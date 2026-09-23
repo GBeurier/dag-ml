@@ -1241,6 +1241,36 @@ pub(crate) fn data_view_for_partition(
             serde_json::Value::Bool(binding.view_policy.include_augmented_refit_predictions),
         );
     }
+    if role == DataViewRole::Fit && scope.phase == Phase::FitCv {
+        extra.insert(
+            "include_augmented_cv_train_predictions".to_string(),
+            serde_json::Value::Bool(binding.view_policy.include_augmented_cv_train_predictions),
+        );
+        if binding.view_policy.include_augmented_cv_train_predictions {
+            let fold_id = scope.fold_id.as_ref().ok_or_else(|| {
+                DagMlError::RuntimeValidation(
+                    "augmented CV train predictions require a fold id".to_string(),
+                )
+            })?;
+            let ids = binding
+                .view_policy
+                .augmented_cv_train_prediction_ids_by_fold
+                .get(fold_id)
+                .ok_or_else(|| {
+                    DagMlError::RuntimeValidation(format!(
+                        "augmented CV train predictions have no declared IDs for fold `{fold_id}`"
+                    ))
+                })?;
+            extra.insert(
+                "augmented_cv_train_prediction_ids".to_string(),
+                serde_json::to_value(ids).map_err(|error| {
+                    DagMlError::RuntimeValidation(format!(
+                        "cannot serialize augmented CV train prediction IDs: {error}"
+                    ))
+                })?,
+            );
+        }
+    }
     if let Some(source_index) = binding
         .metadata
         .get(crate::data::SOURCE_INDEX_METADATA_KEY)

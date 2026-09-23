@@ -1225,6 +1225,13 @@ pub struct DataViewPolicy {
     /// well as their base origins. The fit view must include those children.
     #[serde(default, skip_serializing_if = "is_false")]
     pub include_augmented_refit_predictions: bool,
+    /// Opt in to FIT_CV in-sample predictions for exactly these augmented
+    /// observation IDs per fold. They remain report-only, never OOF inputs.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub include_augmented_cv_train_predictions: bool,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub augmented_cv_train_prediction_ids_by_fold:
+        BTreeMap<crate::ids::FoldId, Vec<crate::ids::SampleId>>,
     #[serde(default)]
     pub include_augmented_validation: bool,
     #[serde(default)]
@@ -1242,6 +1249,8 @@ impl Default for DataViewPolicy {
             predict_partition: DataRequestPartition::FoldValidation,
             include_augmented_train: true,
             include_augmented_refit_predictions: false,
+            include_augmented_cv_train_predictions: false,
+            augmented_cv_train_prediction_ids_by_fold: BTreeMap::new(),
             include_augmented_validation: false,
             include_excluded: false,
             require_sample_ids: true,
@@ -1264,6 +1273,27 @@ impl DataViewPolicy {
                 "include_augmented_refit_predictions requires include_augmented_train=true"
                     .to_string(),
             ));
+        }
+        if self.include_augmented_cv_train_predictions && !self.include_augmented_train {
+            return Err(DagMlError::CampaignValidation(
+                "include_augmented_cv_train_predictions requires include_augmented_train=true"
+                    .to_string(),
+            ));
+        }
+        if !self.include_augmented_cv_train_predictions
+            && !self.augmented_cv_train_prediction_ids_by_fold.is_empty()
+        {
+            return Err(DagMlError::CampaignValidation(
+                "augmented CV train prediction IDs require include_augmented_cv_train_predictions=true"
+                    .to_string(),
+            ));
+        }
+        for ids in self.augmented_cv_train_prediction_ids_by_fold.values() {
+            if ids.len() != ids.iter().collect::<BTreeSet<_>>().len() {
+                return Err(DagMlError::CampaignValidation(
+                    "augmented CV train prediction IDs contain duplicates".to_string(),
+                ));
+            }
         }
         for unsafe_flag in &self.unsafe_flags {
             if unsafe_flag.trim().is_empty() {
@@ -2583,7 +2613,31 @@ mod tests {
         .unwrap();
         assert!(policy.include_augmented_train);
         assert!(!policy.include_augmented_refit_predictions);
+        assert!(!policy.include_augmented_cv_train_predictions);
         policy.validate().unwrap();
+    }
+
+    #[test]
+    fn augmented_cv_train_prediction_policy_requires_augmented_fit_scope_and_opt_in() {
+        let fold = crate::ids::FoldId::new("fold0").unwrap();
+        let child = crate::ids::SampleId::new("child0").unwrap();
+        let mut policy = DataViewPolicy::default();
+        policy
+            .augmented_cv_train_prediction_ids_by_fold
+            .insert(fold, vec![child]);
+        assert!(policy
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("require include_augmented_cv_train_predictions"));
+        policy.include_augmented_cv_train_predictions = true;
+        policy.validate().unwrap();
+        policy.include_augmented_train = false;
+        assert!(policy
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("requires include_augmented_train=true"));
     }
 
     #[test]
