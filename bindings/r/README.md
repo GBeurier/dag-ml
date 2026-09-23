@@ -67,3 +67,26 @@ export DAGML_NATIVE_LIBRARY="$PWD/target/release/libdag_ml_capi.so"
 R CMD build bindings/r
 R CMD check --no-manual dagml_*.tar.gz
 ```
+
+Host hyperparameter search can use the native scheduler through executable
+JSONL operator and optimizer adapters. The three JSON inputs are an
+`ExecutionPlan`, `ExternalDataPlanEnvelope`, and `HostHpoSearchRequest`.
+The CLI, rather than an R callback thread, owns trial scheduling, folds,
+pruning, selection, and durable checkpoints:
+
+```r
+outcome <- dagml_host_hpo_search(
+  plan = "plan.json", envelope = "envelope.json", request = "hpo.json",
+  operator_adapter = "./r-operator-adapter",
+  optimizer_adapter = "./r-optimizer-adapter",
+  checkpoint = "search.checkpoint.json",
+  operator_persistent = TRUE
+)
+```
+
+The executables can launch `Rscript` but must implement the same JSONL
+protocol as the [CLI examples](../../examples/adapters/). The wrapper accepts
+`parallel_trials = 1` only; for process-isolated parallel trials, invoke
+`dag-ml-cli run-host-hpo --parallel-trials N` directly. The R adapter processes
+and their optimizer state remain host-owned. Run the wrapper smoke with
+`R CMD check`; a working R installation is required.
