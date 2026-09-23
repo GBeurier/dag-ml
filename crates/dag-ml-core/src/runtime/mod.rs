@@ -266,6 +266,8 @@ pub struct RunContext {
     pub score_collector: Vec<RegressionMetricReport>,
     /// Per-fold `y_true` records, kept so cross-fold ensembles (the OOF average) can be scored.
     pub regression_target_records: Vec<RegressionTargetRecord>,
+    /// Class probability evidence, retained for class-aligned CV test ensembles.
+    pub classification_probability_blocks: Vec<ClassificationProbabilityBlock>,
     /// The per-sample cross-fold OOF average blocks (+ `y_true`) collected alongside the scalar OOF
     /// average reports — one per scored producer. Surfaced so the host can fill the `(validation, avg)`
     /// row's per-sample y_pred; populated by `collect_cross_fold_validation_scores`, empty otherwise.
@@ -359,6 +361,7 @@ impl RunContext {
             lineage: InMemoryLineageRecorder::new(),
             score_collector: Vec::new(),
             regression_target_records: Vec::new(),
+            classification_probability_blocks: Vec::new(),
             oof_average_blocks: Vec::new(),
             test_ensemble_blocks: Vec::new(),
             global_oof_aggregation: BTreeMap::new(),
@@ -449,6 +452,7 @@ impl RunContext {
     ) -> Result<()> {
         let outcome = cross_fold_test_reports(
             self.prediction_store.blocks(),
+            &self.classification_probability_blocks,
             &self.regression_target_records,
             &self.score_collector,
             selection_metric,

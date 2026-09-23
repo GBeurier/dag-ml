@@ -1046,6 +1046,7 @@ mod tests {
                 .collect::<Result<Vec<_>>>()?;
             Ok(NodeResult {
                 schema_version: None,
+                classification_probabilities: Vec::new(),
                 node_id: task.node_plan.node_id.clone(),
                 outputs: BTreeMap::new(),
                 predictions: Vec::new(),

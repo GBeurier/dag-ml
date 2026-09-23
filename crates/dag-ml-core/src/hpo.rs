@@ -1804,6 +1804,7 @@ mod pls_controller {
             let artifact_refs = artifacts.clone();
             Ok(NodeResult {
                 schema_version: None,
+                classification_probabilities: Vec::new(),
                 node_id: task.node_plan.node_id.clone(),
                 outputs: BTreeMap::from([("oof".to_string(), self.handle(HandleKind::Prediction))]),
                 predictions: vec![prediction],
@@ -2336,6 +2337,7 @@ mod pls_controller {
             let artifact_refs = artifacts.clone();
             Ok(NodeResult {
                 schema_version: None,
+                classification_probabilities: Vec::new(),
                 node_id: task.node_plan.node_id.clone(),
                 outputs: BTreeMap::from([("oof".to_string(), self.handle(HandleKind::Prediction))]),
                 predictions: vec![PredictionBlock {

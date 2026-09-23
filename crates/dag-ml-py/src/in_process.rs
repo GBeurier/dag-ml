@@ -1984,6 +1984,7 @@ mod tests {
                 .collect::<BTreeMap<_, _>>();
             Ok(NodeResult {
                 schema_version: None,
+                classification_probabilities: Vec::new(),
                 node_id: task.node_plan.node_id.clone(),
                 outputs: BTreeMap::from([
                     ("x".to_string(), data_output.clone()),
@@ -2644,6 +2645,7 @@ mod tests {
                 .collect::<BTreeMap<_, _>>();
             let result = NodeResult {
                 schema_version: None,
+                classification_probabilities: Vec::new(),
                 node_id: task.node_plan.node_id.clone(),
                 outputs: BTreeMap::from([(
                     "oof".to_string(),
