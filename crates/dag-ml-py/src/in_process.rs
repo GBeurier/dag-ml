@@ -314,6 +314,18 @@ impl dag_ml_core::HostHpoProposalSource for PyHostHpoProposals {
         )
     }
 
+    fn ask_in_phase(
+        &mut self,
+        trial_index: u32,
+        phase_index: Option<u32>,
+    ) -> dag_ml_core::Result<Option<std::collections::BTreeMap<String, serde_json::Value>>> {
+        call_py_bridge(
+            &self.callback,
+            &serde_json::json!({"operation": "ask", "trial_index": trial_index, "phase_index": phase_index}),
+            "host optimizer",
+        )
+    }
+
     fn tell(&mut self, trial_index: u32, score: f64) -> dag_ml_core::Result<()> {
         call_py_bridge(
             &self.callback,

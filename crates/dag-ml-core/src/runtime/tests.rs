@@ -9760,6 +9760,7 @@ fn variant_scoring_controllers() -> RuntimeControllerRegistry {
 fn host_hpo_owns_budget_native_scores_and_selection_without_refit() {
     struct Proposals {
         asked: u32,
+        phases: Vec<Option<u32>>,
         told: Vec<(u32, f64)>,
     }
     impl HostHpoProposalSource for Proposals {
@@ -9778,6 +9779,14 @@ fn host_hpo_owns_budget_native_scores_and_selection_without_refit() {
         fn tell(&mut self, trial_index: u32, score: f64) -> Result<()> {
             self.told.push((trial_index, score));
             Ok(())
+        }
+        fn ask_in_phase(
+            &mut self,
+            trial_index: u32,
+            phase_index: Option<u32>,
+        ) -> Result<Option<BTreeMap<String, serde_json::Value>>> {
+            self.phases.push(phase_index);
+            self.ask(trial_index)
         }
     }
     struct CvOnly(VariantScoringController);
@@ -9816,6 +9825,7 @@ fn host_hpo_owns_budget_native_scores_and_selection_without_refit() {
     let provider = InMemoryDataProvider::new(ControllerId::new("controller:data").unwrap());
     let mut request = HostHpoSearchRequest {
         parameter_bindings: BTreeMap::new(),
+        phase_trial_budgets: vec![1, 2],
         fold_score_reduction: None,
         target_node: NodeId::new("model:pls").unwrap(),
         trial_budget: 3,
@@ -9825,12 +9835,14 @@ fn host_hpo_owns_budget_native_scores_and_selection_without_refit() {
     };
     let mut proposals = Proposals {
         asked: 0,
+        phases: Vec::new(),
         told: Vec::new(),
     };
     let result = SequentialScheduler
         .execute_host_hpo_search(&plan, &controllers, &provider, &request, &mut proposals)
         .unwrap();
     assert_eq!(proposals.asked, 3);
+    assert_eq!(proposals.phases, vec![Some(0), Some(1), Some(1)]);
     assert_eq!(proposals.told, vec![(0, 3.0), (1, 1.0), (2, 2.0)]);
     assert_eq!(result.selected_trial_index, 1);
     assert_eq!(result.selected_params["n_components"], json!(1.0));
@@ -9851,6 +9863,7 @@ fn host_hpo_owns_budget_native_scores_and_selection_without_refit() {
     request.fold_score_reduction = Some(HostHpoFoldReduction::Mean);
     let mut reduced_proposals = Proposals {
         asked: 0,
+        phases: Vec::new(),
         told: Vec::new(),
     };
     let reduced = SequentialScheduler
@@ -9875,6 +9888,14 @@ fn host_hpo_owns_budget_native_scores_and_selection_without_refit() {
             "selection reduction cannot rewrite native per-fold/OOF reports"
         );
     }
+    request.phase_trial_budgets = vec![1, 1];
+    assert!(SequentialScheduler
+        .execute_host_hpo_search(&plan, &controllers, &provider, &request, &mut proposals)
+        .is_err());
+    assert_eq!(
+        proposals.asked, 3,
+        "invalid phase budgets cannot ask or evaluate"
+    );
     request.trial_budget = 0;
     assert!(SequentialScheduler
         .execute_host_hpo_search(&plan, &controllers, &provider, &request, &mut proposals)
@@ -9985,6 +10006,7 @@ fn durable_host_fixture(
     let provider = InMemoryDataProvider::new(ControllerId::new("controller:data").unwrap());
     let request = HostHpoSearchRequest {
         parameter_bindings: BTreeMap::new(),
+        phase_trial_budgets: Vec::new(),
         target_node: NodeId::new("model:pls").unwrap(),
         trial_budget: 3,
         metric: RegressionMetricKind::Rmse,

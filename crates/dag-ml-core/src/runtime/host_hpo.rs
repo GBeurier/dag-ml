@@ -29,6 +29,11 @@ pub struct HostHpoSearchRequest {
     pub metric: RegressionMetricKind,
     pub direction: crate::selection::MetricObjective,
     pub optimizer_descriptor: BTreeMap<String, serde_json::Value>,
+    /// Consecutive trial budgets for a phased optimizer. Empty means one
+    /// implicit phase. The budgets must sum to `trial_budget`; core owns the
+    /// phase boundary while the proposal source owns sampler-specific state.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub phase_trial_budgets: Vec<u32>,
     /// None preserves the original global OOF objective. Fold reductions are
     /// explicit selection evidence, never synthetic OOF ScoreSet reports.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -40,6 +45,20 @@ pub struct HostHpoSearchRequest {
 }
 
 impl HostHpoSearchRequest {
+    fn phase_index(&self, trial_index: u32) -> Option<u32> {
+        if self.phase_trial_budgets.is_empty() {
+            return None;
+        }
+        let mut end = 0;
+        for (index, budget) in self.phase_trial_budgets.iter().enumerate() {
+            end += budget;
+            if trial_index < end {
+                return Some(index as u32);
+            }
+        }
+        None
+    }
+
     fn validate_parameter_bindings(&self, plan: &ExecutionPlan) -> Result<()> {
         let mut destinations = BTreeSet::new();
         for (path, binding) in &self.parameter_bindings {
@@ -105,6 +124,15 @@ impl HostHpoSearchRequest {
 
 pub trait HostHpoProposalSource {
     fn ask(&mut self, trial_index: u32) -> Result<Option<BTreeMap<String, serde_json::Value>>>;
+    /// Receive the core-owned phase for a candidate. Existing one-phase
+    /// sources remain source-compatible through the default implementation.
+    fn ask_in_phase(
+        &mut self,
+        trial_index: u32,
+        _phase_index: Option<u32>,
+    ) -> Result<Option<BTreeMap<String, serde_json::Value>>> {
+        self.ask(trial_index)
+    }
     fn tell(&mut self, trial_index: u32, score: f64) -> Result<()>;
     /// Terminalize a failed candidate before pairing durable optimizer state.
     fn fail(&mut self, _trial_index: u32, _error: &str) -> Result<()> {
@@ -297,6 +325,18 @@ impl SequentialScheduler {
                 "host HPO requires a positive budget and explicit optimizer descriptor".into(),
             ));
         }
+        if !request.phase_trial_budgets.is_empty()
+            && (request.phase_trial_budgets.contains(&0)
+                || request
+                    .phase_trial_budgets
+                    .iter()
+                    .try_fold(0u32, |total, budget| total.checked_add(*budget))
+                    != Some(request.trial_budget))
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "host HPO phase budgets must be positive and sum to trial_budget".into(),
+            ));
+        }
         let folds = plan.fold_set.as_ref().ok_or_else(|| {
             DagMlError::RuntimeValidation("host HPO requires explicit evaluation folds".into())
         })?;
@@ -350,7 +390,9 @@ impl SequentialScheduler {
             if status == HostHpoSearchStatus::Cancelled {
                 break;
             }
-            let Some(params) = proposals.ask(trial_index)? else {
+            let Some(params) =
+                proposals.ask_in_phase(trial_index, request.phase_index(trial_index))?
+            else {
                 status = HostHpoSearchStatus::Exhausted;
                 break;
             };
