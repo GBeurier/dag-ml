@@ -26,18 +26,18 @@ use dag_ml_core::{
     BundlePredictionCachePayloadSet, BundlePredictionCacheRecord, BundlePredictionRequirement,
     BundleReplayExecution, CacheNamespace, CampaignSpec, CandidateScore,
     ColumnarPredictionCacheStore, ControllerId, ControllerManifest, ControllerRegistry, DagMlError,
-    DataRequestPartition, ExecutionBundle, ExplanationBlock, ExternalDataPlanEnvelope,
-    FileArtifactManifestStore, FileArtifactPayloadStore, FilePredictionCacheStore, GraphSpec,
-    HandleKind, HandleRef, InMemoryArtifactStore, InMemoryDataProvider, LineageId, LineageRecord,
-    LossSpec, MetricObjective, MetricSpec, NodeId, NodeResult, NodeTask, OofCampaign,
-    OperatorVariantModel, ParallelScheduler, Phase, PipelineDslSpec, PortablePredictorPackage,
-    PredictionBlock, PredictionLevel, PredictionPartition, PredictionUnitId, RefitArtifactRecord,
-    RegressionMetricKind, RegressionMetricReport, RegressionTargetBlock, ReplayPhaseRequest,
-    ResearchProvenancePackage, RunContext, RunId, RuntimeArtifactStore, RuntimeController,
-    RuntimeControllerRegistry, RuntimeDataProvider, RuntimePredictionCacheStore,
-    RuntimeTunerSession, SampleId, ScoreSet, SelectionDecision, SelectionMetric, SelectionPolicy,
-    SequentialScheduler, TrainingRequest, TrainingResourceLimits, VariantId,
-    SCORE_SET_SCHEMA_VERSION,
+    DataRequestPartition, ExecutionBundle, ExplanationBlock, ExplicitPhaseDataProvider,
+    ExternalDataPlanEnvelope, FileArtifactManifestStore, FileArtifactPayloadStore,
+    FilePredictionCacheStore, GraphSpec, HandleKind, HandleRef, InMemoryArtifactStore,
+    InMemoryDataProvider, LineageId, LineageRecord, LossSpec, MetricObjective, MetricSpec, NodeId,
+    NodeResult, NodeTask, OofCampaign, OperatorVariantModel, ParallelScheduler, Phase,
+    PipelineDslSpec, PortablePredictorPackage, PredictionBlock, PredictionLevel,
+    PredictionPartition, PredictionUnitId, RefitArtifactRecord, RegressionMetricKind,
+    RegressionMetricReport, RegressionTargetBlock, ReplayPhaseRequest, ResearchProvenancePackage,
+    RunContext, RunId, RuntimeArtifactStore, RuntimeController, RuntimeControllerRegistry,
+    RuntimeDataProvider, RuntimePredictionCacheStore, RuntimeTunerSession, SampleId, ScoreSet,
+    SelectionDecision, SelectionMetric, SelectionPolicy, SequentialScheduler, TrainingRequest,
+    TrainingResourceLimits, VariantId, SCORE_SET_SCHEMA_VERSION,
 };
 use serde::{Deserialize, Serialize};
 
@@ -628,6 +628,43 @@ enum Command {
         #[arg(long, default_value = "plan:cli.process.dsl.cv.refit")]
         plan_id: String,
         #[arg(long, default_value = "run:cli.process.dsl.cv.refit")]
+        run_id: String,
+        #[arg(long, default_value_t = 12345)]
+        root_seed: u64,
+        #[arg(long, value_enum, default_value = "sequential")]
+        scheduler: CliScheduler,
+        #[arg(long, default_value_t = 1)]
+        scheduler_workers: usize,
+        #[arg(long, default_value_t = 1)]
+        cpu_threads: u32,
+        #[arg(long = "gpu-device")]
+        gpu_devices: Vec<String>,
+    },
+    /// Execute one concrete no-splitter REFIT phase with explicit attested row order.
+    RunProcessDslRefitPhase {
+        #[arg(long)]
+        dsl: PathBuf,
+        #[arg(long)]
+        controllers: PathBuf,
+        #[arg(long)]
+        envelope: PathBuf,
+        #[arg(long)]
+        training_sample_ids: PathBuf,
+        #[arg(long)]
+        adapter: PathBuf,
+        #[arg(long)]
+        persistent: bool,
+        #[arg(long, default_value_t = 1)]
+        process_workers: usize,
+        #[arg(long, default_value_t = DEFAULT_PROCESS_TIMEOUT_MS)]
+        process_timeout_ms: u64,
+        #[arg(long, default_value_t = 0)]
+        process_retries: usize,
+        #[arg(long)]
+        output: Option<PathBuf>,
+        #[arg(long, default_value = "plan:cli.process.dsl.refit.phase")]
+        plan_id: String,
+        #[arg(long, default_value = "run:cli.process.dsl.refit.phase")]
         run_id: String,
         #[arg(long, default_value_t = 12345)]
         root_seed: u64,
@@ -1764,6 +1801,87 @@ fn main() -> Result<()> {
                     .with_context(|| "prediction cache payloads do not match captured bundle")?;
                 emit_json(Some(path), &payload_set, "prediction cache payload set")?;
             }
+        }
+        Command::RunProcessDslRefitPhase {
+            dsl,
+            controllers,
+            envelope,
+            training_sample_ids,
+            adapter,
+            persistent,
+            process_workers,
+            process_timeout_ms,
+            process_retries,
+            output,
+            plan_id,
+            run_id,
+            root_seed,
+            scheduler,
+            scheduler_workers,
+            cpu_threads,
+            gpu_devices,
+        } => {
+            let envelope: ExternalDataPlanEnvelope =
+                read_json(&envelope, "external data-plan envelope")?;
+            let ids: Vec<String> = read_json(&training_sample_ids, "training sample ids")?;
+            let ids = ids
+                .into_iter()
+                .map(SampleId::new)
+                .collect::<dag_ml_core::Result<Vec<_>>>()?;
+            let (plan, operator_models) =
+                build_plan_and_operator_models_from_dsl_path_with_envelope(
+                    &dsl,
+                    &controllers,
+                    &envelope,
+                    plan_id,
+                )?;
+            if !operator_models.is_empty() || plan.variants.len() != 1 || plan.fold_set.is_some() {
+                bail!("explicit REFIT phase requires one concrete no-splitter pipeline without unresolved operator choices");
+            }
+            plan.campaign.validate_data_envelope_relations(&envelope)?;
+            let provider = ExplicitPhaseDataProvider::new(
+                ControllerId::new("controller:data.provider")?,
+                envelope,
+                Some(ids),
+            )?;
+            let process_config = process_adapter_runtime_config(
+                process_workers,
+                process_timeout_ms,
+                process_retries,
+            )?;
+            let scheduler = SchedulerConfig::new(scheduler, scheduler_workers)?;
+            let runtime_controllers = process_runtime_controllers_for_mode(
+                &plan,
+                adapter,
+                persistent,
+                process_config,
+                scheduler,
+            )?;
+            let mut ctx = RunContext::new(RunId::new(run_id)?, Some(root_seed));
+            ctx.resource_limits = Some(TrainingResourceLimits {
+                cpu_threads,
+                memory_bytes: None,
+                gpu_devices,
+                wall_time_ms: None,
+            });
+            let results = execute_campaign_phase_with_scheduler(
+                scheduler,
+                &plan,
+                &runtime_controllers,
+                &provider,
+                &mut ctx,
+                Phase::Refit,
+            )
+            .with_context(|| "explicit process DSL REFIT phase failed")?;
+            let scores = ctx.build_score_set(plan.id.clone(), None);
+            emit_json(
+                output.as_ref(),
+                &serde_json::json!({
+                    "node_results": results, "scores": scores, "phase": Phase::Refit,
+                    "effective_plan": plan,
+                }),
+                "explicit phase outcome",
+            )?;
         }
         Command::RunProcessDslCvRefitReplay {
             dsl,

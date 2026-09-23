@@ -47,8 +47,8 @@ use dag_ml_core::{
     select_best_operator_variant_from_models,
     select_best_variant_by_cv, validate_terminal_prediction_preflight, AggregationControllerResult,
     AggregationControllerTask, ArtifactMaterializationRequest, BundleId, ControllerId,
-    ControllerRegistry, DagMlError as CoreDagMlError, ExecutionPlan, ExternalDataPlanEnvelope,
-    HandleKind, HandleRef, InMemoryArtifactStore, InMemoryDataProvider, NodeResult, NodeTask,
+    ControllerRegistry, DagMlError as CoreDagMlError, ExecutionPlan, ExplicitPhaseDataProvider,
+    ExternalDataPlanEnvelope, HandleKind, HandleRef, InMemoryArtifactStore, InMemoryDataProvider, NodeResult, NodeTask,
     OperatorVariantModel, Phase, RegressionMetricKind, RegressionMetricReport, RunContext, RunId,
     RuntimeController, RuntimeControllerRegistry, ScoreSet, SequentialScheduler,
     TerminalPredictionReplay, TerminalPredictionSelector, TrainingLossRoleReference,
@@ -56,50 +56,6 @@ use dag_ml_core::{
 };
 
 use crate::{py_core_error, py_serde_error};
-
-/// Provider for explicit phase execution. Training and external prediction
-/// universes stay distinct; no synthetic fold set is introduced.
-struct ExplicitPhaseDataProvider {
-    inner: InMemoryDataProvider,
-    envelope: ExternalDataPlanEnvelope,
-    training_sample_ids: Option<Vec<dag_ml_core::SampleId>>,
-}
-
-impl dag_ml_core::RuntimeDataProvider for ExplicitPhaseDataProvider {
-    fn materialize(
-        &self,
-        request: &dag_ml_core::DataMaterializationRequest,
-    ) -> dag_ml_core::Result<HandleRef> {
-        self.inner.materialize(request)
-    }
-
-    fn make_view(&self, request: &dag_ml_core::DataViewRequest) -> dag_ml_core::Result<HandleRef> {
-        self.inner.make_view(request)
-    }
-
-    fn coordinator_relations(
-        &self,
-        binding: &dag_ml_core::DataBinding,
-    ) -> dag_ml_core::Result<Option<dag_ml_core::SampleRelationSet>> {
-        self.inner.coordinator_relations(binding)
-    }
-
-    fn predict_cohort(
-        &self,
-        binding: &dag_ml_core::DataBinding,
-        phase: Phase,
-    ) -> dag_ml_core::Result<Option<dag_ml_core::PredictCohort>> {
-        self.inner.predict_cohort(binding, phase)
-    }
-
-    fn refit_sample_ids(
-        &self,
-        binding: &dag_ml_core::DataBinding,
-    ) -> dag_ml_core::Result<Option<Vec<dag_ml_core::SampleId>>> {
-        binding.validate_envelope(&self.envelope)?;
-        Ok(self.training_sample_ids.clone())
-    }
-}
 
 /// Execute exactly one concrete REFIT or PREDICT phase through the Rust
 /// scheduler. This does not select variants, invent folds, fit before PREDICT,
@@ -143,16 +99,6 @@ pub fn execute_phase_in_process(
         (Phase::Refit, Some(ids)) => {
             let ids = ids.into_iter().map(dag_ml_core::SampleId::new)
                 .collect::<dag_ml_core::Result<Vec<_>>>().map_err(py_core_error)?;
-            let relations = envelope.coordinator_relations.as_ref().ok_or_else(|| py_core_error(
-                CoreDagMlError::RuntimeValidation("REFIT requires attested training relations".into())
-            ))?;
-            let expected = relations.records.iter().map(|record| record.sample_id.clone()).collect::<std::collections::BTreeSet<_>>();
-            let supplied = ids.iter().cloned().collect::<std::collections::BTreeSet<_>>();
-            if ids.is_empty() || supplied.len() != ids.len() || supplied != expected {
-                return Err(py_core_error(CoreDagMlError::RuntimeValidation(
-                    "training_sample_ids must be an exact unique ordering of the attested training universe".into()
-                )));
-            }
             Some(ids)
         }
         (Phase::Refit, None) => return Err(py_core_error(CoreDagMlError::RuntimeValidation(
@@ -208,15 +154,11 @@ pub fn execute_phase_in_process(
     plan.campaign
         .validate_data_envelope_relations(&envelope)
         .map_err(py_core_error)?;
-    let provider = ExplicitPhaseDataProvider {
-        inner: InMemoryDataProvider::with_envelope(
-            ControllerId::new("controller:data.provider").map_err(py_core_error)?,
-            envelope.clone(),
-        )
-        .map_err(py_core_error)?,
+    let provider = ExplicitPhaseDataProvider::new(
+        ControllerId::new("controller:data.provider").map_err(py_core_error)?,
         envelope,
         training_sample_ids,
-    };
+    ).map_err(py_core_error)?;
     let controllers = build_runtime_controllers(py, &plan, &op_callback).map_err(py_core_error)?;
     let run_id = RunId::new(format!("run:{}:{}:in-process", dsl.id, phase.as_str()))
         .map_err(py_core_error)?;
