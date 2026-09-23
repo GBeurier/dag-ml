@@ -1223,7 +1223,7 @@ pub struct DataViewPolicy {
     pub include_augmented_train: bool,
     /// Opt in to REFIT resubstitution predictions over augmented children as
     /// well as their base origins. The fit view must include those children.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub include_augmented_refit_predictions: bool,
     #[serde(default)]
     pub include_augmented_validation: bool,
@@ -1346,6 +1346,10 @@ fn default_predict_partition() -> DataRequestPartition {
 
 fn default_true() -> bool {
     true
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
