@@ -49,7 +49,7 @@ def _sha256(path: Path) -> str:
 
 
 def test_base_pack_remains_byte_current() -> None:
-    # Published v0.3.25 (233d4ec): retain the released pack and its 105 artifacts.
+    # Current W1 bytes and its 105 artifacts are pinned independently of D4.
     pack = load_json(BASE_PACK)
     assert _sha256(BASE_PACK) == (
         "7a2b6bfe0a395f58c860aa3ca67f068f6efb6ca62c2549d16a62417a92371951"
