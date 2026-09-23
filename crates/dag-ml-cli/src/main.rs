@@ -7203,7 +7203,6 @@ mod tests {
         let plan_path = directory.join("plan.json");
         let envelope_path = directory.join("envelope.json");
         let request_path = directory.join("request.json");
-        let checkpoint_path = directory.join("checkpoint.json");
         let output_path = directory.join("output.json");
         let graph: GraphSpec =
             serde_json::from_str(include_str!("../../../examples/minimal_graph.json")).unwrap();
@@ -7231,41 +7230,65 @@ mod tests {
         .unwrap();
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
         let operator = root.join("examples/adapters/hpo_process_controller.py");
-        let optimizer = root.join("examples/adapters/hpo_optimizer_jsonl.py");
-        for budget in [2, 3] {
-            std::fs::write(
-                &request_path,
-                serde_json::to_vec(&serde_json::json!({
-                    "target_node": "model:base", "trial_budget": budget,
-                    "metric": "rmse", "direction": "minimize",
-                    "optimizer_descriptor": {"adapter": "example"},
-                    "progressive_pruning": true,
-                }))
-                .unwrap(),
-            )
-            .unwrap();
-            run_host_hpo_cli(
-                &plan_path,
-                &envelope_path,
-                &request_path,
-                &operator,
-                false,
-                &optimizer,
-                2,
-                Some(&checkpoint_path),
-                Some(&output_path),
-                Duration::from_secs(10),
-            )
-            .unwrap();
-            let result: serde_json::Value =
-                serde_json::from_slice(&std::fs::read(&output_path).unwrap()).unwrap();
-            assert_eq!(result["status"], "completed");
-            assert_eq!(result["trials"].as_array().unwrap().len(), budget);
-            assert_eq!(result["selected_trial_index"], 0);
-            let checkpoint: HostHpoCheckpoint =
-                serde_json::from_slice(&std::fs::read(&checkpoint_path).unwrap()).unwrap();
-            assert_eq!(checkpoint.trials.len(), budget);
-            checkpoint.verify_seal().unwrap();
+        let mut optimizers = vec![root.join("examples/adapters/hpo_optimizer_jsonl.py")];
+        let r_available = std::process::Command::new("Rscript")
+            .arg("--version")
+            .output()
+            .is_ok();
+        if r_available {
+            optimizers.push(root.join("examples/adapters/hpo_optimizer_jsonl.R"));
+        } else {
+            assert_ne!(std::env::var("DAGML_REQUIRE_HPO_R").as_deref(), Ok("1"));
+        }
+        let octave_available = std::process::Command::new("octave")
+            .arg("--version")
+            .output()
+            .is_ok();
+        if octave_available {
+            optimizers.push(root.join("examples/adapters/hpo_optimizer_matlab.sh"));
+        } else {
+            assert_ne!(
+                std::env::var("DAGML_REQUIRE_HPO_MATLAB").as_deref(),
+                Ok("1")
+            );
+        }
+        for (adapter_index, optimizer) in optimizers.iter().enumerate() {
+            let checkpoint_path = directory.join(format!("checkpoint-{adapter_index}.json"));
+            for budget in [2, 3] {
+                std::fs::write(
+                    &request_path,
+                    serde_json::to_vec(&serde_json::json!({
+                        "target_node": "model:base", "trial_budget": budget,
+                        "metric": "rmse", "direction": "minimize",
+                        "optimizer_descriptor": {"adapter": "example"},
+                        "progressive_pruning": true,
+                    }))
+                    .unwrap(),
+                )
+                .unwrap();
+                run_host_hpo_cli(
+                    &plan_path,
+                    &envelope_path,
+                    &request_path,
+                    &operator,
+                    false,
+                    optimizer,
+                    2,
+                    Some(&checkpoint_path),
+                    Some(&output_path),
+                    Duration::from_secs(10),
+                )
+                .unwrap();
+                let result: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(&output_path).unwrap()).unwrap();
+                assert_eq!(result["status"], "completed");
+                assert_eq!(result["trials"].as_array().unwrap().len(), budget);
+                assert_eq!(result["selected_trial_index"], 0);
+                let checkpoint: HostHpoCheckpoint =
+                    serde_json::from_slice(&std::fs::read(&checkpoint_path).unwrap()).unwrap();
+                assert_eq!(checkpoint.trials.len(), budget);
+                checkpoint.verify_seal().unwrap();
+            }
         }
         std::fs::remove_dir_all(directory).unwrap();
     }
