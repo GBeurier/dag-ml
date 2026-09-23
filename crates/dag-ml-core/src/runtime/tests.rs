@@ -9231,8 +9231,8 @@ fn nested_stacking_test_plan(outer: FoldSet, partitioned_refit_oof: bool) -> Exe
 // Contract for a second OOF stage. The first meta-model must be fitted from
 // inner OOF predictions before it can itself produce OOF predictions for a
 // downstream residual learner. A single global inner fold set cannot attest
-// both. This planner-level witness omits the separate Data edge that a full
-// prediction-feature merge would need.
+// both. The independent Data edge here keeps the residual learner valid; the
+// full prediction-feature merge topology is covered by the DSL test.
 #[test]
 #[ignore = "two dependent OOF stages need a recursive native campaign planner"]
 fn nested_stacking_then_residual_accepts_dependent_meta_models() {
@@ -9248,21 +9248,36 @@ fn nested_stacking_then_residual_accepts_dependent_meta_models() {
     }
     .split("outer", &samples)
     .unwrap();
-    let mut plan = nested_stacking_test_plan(outer, false);
+    let plan = nested_stacking_test_plan(outer, false);
     let upstream_id = NodeId::new("model:meta").unwrap();
     let downstream_id = NodeId::new("model:meta.downstream").unwrap();
+    let feature_id = NodeId::new("transform:features").unwrap();
     let mut downstream = node(
         downstream_id.as_str(),
         NodeKind::Model,
-        vec![port("upstream", PortKind::Prediction)],
+        vec![
+            port("upstream", PortKind::Prediction),
+            port("x_original", PortKind::Data),
+        ],
         vec![port("pred", PortKind::Prediction)],
     );
     downstream.metadata.insert(
         RESIDUAL_TARGET_EXECUTION_METADATA_KEY.to_string(),
         json!(RESIDUAL_TARGET_EXECUTION_V1),
     );
-    plan.graph_plan.graph.nodes.push(downstream);
-    plan.graph_plan.graph.edges.push(EdgeSpec {
+    downstream.metadata.insert(
+        STACKING_REFIT_OOF_METADATA_KEY.to_string(),
+        json!(STACKING_REFIT_PARTITIONED_INNER_V1),
+    );
+    let mut graph = plan.graph_plan.graph.clone();
+    graph.nodes.push(node(
+        feature_id.as_str(),
+        NodeKind::Transform,
+        Vec::new(),
+        vec![port("x_out", PortKind::Data)],
+    ));
+    graph.nodes.push(downstream);
+    graph.edges.push(EdgeSpec {
         source: PortRef {
             node_id: upstream_id,
             port_name: "pred".to_string(),
@@ -9277,9 +9292,19 @@ fn nested_stacking_then_residual_accepts_dependent_meta_models() {
             ..EdgeContract::new(PortKind::Prediction, None)
         },
     });
-    let mut downstream_plan = plan.node_plans[&NodeId::new("model:meta").unwrap()].clone();
-    downstream_plan.node_id = downstream_id.clone();
-    plan.node_plans.insert(downstream_id, downstream_plan);
+    graph.edges.push(EdgeSpec {
+        source: PortRef {
+            node_id: feature_id,
+            port_name: "x_out".to_string(),
+        },
+        target: PortRef {
+            node_id: downstream_id,
+            port_name: "x_original".to_string(),
+        },
+        contract: EdgeContract::new(PortKind::Data, None),
+    });
+    let plan = build_execution_plan("plan:dependent.meta", graph, plan.campaign, &manifests())
+        .expect("valid two-stage prediction and residual topology");
 
     nested_stacking_campaign_plan(&plan)
         .expect("dependent OOF stages need separate nested fold scopes");
