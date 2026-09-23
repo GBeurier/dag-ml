@@ -71,3 +71,24 @@ Run the binding test with GNU Octave:
 octave --no-gui --quiet --eval \
   "addpath('bindings/matlab/tests'); local_implementation_registry"
 ```
+
+For host hyperparameter search, `dagml.hostHpoSearch` calls the standalone
+native scheduler through executable JSONL operator and optimizer adapters.
+The three JSON files are an `ExecutionPlan`, `ExternalDataPlanEnvelope`, and
+`HostHpoSearchRequest`:
+
+```matlab
+result = dagml.hostHpoSearch( ...
+    'plan.json', 'envelope.json', 'hpo.json', ...
+    './matlab-operator-adapter', './matlab-optimizer-adapter', ...
+    'checkpoint', 'search.checkpoint.json', ...
+    'operatorPersistent', true);
+```
+
+The executables can launch MATLAB or Octave and must implement the same
+JSONL protocol as the [CLI examples](../../examples/adapters/). DAG-ML owns
+trial scheduling, fold scoring, pruning, selection, and durable checkpoints.
+The wrapper is POSIX-only and accepts `parallelTrials = 1` only; for
+process-isolated parallel trials, invoke `dag-ml-cli run-host-hpo
+--parallel-trials N` directly. Run its smoke with `addpath('bindings/matlab');
+addpath('bindings/matlab/tests'); host_hpo_search` in MATLAB or Octave.
