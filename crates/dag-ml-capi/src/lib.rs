@@ -6448,6 +6448,7 @@ mod tests {
         let node_id = NodeId::new("transform:scale").unwrap();
         let task = NodeTask {
             inner_fold_set: None,
+            residual_targets: Vec::new(),
             run_id: RunId::new("run:cabi.controller").unwrap(),
             node_plan: NodePlan {
                 inner_cv: None,

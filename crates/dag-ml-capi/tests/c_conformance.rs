@@ -2342,6 +2342,7 @@ fn node_task_result_fixture() -> (NodeTask, NodeResult) {
     let node_id = NodeId::new("transform:scale").unwrap();
     let task = NodeTask {
         inner_fold_set: None,
+        residual_targets: Vec::new(),
         run_id: RunId::new("run:c.conformance.node-result").unwrap(),
         node_plan: NodePlan {
             inner_cv: None,
