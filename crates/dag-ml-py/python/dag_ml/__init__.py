@@ -35,6 +35,7 @@ from ._dag_ml import (
     project_training_request_json,
     sample_relation_set_fingerprint_json,
     select_candidate_json,
+    select_portable_output_json,
     validate_cache_namespace_json,
     validate_campaign_json,
     validate_controller_manifest_json,
@@ -784,6 +785,10 @@ class PortablePredictorPackage(JsonContract):
     def _validate_json(cls, json_text: str) -> None:
         validate_portable_predictor_package_json(json_text)
 
+    def select_output(self, binding_id: str) -> dict[str, Any]:
+        """Resolve one explicitly named output of this validated package."""
+        return json.loads(select_portable_output_json(self.json(), binding_id))
+
 
 class PortableRefitPackageV3(JsonContract):
     """Strict, target-bound native full-refit Package V3 contract."""
@@ -1098,6 +1103,11 @@ def fan_out_data_aware_branches(dsl: Any, envelope: Any) -> PipelineDslSpec:
 def select_candidate(policy: Any, candidates: Any) -> dict[str, Any]:
     """Rank candidate scores with dag-ml-core's deterministic SELECT policy."""
     return json.loads(select_candidate_json(_coerce_json(policy), _coerce_json(candidates)))
+
+
+def select_portable_output(package: Any, binding_id: str) -> dict[str, Any]:
+    """Select a portable package output by binding id, with native validation."""
+    return json.loads(select_portable_output_json(_coerce_json(package), binding_id))
 
 
 def build_execution_plan(
@@ -1827,8 +1837,10 @@ __all__ = [
     "execute_training_json",
     "fan_out_data_aware_branches",
     "select_candidate",
+    "select_portable_output",
     "fan_out_data_aware_branches_json",
     "select_candidate_json",
+    "select_portable_output_json",
     "fold_set_fingerprint_json",
     "loss_execution_attestation",
     "project_training_request",

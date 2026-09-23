@@ -367,6 +367,13 @@ fn validate_portable_predictor_package_json(json: &str) -> PyResult<()> {
 }
 
 #[pyfunction]
+fn select_portable_output_json(package_json: &str, binding_id: &str) -> PyResult<String> {
+    let package = PortablePredictorPackage::from_json(package_json).map_err(py_core_error)?;
+    let selected = package.select_output(binding_id).map_err(py_core_error)?;
+    serde_json::to_string(&selected).map_err(py_serde_error)
+}
+
+#[pyfunction]
 fn validate_portable_refit_package_v3_json(json: &str) -> PyResult<()> {
     PortableRefitPackageV3::from_json(json)
         .map(|_| ())
@@ -567,6 +574,7 @@ fn _dag_ml(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
         validate_portable_predictor_package_json,
         module
     )?)?;
+    module.add_function(wrap_pyfunction!(select_portable_output_json, module)?)?;
     module.add_function(wrap_pyfunction!(
         validate_portable_refit_package_v3_json,
         module
