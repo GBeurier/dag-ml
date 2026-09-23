@@ -29,6 +29,8 @@ pub(crate) struct NestedStackingOuterScope {
 pub(crate) struct NestedStackingCampaignPlan {
     pub(crate) meta_node_id: NodeId,
     pub(crate) kind: NestedMetaKind,
+    /// The resolved policy used by every nested scope in this campaign.
+    pub(crate) inner_cv: crate::fold::NestedCvSpec,
     /// Every dependency needed to produce base predictions for either the
     /// inner or outer scope. The meta node itself is deliberately excluded.
     pub(crate) base_node_ids: BTreeSet<NodeId>,
@@ -48,6 +50,187 @@ pub(crate) struct PredictionFeatureJoinPlan {
     pub(crate) source_node_ids: BTreeSet<NodeId>,
     /// Base prediction producers after the joined Data output is cached.
     pub(crate) downstream_node_ids: BTreeSet<NodeId>,
+}
+
+#[derive(Clone, Debug)]
+struct CapacityRequirements {
+    base: Vec<(NodeId, usize)>,
+    source: Vec<(NodeId, usize)>,
+    learner: Vec<(NodeId, usize)>,
+    auto_gate: bool,
+    prediction_join: bool,
+}
+
+fn declared_fit_capacity(
+    plan: &ExecutionPlan,
+    node_ids: &BTreeSet<NodeId>,
+) -> Result<Vec<(NodeId, usize)>> {
+    let mut requirements = Vec::new();
+    for node_id in node_ids {
+        let node = plan
+            .graph_plan
+            .graph
+            .nodes
+            .iter()
+            .find(|node| node.id == *node_id)
+            .expect("validated graph node");
+        if node.kind != NodeKind::Model {
+            continue;
+        }
+        let minimum = node
+            .metadata
+            .get("fit_capacity")
+            .and_then(serde_json::Value::as_object)
+            .and_then(|hint| hint.get("min_fit_samples"))
+            .and_then(serde_json::Value::as_u64)
+            .filter(|value| *value > 0)
+            .and_then(|value| usize::try_from(value).ok())
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "capacity KFold requires model `{node_id}` metadata.fit_capacity.min_fit_samples >= 1"
+                ))
+            })?;
+        requirements.push((node_id.clone(), minimum));
+    }
+    Ok(requirements)
+}
+
+fn check_fit_capacity(
+    requirements: &[(NodeId, usize)],
+    fit_rows: usize,
+    scope: &str,
+) -> Result<()> {
+    for (node_id, minimum) in requirements {
+        if fit_rows < *minimum {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "capacity KFold model `{node_id}` has {fit_rows} fit samples in `{scope}`; requires at least {minimum}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn check_prediction_join_capacity(
+    policy: &crate::fold::NestedCvSpec,
+    parent_set: &FoldSet,
+    parent: &FoldAssignment,
+    requirements: &CapacityRequirements,
+) -> Result<()> {
+    if !requirements.prediction_join {
+        return Ok(());
+    }
+    check_fit_capacity(
+        &requirements.source,
+        parent.train_sample_ids.len(),
+        "prediction source parent",
+    )?;
+    let source_oof = policy.build_nested_fold_set(parent, &parent_set.sample_groups)?;
+    for source_fold in &source_oof.inner_fold_set.folds {
+        check_fit_capacity(
+            &requirements.source,
+            source_fold.train_sample_ids.len(),
+            "prediction source OOF",
+        )?;
+    }
+    Ok(())
+}
+
+fn check_capacity_scopes(
+    policy: &crate::fold::NestedCvSpec,
+    parent_set: &FoldSet,
+    parent: &FoldAssignment,
+    requirements: &CapacityRequirements,
+) -> Result<()> {
+    check_fit_capacity(
+        &requirements.base,
+        parent.train_sample_ids.len(),
+        "outer base",
+    )?;
+    check_fit_capacity(
+        &requirements.learner,
+        parent.train_sample_ids.len(),
+        "outer learner",
+    )?;
+    check_prediction_join_capacity(policy, parent_set, parent, requirements)?;
+
+    let residual_oof = policy.build_nested_fold_set(parent, &parent_set.sample_groups)?;
+    for residual_fold in &residual_oof.inner_fold_set.folds {
+        check_fit_capacity(
+            &requirements.base,
+            residual_fold.train_sample_ids.len(),
+            "residual base OOF",
+        )?;
+        check_prediction_join_capacity(
+            policy,
+            &residual_oof.inner_fold_set,
+            residual_fold,
+            requirements,
+        )?;
+        if requirements.auto_gate {
+            check_fit_capacity(
+                &requirements.learner,
+                residual_fold.train_sample_ids.len(),
+                "automatic-gate learner",
+            )?;
+            let gate_oof = policy
+                .build_nested_fold_set(residual_fold, &residual_oof.inner_fold_set.sample_groups)?;
+            for gate_fold in &gate_oof.inner_fold_set.folds {
+                check_fit_capacity(
+                    &requirements.base,
+                    gate_fold.train_sample_ids.len(),
+                    "automatic-gate base OOF",
+                )?;
+                check_prediction_join_capacity(
+                    policy,
+                    &gate_oof.inner_fold_set,
+                    gate_fold,
+                    requirements,
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn resolve_capacity_kfold(
+    requested: &crate::fold::CapacityKFoldSpec,
+    fold_set: &FoldSet,
+    requirements: &CapacityRequirements,
+) -> Result<crate::fold::NestedCvSpec> {
+    if !fold_set.sample_groups.is_empty() {
+        return Err(DagMlError::RuntimeValidation(
+            "capacity KFold does not support grouped samples; declare a group-aware inner CV policy"
+                .to_string(),
+        ));
+    }
+    let mut last_error = String::new();
+    for splits in requested.min_splits..=requested.max_splits {
+        let policy = crate::fold::NestedCvSpec::KFold(crate::fold::KFoldSpec {
+            n_splits: splits,
+            shuffle: requested.shuffle,
+            seed: requested.seed,
+        });
+        let attempt = (|| {
+            for outer in &fold_set.folds {
+                check_capacity_scopes(&policy, fold_set, outer, requirements)?;
+            }
+            let full_train = FoldAssignment {
+                fold_id: FoldId::new("capacity.refit")?,
+                train_sample_ids: fold_set.sample_ids.clone(),
+                validation_sample_ids: Vec::new(),
+                metadata: BTreeMap::new(),
+            };
+            check_capacity_scopes(&policy, fold_set, &full_train, requirements)
+        })();
+        match attempt {
+            Ok(()) => return Ok(policy),
+            Err(error) => last_error = error.to_string(),
+        }
+    }
+    Err(DagMlError::RuntimeValidation(format!(
+        "capacity KFold found no feasible split count in {}..={}: {last_error}",
+        requested.min_splits, requested.max_splits
+    )))
 }
 
 pub(crate) fn prediction_feature_join_plan(
@@ -364,13 +547,67 @@ pub(crate) fn nested_stacking_campaign_plan_for_node(
             "nested stacking requires an attested outer fold set".to_string(),
         )
     })?;
-    let inner_spec =
+    let requested_inner_cv =
         crate::fold::resolve_inner_cv(meta_plan.inner_cv.as_ref(), plan.campaign.inner_cv.as_ref())
             .ok_or_else(|| {
                 DagMlError::RuntimeValidation(format!(
                     "nested stacking meta node `{meta_node_id}` has no inner_cv policy"
                 ))
             })?;
+    let inner_spec = match requested_inner_cv {
+        crate::fold::NestedCvSpec::CapacityKFold(requested) => {
+            if kind != NestedMetaKind::Residual {
+                return Err(DagMlError::RuntimeValidation(
+                    "capacity KFold currently supports residual meta nodes only".to_string(),
+                ));
+            }
+            for node_id in &base_node_ids {
+                if is_nested_stacking_meta_node(plan, node_id)? {
+                    return Err(DagMlError::RuntimeValidation(
+                        "capacity KFold does not yet support dependent meta nodes".to_string(),
+                    ));
+                }
+            }
+            let provisional = NestedStackingCampaignPlan {
+                meta_node_id: meta_node_id.clone(),
+                kind,
+                inner_cv: requested_inner_cv.clone(),
+                base_node_ids: base_node_ids.clone(),
+                meta_data_node_ids: meta_data_node_ids.clone(),
+                outer_scopes: Vec::new(),
+                refit_fold_set: None,
+            };
+            let join = prediction_feature_join_plan(plan, &provisional)?;
+            let (base_nodes, source_nodes) = if let Some(join) = &join {
+                (
+                    join.downstream_node_ids.clone(),
+                    join.source_node_ids.clone(),
+                )
+            } else {
+                (base_node_ids.clone(), BTreeSet::new())
+            };
+            let meta_node = plan
+                .graph_plan
+                .graph
+                .nodes
+                .iter()
+                .find(|node| node.id == meta_node_id)
+                .expect("validated meta node");
+            let requirements = CapacityRequirements {
+                base: declared_fit_capacity(plan, &base_nodes)?,
+                source: declared_fit_capacity(plan, &source_nodes)?,
+                learner: declared_fit_capacity(plan, &BTreeSet::from([meta_node_id.clone()]))?,
+                auto_gate: meta_node
+                    .metadata
+                    .get("residual_gate")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("auto"),
+                prediction_join: join.is_some(),
+            };
+            resolve_capacity_kfold(requested, fold_set, &requirements)?
+        }
+        fixed => fixed.clone(),
+    };
     let outer_scopes = fold_set
         .folds
         .iter()
@@ -458,6 +695,7 @@ pub(crate) fn nested_stacking_campaign_plan_for_node(
     Ok(Some(NestedStackingCampaignPlan {
         meta_node_id,
         kind,
+        inner_cv: inner_spec,
         base_node_ids,
         meta_data_node_ids,
         outer_scopes,
@@ -785,4 +1023,65 @@ pub(crate) fn dependency_closure(
         }
     }
     closure
+}
+
+#[cfg(test)]
+mod capacity_tests {
+    use super::*;
+
+    fn thirty_row_folds() -> FoldSet {
+        let samples = (0..30)
+            .map(|index| SampleId::new(format!("s{index}")).unwrap())
+            .collect::<Vec<_>>();
+        crate::fold::KFoldSpec {
+            n_splits: 2,
+            shuffle: false,
+            seed: None,
+        }
+        .split("outer", &samples)
+        .unwrap()
+    }
+
+    fn residual_with_prediction_join(base_minimum: usize) -> CapacityRequirements {
+        CapacityRequirements {
+            base: vec![(NodeId::new("base").unwrap(), base_minimum)],
+            source: vec![(NodeId::new("source").unwrap(), 1)],
+            learner: vec![(NodeId::new("learner").unwrap(), 1)],
+            auto_gate: true,
+            prediction_join: true,
+        }
+    }
+
+    #[test]
+    fn capacity_kfold_resolves_from_actual_nested_fit_scopes() {
+        let folds = thirty_row_folds();
+        let requested = crate::fold::CapacityKFoldSpec {
+            min_splits: 2,
+            max_splits: 4,
+            shuffle: false,
+            seed: None,
+        };
+        let resolved =
+            resolve_capacity_kfold(&requested, &folds, &residual_with_prediction_join(4)).unwrap();
+        assert!(matches!(resolved, crate::fold::NestedCvSpec::KFold(spec) if spec.n_splits == 3));
+
+        let higher =
+            resolve_capacity_kfold(&requested, &folds, &residual_with_prediction_join(8)).unwrap();
+        assert!(matches!(higher, crate::fold::NestedCvSpec::KFold(spec) if spec.n_splits == 4));
+    }
+
+    #[test]
+    fn capacity_kfold_fails_before_fit_when_budget_cannot_meet_hint() {
+        let folds = thirty_row_folds();
+        let requested = crate::fold::CapacityKFoldSpec {
+            min_splits: 2,
+            max_splits: 3,
+            shuffle: false,
+            seed: None,
+        };
+        let error = resolve_capacity_kfold(&requested, &folds, &residual_with_prediction_join(8))
+            .unwrap_err();
+        assert!(error.to_string().contains("no feasible split count"));
+        assert!(error.to_string().contains("base"));
+    }
 }

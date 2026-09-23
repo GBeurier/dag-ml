@@ -1279,17 +1279,7 @@ impl SequentialScheduler {
         active_nested.base_node_ids = base_node_ids.clone();
         let feature_join = prediction_feature_join_plan(plan, &active_nested)?;
         let feature_inner_spec = if feature_join.is_some() {
-            let meta_plan = plan
-                .node_plans
-                .get(&nested.meta_node_id)
-                .expect("validated nested meta node");
-            Some(
-                crate::fold::resolve_inner_cv(
-                    meta_plan.inner_cv.as_ref(),
-                    plan.campaign.inner_cv.as_ref(),
-                )
-                .expect("validated nested inner CV"),
-            )
+            Some(&nested.inner_cv)
         } else {
             None
         };
@@ -1345,15 +1335,11 @@ impl SequentialScheduler {
                 }
             }
             if let Some(threshold) = auto_threshold {
+                let inner_spec = &nested.inner_cv;
                 let meta_plan = plan
                     .node_plans
                     .get(&nested.meta_node_id)
                     .expect("validated residual learner");
-                let inner_spec = crate::fold::resolve_inner_cv(
-                    meta_plan.inner_cv.as_ref(),
-                    plan.campaign.inner_cv.as_ref(),
-                )
-                .expect("validated inner CV");
                 let mut learner_only = BTreeSet::from([nested.meta_node_id.clone()]);
                 learner_only.extend(meta_data_to_run.iter().cloned());
                 let variant_id = Some(variant.variant_id.clone());
@@ -1773,17 +1759,7 @@ impl SequentialScheduler {
         active_nested.base_node_ids = base_node_ids.clone();
         let feature_join = prediction_feature_join_plan(plan, &active_nested)?;
         let inner_spec = if residual_auto_threshold.is_some() || feature_join.is_some() {
-            let meta_plan = plan
-                .node_plans
-                .get(&nested.meta_node_id)
-                .expect("validated meta node");
-            Some(
-                crate::fold::resolve_inner_cv(
-                    meta_plan.inner_cv.as_ref(),
-                    plan.campaign.inner_cv.as_ref(),
-                )
-                .expect("validated nested inner CV"),
-            )
+            Some(&nested.inner_cv)
         } else {
             None
         };

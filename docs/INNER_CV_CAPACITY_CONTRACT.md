@@ -1,6 +1,9 @@
 # Nested OOF fit-capacity contract (proposal)
 
-Status: design proposal; no automatic policy is implemented yet.
+Status: first executable slice implemented for residual meta nodes without
+dependent meta models or grouped samples. General group-aware capacity,
+per-operator validation-sample minima, and all multi-meta topologies remain
+proposed work.
 
 ## Problem and invariant
 
@@ -19,8 +22,8 @@ fixed value merely moves the failure for other data or operators.
 
 ## Portable declarations
 
-Add an optional `fit_capacity` object to each model node's execution contract,
-attested by its controller manifest or per-operator descriptor:
+The first slice reads a `fit_capacity` object from each model node's graph
+metadata. Language adapters/controllers declare it from the operator profile:
 
 ```json
 {
@@ -30,15 +33,17 @@ attested by its controller manifest or per-operator descriptor:
 }
 ```
 
-These are necessary lower bounds, not a claim that a model always converges
-above them. The host adapter owns the estimate because Rust cannot inspect
-feature matrices or estimator internals. A PLS adapter may compute a bound
-from `n_components`; an opaque adapter may omit the declaration. The core must
-validate that declared numbers are positive and include the declaration in
-plan fingerprints. It must never infer capacity from an operator's language or
+The implemented field is `min_fit_samples`; the other two fields above are
+reserved for later slices. This is a conservative structural minimum, not a
+claim that a model always converges above it. The host adapter owns the bound
+because Rust cannot inspect feature matrices or estimator internals. The core
+requires a positive declaration for every model in this first slice's affected
+closure. An opaque adapter can retain a fixed `inner_cv` until it can declare
+a meaningful minimum. The declaration is part of graph metadata and therefore
+of the plan fingerprint. The core never infers capacity from a language or
 class name.
 
-Add an opt-in nested policy alongside today's fixed `NestedCvSpec` forms:
+The first slice adds an opt-in nested policy alongside fixed `NestedCvSpec` forms:
 
 ```json
 {
@@ -51,36 +56,37 @@ Add an opt-in nested policy alongside today's fixed `NestedCvSpec` forms:
 ```
 
 The policy is usable at campaign or node level through the existing `inner_cv`
-field. `max_splits` is an explicit compute budget; the core must not silently
-fall back to in-sample or outer-OOF features. Existing fixed policies retain
-their current semantics and JSON representation.
+field. `max_splits` is an explicit compute budget; the core never falls back to
+in-sample or outer-OOF features. Existing fixed policies retain their semantics
+and JSON representation.
 
 ## Planning algorithm
 
-Before invoking any controller, the core should walk the dependency closure
-of each nested meta node and prediction-feature join. For every candidate
+Before invoking a controller, the first slice walks the dependency closure
+of a residual meta node and its optional prediction-feature join. For every candidate
 split count from `min_splits` to `max_splits`, it should build the actual fold
 sets using the declared splitter and sample/group identities, recursively
 including all nested OOF levels. The first candidate for which every model's
 minimum fit and validation counts hold in every phase (outer FIT_CV, nested
 FIT_CV, and REFIT OOF preparation) becomes the resolved policy. Record the
 resolved counts, fold-set fingerprints, and limiting model/scope in the plan.
-Do not use a closed-form estimate alone: uneven groups and stratification can
-make the smallest fold much smaller than the average.
+It uses the actual sample identities and fold memberships, not a closed-form
+average. The first slice rejects grouped samples, dependent meta nodes, and
+non-residual stacking under this policy until those scope shapes are supported.
 
-If no candidate fits, reject before training with a typed error containing
-the model node, offending scope, observed and required counts, allowed split
-range, and whether group/stratum constraints prevented a choice. If a host
-model later reports a numerical rank or capacity failure despite sufficient
-row counts, preserve that typed host error. Retrying with a different policy
-would require a *new* fingerprinted campaign, never a silent mutation of an
-in-progress run.
+If no candidate fits, the core rejects before training with a runtime
+validation error containing the model node, offending scope, observed and
+required counts, and allowed split range. A later slice should give this error
+a dedicated code and add group/stratum diagnostics. A host numerical rank or
+convergence failure remains distinct from this structural refusal. Retrying
+with a different policy requires a *new* fingerprinted campaign, never a
+silent mutation of an in-progress run.
 
-The planner must require capacity declarations for all model nodes in the
-affected dependency closure before claiming automatic capacity safety. An
-unknown model may run under an explicit fixed `inner_cv`, but the result is
-only an attempt, not an attested capacity guarantee. This keeps the same
-cross-language behavior for Python, C, Rust, R, MATLAB, and WASM controllers.
+The planner requires capacity declarations for all model nodes in the affected
+dependency closure. An unknown model may run under an explicit fixed
+`inner_cv`, but that is only an attempt, not a capacity guarantee. The JSON
+contract is shared by Python, C, Rust, R, MATLAB, and WASM controllers; no
+language-specific scheduler policy is added.
 
 ## Acceptance oracles
 
