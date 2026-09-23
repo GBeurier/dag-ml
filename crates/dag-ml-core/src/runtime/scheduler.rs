@@ -1578,12 +1578,11 @@ impl SequentialScheduler {
         if let Some(node_ids) = resources.cached_data_node_ids {
             for node_id in node_ids {
                 let key = data_output_scope_key(node_id, &scope, &resources, plan);
-                let cached = ctx.data_output_cache.get(&key).ok_or_else(|| {
-                    DagMlError::RuntimeValidation(format!(
-                        "nested learner is missing cached data output for node `{node_id}` in fold {:?}",
-                        scope.fold_id
-                    ))
-                })?;
+                // A graph transform without a provider view is reconstructed
+                // by the host model and has no materialized data-edge payload.
+                let Some(cached) = ctx.data_output_cache.get(&key) else {
+                    continue;
+                };
                 output_handles.insert(node_id.clone(), cached.handles.clone());
                 output_data_views.insert(node_id.clone(), cached.views.clone());
                 input_lineage.insert(node_id.clone(), cached.lineage_id.clone());
