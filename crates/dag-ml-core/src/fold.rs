@@ -746,6 +746,48 @@ mod tests {
     }
 
     #[test]
+    fn outer_oof_is_not_safe_training_evidence_for_an_outer_fold_meta_model() {
+        let samples = (0..12)
+            .map(|index| SampleId::new(format!("s{index}")).unwrap())
+            .collect::<Vec<_>>();
+        let policy = KFoldSpec {
+            n_splits: 2,
+            shuffle: false,
+            seed: None,
+        };
+        let outer = policy.split("outer", &samples).unwrap();
+        let inner_policy = NestedCvSpec::KFold(policy);
+
+        for parent in &outer.folds {
+            let parent_validation = parent.validation_sample_ids.iter().collect::<BTreeSet<_>>();
+            // An outer OOF prediction for a row in this fold's training set
+            // comes from the other fold's model, which has seen this fold's
+            // validation labels. It cannot train a leakage-safe meta-model.
+            for train_row in &parent.train_sample_ids {
+                let source_fold = outer
+                    .folds
+                    .iter()
+                    .find(|fold| fold.validation_sample_ids.contains(train_row))
+                    .unwrap();
+                assert!(source_fold
+                    .train_sample_ids
+                    .iter()
+                    .any(|row| parent_validation.contains(row)));
+            }
+
+            let inner = inner_policy
+                .build_nested_fold_set(parent, &outer.sample_groups)
+                .unwrap();
+            for fold in &inner.inner_fold_set.folds {
+                assert!(fold
+                    .train_sample_ids
+                    .iter()
+                    .all(|row| !parent_validation.contains(row)));
+            }
+        }
+    }
+
+    #[test]
     fn fold_validation_rejects_overlap() {
         let fold_set = FoldSet {
             id: "bad".to_string(),
