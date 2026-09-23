@@ -50,6 +50,8 @@ pub enum DataRequestPartition {
     FoldTrain,
     FoldValidation,
     FullTrain,
+    /// Explicit opt-in fit scope including training and held-out observations.
+    AllObservations,
     Predict,
 }
 
@@ -1242,6 +1244,8 @@ impl Default for DataViewPolicy {
 
 impl DataViewPolicy {
     pub const ALLOW_FIT_CV_FULL_TRAIN_VIEW: &'static str = "allow_fit_cv_full_train_view";
+    pub const ALLOW_FIT_CV_ALL_OBSERVATIONS_VIEW: &'static str =
+        "allow_fit_cv_all_observations_view";
     pub const ALLOW_FIT_CV_VALIDATION_VIEW: &'static str = "allow_fit_cv_validation_view";
     pub const ALLOW_AUGMENTED_VALIDATION_VIEW: &'static str = "allow_augmented_validation_view";
     pub const ALLOW_EXCLUDED_ROWS: &'static str = "allow_excluded_rows";
@@ -1260,6 +1264,10 @@ impl DataViewPolicy {
                 if self
                     .unsafe_flags
                     .contains(Self::ALLOW_FIT_CV_FULL_TRAIN_VIEW) => {}
+            DataRequestPartition::AllObservations
+                if self
+                    .unsafe_flags
+                    .contains(Self::ALLOW_FIT_CV_ALL_OBSERVATIONS_VIEW) => {}
             DataRequestPartition::FoldValidation
                 if self
                     .unsafe_flags
@@ -1267,6 +1275,11 @@ impl DataViewPolicy {
             DataRequestPartition::FullTrain => {
                 return Err(DagMlError::CampaignValidation(
                     "data view policy fit_partition=full_train would leak validation rows during FIT_CV; add explicit unsafe flag allow_fit_cv_full_train_view".to_string(),
+                ));
+            }
+            DataRequestPartition::AllObservations => {
+                return Err(DagMlError::CampaignValidation(
+                    "data view policy fit_partition=all_observations would include held-out observations during FIT_CV; add explicit unsafe flag allow_fit_cv_all_observations_view".to_string(),
                 ));
             }
             DataRequestPartition::FoldValidation => {
@@ -1282,7 +1295,9 @@ impl DataViewPolicy {
         }
         match self.predict_partition {
             DataRequestPartition::FoldValidation | DataRequestPartition::Predict => {}
-            DataRequestPartition::FoldTrain | DataRequestPartition::FullTrain => {
+            DataRequestPartition::FoldTrain
+            | DataRequestPartition::FullTrain
+            | DataRequestPartition::AllObservations => {
                 return Err(DagMlError::CampaignValidation(format!(
                     "data view policy predict_partition={:?} is not valid for validation/predict views",
                     self.predict_partition

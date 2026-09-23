@@ -65,7 +65,9 @@ impl DataProviderViewSpec {
                     )));
                 }
             }
-            DataRequestPartition::FullTrain | DataRequestPartition::Predict => {
+            DataRequestPartition::FullTrain
+            | DataRequestPartition::AllObservations
+            | DataRequestPartition::Predict => {
                 if self.fold_id.is_some() {
                     return Err(DagMlError::RuntimeValidation(format!(
                         "data provider view {:?} must not carry a fold id",

@@ -76,7 +76,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/data.rs",
-      "sha256": "d87dc7e6cabd4f77b08eec235aee0c2b29e257c7be3b1fd7eab040e6fd8199a5",
+      "sha256": "362d9fc5e623ce2cfffb0c801be16b55ad93c6970bb94d6df32333210d440761",
       "kind": "typed_contract_dependency"
     },
     {
@@ -126,7 +126,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/policy.rs",
-      "sha256": "9012884b501e3a5d2f8b4f9bdebee108b28bd6d44724c5f8b191b5aee2d25678",
+      "sha256": "d97cb40c703c79f3fce53a63041fd237d3b871e628ac45608213b25456df3837",
       "kind": "typed_contract_dependency"
     },
     {
@@ -141,7 +141,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/runtime/dataview.rs",
-      "sha256": "ebf9b2b6baa1ec5e4de0f8eb2d0caef1f13d450e4c37c2febeeb0ddca6a753f4",
+      "sha256": "f9c98a510ac1fceddf4d59069227e149e85af03afd806ad3501bd487bd540f95",
       "kind": "native_hpo_runtime_session"
     },
     {
@@ -166,7 +166,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/runtime/task.rs",
-      "sha256": "5b29b2b3b5468139a51ddd44461ccd773604afa0e290158db061a39f9895f825",
+      "sha256": "f31224bb9297b242540b1f6e93b44cfee1b11912f33c22ecc753e09392aa5a88",
       "kind": "typed_runtime_dependency"
     },
     {
@@ -261,7 +261,7 @@
     },
     {
       "path": "docs/contracts/campaign_spec.schema.json",
-      "sha256": "f202dcff0f8bbc50c9284b3b9ef1eb0b1dfa2588638f385dc2a946b648ac701d",
+      "sha256": "232b69f7e132d31c2590e140f443cdd6264a2dfd629f40ac7f1c242001357279",
       "kind": "schema_dependency"
     },
     {
@@ -341,7 +341,7 @@
     },
     {
       "path": "docs/contracts/node_task.schema.json",
-      "sha256": "e9cefa950766940e1f586f43078298d25b0ef526e129cb8d2c122b24bf6678fd",
+      "sha256": "ca0ebb0f57c90f4df11bbd692601ffa70290bc8213ba80479c5c4164ea5c51b6",
       "kind": "schema_dependency"
     },
     {
@@ -599,5 +599,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "aed1893528ca56cba054e26350b5727bf8aee9be120a34956ebe72357d2a912c"
+  "pack_checksum": "1820768e44bb3523a90cee983b9edde8ab562e2f376f8fdd6ca68317145ca6bb"
 }
