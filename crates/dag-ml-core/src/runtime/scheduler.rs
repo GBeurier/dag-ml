@@ -1403,6 +1403,7 @@ impl SequentialScheduler {
                         &mut prediction_inputs,
                     )?;
                 }
+                apply_stacking_prediction_aggregations(plan, node_plan, &mut prediction_inputs)?;
                 let mut artifact_inputs = BTreeMap::new();
                 if let Some(node_artifact_handles) = resources
                     .replay_artifact_handles
@@ -1933,6 +1934,8 @@ impl ParallelScheduler {
                     continue;
                 }
                 let mut input_handles = collected_inputs.handles;
+                let mut prediction_inputs = collected_inputs.prediction_inputs;
+                apply_stacking_prediction_aggregations(plan, node_plan, &mut prediction_inputs)?;
                 let mut artifact_inputs = BTreeMap::new();
                 if let Some(node_artifact_handles) = resources
                     .replay_artifact_handles
@@ -1985,7 +1988,7 @@ impl ParallelScheduler {
                         branch_path: Vec::new(),
                         input_handles,
                         data_views: collected_inputs.data_views,
-                        prediction_inputs: collected_inputs.prediction_inputs,
+                        prediction_inputs,
                         artifact_inputs,
                         required_loss_attestations: NodeTask::required_loss_attestations_for(
                             &task_node_plan,

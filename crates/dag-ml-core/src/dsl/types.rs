@@ -484,6 +484,8 @@ pub struct PipelineDslMergeSelector {
     pub select: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metric: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aggregate: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub metadata: BTreeMap<String, serde_json::Value>,
 }
@@ -495,6 +497,8 @@ pub struct PipelineDslMergeModelStep {
     pub params: BTreeMap<String, serde_json::Value>,
     #[serde(default)]
     pub metadata: BTreeMap<String, serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub selectors: Vec<PipelineDslMergeSelector>,
     #[serde(default)]
     pub seed_label: Option<String>,
     #[serde(default = "default_true")]
