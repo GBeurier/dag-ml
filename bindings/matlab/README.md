@@ -88,7 +88,7 @@ result = dagml.hostHpoSearch( ...
 The executables can launch MATLAB or Octave and must implement the same
 JSONL protocol as the [CLI examples](../../examples/adapters/). DAG-ML owns
 trial scheduling, fold scoring, pruning, selection, and durable checkpoints.
-The wrapper is POSIX-only and accepts `parallelTrials = 1` only; for
-process-isolated parallel trials, invoke `dag-ml-cli run-host-hpo
---parallel-trials N` directly. Run its smoke with `addpath('bindings/matlab');
+The wrapper is POSIX-only and accepts `parallelTrials = N`. DAG-ML starts an
+isolated operator-adapter process per candidate and keeps optimizer callbacks
+on the coordinator thread. Run its smoke with `addpath('bindings/matlab');
 addpath('bindings/matlab/tests'); host_hpo_search` in MATLAB or Octave.

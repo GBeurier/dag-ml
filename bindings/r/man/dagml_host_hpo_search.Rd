@@ -14,7 +14,7 @@ dagml_host_hpo_search(plan, envelope, request, operator_adapter,
 \item{checkpoint}{Optional native checkpoint file for durable resume.}
 \item{output}{Optional result JSON file. Defaults to a temporary file.}
 \item{operator_persistent}{Keep a candidate-local operator process across folds.}
-\item{parallel_trials}{Must be 1. Parallel trials require isolated worker processes and direct CLI use.}
+\item{parallel_trials}{Positive number of concurrent candidate trials. DAG-ML starts isolated operator-adapter processes.}
 \item{adapter_timeout_ms}{Positive adapter response timeout in milliseconds.}
 }
 \value{Native HPO outcome decoded as an R list without simplifying JSON arrays.}

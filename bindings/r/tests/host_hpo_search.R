@@ -24,24 +24,31 @@ if (.Platform$OS.type != "windows") {
     "    *) exit 12 ;;",
     "  esac",
     "done",
-    "test \"$parallel\" = 1 || exit 13",
+    "test \"$parallel\" -ge 1 || exit 13",
     "test \"$persistent\" = 1 || exit 14",
     "test -n \"$checkpoint\" || exit 15",
-    "printf '{\"wrapper_smoke\":true,\"trials\":[1,2]}\\n' > \"$output\""
+    "printf '{\"wrapper_smoke\":true,\"parallel_trials\":%s,\"trials\":[1,2]}\\n' \"$parallel\" > \"$output\""
   ), cli)
   Sys.chmod(cli, "0755")
   result <- dagml_host_hpo_search(
     input, input, input, cli, cli, cli = cli,
     checkpoint = file.path(work, "checkpoint 'state'.json"),
+    operator_persistent = TRUE, parallel_trials = 2L
+  )
+  stopifnot(isTRUE(result$wrapper_smoke), length(result$trials) == 2L,
+            result$parallel_trials == 2L)
+  sequential <- dagml_host_hpo_search(
+    input, input, input, cli, cli, cli = cli,
+    checkpoint = file.path(work, "checkpoint 'state'.json"),
     operator_persistent = TRUE
   )
-  stopifnot(isTRUE(result$wrapper_smoke), length(result$trials) == 2L)
+  stopifnot(sequential$parallel_trials == 1L)
   rejected <- tryCatch(
     dagml_host_hpo_search(input, input, input, cli, cli, cli = cli,
-                           parallel_trials = 2L),
+                           parallel_trials = 0L),
     error = identity
   )
   stopifnot(inherits(rejected, "error"),
-            grepl("parallel_trials=1", conditionMessage(rejected)))
+            grepl("positive integer", conditionMessage(rejected)))
   unlink(work, recursive = TRUE)
 }

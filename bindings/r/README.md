@@ -86,7 +86,7 @@ outcome <- dagml_host_hpo_search(
 
 The executables can launch `Rscript` but must implement the same JSONL
 protocol as the [CLI examples](../../examples/adapters/). The wrapper accepts
-`parallel_trials = 1` only; for process-isolated parallel trials, invoke
-`dag-ml-cli run-host-hpo --parallel-trials N` directly. The R adapter processes
-and their optimizer state remain host-owned. Run the wrapper smoke with
+`parallel_trials = N`; DAG-ML starts a separate operator-adapter process per
+candidate and keeps optimizer callbacks on the coordinator thread. The R adapter
+processes and their optimizer state remain host-owned. Run the wrapper smoke with
 `R CMD check`; a working R installation is required.
