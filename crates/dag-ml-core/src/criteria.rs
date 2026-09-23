@@ -1210,6 +1210,13 @@ pub fn builtin_metric_catalog() -> Result<BTreeMap<String, MetricSpec>> {
                 LearningTaskKind::MulticlassClassification,
             ]),
         ),
+        (
+            "f1",
+            BTreeSet::from([
+                LearningTaskKind::BinaryClassification,
+                LearningTaskKind::MulticlassClassification,
+            ]),
+        ),
     ] {
         specs.push(MetricSpec::new(
             format!("dagml.metric.{name}@1"),
@@ -1468,7 +1475,7 @@ mod tests {
         assert!(losses.values().all(|spec| spec.validate().is_ok()));
 
         let metrics = builtin_metric_catalog().unwrap();
-        assert_eq!(metrics.len(), 6);
+        assert_eq!(metrics.len(), 7);
         assert_eq!(
             metrics["dagml.metric.rmse@1"].objective,
             MetricObjective::Minimize
