@@ -615,6 +615,7 @@ impl CompatDslLowerer {
             inner_cv: operator_step.inner_cv,
             id: operator_step.id,
             operator: operator_step.operator,
+            sources: Vec::new(),
             params: operator_step.params,
             metadata: operator_step.metadata,
             selectors: Vec::new(),

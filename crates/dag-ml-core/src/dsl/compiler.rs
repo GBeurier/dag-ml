@@ -467,12 +467,36 @@ impl PipelineCompiler {
                 } else {
                     original_data
                 };
-                let prediction = self.compile_merge_model_with_extra(
-                    step,
-                    &state.pending_predictions,
-                    data,
-                    extra_metadata,
-                )?;
+                let predictions = if step.sources.is_empty() {
+                    state.pending_predictions.clone()
+                } else {
+                    if step.sources.iter().collect::<BTreeSet<_>>().len() != step.sources.len() {
+                        return Err(DagMlError::GraphValidation(format!(
+                            "pipeline DSL merge_model `{}` sources must be distinct",
+                            step.id
+                        )));
+                    }
+                    step.sources.iter().enumerate().map(|(index, source_id)| {
+                        let source = self.nodes.iter().find(|node| node.id == *source_id)
+                            .ok_or_else(|| DagMlError::GraphValidation(format!(
+                                "pipeline DSL merge_model `{}` source `{source_id}` must precede it",
+                                step.id
+                            )))?;
+                        let output = source.ports.outputs.iter().find(|port| port.kind == PortKind::Prediction)
+                            .ok_or_else(|| DagMlError::GraphValidation(format!(
+                                "pipeline DSL merge_model `{}` source `{source_id}` has no prediction output",
+                                step.id
+                            )))?;
+                        Ok(PredictionSource {
+                            node_id: source_id.clone(),
+                            port_name: output.name.clone(),
+                            input_name: format!("source_{index}_oof"),
+                            branch_id: None,
+                        })
+                    }).collect::<Result<Vec<_>>>()?
+                };
+                let prediction =
+                    self.compile_merge_model_with_extra(step, &predictions, data, extra_metadata)?;
                 state.clear_pending();
                 state.pending_predictions.push(prediction);
                 Ok(())
@@ -1201,6 +1225,17 @@ impl PipelineCompiler {
                 serde_json::to_value(&step.selectors).map_err(|error| {
                     DagMlError::GraphValidation(format!(
                         "failed to serialize pipeline DSL merge_model `{}` selectors: {error}",
+                        step.id
+                    ))
+                })?,
+            );
+        }
+        if !step.sources.is_empty() {
+            metadata.insert(
+                "prediction_source_order".to_string(),
+                serde_json::to_value(&step.sources).map_err(|error| {
+                    DagMlError::GraphValidation(format!(
+                        "failed to serialize pipeline DSL merge_model `{}` sources: {error}",
                         step.id
                     ))
                 })?,
