@@ -15,7 +15,7 @@ mod local_implementation;
 mod training;
 
 use dag_ml_core::{
-    build_archive_v2_native_portable_payloads, build_archive_v3_native_refit_payloads,
+    align_named_source_rows, build_archive_v2_native_portable_payloads, build_archive_v3_native_refit_payloads,
     build_conformal_presentation_v1, build_execution_plan, compile_pipeline_dsl,
     compile_pipeline_dsl_with_generation,
     compile_pipeline_dsl_with_generation_and_controller_registry, fan_out_data_aware_branches,
@@ -23,7 +23,7 @@ use dag_ml_core::{
     parse_pipeline_dsl_json, select_candidate, CacheNamespace, CampaignSpec, CandidateScore,
     ControllerManifest, ControllerRegistry, DagMlError as CoreDagMlError, ExecutionBundle,
     ExecutionPlan, ExternalDataPlanEnvelope,
-    FoldSet, GraphSpec, HostControllerSpec, ParameterProjection, PortablePredictorPackage,
+    FoldSet, GraphSpec, HostControllerSpec, NamedSourceAlignmentRequest, ParameterProjection, PortablePredictorPackage,
     PortableRefitPackageV3, PredictCohort, PredictCohortRole, SampleRelationSet,
     TrainingContractProjection, TrainingOutcome, TrainingReplayOutcome, TrainingReplayRequest,
     TrainingRequest, SelectionPolicy, EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION_V2,
@@ -373,6 +373,14 @@ fn select_portable_output_json(package_json: &str, binding_id: &str) -> PyResult
     serde_json::to_string(&selected).map_err(py_serde_error)
 }
 
+/// Plan feature-row permutations in the core without copying host feature buffers.
+#[pyfunction]
+fn align_named_source_rows_json(request_json: &str) -> PyResult<String> {
+    let request: NamedSourceAlignmentRequest = serde_json::from_str(request_json).map_err(py_serde_error)?;
+    let alignment = align_named_source_rows(&request).map_err(py_core_error)?;
+    serde_json::to_string(&alignment).map_err(py_serde_error)
+}
+
 #[pyfunction]
 fn validate_portable_refit_package_v3_json(json: &str) -> PyResult<()> {
     PortableRefitPackageV3::from_json(json)
@@ -575,6 +583,7 @@ fn _dag_ml(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
         module
     )?)?;
     module.add_function(wrap_pyfunction!(select_portable_output_json, module)?)?;
+    module.add_function(wrap_pyfunction!(align_named_source_rows_json, module)?)?;
     module.add_function(wrap_pyfunction!(
         validate_portable_refit_package_v3_json,
         module
@@ -757,6 +766,7 @@ fn contract_manifest() -> serde_json::Value {
             "validate_parameter_projection_json",
             "validate_cache_namespace_json",
             "validate_portable_predictor_package_json",
+            "align_named_source_rows_json",
             "validate_portable_refit_package_v3_json",
             "validate_training_outcome_json",
             "validate_training_replay_request_json",
@@ -897,6 +907,15 @@ fn py_core_error(error: CoreDagMlError) -> PyErr {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_named_source_alignment_exposes_row_permutations() {
+        let request = r#"{"sample_ids":["s1","s2"],"required_source_ids":["source_0","source_1"],"sources":[{"source_id":"source_1","sample_ids":["s1","s2"]},{"source_id":"source_0","sample_ids":["s2","s1"]}]}"#;
+        let aligned: serde_json::Value =
+            serde_json::from_str(&align_named_source_rows_json(request).unwrap()).unwrap();
+        assert_eq!(aligned["sources"][0]["row_indices"], serde_json::json!([1, 0]));
+        assert_eq!(aligned["sources"][1]["row_indices"], serde_json::json!([0, 1]));
+    }
 
     #[test]
     fn fingerprint_and_signing_helpers_reject_duplicate_json_keys() {
@@ -1269,6 +1288,7 @@ mod tests {
                 "validate_parameter_projection_json",
                 "validate_cache_namespace_json",
                 "validate_portable_predictor_package_json",
+                "align_named_source_rows_json",
                 "validate_training_outcome_json",
                 "execute_training_json",
                 "execute_methods_training_json",

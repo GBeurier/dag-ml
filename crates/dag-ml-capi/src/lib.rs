@@ -1959,6 +1959,36 @@ pub unsafe extern "C" fn dagml_select_portable_output_json(
     }
 }
 
+/// Validate named source/sample coverage and return identity-only row indices.
+///
+/// # Safety
+///
+/// `request_ptr` addresses `request_len` bytes; release `out_json` with
+/// `dagml_owned_bytes_free`.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_align_named_source_rows_json(
+    request_ptr: *const u8,
+    request_len: usize,
+    out_json: *mut DagMlOwnedBytes,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    clear_error(error_out);
+    clear_owned_bytes(out_json);
+    let request: dag_ml_core::NamedSourceAlignmentRequest = match parse_json_ptr(
+        request_ptr,
+        request_len,
+        error_out,
+        "named source alignment",
+    ) {
+        Ok(request) => request,
+        Err(status) => return status,
+    };
+    match dag_ml_core::align_named_source_rows(&request) {
+        Ok(alignment) => write_owned_json(out_json, error_out, &alignment),
+        Err(error) => validation_error(error_out, error),
+    }
+}
+
 /// Selects candidates per group from JSON policy, candidates and group map.
 ///
 /// # Safety
@@ -8941,6 +8971,29 @@ mod tests {
         assert!(out.ptr.is_null());
         assert!(error_message(&error).contains("no output binding"));
         unsafe { dagml_string_free(error) };
+    }
+
+    #[test]
+    fn aligns_named_source_rows_over_abi() {
+        let request = br#"{"sample_ids":["s1","s2"],"required_source_ids":["source_0","source_1"],"sources":[{"source_id":"source_0","sample_ids":["s2","s1"]},{"source_id":"source_1","sample_ids":["s1","s2"]}]}"#;
+        let mut out = DagMlOwnedBytes::default();
+        let mut error = DagMlString::default();
+        let status = unsafe {
+            dagml_align_named_source_rows_json(
+                request.as_ptr(),
+                request.len(),
+                &mut out,
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        let aligned: serde_json::Value =
+            serde_json::from_slice(unsafe { slice::from_raw_parts(out.ptr, out.len) }).unwrap();
+        assert_eq!(
+            aligned["sources"][0]["row_indices"],
+            serde_json::json!([1, 0])
+        );
+        unsafe { dagml_owned_bytes_free(out) };
     }
 
     #[test]

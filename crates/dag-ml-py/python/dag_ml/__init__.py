@@ -61,6 +61,9 @@ from ._dag_ml import (
     TrainingResult as _NativeTrainingResult,
 )
 from ._dag_ml import (
+    align_named_source_rows_json as _native_align_named_source_rows_json,
+)
+from ._dag_ml import (
     attach_predict_cohort_to_envelope_json as _native_attach_predict_cohort_to_envelope_json,
 )
 from ._dag_ml import (
@@ -181,6 +184,7 @@ _FACADE_EXPORTS = [
     "derive_controller_manifests",
     "fan_out_data_aware_branches",
     "build_execution_plan",
+    "align_named_source_rows",
     "project_training_request",
     "sign_training_request",
     "sign_training_replay_request",
@@ -1110,6 +1114,11 @@ def select_portable_output(package: Any, binding_id: str) -> dict[str, Any]:
     return json.loads(select_portable_output_json(_coerce_json(package), binding_id))
 
 
+def align_named_source_rows(request: Any) -> dict[str, Any]:
+    """Validate named source/sample coverage and return native row permutations."""
+    return json.loads(_native_align_named_source_rows_json(_coerce_json(request)))
+
+
 def build_execution_plan(
     plan_id: str,
     graph: Any,
@@ -1771,6 +1780,7 @@ def replay_loaded_predictor_package(
 
 
 __all__ = [
+    "align_named_source_rows",
     "CacheNamespace",
     "CampaignSpec",
     "CompiledPipelineArtifact",

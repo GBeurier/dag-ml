@@ -193,6 +193,15 @@ pub fn select_portable_output_json(
     serde_json::to_string(&selected).map_err(js_serde_error)
 }
 
+/// Validate named source/sample coverage and return identity-only row indices.
+#[wasm_bindgen]
+pub fn align_named_source_rows_json(request_json: &str) -> Result<String, JsValue> {
+    let request: dag_ml_core::NamedSourceAlignmentRequest =
+        serde_json::from_str(request_json).map_err(js_serde_error)?;
+    let alignment = dag_ml_core::align_named_source_rows(&request).map_err(js_core_error)?;
+    serde_json::to_string(&alignment).map_err(js_serde_error)
+}
+
 #[wasm_bindgen]
 pub fn compile_pipeline_dsl_graph_json(json: &str) -> Result<String, JsValue> {
     let spec = parse_pipeline_dsl_json(json.as_bytes()).map_err(js_core_error)?;
@@ -386,6 +395,7 @@ fn contract_manifest() -> serde_json::Value {
             "stratified_kfold_split_json",
             "select_candidates_json",
             "select_portable_output_json",
+            "align_named_source_rows_json",
             "LocalImplementationRegistry",
             "loss_execution_attestation_json",
             "execute_campaign_phase_json",
@@ -686,5 +696,20 @@ mod tests {
             .as_array()
             .unwrap()
             .contains(&serde_json::json!("select_portable_output_json")));
+    }
+
+    #[test]
+    fn aligns_named_source_rows_for_browser_hosts() {
+        let request = r#"{"sample_ids":["s1","s2"],"required_source_ids":["source_0"],"sources":[{"source_id":"source_0","sample_ids":["s2","s1"]}]}"#;
+        let aligned: serde_json::Value =
+            serde_json::from_str(&align_named_source_rows_json(request).unwrap()).unwrap();
+        assert_eq!(
+            aligned["sources"][0]["row_indices"],
+            serde_json::json!([1, 0])
+        );
+        assert!(contract_manifest()["wasm_exports"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("align_named_source_rows_json")));
     }
 }

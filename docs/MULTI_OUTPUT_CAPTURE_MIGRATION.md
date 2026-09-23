@@ -27,11 +27,14 @@ influence, data identities, and their cross-linked fingerprints would have to
 be invented after execution.
 
 The current `.n4a` host archive is a useful Python replay profile: it stores
-all source estimators and a source-to-output descriptor. Its input relation is
-`aligned_rows`; it splits one concatenated matrix by saved feature widths.
-It has no native join of independently ordered source blocks by sample ID and
-is not a `PortablePredictorPackage`. The pending Python parity test
-`test_independent_outputs_join_named_sources_by_sample_id` records this gap.
+all source estimators and a source-to-output descriptor. It can split one
+concatenated matrix by saved feature widths or accept named source blocks with
+sample IDs. For named blocks, `align_named_source_rows` in DAG-ML core validates
+exact source/sample coverage and returns row permutations; Python applies
+those permutations to its host-owned feature buffers. The primitive is exposed
+through Python, C and WASM. This host archive is still not a
+`PortablePredictorPackage`: it lacks the signed training outcome, portable
+artifact bindings and attested source-to-output relation.
 
 ## Minimum honest CV capture
 
