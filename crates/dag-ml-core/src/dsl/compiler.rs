@@ -467,8 +467,39 @@ impl PipelineCompiler {
                 } else {
                     original_data
                 };
+                let available = if step.sources.is_empty() {
+                    state
+                        .pending_predictions
+                        .iter()
+                        .map(|source| &source.node_id)
+                        .collect::<BTreeSet<_>>()
+                } else {
+                    step.sources.iter().collect::<BTreeSet<_>>()
+                };
+                if step.source_ports.keys().any(|id| !available.contains(id)) {
+                    return Err(DagMlError::GraphValidation(format!(
+                        "pipeline DSL merge_model `{}` source_ports names an undeclared source",
+                        step.id
+                    )));
+                }
                 let predictions = if step.sources.is_empty() {
-                    state.pending_predictions.clone()
+                    state.pending_predictions.iter().map(|pending| {
+                        let mut source = pending.clone();
+                        if let Some(requested_port) = step.source_ports.get(&source.node_id) {
+                            let node = self.nodes.iter().find(|node| node.id == source.node_id)
+                                .expect("pending prediction source is compiled");
+                            if !node.ports.outputs.iter().any(|port| {
+                                port.kind == PortKind::Prediction && port.name == *requested_port
+                            }) {
+                                return Err(DagMlError::GraphValidation(format!(
+                                    "pipeline DSL merge_model `{}` source `{}` has no prediction output `{requested_port}`",
+                                    step.id, source.node_id
+                                )));
+                            }
+                            source.port_name = requested_port.clone();
+                        }
+                        Ok(source)
+                    }).collect::<Result<Vec<_>>>()?
                 } else {
                     if step.sources.iter().collect::<BTreeSet<_>>().len() != step.sources.len() {
                         return Err(DagMlError::GraphValidation(format!(
@@ -482,10 +513,15 @@ impl PipelineCompiler {
                                 "pipeline DSL merge_model `{}` source `{source_id}` must precede it",
                                 step.id
                             )))?;
-                        let output = source.ports.outputs.iter().find(|port| port.kind == PortKind::Prediction)
+                        let requested_port = step.source_ports.get(source_id);
+                        let output = source.ports.outputs.iter().find(|port| {
+                            port.kind == PortKind::Prediction
+                                && requested_port.is_none_or(|requested| &port.name == requested)
+                        })
                             .ok_or_else(|| DagMlError::GraphValidation(format!(
-                                "pipeline DSL merge_model `{}` source `{source_id}` has no prediction output",
-                                step.id
+                                "pipeline DSL merge_model `{}` source `{source_id}` has no prediction output{}",
+                                step.id,
+                                requested_port.map_or_else(String::new, |port| format!(" `{port}`")),
                             )))?;
                         Ok(PredictionSource {
                             node_id: source_id.clone(),
@@ -950,6 +986,12 @@ impl PipelineCompiler {
     ) -> Result<PredictionSource> {
         let mut metadata = operator_runtime_metadata(step, branch_id)?;
         metadata.extend(extra_metadata);
+        if !step.prediction_output_ports.is_empty() {
+            metadata.insert(
+                "auxiliary_prediction_ports".to_string(),
+                serde_json::to_value(&step.prediction_output_ports).expect("string port list"),
+            );
+        }
         let node = NodeSpec {
             id: step.id.clone(),
             kind,
@@ -964,7 +1006,7 @@ impl PipelineCompiler {
                 } else {
                     vec![data_port("x", input.representation.clone(), "")]
                 },
-                outputs: vec![prediction_port("oof", "")],
+                outputs: prediction_output_schema(&step.id, &step.prediction_output_ports)?,
             },
             metadata,
             seed_label: step.seed_label.clone(),
@@ -1241,8 +1283,20 @@ impl PipelineCompiler {
                 })?,
             );
         }
+        if !step.source_ports.is_empty() {
+            metadata.insert(
+                "prediction_source_ports".to_string(),
+                serde_json::to_value(&step.source_ports).expect("source port map"),
+            );
+        }
         let branch_id = branch_id_from_metadata(&extra_metadata);
         metadata.extend(extra_metadata);
+        if !step.prediction_output_ports.is_empty() {
+            metadata.insert(
+                "auxiliary_prediction_ports".to_string(),
+                serde_json::to_value(&step.prediction_output_ports).expect("string port list"),
+            );
+        }
         let node = NodeSpec {
             id: step.id.clone(),
             kind: NodeKind::Model,
@@ -1250,7 +1304,7 @@ impl PipelineCompiler {
             params: step.params.clone(),
             ports: PortSchema {
                 inputs: input_ports,
-                outputs: vec![prediction_port("oof", "")],
+                outputs: prediction_output_schema(&step.id, &step.prediction_output_ports)?,
             },
             metadata,
             seed_label: step.seed_label.clone(),
@@ -2214,6 +2268,19 @@ pub(crate) fn target_port(name: &str, description: &str) -> PortSpec {
         target_level: None,
         description: description.to_string(),
     }
+}
+fn prediction_output_schema(node_id: &NodeId, additional: &[String]) -> Result<Vec<PortSpec>> {
+    let mut seen = BTreeSet::from(["oof"]);
+    let mut outputs = vec![prediction_port("oof", "")];
+    for name in additional {
+        if name.trim().is_empty() || name != name.trim() || !seen.insert(name.as_str()) {
+            return Err(DagMlError::GraphValidation(format!(
+                "pipeline DSL model `{node_id}` has a blank, duplicate, or reserved prediction output port `{name}`"
+            )));
+        }
+        outputs.push(prediction_port(name, ""));
+    }
+    Ok(outputs)
 }
 pub(crate) fn prediction_port(name: &str, description: &str) -> PortSpec {
     PortSpec {

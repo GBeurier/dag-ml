@@ -283,6 +283,98 @@ fn merge_model_can_reuse_earlier_prediction_producers_in_declared_order() {
 }
 
 #[test]
+fn merge_model_routes_explicit_auxiliary_prediction_ports_without_changing_primary_oof() {
+    let spec: PipelineDslSpec = serde_json::from_value(serde_json::json!({
+        "id": "dsl-dual-prediction-output",
+        "steps": [
+            {"kind": "model", "id": "model:base", "operator": {"type": "Classifier"},
+             "prediction_output_ports": ["proba"]},
+            {"kind": "merge_model", "id": "model:first", "operator": {"type": "Meta"},
+             "prediction_output_ports": ["proba"],
+             "source_ports": {"model:base": "proba"}},
+            {"kind": "merge_model", "id": "model:second", "operator": {"type": "Meta"},
+             "sources": ["model:first", "model:base"],
+             "source_ports": {"model:first": "proba", "model:base": "proba"}}
+        ]
+    }))
+    .unwrap();
+    let graph = compile_pipeline_dsl(&spec).unwrap();
+    let first = graph
+        .nodes
+        .iter()
+        .find(|node| node.id.as_str() == "model:first")
+        .unwrap();
+    assert_eq!(
+        first
+            .ports
+            .outputs
+            .iter()
+            .map(|port| port.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["oof", "proba"]
+    );
+    assert_eq!(
+        first.metadata["auxiliary_prediction_ports"],
+        serde_json::json!(["proba"])
+    );
+    assert_eq!(
+        first.metadata["prediction_source_ports"],
+        serde_json::json!({"model:base": "proba"})
+    );
+    assert!(graph
+        .edges
+        .iter()
+        .any(|edge| edge.target.node_id == first.id
+            && edge.source.node_id.as_str() == "model:base"
+            && edge.source.port_name == "proba"));
+    let second = graph
+        .nodes
+        .iter()
+        .find(|node| node.id.as_str() == "model:second")
+        .unwrap();
+    assert_eq!(
+        second.metadata["prediction_source_order"],
+        serde_json::json!(["model:first", "model:base"])
+    );
+    assert_eq!(
+        second.metadata["prediction_source_ports"],
+        serde_json::json!({"model:first": "proba", "model:base": "proba"})
+    );
+    let edges = graph
+        .edges
+        .iter()
+        .filter(|edge| edge.target.node_id == second.id && edge.contract.requires_oof)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        edges
+            .iter()
+            .map(|edge| edge.source.port_name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["proba", "proba"]
+    );
+    graph.validate().unwrap();
+
+    let mut missing_port = spec.clone();
+    if let PipelineDslStep::MergeModel(second) = &mut missing_port.steps[2] {
+        second
+            .source_ports
+            .insert(NodeId::new("model:base").unwrap(), "unknown".to_string());
+    }
+    assert!(compile_pipeline_dsl(&missing_port)
+        .unwrap_err()
+        .to_string()
+        .contains("no prediction output `unknown`"));
+    let mut duplicate = spec;
+    if let PipelineDslStep::Model(base) = &mut duplicate.steps[0] {
+        base.prediction_output_ports.push("oof".to_string());
+    }
+    assert!(compile_pipeline_dsl(&duplicate)
+        .unwrap_err()
+        .to_string()
+        .contains("reserved prediction output port"));
+}
+
+#[test]
 fn merge_model_compiles_per_branch_probability_selector() {
     let spec: PipelineDslSpec = serde_json::from_value(serde_json::json!({
         "id": "dsl-branch-proba",
@@ -2429,6 +2521,7 @@ fn operator_variant_label_matches_pinned_host_contract() {
         PipelineDslStep::Transform(PipelineDslOperatorStep {
             id: NodeId::new("transform:snv").unwrap(),
             operator: serde_json::Value::String("SNV".to_string()),
+            prediction_output_ports: Vec::new(),
             params: BTreeMap::new(),
             metadata: BTreeMap::new(),
             seed_label: None,
@@ -2443,6 +2536,7 @@ fn operator_variant_label_matches_pinned_host_contract() {
         PipelineDslStep::Model(PipelineDslOperatorStep {
             id: NodeId::new("model:pls").unwrap(),
             operator: serde_json::json!({"class": "sklearn.cross_decomposition.PLSRegression"}),
+            prediction_output_ports: Vec::new(),
             params: BTreeMap::from([("n_components".to_string(), serde_json::json!(5))]),
             metadata: BTreeMap::new(),
             seed_label: None,
@@ -2521,6 +2615,7 @@ fn operator_variant_label_preserves_numeric_value_forms() {
     let with_int = vec![PipelineDslStep::Model(PipelineDslOperatorStep {
         id: NodeId::new("model:pls").unwrap(),
         operator: serde_json::Value::String("PLS".to_string()),
+        prediction_output_ports: Vec::new(),
         params: BTreeMap::from([("alpha".to_string(), serde_json::json!(1))]),
         metadata: BTreeMap::new(),
         seed_label: None,
@@ -2535,6 +2630,7 @@ fn operator_variant_label_preserves_numeric_value_forms() {
     let with_float = vec![PipelineDslStep::Model(PipelineDslOperatorStep {
         id: NodeId::new("model:pls").unwrap(),
         operator: serde_json::Value::String("PLS".to_string()),
+        prediction_output_ports: Vec::new(),
         params: BTreeMap::from([("alpha".to_string(), serde_json::json!(1.0))]),
         metadata: BTreeMap::new(),
         seed_label: None,

@@ -9030,6 +9030,92 @@ fn predict_refuses_sibling_prediction_source_port() {
 }
 
 #[test]
+fn predict_routes_both_explicit_prediction_ports_from_one_producer() {
+    let plan = build_execution_plan(
+        "plan:oof.dual.port.predict",
+        oof_edge_graph_with_ambiguous_prediction_port(),
+        oof_edge_campaign(),
+        &oof_edge_manifests(BTreeSet::from([Phase::FitCv, Phase::Refit, Phase::Predict])),
+    )
+    .unwrap();
+    let base = NodeId::new("model:base").unwrap();
+    let meta = NodeId::new("model:meta").unwrap();
+    let owner = ControllerId::new("controller:model").unwrap();
+    let handles = BTreeMap::from([(
+        base.clone(),
+        BTreeMap::from([
+            (
+                "pred".to_string(),
+                HandleRef {
+                    handle: 50,
+                    kind: HandleKind::Prediction,
+                    owner_controller: owner.clone(),
+                },
+            ),
+            (
+                "aux".to_string(),
+                HandleRef {
+                    handle: 60,
+                    kind: HandleKind::Prediction,
+                    owner_controller: owner,
+                },
+            ),
+        ]),
+    )]);
+    let mut ctx = RunContext::new(RunId::new("run:oof.dual.port.predict").unwrap(), Some(11));
+    let ids = vec![SampleId::new("s1").unwrap(), SampleId::new("s2").unwrap()];
+    for (port_name, values) in [
+        ("pred", vec![vec![0.0], vec![1.0]]),
+        ("aux", vec![vec![0.8, 0.2], vec![0.1, 0.9]]),
+    ] {
+        ctx.prediction_store
+            .append(PredictionBlock {
+                prediction_id: Some(format!("pred:model:base:{port_name}:final")),
+                producer_node: base.clone(),
+                producer_port: Some(port_name.to_string()),
+                partition: PredictionPartition::Final,
+                fold_id: None,
+                sample_ids: ids.clone(),
+                target_names: if port_name == "aux" {
+                    vec!["0".to_string(), "1".to_string()]
+                } else {
+                    vec!["y".to_string()]
+                },
+                values,
+            })
+            .unwrap();
+    }
+    let collected = collect_input_handles(
+        &plan,
+        plan.node_plans.get(&meta).unwrap(),
+        &handles,
+        &BTreeMap::new(),
+        &PhaseScopeResources::default(),
+        &ctx,
+        &PhaseScope {
+            phase: Phase::Predict,
+            variant_id: Some(VariantId::new("variant:base").unwrap()),
+            variant: None,
+            fold_id: None,
+            seed_root: Some(11),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        collected.prediction_inputs["model:base.pred:predict"].prediction_width,
+        1
+    );
+    assert_eq!(
+        collected.prediction_inputs["model:base.aux:predict"].prediction_width,
+        2
+    );
+    assert_eq!(
+        collected.prediction_inputs["model:base.aux:predict"].values[0],
+        vec![0.8, 0.2]
+    );
+}
+
+#[test]
 fn in_memory_artifact_store_resolves_bundle_artifacts() {
     let plan = fixture_plan("plan:replay.artifacts");
     let bundle = replay_bundle(&plan);
@@ -10653,6 +10739,7 @@ fn native_scoring_collects_reports_and_builds_score_set() {
     let mut ctx = RunContext::new(RunId::new("run:t").unwrap(), None);
     apply_result_scoring(
         &make(vec![targets]),
+        &BTreeSet::new(),
         &mut ctx.score_collector,
         &mut ctx.regression_target_records,
     )
@@ -10670,12 +10757,110 @@ fn native_scoring_collects_reports_and_builds_score_set() {
     let mut empty = RunContext::new(RunId::new("run:t").unwrap(), None);
     apply_result_scoring(
         &make(Vec::new()),
+        &BTreeSet::new(),
         &mut empty.score_collector,
         &mut empty.regression_target_records,
     )
     .unwrap();
     assert!(empty.score_collector.is_empty());
     assert!(empty.build_score_set("plan:t", None).is_none());
+}
+
+#[test]
+fn auxiliary_prediction_port_matches_primary_cohort_and_does_not_score() {
+    use crate::aggregation::PredictionUnitId;
+
+    let mut plan = fixture_plan("plan:dual-prediction-output");
+    let node_id = NodeId::new("model:base").unwrap();
+    let node = plan
+        .graph_plan
+        .graph
+        .nodes
+        .iter_mut()
+        .find(|node| node.id == node_id)
+        .unwrap();
+    node.ports.outputs.push(port("proba", PortKind::Prediction));
+    node.metadata
+        .insert("auxiliary_prediction_ports".to_string(), json!(["proba"]));
+    let mut task = fit_influence_validation_task(FitInfluenceTask::default());
+    task.node_plan = plan.node_plans[&node_id].clone();
+    let ids = vec![SampleId::new("s1").unwrap(), SampleId::new("s2").unwrap()];
+    let primary = PredictionBlock {
+        prediction_id: None,
+        producer_node: node_id.clone(),
+        producer_port: Some("oof".to_string()),
+        partition: PredictionPartition::Validation,
+        fold_id: Some(FoldId::new("fold:0").unwrap()),
+        sample_ids: ids.clone(),
+        values: vec![vec![0.0], vec![1.0]],
+        target_names: vec!["y".to_string()],
+    };
+    let auxiliary = PredictionBlock {
+        producer_port: Some("proba".to_string()),
+        values: vec![vec![0.8, 0.2], vec![0.1, 0.9]],
+        target_names: vec!["0".to_string(), "1".to_string()],
+        ..primary.clone()
+    };
+    let mut result = NodeResult {
+        schema_version: None,
+        classification_probabilities: Vec::new(),
+        node_id: node_id.clone(),
+        outputs: BTreeMap::new(),
+        predictions: vec![primary, auxiliary],
+        observation_predictions: Vec::new(),
+        aggregated_predictions: Vec::new(),
+        explanations: Vec::new(),
+        shape_deltas: Vec::new(),
+        artifacts: Vec::new(),
+        artifact_handles: BTreeMap::new(),
+        fit_influence_diagnostics: Vec::new(),
+        regression_targets: vec![RegressionTargetBlock {
+            level: PredictionLevel::Sample,
+            unit_ids: ids.into_iter().map(PredictionUnitId::Sample).collect(),
+            values: vec![vec![0.0], vec![1.0]],
+            target_names: vec!["y".to_string()],
+            validity_masks: None,
+        }],
+        lineage: LineageRecord {
+            record_id: LineageId::new("lineage:dual.prediction").unwrap(),
+            run_id: task.run_id.clone(),
+            node_id,
+            phase: task.phase,
+            controller_id: task.node_plan.controller_id.clone(),
+            controller_version: task.node_plan.controller_version.clone(),
+            variant_id: None,
+            fold_id: task.fold_id.clone(),
+            branch_path: Vec::new(),
+            input_lineage: Vec::new(),
+            artifact_refs: Vec::new(),
+            params_fingerprint: task.node_plan.params_fingerprint.clone(),
+            data_model_shape_fingerprint: None,
+            aggregation_policy_fingerprint: None,
+            seed: None,
+            unsafe_flags: BTreeSet::new(),
+            metrics: BTreeMap::new(),
+            loss_attestations: Vec::new(),
+            early_stopping_records: Vec::new(),
+        },
+    };
+    normalize_result_prediction_ports(&plan, &task, &mut result).unwrap();
+    let mut ctx = RunContext::new(task.run_id.clone(), None);
+    apply_result_scoring(
+        &result,
+        &BTreeSet::from(["proba".to_string()]),
+        &mut ctx.score_collector,
+        &mut ctx.regression_target_records,
+    )
+    .unwrap();
+    assert_eq!(ctx.score_collector.len(), 1);
+    assert_eq!(ctx.regression_target_records.len(), 1);
+    assert_eq!(ctx.score_collector[0].producer_port.as_deref(), Some("oof"));
+
+    result.predictions[1].sample_ids.reverse();
+    assert!(normalize_result_prediction_ports(&plan, &task, &mut result)
+        .unwrap_err()
+        .to_string()
+        .contains("ordered sample IDs"));
 }
 
 #[test]
