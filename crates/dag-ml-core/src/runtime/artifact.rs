@@ -64,6 +64,7 @@ pub const PORTABLE_ARTIFACT_BRIDGE_SCHEMA_VERSION: u32 = 1;
 #[serde(rename_all = "snake_case")]
 pub enum ArtifactBackend {
     Joblib,
+    Rds,
     Torch,
     Tensorflow,
     Onnx,
