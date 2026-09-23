@@ -439,7 +439,7 @@ impl PipelineCompiler {
                 // A residual learner predicts from the same feature stream as
                 // its base branch.  Ordinary stacking keeps its historical
                 // `include_original_data` input instead.
-                let data = if step.metadata.get("residual_target_execution").is_some() {
+                let data = if step.metadata.contains_key("residual_target_execution") {
                     &state.current_data
                 } else {
                     original_data
