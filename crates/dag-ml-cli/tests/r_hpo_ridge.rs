@@ -4,8 +4,9 @@ use std::process::Command;
 
 use dag_ml_core::{
     build_execution_plan, CampaignSpec, ControllerManifest, ControllerRegistry,
-    ExternalDataPlanEnvelope, GraphSpec, ObservationId, SampleId, SampleRelation,
-    SampleRelationSet,
+    ExternalDataPlanEnvelope, GraphSpec, InitialFullRefitPackage, ObservationId, PredictCohort,
+    PredictCohortRole, SampleId, SampleRelation, SampleRelationSet,
+    EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION_V2,
 };
 use serde_json::{json, Value};
 
@@ -111,7 +112,11 @@ fn r_ridge_hpo_uses_fold_train_ids_and_native_parallel_pruning_resume() {
     let evidence_dir = work.join("operator-evidence");
     std::fs::create_dir(&evidence_dir).unwrap();
     write_json(&plan_path, &plan());
-    std::fs::write(&data_path, "id,x,y\ns1,1,1\ns2,2,2\n").unwrap();
+    std::fs::write(
+        &data_path,
+        "id,x,y\ns1,1,1\ns2,2,2\nsample:1,1,1\nsample:2,2,2\nheldout:1,3,3\nheldout:2,4,4\n",
+    )
+    .unwrap();
     let mut envelope: ExternalDataPlanEnvelope = serde_json::from_slice(&std::fs::read(
         repo.join("crates/dag-ml-core/tests/fixtures/package/data/coordinator_data_plan_envelope_sample12.json"),
     ).unwrap()).unwrap();
@@ -223,5 +228,167 @@ fn r_ridge_hpo_uses_fold_train_ids_and_native_parallel_pruning_resume() {
             }
         }
     }
+    let selected: Value = serde_json::from_slice(&std::fs::read(&outcome_path).unwrap()).unwrap();
+    assert_eq!(selected["trials"][0]["params"]["n_components"], 1);
+    assert_selected_r_ridge_refit_replay(&repo, &work, &data_path, &selected);
     std::fs::remove_dir_all(work).unwrap();
+}
+
+fn assert_selected_r_ridge_refit_replay(repo: &Path, work: &Path, data: &Path, hpo: &Value) {
+    let mut dsl = json!({
+        "id": "dsl:r-hpo-ridge-refit",
+        "input": {"name": "x", "representation": "tabular_numeric"},
+        "campaign_id": "campaign:r-hpo-ridge-refit", "root_seed": 7,
+        "leakage_policy": {"split_unit": "sample", "forbid_origin_cross_fold": true,
+            "allow_observation_split_with_shared_target": false, "require_group_ids": false,
+            "unsafe_flags": []},
+        "data_bindings": [{"node_id": "model:initial", "input_name": "x",
+            "request_id": "nir-to-tabular",
+            "schema_fingerprint": "f97b37872fa22134b508f98fd8e207e5b776b52594fb8f6f5c3e15bee212246b",
+            "plan_fingerprint": "7c5431d85574b3f337022fa5d25971d5b5cf445b90331b49938f573ff6901e4d",
+            "relation_fingerprint": "a3a7e329df35db9f2883a17b8611b7fae6dcaa031875e3ec2c9be1b9e29cbe10",
+            "output_representation": "tabular_numeric", "feature_set_id": "x",
+            "source_ids": ["nir"], "require_relations": true}],
+        "steps": [{"kind": "model", "id": "model:initial", "operator": {"type": "RidgeR"},
+            "params": {"n_components": hpo["trials"][0]["params"]["n_components"]}}]
+    });
+    let mut envelope: Value = serde_json::from_slice(
+        &std::fs::read(
+            repo.join("examples/fixtures/data/coordinator_data_plan_envelope_sample12.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    envelope["data_content_fingerprint"] = json!("e".repeat(64));
+    envelope["target_content_fingerprint"] = json!("f".repeat(64));
+    let typed: ExternalDataPlanEnvelope = serde_json::from_value(envelope.clone()).unwrap();
+    let relations = typed.coordinator_relations.as_ref().unwrap();
+    envelope["relation_fingerprint"] = json!(relations.fingerprint().unwrap());
+    dsl["data_bindings"][0]["relation_fingerprint"] = envelope["relation_fingerprint"].clone();
+    let dsl_path = work.join("refit-dsl.json");
+    let envelope_path = work.join("refit-envelope.json");
+    let ids_path = work.join("refit-ids.json");
+    let package_path = work.join("refit-package.json");
+    let outcome_path = work.join("refit-outcome.json");
+    let sidecar = work.join("artifacts/r-ridge.rds");
+    let adapter = repo.join("examples/adapters/refit_ridge_operator.R");
+    write_json(&dsl_path, &dsl);
+    write_json(&envelope_path, &envelope);
+    write_json(&ids_path, &json!(["sample:2", "sample:1"]));
+    let output = Command::new(env!("CARGO_BIN_EXE_dag-ml-cli"))
+        .current_dir(repo)
+        .env("DAGML_R_HPO_DATA", data)
+        .env("DAGML_R_RIDGE_SIDECAR", &sidecar)
+        .args(["run-process-dsl-refit-phase", "--dsl"])
+        .arg(&dsl_path)
+        .arg("--controllers")
+        .arg(repo.join("examples/controller_manifests.json"))
+        .arg("--envelope")
+        .arg(&envelope_path)
+        .arg("--training-sample-ids")
+        .arg(&ids_path)
+        .arg("--adapter")
+        .arg(&adapter)
+        .arg("--package-output")
+        .arg(&package_path)
+        .arg("--output")
+        .arg(&outcome_path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "R Ridge REFIT failed: {} {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let package =
+        InitialFullRefitPackage::from_json(&std::fs::read_to_string(&package_path).unwrap())
+            .unwrap();
+    assert_eq!(package.artifacts.len(), 1);
+    assert_eq!(
+        package.artifacts[0].record.artifact.backend,
+        Some(dag_ml_core::ArtifactBackend::Rds)
+    );
+    assert!(sidecar.is_file());
+    let outcome: Value = serde_json::from_slice(&std::fs::read(&outcome_path).unwrap()).unwrap();
+    let mut replay_envelope: ExternalDataPlanEnvelope = serde_json::from_value(envelope).unwrap();
+    let heldout: SampleRelationSet = serde_json::from_value(json!({"records": [
+        {"observation_id": "obs.h1", "sample_id": "heldout:1", "target_id": "target:h1", "group_id": "group:h", "origin_sample_id": null, "source_id": "nir", "is_augmented": false},
+        {"observation_id": "obs.h2", "sample_id": "heldout:2", "target_id": "target:h2", "group_id": "group:h", "origin_sample_id": null, "source_id": "nir", "is_augmented": false}
+    ]})).unwrap();
+    replay_envelope.schema_version = EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION_V2;
+    replay_envelope.predict_cohort = Some(
+        PredictCohort::from_relations(
+            PredictCohortRole::ExternalTest,
+            heldout,
+            vec!["y".into()],
+            "a".repeat(64),
+            Some("b".repeat(64)),
+        )
+        .unwrap(),
+    );
+    let replay_envelope_path = work.join("replay-envelope.json");
+    let handles_path = work.join("artifact-handles.json");
+    let output_ids_path = work.join("output-ids.json");
+    let replay_path = work.join("replay-outcome.json");
+    write_json(&replay_envelope_path, &replay_envelope);
+    write_json(
+        &handles_path,
+        &outcome["node_results"][0]["artifact_handles"],
+    );
+    write_json(&output_ids_path, &json!([package.outputs[0].output_id]));
+    let replay = Command::new(env!("CARGO_BIN_EXE_dag-ml-cli"))
+        .current_dir(repo)
+        .env("DAGML_R_HPO_DATA", data)
+        .env("DAGML_R_RIDGE_SIDECAR", &sidecar)
+        .args(["run-process-initial-full-refit-predict", "--package"])
+        .arg(&package_path)
+        .arg("--envelope")
+        .arg(&replay_envelope_path)
+        .arg("--adapter")
+        .arg(&adapter)
+        .arg("--artifact-handles")
+        .arg(&handles_path)
+        .arg("--output-ids")
+        .arg(&output_ids_path)
+        .arg("--output")
+        .arg(&replay_path)
+        .output()
+        .unwrap();
+    assert!(
+        replay.status.success(),
+        "R Ridge fresh-process replay failed: {} {}",
+        String::from_utf8_lossy(&replay.stdout),
+        String::from_utf8_lossy(&replay.stderr)
+    );
+    let replay: Value = serde_json::from_slice(&std::fs::read(&replay_path).unwrap()).unwrap();
+    assert_eq!(
+        replay["replay_outcome"]["outputs"][0]["prediction"]["sample_ids"],
+        json!(["heldout:1", "heldout:2"])
+    );
+    assert_eq!(
+        replay["replay_outcome"]["outputs"][0]["prediction"]["values"],
+        json!([[3.0], [4.0]])
+    );
+    std::fs::write(&sidecar, b"tampered RDS").unwrap();
+    let rejected = Command::new(env!("CARGO_BIN_EXE_dag-ml-cli"))
+        .current_dir(repo)
+        .env("DAGML_R_HPO_DATA", data)
+        .env("DAGML_R_RIDGE_SIDECAR", &sidecar)
+        .args(["run-process-initial-full-refit-predict", "--package"])
+        .arg(&package_path)
+        .arg("--envelope")
+        .arg(&replay_envelope_path)
+        .arg("--adapter")
+        .arg(&adapter)
+        .arg("--artifact-handles")
+        .arg(&handles_path)
+        .arg("--output-ids")
+        .arg(&output_ids_path)
+        .output()
+        .unwrap();
+    assert!(
+        !rejected.status.success(),
+        "R Ridge replay accepted a corrupted RDS sidecar"
+    );
 }

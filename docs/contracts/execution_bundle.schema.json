@@ -239,7 +239,7 @@
       }
     },
     "artifact_backend": {
-      "enum": ["joblib", "torch", "tensorflow", "onnx", "safetensors", "json", "raw"]
+      "enum": ["joblib", "rds", "torch", "tensorflow", "onnx", "safetensors", "json", "raw"]
     },
     "artifact_ref": {
       "type": "object",

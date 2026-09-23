@@ -70,7 +70,7 @@
     },
     {
       "path": "docs/contracts/execution_bundle.schema.json",
-      "sha256": "4c4c1d1382d718a6d4c9095e25975c2c603501f6b4b2adaf2961a6cb0908bb41",
+      "sha256": "44036b321b61b224f48109908c7c4191c647a1d073f9a4af333d4a7780be6770",
       "kind": "schema_dependency"
     },
     {
@@ -115,7 +115,7 @@
     },
     {
       "path": "docs/contracts/node_result.schema.json",
-      "sha256": "2fa3a551956d57bf0beab7787114c470fdfc5b6c0ff37e73d9fcb3d023007670",
+      "sha256": "7ee89f5d44d9ca2f7a4cb7a4bf725d89c9081530bfd6255e5b58b47e73f0950d",
       "kind": "schema_dependency"
     },
     {
@@ -453,5 +453,5 @@
       ]
     }
   ],
-  "pack_checksum": "c7baf32bd044605c59626bb160c957547f168ad74373165764d061f4189d7d34"
+  "pack_checksum": "5241daaf11a72d7be1af6fa771cd36cd9af2b1e90e9aa9b8a292a51c0b728276"
 }

@@ -136,7 +136,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/runtime/artifact.rs",
-      "sha256": "14be68bbc4b6627d58ffd7441fc78d2726e64e39520718bd71858418fece42de",
+      "sha256": "07ddb83e2d7b9ad770262ce6de03055580fca6216b3381d875fcc2138b5ce9d6",
       "kind": "typed_runtime_dependency"
     },
     {
@@ -291,7 +291,7 @@
     },
     {
       "path": "docs/contracts/execution_bundle.schema.json",
-      "sha256": "4c4c1d1382d718a6d4c9095e25975c2c603501f6b4b2adaf2961a6cb0908bb41",
+      "sha256": "44036b321b61b224f48109908c7c4191c647a1d073f9a4af333d4a7780be6770",
       "kind": "schema_dependency"
     },
     {
@@ -336,12 +336,12 @@
     },
     {
       "path": "docs/contracts/node_result.schema.json",
-      "sha256": "2fa3a551956d57bf0beab7787114c470fdfc5b6c0ff37e73d9fcb3d023007670",
+      "sha256": "7ee89f5d44d9ca2f7a4cb7a4bf725d89c9081530bfd6255e5b58b47e73f0950d",
       "kind": "schema_dependency"
     },
     {
       "path": "docs/contracts/node_task.schema.json",
-      "sha256": "cb66a22a7c858e4718a052acc4085946783bb41f7449774c86efe72955203eda",
+      "sha256": "c3aaaa2929aabbd8e23b2daf3820f8f0de80529d4bd46f4bce53a7ee9e7f4b63",
       "kind": "schema_dependency"
     },
     {
@@ -599,5 +599,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "aa799dcae484c4f4fd570c841d3511f85ae35c840c83239bfe1e138f0b940015"
+  "pack_checksum": "fd327d0502dd77c89f0f37b3a7f3d8dbef5fadf3ee6b2759303f3a3990f4284a"
 }

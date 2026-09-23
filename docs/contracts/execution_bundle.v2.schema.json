@@ -311,6 +311,7 @@
         "tensorflow",
         "onnx",
         "safetensors",
+        "rds",
         "json",
         "raw"
       ]
