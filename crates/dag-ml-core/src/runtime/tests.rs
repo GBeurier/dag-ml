@@ -17624,6 +17624,69 @@ fn stacking_best_fold_refit_reads_selected_cv_test_block() {
     );
 }
 
+#[test]
+fn stacking_cv_test_input_selects_only_current_fold_and_never_validation() {
+    let plan = build_execution_plan(
+        "plan:stack.cv.fold.test",
+        oof_edge_graph(),
+        oof_edge_campaign(),
+        &oof_edge_manifests(BTreeSet::from([Phase::FitCv])),
+    )
+    .unwrap();
+    let mut ctx = RunContext::new(RunId::new("run:stack.cv.fold.test").unwrap(), Some(11));
+    for (fold, partition, value) in [
+        ("fold:0", PredictionPartition::Test, 0.2),
+        ("fold:1", PredictionPartition::Test, 0.8),
+        ("fold:0", PredictionPartition::Validation, 99.0),
+    ] {
+        ctx.prediction_store
+            .append(PredictionBlock {
+                prediction_id: None,
+                producer_node: NodeId::new("model:base").unwrap(),
+                producer_port: None,
+                partition,
+                fold_id: Some(FoldId::new(fold).unwrap()),
+                sample_ids: vec![SampleId::new("external:test").unwrap()],
+                values: vec![vec![value]],
+                target_names: vec!["y".to_string()],
+            })
+            .unwrap();
+    }
+    let input = collect_cv_fold_test_prediction_input(
+        &plan,
+        &plan.graph_plan.graph.edges[0],
+        &ctx,
+        &PhaseScope {
+            phase: Phase::FitCv,
+            variant_id: None,
+            variant: None,
+            fold_id: Some(FoldId::new("fold:1").unwrap()),
+            seed_root: None,
+        },
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(input.spec.partition, PredictionPartition::Test);
+    assert_eq!(input.spec.fold_id, Some(FoldId::new("fold:1").unwrap()));
+    assert_eq!(input.spec.values, vec![vec![0.8]]);
+    assert_ne!(
+        input.handle.handle,
+        deterministic_oof_handle(
+            &plan,
+            &plan.graph_plan.graph.edges[0],
+            &ctx,
+            &PhaseScope {
+                phase: Phase::FitCv,
+                variant_id: None,
+                variant: None,
+                fold_id: Some(FoldId::new("fold:1").unwrap()),
+                seed_root: None,
+            },
+        )
+        .unwrap(),
+    );
+}
+
 fn sample_relations_envelope(rows: &[(&str, &str)]) -> ExternalDataPlanEnvelope {
     let records = rows
         .iter()
