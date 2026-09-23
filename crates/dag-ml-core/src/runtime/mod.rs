@@ -264,6 +264,9 @@ pub struct RunContext {
     /// Native per-fold/per-partition score reports collected during the run (when the host emits
     /// `regression_targets`).
     pub score_collector: Vec<RegressionMetricReport>,
+    /// Training scores imported from an execution bundle for deterministic
+    /// weighted stacking during a fresh PREDICT replay.
+    pub(crate) stacking_weight_scores: Vec<RegressionMetricReport>,
     /// Per-fold `y_true` records, kept so cross-fold ensembles (the OOF average) can be scored.
     pub regression_target_records: Vec<RegressionTargetRecord>,
     /// Class probability evidence, retained for class-aligned CV test ensembles.
@@ -360,6 +363,7 @@ impl RunContext {
             aggregated_prediction_store: InMemoryAggregatedPredictionStore::new(),
             lineage: InMemoryLineageRecorder::new(),
             score_collector: Vec::new(),
+            stacking_weight_scores: Vec::new(),
             regression_target_records: Vec::new(),
             classification_probability_blocks: Vec::new(),
             oof_average_blocks: Vec::new(),
