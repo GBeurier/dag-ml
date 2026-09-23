@@ -1105,6 +1105,16 @@ pub(crate) fn data_view_for_partition(
             source_index,
         );
     }
+    if let Some(feature_axes) = binding
+        .metadata
+        .get(crate::data::FEATURE_AXES_METADATA_KEY)
+        .cloned()
+    {
+        extra.insert(
+            crate::data::FEATURE_AXES_METADATA_KEY.to_string(),
+            feature_axes,
+        );
+    }
     if !binding.view_policy.unsafe_flags.is_empty() {
         extra.insert(
             "unsafe_flags".to_string(),

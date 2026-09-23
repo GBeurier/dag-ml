@@ -31,6 +31,9 @@ pub const DATA_PLAN_SCHEMA_VERSION: u32 = 1;
 pub const DATA_PLAN_SCHEMA_ID: &str =
     "https://github.com/GBeurier/dag-ml/schemas/data_plan.v1.schema.json";
 pub const SOURCE_INDEX_METADATA_KEY: &str = "source_index";
+/// Source-local feature coordinates supplied by a data provider.  The runtime
+/// carries them to every fit/predict view without interpreting their units.
+pub const FEATURE_AXES_METADATA_KEY: &str = "feature_axes";
 
 fn default_external_data_plan_envelope_schema_version() -> u32 {
     EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION_V1
@@ -1429,6 +1432,36 @@ impl DataBinding {
             self.metadata.get(SOURCE_INDEX_METADATA_KEY),
             &self.source_ids,
         )?;
+        if let Some(value) = self.metadata.get(FEATURE_AXES_METADATA_KEY) {
+            let axes = value.as_object().ok_or_else(|| {
+                DagMlError::CampaignValidation(
+                    "data binding metadata.feature_axes must map source ids to coordinate arrays"
+                        .to_string(),
+                )
+            })?;
+            if axes.is_empty() || axes.len() != self.source_ids.len() {
+                return Err(DagMlError::CampaignValidation(
+                    "data binding metadata.feature_axes must cover every source exactly once"
+                        .to_string(),
+                ));
+            }
+            for source_id in &self.source_ids {
+                let coordinates = axes.get(source_id).and_then(serde_json::Value::as_array)
+                    .filter(|coordinates| !coordinates.is_empty())
+                    .ok_or_else(|| DagMlError::CampaignValidation(format!(
+                        "data binding metadata.feature_axes is missing coordinates for source `{source_id}`"
+                    )))?;
+                if coordinates.iter().any(|coordinate| {
+                    coordinate
+                        .as_str()
+                        .is_none_or(|value| value.trim().is_empty())
+                }) {
+                    return Err(DagMlError::CampaignValidation(format!(
+                        "data binding metadata.feature_axes for source `{source_id}` must contain non-empty strings"
+                    )));
+                }
+            }
+        }
         Ok(())
     }
 
