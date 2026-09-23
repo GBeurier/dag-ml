@@ -88,6 +88,12 @@ result = dagml.hostHpoSearch( ...
 The executables can launch MATLAB or Octave and must implement the same
 JSONL protocol as the [CLI examples](../../examples/adapters/). DAG-ML owns
 trial scheduling, fold scoring, pruning, selection, and durable checkpoints.
+The real Octave Ridge oracle in `crates/dag-ml-cli/tests/octave_hpo_ridge.rs`
+qualifies that path through native OOF scoring, pruning and resume, selected
+REFIT into a host-owned MAT sidecar, and fresh-process replay. Run it with
+`DAGML_REQUIRE_HPO_OCTAVE=1 cargo test -p dag-ml-cli --test octave_hpo_ridge`
+when `octave` is on `PATH`. The core records the MAT artifact and validates
+its fingerprint; Octave alone serializes and loads the fitted model.
 The wrapper is POSIX-only and accepts `parallelTrials = N`. DAG-ML starts an
 isolated operator-adapter process per candidate and keeps optimizer callbacks
 on the coordinator thread. Run its smoke with `addpath('bindings/matlab');

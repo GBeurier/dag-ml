@@ -308,6 +308,7 @@
       "enum": [
         "joblib",
         "rds",
+        "mat",
         "torch",
         "tensorflow",
         "onnx",

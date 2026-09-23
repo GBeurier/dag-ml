@@ -226,7 +226,7 @@
       "enum": ["data", "data_view", "model", "artifact", "prediction", "relation"]
     },
     "artifact_backend": {
-      "enum": ["joblib", "rds", "torch", "tensorflow", "onnx", "safetensors", "json", "raw"]
+      "enum": ["joblib", "rds", "mat", "torch", "tensorflow", "onnx", "safetensors", "json", "raw"]
     },
     "controller_capability": {
       "enum": [
