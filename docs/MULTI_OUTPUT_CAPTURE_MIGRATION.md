@@ -64,11 +64,12 @@ input as its own data plan.
    Return blocks keyed by binding ID. A scalar accessor requires one selected
    binding; the package's selection metric is never a replay default.
 
-The no-splitter route needs its own attested package construction if
-`execute_training` requires FIT_CV evidence for selection. It must preserve
-the current full-train semantics and must not manufacture CV scores or folds.
-The existing portable refit package contract is a candidate for that route;
-it should be tested before replacing the phase runner.
+The no-splitter route needs its own attested initial full-refit package. It
+must preserve full-train semantics and must not manufacture CV scores or folds.
+`PortableRefitPackageV3` is not that package: its builder requires an existing
+Package V2 parent, its closed recipe and a distinct target training request.
+Using it for a first training run would forge parent evidence. A separate
+initial full-refit contract is required in DAG-ML core.
 
 ## Executable CV seam and remaining production blockers
 
