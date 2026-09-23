@@ -751,6 +751,9 @@ enum Command {
         envelope: PathBuf,
         #[arg(long)]
         adapter: PathBuf,
+        /// Write the native bundle, replay results, prediction blocks and scores.
+        #[arg(long)]
+        output: Option<PathBuf>,
         #[arg(long, default_value_t = 1)]
         process_workers: usize,
         #[arg(long, default_value_t = DEFAULT_PROCESS_TIMEOUT_MS)]
@@ -2109,6 +2112,7 @@ fn main() -> Result<()> {
             controllers,
             envelope,
             adapter,
+            output,
             process_workers,
             process_timeout_ms,
             process_retries,
@@ -2200,6 +2204,21 @@ fn main() -> Result<()> {
                 captured.observed_process_worker_count,
                 observed_process_worker_count(&replay_ctx)
             );
+            if let Some(path) = output.as_ref() {
+                emit_json(
+                    Some(path),
+                    &serde_json::json!({
+                        "bundle": captured.bundle,
+                        "fit_cv_result_count": captured.fit_cv_result_count,
+                        "refit_result_count": captured.refit_result_count,
+                        "oof_average_results": captured.oof_average_results,
+                        "replay_node_results": replay_results,
+                        "replay_prediction_blocks": replay_ctx.prediction_store.blocks(),
+                        "replay_scores": replay_ctx.build_score_set(plan.id.clone(), None),
+                    }),
+                    "process DSL CV+REFIT+PREDICT outcome",
+                )?;
+            }
         }
         Command::RunProcessRefitReplay {
             graph,

@@ -108,3 +108,9 @@ prediction <- dagml_initial_full_refit_predict(
 The package contains native lineage and artifact identities, while R retains
 model sidecars. The replay adapter must resolve the exact host artifact handles
 listed in the package; DAG-ML rejects missing or extra handles.
+
+For a pipeline with CV, `dagml_cv_refit_predict()` executes CV, winner REFIT
+and PREDICT in one native CLI session. Its outcome includes the execution
+bundle, OOF averages and replay prediction blocks. This keeps host model
+handles alive for the replay in that session; persisting the bundle JSON alone
+does not persist R model sidecars.
