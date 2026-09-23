@@ -13671,6 +13671,81 @@ fn refit_fit_view_attests_augmented_resubstitution_opt_in() {
 }
 
 #[test]
+fn cv_augmented_train_predictions_are_fold_declared_and_never_oof() {
+    let node_id = NodeId::new("node:model").unwrap();
+    let mut binding = data_binding(&node_id);
+    let fold_id = FoldId::new("fold:0").unwrap();
+    let origin = SampleId::new("s1").unwrap();
+    let child = SampleId::new("child:fold0").unwrap();
+    let other_fold_child = SampleId::new("child:fold1").unwrap();
+    binding.view_policy.include_augmented_cv_train_predictions = true;
+    binding
+        .view_policy
+        .augmented_cv_train_prediction_ids_by_fold
+        .insert(fold_id.clone(), vec![child.clone()]);
+    let scope = PhaseScope {
+        phase: Phase::FitCv,
+        variant_id: None,
+        variant: None,
+        fold_id: Some(fold_id.clone()),
+        seed_root: None,
+    };
+    let view = data_view_for_partition(
+        &binding,
+        Some(&three_fold_stress_set()),
+        &scope,
+        DataRequestPartition::FoldTrain,
+        None,
+        DataViewRole::Fit,
+        &BTreeSet::new(),
+    )
+    .unwrap();
+    assert_eq!(
+        view.extra["augmented_cv_train_prediction_ids"],
+        json!(["child:fold0"])
+    );
+    let mut base =
+        crate::relation::SampleRelation::new(ObservationId::new("s1").unwrap(), origin.clone());
+    base.origin_sample_id = None;
+    let make_child = |id: &SampleId| {
+        let mut relation = crate::relation::SampleRelation::new(
+            ObservationId::new(id.as_str()).unwrap(),
+            origin.clone(),
+        );
+        relation.origin_sample_id = Some(origin.clone());
+        relation.is_augmented = true;
+        relation
+    };
+    let relations = crate::relation::SampleRelationSet {
+        records: vec![base, make_child(&child), make_child(&other_fold_child)],
+    };
+    validate_cv_augmented_train_prediction_view(&view, &relations).unwrap();
+
+    let mut task = fit_influence_validation_task(FitInfluenceTask::default());
+    task.fold_id = Some(fold_id.clone());
+    task.data_views.insert("data:x".to_string(), view);
+    let mut prediction = PredictionBlock {
+        prediction_id: None,
+        producer_node: task.node_plan.node_id.clone(),
+        producer_port: Some("prediction".to_string()),
+        partition: PredictionPartition::Train,
+        fold_id: Some(fold_id),
+        sample_ids: vec![origin, child],
+        values: vec![vec![1.0], vec![1.1]],
+        target_names: vec!["y".to_string()],
+    };
+    validate_prediction_scope(&prediction, &task).unwrap();
+    prediction.sample_ids.push(other_fold_child);
+    prediction.values.push(vec![1.2]);
+    assert!(validate_prediction_scope(&prediction, &task)
+        .unwrap_err()
+        .to_string()
+        .contains("outside its fold-train data view"));
+    prediction.partition = PredictionPartition::TrainPool;
+    assert!(validate_prediction_scope(&prediction, &task).is_err());
+}
+
+#[test]
 fn data_view_extra_carries_source_index_metadata() {
     let node_id = NodeId::new("node:model").unwrap();
     let mut binding = data_binding(&node_id);

@@ -4757,13 +4757,15 @@ pub(crate) fn collect_input_handles(
         // fitting scopes. A top-level PREDICT must not even resolve the CV
         // relation authority: its separately attested cohort below owns the
         // complete identity universe for that read.
-        let excluded_samples = if scope.phase == Phase::Predict {
-            BTreeSet::new()
+        let coordinator_relations = if scope.phase == Phase::Predict {
+            None
         } else {
             coordinator_relations_for_node(node_plan, resources)?
-                .map(|relations| relations.excluded_sample_ids())
-                .unwrap_or_default()
         };
+        let excluded_samples = coordinator_relations
+            .as_ref()
+            .map(|relations| relations.excluded_sample_ids())
+            .unwrap_or_default();
         let scope_fold_set = resources.fold_set_override.or(plan.fold_set.as_ref());
         for binding in &node_plan.data_bindings {
             let predict_cohort = if scope.phase == Phase::Predict {
@@ -4796,6 +4798,17 @@ pub(crate) fn collect_input_handles(
                 branch_view_for_node.as_ref(),
                 &excluded_samples,
             )?;
+            if scope.phase == Phase::FitCv
+                && binding.view_policy.include_augmented_cv_train_predictions
+            {
+                let relations = coordinator_relations.as_ref().ok_or_else(|| {
+                    DagMlError::RuntimeValidation(format!(
+                        "node `{}` requires coordinator relations for augmented CV train predictions",
+                        node_plan.node_id
+                    ))
+                })?;
+                validate_cv_augmented_train_prediction_view(&view, relations)?;
+            }
             if scope.phase == Phase::Refit
                 && scope_fold_set.is_none()
                 && view.partition == DataRequestPartition::FullTrain

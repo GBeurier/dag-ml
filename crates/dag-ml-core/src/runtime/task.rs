@@ -1277,13 +1277,37 @@ pub(crate) fn validate_prediction_scope(
             )));
         }
         if !task.data_views.is_empty() {
-            let train_ids: BTreeSet<_> = task
+            let mut train_ids: BTreeSet<_> = task
                 .data_views
                 .values()
                 .filter(|view| view.partition == DataRequestPartition::FoldTrain)
                 .filter_map(|view| view.sample_ids.as_ref())
                 .flat_map(|ids| ids.iter().cloned())
                 .collect();
+            for view in task.data_views.values().filter(|view| {
+                view.partition == DataRequestPartition::FoldTrain
+                    && view.extra.get("include_augmented_cv_train_predictions")
+                        == Some(&serde_json::Value::Bool(true))
+            }) {
+                let children: Vec<SampleId> = serde_json::from_value(
+                    view.extra
+                        .get("augmented_cv_train_prediction_ids")
+                        .cloned()
+                        .ok_or_else(|| {
+                            DagMlError::RuntimeValidation(format!(
+                                "node `{}` has no declared augmented CV train prediction IDs",
+                                task.node_plan.node_id
+                            ))
+                        })?,
+                )
+                .map_err(|error| {
+                    DagMlError::RuntimeValidation(format!(
+                        "node `{}` has malformed augmented CV train prediction IDs: {error}",
+                        task.node_plan.node_id
+                    ))
+                })?;
+                train_ids.extend(children);
+            }
             if train_ids.is_empty()
                 || prediction
                     .sample_ids

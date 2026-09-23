@@ -1569,6 +1569,75 @@ pub(crate) fn data_view_for_scope(
     )
 }
 
+/// Check that a CV in-sample prediction opt-in names only augmented rows whose
+/// physical origins are in this fold's fitted cohort. The declared list is
+/// exact: controllers may emit a subset, but no other fold's child can be
+/// smuggled into the result through `include_augmented=true` alone.
+pub(crate) fn validate_cv_augmented_train_prediction_view(
+    view: &DataProviderViewSpec,
+    relations: &crate::relation::SampleRelationSet,
+) -> Result<()> {
+    if view.extra.get("include_augmented_cv_train_predictions")
+        != Some(&serde_json::Value::Bool(true))
+    {
+        return Ok(());
+    }
+    if view.partition != DataRequestPartition::FoldTrain
+        || !view.include_augmented
+        || view.fold_id.is_none()
+    {
+        return Err(DagMlError::RuntimeValidation(
+            "augmented CV train prediction IDs require an augmented fold-train view".to_string(),
+        ));
+    }
+    let base_ids = view
+        .sample_ids
+        .as_ref()
+        .ok_or_else(|| {
+            DagMlError::RuntimeValidation(
+                "augmented CV train prediction view has no base sample IDs".to_string(),
+            )
+        })?
+        .iter()
+        .collect::<BTreeSet<_>>();
+    let declared: Vec<SampleId> = serde_json::from_value(
+        view.extra
+            .get("augmented_cv_train_prediction_ids")
+            .cloned()
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(
+                    "augmented CV train prediction view has no child IDs".to_string(),
+                )
+            })?,
+    )
+    .map_err(|error| {
+        DagMlError::RuntimeValidation(format!(
+            "augmented CV train prediction IDs are malformed: {error}"
+        ))
+    })?;
+    for child_id in declared {
+        let relation = relations
+            .records
+            .iter()
+            .find(|record| record.observation_id.as_str() == child_id.as_str())
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "augmented CV train prediction `{child_id}` has no coordinator relation"
+                ))
+            })?;
+        let origin = relation
+            .origin_sample_id
+            .as_ref()
+            .unwrap_or(&relation.sample_id);
+        if !relation.is_augmented || relation.excluded || !base_ids.contains(origin) {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "augmented CV train prediction `{child_id}` is not a permitted child of this fold's fitted cohort"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Bind a separately attested cohort to a scheduler-created non-fit view.
 ///
 /// This replaces, rather than merges with, ordinary partition-derived sample
