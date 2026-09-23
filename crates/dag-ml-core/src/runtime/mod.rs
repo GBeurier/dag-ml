@@ -814,7 +814,7 @@ pub fn select_best_operator_variant_from_models<F>(
     run_id: &RunId,
     root_seed: Option<u64>,
     selection_metric: RegressionMetricKind,
-    mut run_single_variant_fit_cv: F,
+    run_single_variant_fit_cv: F,
 ) -> Result<Option<VariantSelection>>
 where
     F: FnMut(&ExecutionPlan, &mut RunContext) -> Result<()>,
@@ -837,7 +837,7 @@ pub fn select_best_operator_variant_outcome_from_models<F>(
     run_id: &RunId,
     root_seed: Option<u64>,
     selection_metric: RegressionMetricKind,
-    run_single_variant_fit_cv: F,
+    mut run_single_variant_fit_cv: F,
 ) -> Result<Option<VariantSelectionOutcome>>
 where
     F: FnMut(&ExecutionPlan, &mut RunContext) -> Result<()>,
@@ -866,8 +866,7 @@ where
                 |_variant| Ok(None),
                 Some(models),
                 &mut run_single_variant_fit_cv,
-            )?
-            .map(|outcome| outcome.selection))
+            )?)
         }
     }
 }

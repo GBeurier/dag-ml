@@ -3379,10 +3379,10 @@ fn build_bundle_from_cv_with_refit_count(
     let mut additional_refit_prediction_block_count = 0usize;
     let mut additional_lineage_records = Vec::<LineageRecord>::new();
     for variant_id in &additional_variant_ids {
-        let extra_pruned_plan = if let Some(model) = input.operator_variant_models.first() {
+        let extra_pruned_plan = if !input.operator_variant_models.is_empty() {
             Some(pruned_plan_for_operator_variant(
                 input.plan,
-                model,
+                &input.operator_variant_models,
                 variant_id,
                 input.root_seed,
             )?)
