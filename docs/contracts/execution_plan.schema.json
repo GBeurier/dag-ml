@@ -304,6 +304,18 @@
         {
           "type": "object",
           "additionalProperties": false,
+          "required": ["kind", "min_splits", "max_splits"],
+          "properties": {
+            "kind": { "const": "capacity_kfold" },
+            "min_splits": { "type": "integer", "minimum": 2 },
+            "max_splits": { "type": "integer", "minimum": 2 },
+            "shuffle": { "type": "boolean" },
+            "seed": { "type": ["integer", "null"], "minimum": 0 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
           "required": ["kind", "n_splits"],
           "properties": {
             "kind": { "const": "group_kfold" },

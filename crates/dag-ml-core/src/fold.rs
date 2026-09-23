@@ -502,12 +502,26 @@ pub enum NestedCvSpec {
     /// Index-based inner K-fold, built in-core from outer-train samples.
     #[serde(rename = "kfold")]
     KFold(KFoldSpec),
+    /// Resolve a K-fold count from attested fit-capacity hints in the graph.
+    /// The nested runtime resolves this to `KFold` before building folds.
+    #[serde(rename = "capacity_kfold")]
+    CapacityKFold(CapacityKFoldSpec),
     /// Group-aware inner K-fold, built in-core from outer-train sample groups.
     #[serde(rename = "group_kfold")]
     GroupKFold(GroupKFoldSpec),
     /// Target-stratified inner K-fold, with labels bound to stable sample ids.
     #[serde(rename = "stratified_kfold")]
     StratifiedKFold(StratifiedNestedCvSpec),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CapacityKFoldSpec {
+    pub min_splits: usize,
+    pub max_splits: usize,
+    #[serde(default)]
+    pub shuffle: bool,
+    #[serde(default)]
+    pub seed: Option<u64>,
 }
 
 /// One inner fold set bound to the exact outer fold that owns its training
@@ -544,6 +558,13 @@ impl NestedCvSpec {
                 if spec.n_splits < 2 {
                     return Err(DagMlError::OofValidation(
                         "inner KFold requires at least two splits".to_string(),
+                    ));
+                }
+            }
+            Self::CapacityKFold(spec) => {
+                if spec.min_splits < 2 || spec.max_splits < spec.min_splits {
+                    return Err(DagMlError::OofValidation(
+                        "capacity KFold requires 2 <= min_splits <= max_splits".to_string(),
                     ));
                 }
             }
@@ -596,6 +617,11 @@ impl NestedCvSpec {
         let inner_id = format!("{}.inner", outer.fold_id);
         let mut inner = match self {
             Self::KFold(spec) => spec.split(inner_id, &outer.train_sample_ids)?,
+            Self::CapacityKFold(_) => {
+                return Err(DagMlError::OofValidation(
+                    "capacity KFold must be resolved against graph fit-capacity hints before building folds".to_string(),
+                ));
+            }
             Self::GroupKFold(spec) => {
                 let train = outer.train_sample_ids.iter().collect::<BTreeSet<_>>();
                 let inner_groups = outer_groups
