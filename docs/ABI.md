@@ -222,9 +222,16 @@ factory that creates one opaque operator state per candidate. A candidate's
 callbacks receive native `NodeTask` JSON and return validated `NodeResult` JSON;
 DAG-ML owns fold execution, scoring and selection. `max_parallel_trials > 1`
 starts bounded concurrent windows and tells the optimizer in trial order.
-The candidate state is destroyed once after its worker completes. The current
-ABI refuses progressive pruning and has no durable resume entry; hosts must
-not treat this boundary as a complete Optuna storage/pruning replacement.
+The candidate state is destroyed once after its worker completes. ABI v1
+keeps its non-durable contract. `dagml_host_hpo_search_json_v2` adds a feedback
+callback for native fold-score pruning decisions, pruned transitions, sealed
+prepared terminals and checkpoint publication. It accepts a native resume
+checkpoint and returns a `HostHpoSearchOutcome` with the updated checkpoint.
+`dagml_host_hpo_checkpoint_recover_json` verifies a prepared terminal and
+marks interrupted in-flight proposals failed without inventing scores. The
+host remains responsible for persisting its optimizer state and pairing it
+with these native records before the next call. The C/Rust conformance test
+exercises overlap, pruning, ordered terminal callbacks, resume and recovery.
 
 The invocation request and result are strict JSON but intentionally
 binding-defined: feature and autodiff tensors remain host-owned, so R, MATLAB,

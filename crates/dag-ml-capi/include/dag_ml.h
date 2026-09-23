@@ -258,6 +258,22 @@ typedef struct DagMlHostHpoCallbacks {
     void (*destroy_candidate)(void *candidate_state);
 } DagMlHostHpoCallbacks;
 
+/* V2 feedback callbacks run only on the HPO coordinator thread. The callback
+ * receives one JSON event (`report_intermediate`, `pruned`, `prepare_terminal`,
+ * or `checkpoint`) and returns one owned JSON reply. A pruning reply contains
+ * `{"prune": bool}`; all other replies require `{"ok": true}`. A checkpoint
+ * reply may also contain `{"continue": false}`. Release every reply through
+ * release_bytes. The host must persist prepared/terminal optimizer state. */
+#ifndef DAG_ML_HOST_HPO_FEEDBACK_ABI_VERSION
+#define DAG_ML_HOST_HPO_FEEDBACK_ABI_VERSION 1u
+#endif
+typedef struct DagMlHostHpoFeedbackCallbacks {
+    uint32_t abi_version;
+    void *user_data;
+    DagMlStatusCode (*invoke)(void *user_data, DagMlBytesView event_json, DagMlOwnedBytes *out_reply_json);
+    void (*release_bytes)(void *user_data, DagMlOwnedBytes bytes);
+} DagMlHostHpoFeedbackCallbacks;
+
 #ifndef DAG_ML_DATA_PROVIDER_VTABLE_ABI_VERSION
 #define DAG_ML_DATA_PROVIDER_VTABLE_ABI_VERSION 2u
 #endif
@@ -557,6 +573,26 @@ DagMlStatusCode dagml_host_hpo_search_json(
     const uint8_t *envelope_ptr, size_t envelope_len,
     const uint8_t *request_ptr, size_t request_len,
     DagMlHostHpoCallbacks callbacks, uint32_t max_parallel_trials,
+    DagMlOwnedBytes *out_json, DagMlString *error_out);
+/* Durable/pruning variant. Null resume_checkpoint_ptr plus zero length starts
+ * a new study. The returned JSON is HostHpoSearchOutcome, including status and
+ * a sealed native checkpoint. The host must pair that checkpoint with its own
+ * optimizer state and recover interrupted candidates before the next call. */
+DagMlStatusCode dagml_host_hpo_search_json_v2(
+    const uint8_t *plan_ptr, size_t plan_len,
+    const uint8_t *trusted_controllers_ptr, size_t trusted_controllers_len,
+    const uint8_t *envelope_ptr, size_t envelope_len,
+    const uint8_t *request_ptr, size_t request_len,
+    const uint8_t *resume_checkpoint_ptr, size_t resume_checkpoint_len,
+    DagMlHostHpoCallbacks callbacks, DagMlHostHpoFeedbackCallbacks feedback,
+    uint32_t max_parallel_trials, DagMlOwnedBytes *out_json, DagMlString *error_out);
+/* Core-owned recovery of a prepared terminal and interrupted candidate
+ * proposals. Null prepared_ptr plus zero length means no prepared terminal;
+ * interrupted_ptr must contain a JSON array, possibly empty. */
+DagMlStatusCode dagml_host_hpo_checkpoint_recover_json(
+    const uint8_t *checkpoint_ptr, size_t checkpoint_len,
+    const uint8_t *prepared_ptr, size_t prepared_len,
+    const uint8_t *interrupted_ptr, size_t interrupted_len,
     DagMlOwnedBytes *out_json, DagMlString *error_out);
 DagMlStatusCode dagml_selection_policy_contract_json(DagMlOwnedBytes *out_json, DagMlString *error_out);
 DagMlStatusCode dagml_selection_policy_validate_json(const uint8_t *json_ptr, size_t json_len, DagMlString *error_out);
