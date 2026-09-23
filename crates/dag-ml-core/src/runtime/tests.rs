@@ -148,6 +148,7 @@ impl RuntimeController for VariantProbeController {
             .unwrap_or_else(|| "base".to_string());
         Ok(NodeResult {
             schema_version: None,
+            classification_probabilities: Vec::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([(
                 "out".to_string(),
@@ -231,6 +232,7 @@ impl RuntimeController for ShapeDataController {
         };
         Ok(NodeResult {
             schema_version: None,
+            classification_probabilities: Vec::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([("x_out".to_string(), output)]),
             predictions: Vec::new(),
@@ -301,6 +303,7 @@ impl RuntimeController for DataViewProbeController {
         });
         Ok(NodeResult {
             schema_version: None,
+            classification_probabilities: Vec::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([(
                 "oof".to_string(),
@@ -443,6 +446,7 @@ impl RuntimeController for MockController {
             .collect::<Vec<_>>();
         Ok(NodeResult {
             schema_version: None,
+            classification_probabilities: Vec::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([
                 ("out".to_string(), output.clone()),
@@ -681,6 +685,7 @@ impl RuntimeController for ReplayMockController {
             .collect::<BTreeMap<_, _>>();
         Ok(NodeResult {
             schema_version: None,
+            classification_probabilities: Vec::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([("out".to_string(), output)]),
             predictions,
@@ -834,6 +839,7 @@ impl RuntimeController for OofEdgeController {
         };
         Ok(NodeResult {
             schema_version: None,
+            classification_probabilities: Vec::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([(
                 "pred".to_string(),
@@ -953,6 +959,7 @@ impl RuntimeController for CaptureOofValuesController {
         };
         Ok(NodeResult {
             schema_version: None,
+            classification_probabilities: Vec::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([(
                 "pred".to_string(),
@@ -1063,6 +1070,7 @@ impl RuntimeController for ExpectedRefitOofController {
         };
         Ok(NodeResult {
             schema_version: None,
+            classification_probabilities: Vec::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([(
                 "pred".to_string(),
@@ -1173,6 +1181,7 @@ impl RuntimeController for GroupAggregatedOofController {
         };
         Ok(NodeResult {
             schema_version: None,
+            classification_probabilities: Vec::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([(
                 "pred".to_string(),
@@ -1460,6 +1469,7 @@ impl RuntimeController for ObservationPredictionRuntimeController {
             };
         Ok(NodeResult {
             schema_version: None,
+            classification_probabilities: Vec::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([(
                 "pred".to_string(),
@@ -2784,6 +2794,7 @@ fn parallel_scheduler_invokes_independent_level_concurrently() {
             self.active.fetch_sub(1, Ordering::SeqCst);
             Ok(NodeResult {
                 schema_version: None,
+                classification_probabilities: Vec::new(),
                 node_id: task.node_plan.node_id.clone(),
                 outputs: BTreeMap::from([(
                     "x".to_string(),
@@ -2938,6 +2949,7 @@ fn parallel_campaign_scheduler_stress_matches_sequential_across_variants_and_fol
                 .collect::<Vec<_>>();
             Ok(NodeResult {
                 schema_version: None,
+                classification_probabilities: Vec::new(),
                 node_id: task.node_plan.node_id.clone(),
                 outputs: BTreeMap::from([(
                     output_name.to_string(),
@@ -7745,6 +7757,7 @@ fn node_result_validation_rejects_predictions_outside_validation_view() {
     };
     let result = NodeResult {
         schema_version: None,
+        classification_probabilities: Vec::new(),
         node_id: model_id.clone(),
         outputs: BTreeMap::from([(
             "out".to_string(),
@@ -7875,6 +7888,7 @@ fn node_result_validation_rejects_aggregated_units_outside_validation_view() {
     };
     let mut result = NodeResult {
         schema_version: None,
+        classification_probabilities: Vec::new(),
         node_id: model_id.clone(),
         outputs: BTreeMap::from([(
             "out".to_string(),
@@ -8052,6 +8066,7 @@ fn controller_emitted_aggregated_block_must_match_policy_level() {
     };
     let base_result = |level: PredictionLevel, unit: PredictionUnitId| NodeResult {
         schema_version: None,
+        classification_probabilities: Vec::new(),
         node_id: model_id.clone(),
         outputs: BTreeMap::new(),
         predictions: vec![PredictionBlock {
@@ -9647,6 +9662,7 @@ fn native_scoring_collects_reports_and_builds_score_set() {
     };
     let make = |regression_targets: Vec<RegressionTargetBlock>| NodeResult {
         schema_version: None,
+        classification_probabilities: Vec::new(),
         node_id: node.clone(),
         outputs: BTreeMap::new(),
         predictions: vec![predictions.clone()],
@@ -9958,6 +9974,7 @@ impl RuntimeController for VariantScoringController {
             .unwrap_or_else(|| "nofold".to_string());
         Ok(NodeResult {
             schema_version: None,
+            classification_probabilities: Vec::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([("pred".to_string(), output)]),
             predictions,
@@ -11586,6 +11603,7 @@ impl RuntimeController for MultiPortVariantScoringController {
             .unwrap_or_else(|| "nofold".to_string());
         Ok(NodeResult {
             schema_version: None,
+            classification_probabilities: Vec::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([
                 ("pred".to_string(), output.clone()),
@@ -12783,6 +12801,7 @@ impl RuntimeController for BranchScopeRecordingController {
         };
         Ok(NodeResult {
             schema_version: None,
+            classification_probabilities: Vec::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([
                 ("pred".to_string(), prediction_output.clone()),
@@ -12881,6 +12900,7 @@ impl RuntimeController for OverlapEmittingController {
         };
         Ok(NodeResult {
             schema_version: None,
+            classification_probabilities: Vec::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([
                 ("pred".to_string(), prediction_output.clone()),
@@ -13522,6 +13542,7 @@ impl RuntimeController for SilentBranchController {
         };
         Ok(NodeResult {
             schema_version: None,
+            classification_probabilities: Vec::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([
                 ("oof".to_string(), output.clone()),
@@ -13687,6 +13708,7 @@ impl RuntimeController for ScoringBranchController {
             .unwrap_or_else(|| "base".to_string());
         Ok(NodeResult {
             schema_version: None,
+            classification_probabilities: Vec::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([
                 ("pred".to_string(), prediction_output.clone()),
@@ -14425,6 +14447,7 @@ impl RuntimeController for FusionBranchController {
             };
         Ok(NodeResult {
             schema_version: None,
+            classification_probabilities: Vec::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([
                 ("pred".to_string(), prediction_output.clone()),
@@ -14877,6 +14900,7 @@ impl RuntimeController for ProbaBranchController {
         };
         Ok(NodeResult {
             schema_version: None,
+            classification_probabilities: Vec::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([
                 ("pred".to_string(), prediction_output.clone()),
@@ -15138,6 +15162,7 @@ impl RuntimeController for OffFoldScoringController {
             .unwrap_or_else(|| "base".to_string());
         Ok(NodeResult {
             schema_version: None,
+            classification_probabilities: Vec::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([
                 ("pred".to_string(), prediction_output.clone()),
@@ -15483,6 +15508,7 @@ impl RuntimeController for OffFoldDuplicationController {
         };
         Ok(NodeResult {
             schema_version: None,
+            classification_probabilities: Vec::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([
                 ("pred".to_string(), prediction_output.clone()),
@@ -15969,6 +15995,7 @@ impl RuntimeController for DuplicateSampleBranchController {
         };
         Ok(NodeResult {
             schema_version: None,
+            classification_probabilities: Vec::new(),
             node_id: node_id.clone(),
             outputs: BTreeMap::from([
                 ("pred".to_string(), prediction_output.clone()),
@@ -16105,6 +16132,7 @@ impl RuntimeController for StackingOffFoldController {
         };
         Ok(NodeResult {
             schema_version: None,
+            classification_probabilities: Vec::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([(
                 "pred".to_string(),
@@ -16377,6 +16405,7 @@ impl RuntimeController for OperatorScoringController {
             .unwrap_or_else(|| "nofold".to_string());
         Ok(NodeResult {
             schema_version: None,
+            classification_probabilities: Vec::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([("oof".to_string(), output)]),
             predictions,

@@ -496,6 +496,7 @@ impl RuntimeController for TrainingController {
         let output_port = if is_model { "oof" } else { "x_out" };
         Ok(NodeResult {
             schema_version: None,
+            classification_probabilities: Vec::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([(
                 output_port.to_string(),

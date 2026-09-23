@@ -788,6 +788,62 @@ impl ExplanationBlock {
     }
 }
 
+/// Class-aligned probabilities for one labelled test prediction block. This is evidence for
+/// cross-fold classification ensembles, not another numeric target prediction.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClassificationProbabilityBlock {
+    pub producer_node: NodeId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub producer_port: Option<String>,
+    pub partition: PredictionPartition,
+    pub fold_id: Option<FoldId>,
+    pub sample_ids: Vec<SampleId>,
+    pub class_labels: Vec<f64>,
+    pub values: Vec<Vec<f64>>,
+}
+
+impl ClassificationProbabilityBlock {
+    pub fn validate(&self) -> Result<()> {
+        if self.partition != PredictionPartition::Test || self.fold_id.is_none() {
+            return Err(DagMlError::RuntimeValidation(
+                "classification probabilities require a CV test fold".to_string(),
+            ));
+        }
+        if self.class_labels.is_empty()
+            || self.class_labels.iter().any(|label| !label.is_finite())
+            || self.class_labels.iter().any(|label| {
+                self.class_labels
+                    .iter()
+                    .filter(|other| *other == label)
+                    .count()
+                    != 1
+            })
+            || self.sample_ids.is_empty()
+            || self.sample_ids.len() != self.values.len()
+            || self.sample_ids.iter().collect::<BTreeSet<_>>().len() != self.sample_ids.len()
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "classification probabilities have invalid class or sample identities".to_string(),
+            ));
+        }
+        for row in &self.values {
+            if row.len() != self.class_labels.len()
+                || row
+                    .iter()
+                    .any(|p| !p.is_finite() || !(0.0..=1.0).contains(p))
+                || (row.iter().sum::<f64>() - 1.0).abs() > 1e-6
+            {
+                return Err(DagMlError::RuntimeValidation(
+                    "classification probabilities must be finite, non-negative and sum to one"
+                        .to_string(),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NodeResult {
@@ -798,6 +854,8 @@ pub struct NodeResult {
     pub outputs: BTreeMap<String, HandleRef>,
     #[serde(default)]
     pub predictions: Vec<PredictionBlock>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub classification_probabilities: Vec<ClassificationProbabilityBlock>,
     #[serde(default)]
     pub observation_predictions: Vec<ObservationPredictionBlock>,
     #[serde(default)]
@@ -1038,6 +1096,26 @@ impl NodeResult {
                 )));
             }
             validate_prediction_scope(prediction, task)?;
+        }
+        for block in &self.classification_probabilities {
+            block.validate()?;
+            if task.phase != Phase::FitCv
+                || block.producer_node != self.node_id
+                || block.fold_id != task.fold_id
+                || !self.predictions.iter().any(|prediction| {
+                    prediction.partition == PredictionPartition::Test
+                        && prediction.fold_id == block.fold_id
+                        && prediction.producer_port == block.producer_port
+                        && prediction.sample_ids.iter().collect::<BTreeSet<_>>()
+                            == block.sample_ids.iter().collect::<BTreeSet<_>>()
+                        && prediction.values.iter().all(|row| row.len() == 1)
+                })
+            {
+                return Err(DagMlError::RuntimeValidation(
+                    "classification probabilities require a matching single-target CV test prediction"
+                        .to_string(),
+                ));
+            }
         }
         for prediction in &self.observation_predictions {
             prediction.validate_shape()?;

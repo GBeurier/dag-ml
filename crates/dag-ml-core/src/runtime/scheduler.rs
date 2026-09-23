@@ -120,6 +120,7 @@ pub(crate) fn normalize_result_prediction_ports(
         }
     }
     if result.predictions.is_empty()
+        && result.classification_probabilities.is_empty()
         && result.observation_predictions.is_empty()
         && result.aggregated_predictions.is_empty()
         && result.explanations.is_empty()
@@ -131,6 +132,14 @@ pub(crate) fn normalize_result_prediction_ports(
         normalize_prediction_result_port(
             &task.node_plan.node_id,
             "prediction block",
+            &mut block.producer_port,
+            &prediction_ports,
+        )?;
+    }
+    for block in &mut result.classification_probabilities {
+        normalize_prediction_result_port(
+            &task.node_plan.node_id,
+            "classification probability block",
             &mut block.producer_port,
             &prediction_ports,
         )?;
@@ -1606,6 +1615,8 @@ impl SequentialScheduler {
                         for prediction in &result.predictions {
                             ctx.prediction_store.append(prediction.clone())?;
                         }
+                        ctx.classification_probability_blocks
+                            .extend(result.classification_probabilities.iter().cloned());
                         apply_result_scoring(
                             &result,
                             &mut ctx.score_collector,
@@ -1782,6 +1793,8 @@ impl SequentialScheduler {
                 for prediction in &result.aggregated_predictions {
                     ctx.aggregated_prediction_store.append(prediction.clone())?;
                 }
+                ctx.classification_probability_blocks
+                    .extend(result.classification_probabilities.iter().cloned());
                 apply_result_scoring(
                     &result,
                     &mut ctx.score_collector,
@@ -2351,6 +2364,8 @@ impl ParallelScheduler {
                     for prediction in &result.aggregated_predictions {
                         ctx.aggregated_prediction_store.append(prediction.clone())?;
                     }
+                    ctx.classification_probability_blocks
+                        .extend(result.classification_probabilities.iter().cloned());
                     apply_result_scoring(
                         &result,
                         &mut ctx.score_collector,
@@ -2408,6 +2423,8 @@ impl ParallelScheduler {
                     for prediction in &result.predictions {
                         ctx.prediction_store.append(prediction.clone())?;
                     }
+                    ctx.classification_probability_blocks
+                        .extend(result.classification_probabilities.iter().cloned());
                     apply_result_scoring(
                         &result,
                         &mut ctx.score_collector,
@@ -2644,6 +2661,7 @@ mod hpo_scheduler_tests {
             };
             Ok(NodeResult {
                 schema_version: None,
+                classification_probabilities: Vec::new(),
                 node_id: task.node_plan.node_id.clone(),
                 outputs: BTreeMap::from([(
                     "prediction".to_string(),

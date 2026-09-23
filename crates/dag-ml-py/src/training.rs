@@ -3986,6 +3986,7 @@ mod tests {
             }
             let result = NodeResult {
                 schema_version: None,
+                classification_probabilities: Vec::new(),
                 node_id: task.node_plan.node_id.clone(),
                 outputs,
                 predictions,

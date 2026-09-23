@@ -4989,6 +4989,7 @@ impl RuntimeController for CliMockController {
         }
         Ok(NodeResult {
             schema_version: None,
+            classification_probabilities: Vec::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([("out".to_string(), output)]),
             predictions,
@@ -6500,6 +6501,7 @@ mod tests {
 
             Ok(NodeResult {
                 schema_version: None,
+                classification_probabilities: Vec::new(),
                 node_id: task.node_plan.node_id.clone(),
                 outputs: BTreeMap::from([
                     ("x".to_string(), data_output.clone()),
