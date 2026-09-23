@@ -12,6 +12,14 @@ each with one target column. A single source predicting three analytes yields
 one output with three target columns. The two dimensions stay separate in
 training results, archive metadata, and replay.
 
+Concretely, for 20 samples and two spectral sources, `by_source` +
+`merge: auto` produces **two** blocks of 20 predictions: one from the model
+trained on source A and one from the model trained on source B. If each model
+predicts three analytes, each block has shape `[20, 3]`; this is still two
+outputs, not six. If an explicit `merge: mean` combines A and B, the graph
+instead exposes one fused block of shape `[20, 3]`. An output ID identifies a
+graph prediction port; a target name identifies a column within that port.
+
 Training may rank the source models by their own validation scores, but every
 score and prediction row must retain its output binding ID. The ranked winner
 is a presentation/selection decision; it cannot change the stored graph's
@@ -63,6 +71,34 @@ accessor such as `y_pred` must reject an unselected multi-output result.
 `merge: mean` remains a different, explicit graph operation that produces one
 fused output binding. No archive reader may silently turn `merge: auto` into
 `merge: mean` or a winner-takes-all predictor.
+
+For the two-source example, the portable result has this logical shape (the
+concrete wire format may differ by language):
+
+```json
+{
+  "outputs": {
+    "output:source_0": {
+      "source_id": "source_0",
+      "sample_ids": ["s1", "s2"],
+      "target_names": ["analyte_a", "analyte_b", "analyte_c"],
+      "values": [[1.0, 2.0, 3.0], [1.1, 2.1, 3.1]]
+    },
+    "output:source_1": {
+      "source_id": "source_1",
+      "sample_ids": ["s1", "s2"],
+      "target_names": ["analyte_a", "analyte_b", "analyte_c"],
+      "values": [[0.9, 1.9, 2.9], [1.2, 2.2, 3.2]]
+    }
+  }
+}
+```
+
+The core contract is language-neutral: Rust, CLI, C ABI, Python and future
+bindings must preserve the same named output set, source/sample IDs, dimensions
+and selection errors. A language binding may offer a convenience accessor only
+when there is exactly one output or the caller names one. The binding must not
+pick a winner or average blocks on its own.
 
 For example, a future public API could expose
 `result.outputs["output:source_0"]` and
