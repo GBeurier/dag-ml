@@ -4367,7 +4367,7 @@ fn fan_out_rejects_merge_inside_auto_separation_template() {
 }
 
 #[test]
-fn fan_out_rejects_generation_override_on_fanned_node() {
+fn fan_out_rewrites_generation_override_on_fanned_node() {
     let mut spec = auto_separation_by_metadata_spec();
     spec.generation_dimensions = vec![PipelineDslGenerationDimension {
         name: "dim".to_string(),
@@ -4383,11 +4383,18 @@ fn fan_out_rejects_generation_override_on_fanned_node() {
         }],
     }];
     let envelope = fanout_envelope(&[("s1", "A", &[]), ("s2", "B", &[])]);
-    let error = fan_out_data_aware_branches(&spec, &envelope)
-        .unwrap_err()
-        .to_string();
-    assert!(
-        error.contains("generation param_override targeting node `model:site`"),
-        "{error}"
+    let expanded = fan_out_data_aware_branches(&spec, &envelope).unwrap();
+    let overrides = &expanded.generation_dimensions[0].choices[0].param_overrides;
+    assert_eq!(overrides.len(), 2);
+    assert_eq!(overrides[0].node_id.as_str(), "model:site__A");
+    assert_eq!(overrides[1].node_id.as_str(), "model:site__B");
+    assert_eq!(overrides[0].params["alpha"], serde_json::json!(0.1));
+    assert_eq!(overrides[1].params["alpha"], serde_json::json!(0.1));
+    let compiled = compile_pipeline_dsl_with_generation(&expanded).unwrap();
+    assert_eq!(
+        compiled.generation.dimensions[0].choices[0]
+            .param_overrides
+            .len(),
+        2
     );
 }
