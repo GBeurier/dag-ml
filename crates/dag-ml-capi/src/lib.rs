@@ -6448,7 +6448,7 @@ mod tests {
         let node_id = NodeId::new("transform:scale").unwrap();
         let task = NodeTask {
             inner_fold_set: None,
-            residual_targets: Vec::new(),
+            residual_targets: None,
             run_id: RunId::new("run:cabi.controller").unwrap(),
             node_plan: NodePlan {
                 inner_cv: None,
@@ -8465,6 +8465,36 @@ mod tests {
             let candidate = Box::from_raw(candidate.cast::<Candidate>());
             candidate.stats.destroyed.fetch_add(1, Ordering::SeqCst);
         }
+        unsafe extern "C" fn feedback(
+            host: *mut c_void,
+            event: DagMlBytesView,
+            out: *mut DagMlOwnedBytes,
+        ) -> DagMlStatusCode {
+            let host = &*(host.cast::<Host>());
+            let event: serde_json::Value =
+                serde_json::from_slice(slice::from_raw_parts(event.ptr, event.len)).unwrap();
+            let operation = event["operation"].as_str().unwrap();
+            host.0.events.lock().unwrap().push(format!(
+                "{operation}:{}",
+                event
+                    .get("trial_index")
+                    .and_then(serde_json::Value::as_u64)
+                    .map_or_else(|| "checkpoint".to_string(), |index| index.to_string())
+            ));
+            let reply = if operation == "report_intermediate" {
+                serde_json::json!({"prune": event["trial_index"] == 1 && event["step"] == 0})
+            } else {
+                serde_json::json!({"ok": true})
+            };
+            let mut bytes = serde_json::to_vec(&reply).unwrap();
+            *out = DagMlOwnedBytes {
+                ptr: bytes.as_mut_ptr(),
+                len: bytes.len(),
+                capacity: bytes.capacity(),
+            };
+            std::mem::forget(bytes);
+            DagMlStatusCode::OK
+        }
 
         let graph: GraphSpec =
             serde_json::from_str(include_str!("../../../examples/minimal_graph.json")).unwrap();
@@ -8528,6 +8558,130 @@ mod tests {
         );
         assert!(stats.maximum.load(Ordering::SeqCst) >= 2);
         assert_eq!(stats.destroyed.load(Ordering::SeqCst), 2);
+        stats.maximum.store(0, Ordering::SeqCst);
+        stats.destroyed.store(0, Ordering::SeqCst);
+        stats.events.lock().unwrap().clear();
+
+        let request = serde_json::to_vec(&serde_json::json!({
+            "target_node": "model:base", "trial_budget": 2, "metric": "rmse",
+            "direction": "minimize", "optimizer_descriptor": {"owner": "c-test"},
+            "progressive_pruning": true,
+        }))
+        .unwrap();
+        let feedback_callbacks = DagMlHostHpoFeedbackCallbacks {
+            abi_version: DAG_ML_HOST_HPO_FEEDBACK_ABI_VERSION,
+            user_data: (&mut host as *mut Host).cast(),
+            invoke: Some(feedback),
+            release_bytes: Some(release),
+        };
+        let mut out = DagMlOwnedBytes::default();
+        let status = unsafe {
+            dagml_host_hpo_search_json_v2(
+                plan.as_ptr(),
+                plan.len(),
+                manifests.as_ptr(),
+                manifests.len(),
+                envelope.as_ptr(),
+                envelope.len(),
+                request.as_ptr(),
+                request.len(),
+                std::ptr::null(),
+                0,
+                callbacks,
+                feedback_callbacks,
+                2,
+                &mut out,
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        let first: serde_json::Value =
+            serde_json::from_slice(unsafe { slice::from_raw_parts(out.ptr, out.len) }).unwrap();
+        unsafe { dagml_owned_bytes_free(out) };
+        assert_eq!(first["status"], "completed");
+        assert_eq!(first["trials"].as_array().unwrap().len(), 1);
+        assert_eq!(first["pruned_trials"].as_array().unwrap().len(), 1);
+        assert!(stats.maximum.load(Ordering::SeqCst) >= 2);
+        assert_eq!(stats.destroyed.load(Ordering::SeqCst), 2);
+        let events = stats.events.lock().unwrap().clone();
+        assert!(events.iter().any(|event| event == "report_intermediate:1"));
+        assert!(events
+            .iter()
+            .any(|event| event == "prepare_terminal:checkpoint"));
+        assert!(events.iter().any(|event| event == "checkpoint:checkpoint"));
+        assert!(events.iter().any(|event| event == "pruned:1"));
+
+        let resume = serde_json::to_vec(&first["checkpoint"]).unwrap();
+        let interrupted = serde_json::to_vec(&serde_json::json!([{
+            "trial_index": 2, "params": {"n_components": 3},
+        }]))
+        .unwrap();
+        let mut recovered_out = DagMlOwnedBytes::default();
+        let recovery_status = unsafe {
+            dagml_host_hpo_checkpoint_recover_json(
+                resume.as_ptr(),
+                resume.len(),
+                std::ptr::null(),
+                0,
+                interrupted.as_ptr(),
+                interrupted.len(),
+                &mut recovered_out,
+                &mut error,
+            )
+        };
+        assert_eq!(
+            recovery_status,
+            DagMlStatusCode::OK,
+            "{}",
+            error_message(&error)
+        );
+        let recovered: dag_ml_core::HostHpoCheckpoint = serde_json::from_slice(unsafe {
+            slice::from_raw_parts(recovered_out.ptr, recovered_out.len)
+        })
+        .unwrap();
+        unsafe { dagml_owned_bytes_free(recovered_out) };
+        recovered.verify_seal().unwrap();
+        assert_eq!(recovered.trials.len(), 3);
+        assert!(matches!(
+            recovered.trials[2],
+            dag_ml_core::HostHpoTerminalTrial::Failed { .. }
+        ));
+        let request = serde_json::to_vec(&serde_json::json!({
+            "target_node": "model:base", "trial_budget": 3, "metric": "rmse",
+            "direction": "minimize", "optimizer_descriptor": {"owner": "c-test"},
+            "progressive_pruning": true,
+        }))
+        .unwrap();
+        let mut out = DagMlOwnedBytes::default();
+        let status = unsafe {
+            dagml_host_hpo_search_json_v2(
+                plan.as_ptr(),
+                plan.len(),
+                manifests.as_ptr(),
+                manifests.len(),
+                envelope.as_ptr(),
+                envelope.len(),
+                request.as_ptr(),
+                request.len(),
+                resume.as_ptr(),
+                resume.len(),
+                callbacks,
+                feedback_callbacks,
+                2,
+                &mut out,
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        let resumed: serde_json::Value =
+            serde_json::from_slice(unsafe { slice::from_raw_parts(out.ptr, out.len) }).unwrap();
+        unsafe { dagml_owned_bytes_free(out) };
+        assert_eq!(resumed["status"], "completed");
+        assert_eq!(resumed["checkpoint"]["trials"].as_array().unwrap().len(), 3);
+        assert_eq!(resumed["trials"].as_array().unwrap().len(), 2);
+        assert_eq!(resumed["pruned_trials"].as_array().unwrap().len(), 1);
+        assert!(stats.events.lock().unwrap().contains(&"ask:2".to_string()));
+        assert_eq!(stats.destroyed.load(Ordering::SeqCst), 3);
     }
 
     #[test]

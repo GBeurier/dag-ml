@@ -28,10 +28,11 @@ trial budget without repeating historical fits.
 Rust hosts use `execute_parallel_host_hpo_search_with_candidate_factories` or
 its resumable counterpart. PyO3 uses the same core methods with candidate-local
 operator callbacks; nirs4all has legacy/DAG PyO3 and outer CLI oracles for
-parallel Optuna storage and pruning. The C ABI `dagml_host_hpo_search_json`
-currently exposes non-durable parallel work but does not yet expose native
-progress or pruning callbacks. R, MATLAB and WASM language adapters have not
-been implemented or tested.
+parallel Optuna storage and pruning. C ABI v1 exposes non-durable parallel work;
+`dagml_host_hpo_search_json_v2` exposes fold feedback, pruning and durable
+checkpoint callbacks, while `dagml_host_hpo_checkpoint_recover_json` validates
+recovery. Its C/Rust test proves these transitions. R, MATLAB and WASM language
+adapters have not been implemented or tested.
 
 `dag-ml-cli run-host-hpo` is a standalone host HPO command. It reads an
 `ExecutionPlan`, an `ExternalDataPlanEnvelope`, and a `HostHpoSearchRequest`
