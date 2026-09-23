@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::canonical::parse_typed_json;
 use crate::data::data_binding_requirement_key;
@@ -314,6 +315,14 @@ impl InitialFullRefitPackage {
                     if payload.is_empty() {
                         return Err(package_error(
                             "initial full-refit raw artifact payload is empty",
+                        ));
+                    }
+                    if artifact.record.artifact.size_bytes != Some(payload.len() as u64)
+                        || artifact.record.artifact.content_fingerprint.as_deref()
+                            != Some(format!("{:x}", Sha256::digest(payload)).as_str())
+                    {
+                        return Err(package_error(
+                            "initial full-refit raw artifact payload does not match its reference",
                         ));
                     }
                     raw_ids.insert(artifact.record.artifact.id.clone());

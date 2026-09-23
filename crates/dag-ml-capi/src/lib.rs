@@ -19,11 +19,12 @@ use dag_ml_core::{
     ExternalDataPlanEnvelope, FileArtifactManifest, FilePredictionCacheManifest, GraphSpec,
     HandleKind, HandleRef, InMemoryArtifactStore, InMemoryDataProvider, LineageId, LineageRecord,
     ModelInputSpec, NodeResult, NodeTask, OpenLineageRunEventOptions, Phase, PipelineDslSpec,
-    PortablePredictorPackage, PredictionBlock, PredictionCacheMaterializationRequest,
-    PredictionLevel, PredictionPartition, PredictionUnitId, RegressionMetricKind,
-    RegressionMetricReport, RegressionTargetBlock, ReplayPhaseRequest, RunContext, RunId,
-    RuntimeArtifactStore, RuntimeController, RuntimeControllerRegistry, RuntimeDataProvider,
-    RuntimePredictionCacheStore, SampleId, SelectionDecision, SelectionPolicy, SequentialScheduler,
+    PortableArtifactBridgeResult, PortableArtifactBridgeTask, PortablePredictorPackage,
+    PredictionBlock, PredictionCacheMaterializationRequest, PredictionLevel, PredictionPartition,
+    PredictionUnitId, RegressionMetricKind, RegressionMetricReport, RegressionTargetBlock,
+    ReplayPhaseRequest, RunContext, RunId, RuntimeArtifactStore, RuntimeController,
+    RuntimeControllerRegistry, RuntimeDataProvider, RuntimePredictionCacheStore, SampleId,
+    SelectionDecision, SelectionPolicy, SequentialScheduler,
     AGGREGATION_CONTROLLER_RESULT_SCHEMA_ID, AGGREGATION_CONTROLLER_RESULT_SCHEMA_VERSION,
     AGGREGATION_CONTROLLER_TASK_SCHEMA_ID, AGGREGATION_CONTROLLER_TASK_SCHEMA_VERSION,
     CAMPAIGN_SPEC_SCHEMA_ID, CAMPAIGN_SPEC_SCHEMA_VERSION, CONTROLLER_MANIFEST_SCHEMA_ID,
@@ -33,8 +34,9 @@ use dag_ml_core::{
     GRAPH_SPEC_SCHEMA_ID, GRAPH_SPEC_SCHEMA_VERSION, MODEL_INPUT_SPEC_SCHEMA_ID,
     MODEL_INPUT_SPEC_SCHEMA_VERSION, NODE_RESULT_SCHEMA_ID, NODE_RESULT_SCHEMA_VERSION,
     NODE_TASK_SCHEMA_ID, NODE_TASK_SCHEMA_VERSION, PIPELINE_DSL_SCHEMA_ID,
-    PIPELINE_DSL_SCHEMA_VERSION, SELECTION_DECISION_SCHEMA_ID, SELECTION_DECISION_SCHEMA_VERSION,
-    SELECTION_POLICY_SCHEMA_ID, SELECTION_POLICY_SCHEMA_VERSION,
+    PIPELINE_DSL_SCHEMA_VERSION, PORTABLE_ARTIFACT_BRIDGE_SCHEMA_VERSION,
+    SELECTION_DECISION_SCHEMA_ID, SELECTION_DECISION_SCHEMA_VERSION, SELECTION_POLICY_SCHEMA_ID,
+    SELECTION_POLICY_SCHEMA_VERSION,
 };
 use dag_ml_core::{
     execute_attached_training_replay, execute_training, parse_typed_json,
@@ -5258,6 +5260,76 @@ impl RuntimeController for CAbiRuntimeController {
         }
         self.track_result_handles(&result)?;
         Ok(result)
+    }
+
+    fn export_artifact_payload(
+        &self,
+        artifact_id: &dag_ml_core::ArtifactId,
+    ) -> dag_ml_core::Result<Option<Vec<u8>>> {
+        let task = PortableArtifactBridgeTask::ExportArtifactPayload {
+            schema_version: PORTABLE_ARTIFACT_BRIDGE_SCHEMA_VERSION,
+            artifact_id: artifact_id.clone(),
+        };
+        let response = self.invoke_json_task::<PortableArtifactBridgeResult>(
+            serde_json::to_vec(&task)?,
+            "portable artifact export",
+            "portable artifact result",
+        )?;
+        match response {
+            PortableArtifactBridgeResult::ExportedArtifactPayload {
+                schema_version: 1,
+                payload,
+            } if !payload.is_empty() => Ok(Some(payload)),
+            _ => Err(DagMlError::RuntimeValidation(
+                "controller returned invalid portable artifact export response".into(),
+            )),
+        }
+    }
+
+    fn hydrate_artifact_payload(
+        &self,
+        request: &ArtifactMaterializationRequest,
+        payload: &[u8],
+    ) -> dag_ml_core::Result<HandleRef> {
+        let task = PortableArtifactBridgeTask::HydrateArtifactPayload {
+            schema_version: PORTABLE_ARTIFACT_BRIDGE_SCHEMA_VERSION,
+            request: Box::new(request.clone()),
+            payload: payload.to_vec(),
+        };
+        let response = self.invoke_json_task::<PortableArtifactBridgeResult>(
+            serde_json::to_vec(&task)?,
+            "portable artifact hydration",
+            "portable artifact result",
+        )?;
+        match response {
+            PortableArtifactBridgeResult::HydratedArtifactPayload {
+                schema_version: 1,
+                handle,
+            } if handle.owner_controller == self.id && handle.handle != 0 => Ok(handle),
+            _ => Err(DagMlError::RuntimeValidation(
+                "controller returned invalid portable artifact hydration response".into(),
+            )),
+        }
+    }
+
+    fn release_hydrated_artifact_payload(&self, handle: &HandleRef) -> dag_ml_core::Result<()> {
+        let task = PortableArtifactBridgeTask::ReleaseHydratedArtifactPayload {
+            schema_version: PORTABLE_ARTIFACT_BRIDGE_SCHEMA_VERSION,
+            handle: handle.clone(),
+        };
+        let response = self.invoke_json_task::<PortableArtifactBridgeResult>(
+            serde_json::to_vec(&task)?,
+            "portable artifact release",
+            "portable artifact result",
+        )?;
+        match response {
+            PortableArtifactBridgeResult::ReleasedHydratedArtifactPayload { schema_version: 1 } => {
+                Ok(())
+            }
+            _ => Err(DagMlError::RuntimeValidation(
+                "controller returned invalid portable artifact release response".into(),
+            )),
+        }
     }
 
     fn invoke_aggregation(

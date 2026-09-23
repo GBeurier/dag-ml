@@ -20,6 +20,46 @@ pub struct HandleRef {
     pub owner_controller: ControllerId,
 }
 
+/// Versioned control messages carried by an existing host controller's
+/// generic `invoke` callback when it publishes a portable raw artifact.
+/// Binary payloads use JSON byte arrays so C and JavaScript hosts share the
+/// same wire format without extending their callback ABI.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PortableArtifactBridgeTask {
+    ExportArtifactPayload {
+        schema_version: u32,
+        artifact_id: ArtifactId,
+    },
+    HydrateArtifactPayload {
+        schema_version: u32,
+        request: Box<ArtifactMaterializationRequest>,
+        payload: Vec<u8>,
+    },
+    ReleaseHydratedArtifactPayload {
+        schema_version: u32,
+        handle: HandleRef,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PortableArtifactBridgeResult {
+    ExportedArtifactPayload {
+        schema_version: u32,
+        payload: Vec<u8>,
+    },
+    HydratedArtifactPayload {
+        schema_version: u32,
+        handle: HandleRef,
+    },
+    ReleasedHydratedArtifactPayload {
+        schema_version: u32,
+    },
+}
+
+pub const PORTABLE_ARTIFACT_BRIDGE_SCHEMA_VERSION: u32 = 1;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ArtifactBackend {

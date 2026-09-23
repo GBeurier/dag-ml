@@ -49,6 +49,10 @@ fn error_message(error: DagMlString) -> String {
 #[derive(Default)]
 struct ControllerState {
     calls: usize,
+    portable: bool,
+    exports: usize,
+    hydrates: usize,
+    releases: usize,
 }
 
 unsafe extern "C" fn invoke(
@@ -60,12 +64,44 @@ unsafe extern "C" fn invoke(
         return DagMlStatusCode::INVALID_ARGUMENT;
     }
     let state = &mut *user_data.cast::<ControllerState>();
-    state.calls += 1;
     let task: Value =
         match serde_json::from_slice(slice::from_raw_parts(task_json.ptr, task_json.len)) {
             Ok(task) => task,
             Err(_) => return DagMlStatusCode::VALIDATION_ERROR,
         };
+    if let Some(operation) = task["operation"].as_str() {
+        if !state.portable || task["schema_version"] != 1 {
+            return DagMlStatusCode::VALIDATION_ERROR;
+        }
+        let response = match operation {
+            "export_artifact_payload" => {
+                state.exports += 1;
+                json!({"operation":"exported_artifact_payload", "schema_version":1, "payload":[1,2,3]})
+            }
+            "hydrate_artifact_payload" => {
+                if task["payload"] != json!([1, 2, 3]) {
+                    return DagMlStatusCode::VALIDATION_ERROR;
+                }
+                state.hydrates += 1;
+                json!({"operation":"hydrated_artifact_payload", "schema_version":1,
+                    "handle":{"handle":442,"kind":"model","owner_controller":"controller:model.mock"}})
+            }
+            "release_hydrated_artifact_payload" => {
+                state.releases += 1;
+                json!({"operation":"released_hydrated_artifact_payload", "schema_version":1})
+            }
+            _ => return DagMlStatusCode::VALIDATION_ERROR,
+        };
+        let mut bytes = serde_json::to_vec(&response).unwrap();
+        *out_json = DagMlOwnedBytes {
+            ptr: bytes.as_mut_ptr(),
+            len: bytes.len(),
+            capacity: bytes.capacity(),
+        };
+        std::mem::forget(bytes);
+        return DagMlStatusCode::OK;
+    }
+    state.calls += 1;
     let mut result: Value = serde_json::from_str(REFIT_RESULT).unwrap();
     let node = task["node_plan"]["node_id"].as_str().unwrap();
     result["lineage"]["run_id"] = task["run_id"].clone();
@@ -105,6 +141,13 @@ unsafe extern "C" fn invoke(
         result["predictions"][0]["sample_ids"] = json!(["sample:heldout:1"]);
         result["predictions"][0]["values"] = json!([[7.0]]);
     }
+    if state.portable && task["phase"] == "REFIT" {
+        result["artifacts"][0]["backend"] = json!("raw");
+        result["artifacts"][0]["size_bytes"] = json!(3);
+        result["artifacts"][0]["content_fingerprint"] =
+            json!("039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81");
+        result["lineage"]["artifact_refs"][0] = result["artifacts"][0].clone();
+    }
     let mut bytes = serde_json::to_vec(&result).unwrap();
     *out_json = DagMlOwnedBytes {
         ptr: bytes.as_mut_ptr(),
@@ -115,8 +158,7 @@ unsafe extern "C" fn invoke(
     DagMlStatusCode::OK
 }
 
-#[test]
-fn c_abi_initial_full_refit_replays_two_independent_outputs() {
+fn run_multi_output_replay(portable: bool) {
     let fixture = InitialFullRefitPackage::from_json(PACKAGE).unwrap();
     let mut graph = serde_json::to_value(&fixture.effective_plan.graph_plan.graph).unwrap();
     let mut second = graph["nodes"][0].clone();
@@ -139,7 +181,10 @@ fn c_abi_initial_full_refit_replays_two_independent_outputs() {
     let envelope_json = serde_json::to_vec(&fixture.training_envelope).unwrap();
     let manifests_json = serde_json::to_vec(&registry.manifests().collect::<Vec<_>>()).unwrap();
     let ids_json = serde_json::to_vec(&fixture.training_sample_ids).unwrap();
-    let mut state = ControllerState::default();
+    let mut state = ControllerState {
+        portable,
+        ..Default::default()
+    };
     let binding = DagMlControllerBinding {
         controller_id: view(b"controller:model.mock"),
         vtable: DagMlControllerVTable {
@@ -177,6 +222,21 @@ fn c_abi_initial_full_refit_replays_two_independent_outputs() {
     assert_eq!(package.outputs.len(), 2);
     assert_eq!(package.artifacts.len(), 2);
     assert_eq!(state.calls, 2);
+    assert_eq!(state.exports, if portable { 2 } else { 0 });
+    assert_eq!(
+        package.raw_artifact_payloads.len(),
+        if portable { 2 } else { 0 }
+    );
+    if portable {
+        let mut forged = package.clone();
+        *forged.raw_artifact_payloads.values_mut().next().unwrap() = vec![9, 9, 9];
+        forged.package_fingerprint = forged.compute_fingerprint().unwrap();
+        assert!(forged
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("payload does not match"));
+    }
 
     let heldout: SampleRelationSet = serde_json::from_value(json!({"records": [{
         "observation_id": "obs.H001", "sample_id": "sample:heldout:1",
@@ -206,14 +266,25 @@ fn c_abi_initial_full_refit_replays_two_independent_outputs() {
         .flat_map(|result| result["artifact_handles"].as_object().unwrap())
         .map(|(key, value)| (key.clone(), value.clone()))
         .collect::<serde_json::Map<_, _>>();
-    let handles_json = serde_json::to_vec(&handles).unwrap();
+    let handles_json = serde_json::to_vec(&if portable {
+        serde_json::Map::new()
+    } else {
+        handles
+    })
+    .unwrap();
+    let mut replay_state = ControllerState {
+        portable,
+        ..Default::default()
+    };
+    let mut replay_binding = binding;
+    replay_binding.vtable.user_data = (&mut replay_state as *mut ControllerState).cast();
     let predict_request = DagMlInitialFullRefitPredictRequest {
         package_json: view(&package_json),
         envelope_json: view(&envelope_json),
         output_ids_json: view(&output_ids_json),
         artifact_handles_json: view(&handles_json),
         run_id: view(b"run:multi-output.predict"),
-        controller_bindings: &binding,
+        controller_bindings: &replay_binding,
         controller_binding_count: 1,
     };
     let mut out = DagMlOwnedBytes::default();
@@ -231,7 +302,20 @@ fn c_abi_initial_full_refit_replays_two_independent_outputs() {
             .collect::<Vec<_>>(),
         output_ids.iter().map(String::as_str).collect::<Vec<_>>()
     );
-    assert_eq!(state.calls, 4);
+    assert_eq!(state.calls, 2);
+    assert_eq!(replay_state.calls, 2);
+    assert_eq!(replay_state.hydrates, if portable { 2 } else { 0 });
+    assert_eq!(replay_state.releases, if portable { 2 } else { 0 });
+}
+
+#[test]
+fn c_abi_initial_full_refit_replays_two_independent_outputs() {
+    run_multi_output_replay(false);
+}
+
+#[test]
+fn c_abi_initial_full_refit_replays_two_portable_outputs_in_fresh_host() {
+    run_multi_output_replay(true);
 }
 
 unsafe extern "C" fn release_bytes(_user_data: *mut c_void, bytes: DagMlOwnedBytes) {
