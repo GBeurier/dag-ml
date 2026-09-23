@@ -3,7 +3,7 @@
 const fs = require("fs");
 const path = require("path");
 
-module.exports = function smokeHostHpo(dagMl, repo) {
+module.exports = async function smokeHostHpo(dagMl, repo, pkgDir) {
   const graph = {
     id: "graph:wasm-hpo", interface: { inputs: [], outputs: [] },
     nodes: [{
@@ -113,5 +113,74 @@ module.exports = function smokeHostHpo(dagMl, repo) {
   ));
   if (interruptedAfterNativeEvaluation.fingerprint !== resumed.checkpoint.fingerprint) {
     throw new Error("WASM HPO failed to recover a prepared terminal after optimizer transition");
+  }
+
+  const { Worker } = require("worker_threads");
+  const workers = [0, 1].map(() => new Worker(path.join(__dirname, "smoke_wasm_hpo_worker.cjs"), {
+    workerData: { pkgDir, manifests: JSON.stringify([manifest]), envelope, request: JSON.stringify(request) },
+  }));
+  const busy = new Set();
+  let maximumInFlight = 0;
+  const dispatch = (taskJson) => new Promise((resolve, reject) => {
+    const worker = workers.find((candidate) => !busy.has(candidate));
+    if (!worker) return reject(new Error("native window dispatched beyond worker bound"));
+    busy.add(worker);
+    maximumInFlight = Math.max(maximumInFlight, busy.size);
+    const finish = () => {
+      worker.removeListener("message", onMessage);
+      worker.removeListener("error", onError);
+      busy.delete(worker);
+    };
+    const onMessage = (message) => {
+      finish();
+      if (message.error) reject(new Error(message.error));
+      else resolve(message.result);
+    };
+    const onError = (error) => { finish(); reject(error); };
+    worker.once("message", onMessage);
+    worker.once("error", onError);
+    worker.postMessage(taskJson);
+  });
+  const parallelPrepared = [];
+  const parallelTold = [];
+  const parallelOptimizer = (operation, payloadJson) => {
+    const payload = JSON.parse(payloadJson);
+    if (operation === "ask") return JSON.stringify({ params: { offset: payload.trial_index + 1 } });
+    if (operation === "prepare_terminal") {
+      parallelPrepared.push(payload.checkpoint.trials.length);
+      return JSON.stringify({ ok: true });
+    }
+    if (operation === "tell") {
+      if (parallelPrepared[parallelPrepared.length - 1] !== payload.trial_index + 1) {
+        throw new Error("worker trial was told before native checkpoint preparation");
+      }
+      parallelTold.push(payload.trial_index);
+      return JSON.stringify({ ok: true });
+    }
+    if (operation === "checkpoint") return JSON.stringify({ continue: true });
+    return JSON.stringify({ ok: true });
+  };
+  try {
+    request.trial_budget = 2;
+    const parallel = JSON.parse(await dagMl.host_hpo_search_parallel_json(
+      plan, JSON.stringify([manifest]), envelope, JSON.stringify(request), undefined,
+      2, dispatch, parallelOptimizer,
+    ));
+    if (parallel.status !== "completed" || parallel.selected_trial_index !== 0
+        || parallel.checkpoint.trials.length !== 2 || maximumInFlight !== 2
+        || parallelTold.join(",") !== "0,1") {
+      throw new Error("WASM worker HPO did not execute two concurrent candidates with ordered native terminalization");
+    }
+    request.trial_budget = 3;
+    const resumedParallel = JSON.parse(await dagMl.host_hpo_search_parallel_json(
+      plan, JSON.stringify([manifest]), envelope, JSON.stringify(request),
+      JSON.stringify(parallel.checkpoint), 2, dispatch, parallelOptimizer,
+    ));
+    if (resumedParallel.checkpoint.trials.length !== 3 || parallelTold.join(",") !== "0,1,2"
+        || resumedParallel.selected_trial_index !== 0) {
+      throw new Error("WASM worker HPO replayed historical candidates or changed selection on resume");
+    }
+  } finally {
+    await Promise.all(workers.map((worker) => worker.terminate()));
   }
 };

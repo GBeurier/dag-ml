@@ -4,10 +4,12 @@
 
 use super::*;
 use dag_ml_core::{
+    complete_host_hpo_worker_window, evaluate_host_hpo_worker_task, prepare_host_hpo_worker_window,
     ExternalDataPlanEnvelope, HostHpoCheckpoint, HostHpoInterruptedTrial, HostHpoProgress,
     HostHpoProposalSource, HostHpoResumeOptions, HostHpoSearchRequest, HostHpoSearchStatus,
-    InMemoryDataProvider,
+    HostHpoWorkerResult, HostHpoWorkerTask, InMemoryDataProvider,
 };
+use wasm_bindgen_futures::JsFuture;
 
 /// Validate a browser-persisted prepared terminal and seal interrupted trials
 /// before resuming search. This is the same recovery contract as PyO3/C ABI.
@@ -238,5 +240,145 @@ pub fn host_hpo_search_json(
             &mut progress,
         )
         .map_err(js_core_error)?;
+    serde_json::to_string(&outcome).map_err(js_serde_error)
+}
+
+/// Evaluate one candidate inside its own Web Worker/WASM instance. The
+/// browser's dispatcher sends the serialized `HostHpoWorkerTask` to a worker,
+/// which invokes this function with its local synchronous controller callback.
+#[wasm_bindgen]
+pub fn host_hpo_evaluate_worker_task_json(
+    task_json: &str,
+    trusted_controller_manifests_json: &str,
+    data_envelope_json: &str,
+    request_json: &str,
+    js_invoke: &js_sys::Function,
+) -> Result<String, JsValue> {
+    let task: HostHpoWorkerTask = serde_json::from_str(task_json).map_err(js_serde_error)?;
+    let request: HostHpoSearchRequest =
+        serde_json::from_str(request_json).map_err(js_serde_error)?;
+    let trusted_manifests = controller_registry_from_json(trusted_controller_manifests_json)?;
+    validate_runtime_controller_manifests(&task.candidate_plan, &trusted_manifests)
+        .map_err(js_core_error)?;
+    let envelope: ExternalDataPlanEnvelope =
+        serde_json::from_str(data_envelope_json).map_err(js_serde_error)?;
+    let data_fingerprint = HostHpoResumeOptions::from_envelope(&envelope, None)
+        .map_err(js_core_error)?
+        .data_fingerprint;
+    let provider = InMemoryDataProvider::with_envelope(
+        ControllerId::new("controller:wasm.hpo.provider").map_err(js_core_error)?,
+        envelope,
+    )
+    .map_err(js_core_error)?;
+    let mut controllers = RuntimeControllerRegistry::new();
+    for manifest in task.candidate_plan.controller_manifests.values() {
+        controllers
+            .register(Box::new(JsRuntimeController {
+                id: manifest.controller_id.clone(),
+                js_invoke: js_invoke.clone(),
+            }))
+            .map_err(js_core_error)?;
+    }
+    let evidence = evaluate_host_hpo_worker_task(&task, &request, &controllers, &provider)
+        .map_err(js_core_error)?;
+    serde_json::to_string(&HostHpoWorkerResult::Complete {
+        evidence,
+        data_fingerprint,
+    })
+    .map_err(js_serde_error)
+}
+
+/// Run a true browser worker window: dispatch every candidate before awaiting
+/// any Promise, then reconcile results with native core in trial order. The
+/// dispatcher has shape `(taskJson) => Promise<workerResultJson>`; each worker
+/// owns a separate WASM instance and invokes `host_hpo_evaluate_worker_task_json`.
+/// The existing synchronous `host_hpo_search_json` remains available.
+#[wasm_bindgen]
+#[allow(clippy::too_many_arguments)]
+pub async fn host_hpo_search_parallel_json(
+    execution_plan_json: &str,
+    trusted_controller_manifests_json: &str,
+    data_envelope_json: &str,
+    request_json: &str,
+    checkpoint_json: Option<String>,
+    max_workers: usize,
+    js_dispatch: &js_sys::Function,
+    js_optimizer: &js_sys::Function,
+) -> Result<String, JsValue> {
+    let plan = ExecutionPlan::from_json(execution_plan_json).map_err(js_core_error)?;
+    let trusted_manifests = controller_registry_from_json(trusted_controller_manifests_json)?;
+    validate_runtime_controller_manifests(&plan, &trusted_manifests).map_err(js_core_error)?;
+    let envelope: ExternalDataPlanEnvelope =
+        serde_json::from_str(data_envelope_json).map_err(js_serde_error)?;
+    let mut options =
+        HostHpoResumeOptions::from_envelope(&envelope, None).map_err(js_core_error)?;
+    options.checkpoint = checkpoint_json
+        .map(|json| serde_json::from_str(&json).map_err(js_serde_error))
+        .transpose()?;
+    let request: HostHpoSearchRequest =
+        serde_json::from_str(request_json).map_err(js_serde_error)?;
+    let mut proposal = JsProposal {
+        callback: js_optimizer.clone(),
+    };
+    let mut progress = JsProgress {
+        callback: js_optimizer.clone(),
+    };
+    let dispatch = js_dispatch.clone();
+    let outcome = loop {
+        let window =
+            prepare_host_hpo_worker_window(&plan, &request, &options, &mut proposal, max_workers)
+                .map_err(js_core_error)?;
+        // All promises are created before the first await. Resolving each in
+        // turn does not serialize worker execution.
+        let pending = window
+            .tasks
+            .iter()
+            .map(|task| {
+                let payload = serde_json::to_string(task).map_err(js_serde_error)?;
+                let response = dispatch.call1(&JsValue::NULL, &JsValue::from_str(&payload));
+                Ok::<_, JsValue>((
+                    task.trial_index,
+                    response.map(|value| js_sys::Promise::resolve(&value)),
+                ))
+            })
+            .collect::<Result<Vec<_>, JsValue>>()?;
+        let mut results = Vec::with_capacity(pending.len());
+        for (trial_index, promise) in pending {
+            let result = match promise {
+                Ok(promise) => match JsFuture::from(promise).await {
+                    Ok(value) => value
+                        .as_string()
+                        .ok_or_else(|| "worker returned a non-string result".to_string())
+                        .and_then(|json| {
+                            serde_json::from_str(&json).map_err(|error| error.to_string())
+                        })
+                        .unwrap_or_else(|error| HostHpoWorkerResult::Failed { trial_index, error }),
+                    Err(error) => HostHpoWorkerResult::Failed {
+                        trial_index,
+                        error: format!("worker promise rejected: {error:?}"),
+                    },
+                },
+                Err(error) => HostHpoWorkerResult::Failed {
+                    trial_index,
+                    error: format!("worker dispatch threw: {error:?}"),
+                },
+            };
+            results.push(result);
+        }
+        let next = complete_host_hpo_worker_window(
+            &plan,
+            &request,
+            &options,
+            window,
+            results,
+            &mut proposal,
+            &mut progress,
+        )
+        .map_err(js_core_error)?;
+        if next.status != HostHpoSearchStatus::Running {
+            break next;
+        }
+        options.checkpoint = next.checkpoint;
+    };
     serde_json::to_string(&outcome).map_err(js_serde_error)
 }

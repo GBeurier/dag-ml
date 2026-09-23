@@ -21,6 +21,8 @@ const REQUIRED_DTS_EXPORTS = [
   "execute_execution_plan_phase_json",
   "fold_set_fingerprint_json",
   "host_hpo_search_json",
+  "host_hpo_search_parallel_json",
+  "host_hpo_evaluate_worker_task_json",
   "recover_host_hpo_checkpoint_json",
   "loss_execution_attestation_json",
   "validate_fold_set_json",
@@ -541,7 +543,10 @@ if (dagMl.fold_set_fingerprint_json(JSON.stringify(reorderedFoldSet)) !== foldFi
 if (!dagMl.dag_ml_version()) {
   throw new Error("dag_ml_version() returned an empty version");
 }
-require("./smoke_wasm_hpo.cjs")(dagMl, repo);
+require("./smoke_wasm_hpo.cjs")(dagMl, repo, pkgDir).catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});
 try {
   dagMl.validate_graph_json('{"id":"","interface":{},"nodes":[],"edges":[]}');
   throw new Error("invalid graph JSON was accepted");
