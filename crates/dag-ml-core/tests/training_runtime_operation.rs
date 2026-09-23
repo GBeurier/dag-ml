@@ -5560,6 +5560,115 @@ fn d8_loaded_predictor_replays_predict_without_source_training_outcome() {
 }
 
 #[test]
+fn portable_package_replays_all_named_outputs_and_only_explicit_selection() {
+    let mut fixture = fixture(true, false);
+    add_model_probability_port(&mut fixture);
+    fixture.request.options.outputs[0].output_id = "output:source_0".to_string();
+    let mut second_output = fixture.request.options.outputs[0].clone();
+    second_output.output_id = "output:source_1".to_string();
+    second_output.port_name = Some("probability".to_string());
+    fixture.request.options.outputs.push(second_output);
+    fixture.request.options.selection_output_id = "output:source_0".to_string();
+    rebuild(&mut fixture);
+
+    let state = Arc::new(CallState::default());
+    *state.emit_explicit_model_ports.lock().unwrap() = true;
+    let mut store = InMemoryArtifactStore::new();
+    let source = run(&fixture, state.clone(), &provider(&fixture), &mut store).unwrap();
+    let package = source
+        .to_portable_predictor_package(
+            "predictor:package.independent_outputs",
+            FittedArtifactMode::AllowHostSidecar,
+            ArtifactLoadMode::HostSidecar,
+        )
+        .unwrap();
+    let binding_ids = ["output:source_0", "output:source_1"];
+    assert_eq!(
+        package
+            .output_bindings
+            .iter()
+            .map(|binding| binding.binding_id.as_str())
+            .collect::<Vec<_>>(),
+        binding_ids
+    );
+    for binding_id in binding_ids {
+        assert_eq!(
+            package
+                .select_output(binding_id)
+                .unwrap()
+                .output_binding
+                .binding_id,
+            binding_id
+        );
+    }
+    assert!(package.select_output("source_0").is_err());
+
+    let loaded = package
+        .load_with(|record| {
+            store
+                .get(&record.artifact.id)
+                .map(|handle| handle.handle.clone())
+                .ok_or_else(|| {
+                    DagMlError::RuntimeValidation("missing sidecar artifact".to_string())
+                })
+        })
+        .unwrap();
+    let envelopes = replay_envelopes_with_relation(&source, &"e".repeat(64));
+    let controllers = controllers(&fixture, state, true);
+    let request = replay_request(&source, Phase::Predict);
+    let replay = execute_loaded_predictor_replay(LoadedPredictorReplayInput {
+        predictor: &loaded,
+        request: &request,
+        outcome_id: "replay:independent_outputs.all".to_string(),
+        run_id: RunId::new("run:independent_outputs.all").unwrap(),
+        controllers: &controllers,
+        data_provider: &provider(&fixture),
+        data_envelopes: &envelopes,
+        warnings: Vec::new(),
+        diagnostics: BTreeMap::new(),
+    })
+    .unwrap();
+    replay
+        .validate_against_package(loaded.package(), &request)
+        .unwrap();
+    assert_eq!(replay.outputs.len(), 2);
+    assert_eq!(replay.outputs[0].binding.binding_id, binding_ids[0]);
+    assert_eq!(replay.outputs[1].binding.binding_id, binding_ids[1]);
+    assert_eq!(
+        replay.outputs[0].predictions[0].sample_ids,
+        replay.outputs[1].predictions[0].sample_ids
+    );
+    assert_ne!(
+        replay.outputs[0].predictions[0].values,
+        replay.outputs[1].predictions[0].values
+    );
+
+    let mut selected = request.clone();
+    selected.output_binding_ids = vec![binding_ids[1].to_string()];
+    selected.request_fingerprint = selected.compute_fingerprint().unwrap();
+    let selected_replay = execute_loaded_predictor_replay(LoadedPredictorReplayInput {
+        predictor: &loaded,
+        request: &selected,
+        outcome_id: "replay:independent_outputs.selected".to_string(),
+        run_id: RunId::new("run:independent_outputs.selected").unwrap(),
+        controllers: &controllers,
+        data_provider: &provider(&fixture),
+        data_envelopes: &envelopes,
+        warnings: Vec::new(),
+        diagnostics: BTreeMap::new(),
+    })
+    .unwrap();
+    selected_replay
+        .validate_against_package(loaded.package(), &selected)
+        .unwrap();
+    assert_eq!(selected_replay.outputs.len(), 1);
+    assert_eq!(
+        selected_replay.outputs[0].binding.binding_id,
+        binding_ids[1]
+    );
+}
+
+#[test]
 fn loaded_stacking_predict_recomputes_fresh_cohort_without_training_cache() {
     let fixture = fixture(true, true);
     let mut artifact_store = InMemoryArtifactStore::new();
