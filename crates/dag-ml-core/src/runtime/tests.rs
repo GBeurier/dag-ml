@@ -16689,6 +16689,18 @@ fn multi_operator_select_scores_each_pruned_combination_and_refits_winner() {
         .unwrap();
     assert_eq!(selection.selected_variant_id, winner.variant_id);
     assert_eq!(selection.validation_reports.len(), 8);
+    assert_eq!(selection.variant_validation_predictions.len(), 4);
+    for captured in &selection.variant_validation_predictions {
+        assert_eq!(
+            captured.oof_averages.len(),
+            2,
+            "both independent branch producers retain their OOF arrays"
+        );
+        assert_ne!(
+            captured.oof_averages[0].predictions.producer_node,
+            captured.oof_averages[1].predictions.producer_node
+        );
+    }
     let refit = pruned_plan_for_operator_models(&plan, &models, winner).unwrap();
     assert!(refit
         .node_plans
