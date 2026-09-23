@@ -92,3 +92,20 @@ The wrapper is POSIX-only and accepts `parallelTrials = N`. DAG-ML starts an
 isolated operator-adapter process per candidate and keeps optimizer callbacks
 on the coordinator thread. Run its smoke with `addpath('bindings/matlab');
 addpath('bindings/matlab/tests'); host_hpo_search` in MATLAB or Octave.
+
+For a no-splitter pipeline, capture a signed initial REFIT package and replay
+PREDICT on a separate V2 cohort through the native CLI:
+
+```matlab
+refit = dagml.initialFullRefit( ...
+    'pipeline.json', 'controllers.json', 'train-envelope.json', ...
+    'training-ids.json', './matlab-operator-adapter', 'full-refit.package.json');
+prediction = dagml.predictInitialFullRefit( ...
+    'full-refit.package.json', 'predict-envelope.json', ...
+    './matlab-operator-adapter', 'artifact-handles.json', 'output-ids.json');
+```
+
+MATLAB/Octave retains host model sidecars. The replay adapter must resolve
+exactly the artifact handles attested in the package. Run the wrapper smoke
+with `addpath('bindings/matlab'); addpath('bindings/matlab/tests');
+initial_full_refit`.
