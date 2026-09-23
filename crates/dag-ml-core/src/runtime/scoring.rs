@@ -8,6 +8,7 @@ pub(crate) const SCORE_METRICS: &[RegressionMetricKind] = &[
     RegressionMetricKind::R2,
     RegressionMetricKind::Accuracy,
     RegressionMetricKind::BalancedAccuracy,
+    RegressionMetricKind::F1,
 ];
 
 /// Resolve the aggregation contracts that must run after all CV folds have emitted their OOF

@@ -37,6 +37,8 @@ pub enum RegressionMetricKind {
     /// `cv_best_score`. On a class-collapsed predictor it can be far below plain `accuracy`; on a
     /// continuous regression target it is meaningless (≈ chance) but always emitted, like `accuracy`.
     BalancedAccuracy,
+    /// Support-weighted per-class F1, matching sklearn's `average="weighted"`.
+    F1,
 }
 
 impl RegressionMetricKind {
@@ -48,6 +50,7 @@ impl RegressionMetricKind {
             "r2" => Some(Self::R2),
             "accuracy" => Some(Self::Accuracy),
             "balanced_accuracy" => Some(Self::BalancedAccuracy),
+            "f1" => Some(Self::F1),
             _ => None,
         }
     }
@@ -60,13 +63,16 @@ impl RegressionMetricKind {
             Self::R2 => "r2",
             Self::Accuracy => "accuracy",
             Self::BalancedAccuracy => "balanced_accuracy",
+            Self::F1 => "f1",
         }
     }
 
     pub fn objective(self) -> MetricObjective {
         match self {
             Self::Mse | Self::Rmse | Self::Mae => MetricObjective::Minimize,
-            Self::R2 | Self::Accuracy | Self::BalancedAccuracy => MetricObjective::Maximize,
+            Self::R2 | Self::Accuracy | Self::BalancedAccuracy | Self::F1 => {
+                MetricObjective::Maximize
+            }
         }
     }
 
@@ -86,7 +92,7 @@ impl RegressionMetricKind {
                 matches!(metric, Self::Mse | Self::Rmse | Self::Mae | Self::R2)
             }
             crate::training::PredictionKind::ClassLabel => {
-                matches!(metric, Self::Accuracy | Self::BalancedAccuracy)
+                matches!(metric, Self::Accuracy | Self::BalancedAccuracy | Self::F1)
             }
             crate::training::PredictionKind::ClassProbability
             | crate::training::PredictionKind::DecisionScore => false,
@@ -482,7 +488,9 @@ pub fn score_prediction_with_class_probabilities(
         .filter(|metric| {
             matches!(
                 metric,
-                RegressionMetricKind::Accuracy | RegressionMetricKind::BalancedAccuracy
+                RegressionMetricKind::Accuracy
+                    | RegressionMetricKind::BalancedAccuracy
+                    | RegressionMetricKind::F1
             )
         })
         .collect::<Vec<_>>();
@@ -748,7 +756,9 @@ fn score_regression_rows(
                 LearningTaskKind::Regression,
                 PredictionKind::RegressionPoint,
             ),
-            RegressionMetricKind::Accuracy | RegressionMetricKind::BalancedAccuracy => (
+            RegressionMetricKind::Accuracy
+            | RegressionMetricKind::BalancedAccuracy
+            | RegressionMetricKind::F1 => (
                 LearningTaskKind::MulticlassClassification,
                 PredictionKind::ClassLabel,
             ),
@@ -936,8 +946,36 @@ pub(crate) fn compute_metric_per_target(
             RegressionMetricKind::BalancedAccuracy => {
                 balanced_accuracy_for_target(target_idx, predictions, targets)
             }
+            RegressionMetricKind::F1 => weighted_f1_for_target(target_idx, predictions, targets),
         })
         .collect()
+}
+
+fn weighted_f1_for_target(target_idx: usize, predictions: &[&[f64]], targets: &[&[f64]]) -> f64 {
+    let mut counts: BTreeMap<i64, (usize, usize, usize)> = BTreeMap::new();
+    for (prediction, target) in predictions.iter().zip(targets.iter()) {
+        let actual = target[target_idx].round() as i64;
+        let predicted = prediction[target_idx].round() as i64;
+        counts.entry(actual).or_default().2 += 1;
+        if actual == predicted {
+            counts.entry(actual).or_default().0 += 1;
+        } else {
+            counts.entry(predicted).or_default().1 += 1;
+        }
+    }
+    let total = targets.len() as f64;
+    counts
+        .values()
+        .map(|(true_positive, false_positive, support)| {
+            let false_negative = support - true_positive;
+            let denominator = 2 * true_positive + false_positive + false_negative;
+            if denominator == 0 {
+                0.0
+            } else {
+                (2 * true_positive) as f64 / denominator as f64 * (*support as f64 / total)
+            }
+        })
+        .sum()
 }
 
 /// Balanced classification accuracy for one target column: the macro-average of per-class recall over
@@ -1315,7 +1353,9 @@ pub fn cross_fold_test_reports(
 ) -> Result<CrossFoldValidation> {
     let classification = matches!(
         selection_metric,
-        RegressionMetricKind::Accuracy | RegressionMetricKind::BalancedAccuracy
+        RegressionMetricKind::Accuracy
+            | RegressionMetricKind::BalancedAccuracy
+            | RegressionMetricKind::F1
     );
     let mut by_producer: BTreeMap<(NodeId, Option<String>), Vec<PredictionBlock>> = BTreeMap::new();
     for block in prediction_blocks
@@ -1416,7 +1456,9 @@ pub fn cross_fold_train_reports(
 ) -> Result<CrossFoldValidation> {
     let classification = matches!(
         selection_metric,
-        RegressionMetricKind::Accuracy | RegressionMetricKind::BalancedAccuracy
+        RegressionMetricKind::Accuracy
+            | RegressionMetricKind::BalancedAccuracy
+            | RegressionMetricKind::F1
     );
     let mut by_producer: BTreeMap<(NodeId, Option<String>), Vec<PredictionBlock>> = BTreeMap::new();
     for block in prediction_blocks.iter().filter(|block| {
@@ -1747,6 +1789,25 @@ mod tests {
 
     fn assert_close(left: f64, right: f64) {
         assert!((left - right).abs() < 1e-12, "expected {right}, got {left}");
+    }
+
+    #[test]
+    fn weighted_f1_matches_sklearn_multiclass_oracle() {
+        let predictions = [0.0, 0.0, 1.0, 1.0, 2.0, 2.0].map(|value| [value]);
+        let targets = [0.0, 0.0, 0.0, 1.0, 1.0, 2.0].map(|value| [value]);
+        let prediction_rows = predictions
+            .iter()
+            .map(|row| row.as_slice())
+            .collect::<Vec<_>>();
+        let target_rows = targets.iter().map(|row| row.as_slice()).collect::<Vec<_>>();
+        let scores =
+            compute_metric_per_target(RegressionMetricKind::F1, 1, &prediction_rows, &target_rows);
+        assert_close(scores[0], 61.0 / 90.0);
+        assert_eq!(
+            RegressionMetricKind::F1.objective(),
+            MetricObjective::Maximize
+        );
+        assert!(builtin_metric_reference(RegressionMetricKind::F1).is_ok());
     }
 
     #[test]
