@@ -1781,6 +1781,14 @@ pub(crate) fn validate_fit_cv_oof_edge<'a>(
         Some(folds) => folds,
         None => required_fold_set_for_oof(plan, edge)?,
     };
+    let fold = fold_set
+        .folds
+        .iter()
+        .find(|fold| fold.fold_id == *fold_id)
+        .ok_or_else(|| {
+            DagMlError::OofValidation(format!("unknown stacking OOF fold `{fold_id}`"))
+        })?;
+    validate_declared_stacking_missing_policy(plan, edge, &blocks, &fold.validation_sample_ids)?;
     validate_oof_blocks_match_fold(edge, fold_set, fold_id, &blocks)?;
     Ok(blocks)
 }
@@ -1858,6 +1866,7 @@ pub(crate) fn validate_refit_oof_edge<'a>(
         blocks
     };
     let blocks = filter_prediction_blocks_for_edge_source_port(plan, edge, blocks)?;
+    validate_declared_stacking_missing_policy(plan, edge, &blocks, &fold_set.sample_ids)?;
     // No validation OOF at all, under the default full-coverage policy, means the CV phase was never
     // run for this producer (e.g. a direct REFIT without a prior FIT_CV). Report it as a missing-OOF
     // edge — matching `validate_fit_cv_oof_edge` and `validate_refit_aggregated_oof_edge`, which both
@@ -1880,6 +1889,32 @@ pub(crate) fn validate_refit_oof_edge<'a>(
         StackingOofRefitDecision::RefitAllowed(_) => Ok(Some(blocks)),
         StackingOofRefitDecision::SkipRefit(_) => Ok(None),
     }
+}
+
+fn validate_declared_stacking_missing_policy(
+    plan: &ExecutionPlan,
+    edge: &EdgeSpec,
+    blocks: &[&PredictionBlock],
+    requested: &[SampleId],
+) -> Result<()> {
+    let node = plan
+        .graph_plan
+        .graph
+        .nodes
+        .iter()
+        .find(|node| node.id == edge.target.node_id)
+        .ok_or_else(|| {
+            DagMlError::RuntimeValidation(format!(
+                "OOF edge targets unknown node `{}`",
+                edge.target.node_id
+            ))
+        })?;
+    if let Some(policy) =
+        crate::oof::StackingMissingPredictionPolicy::from_metadata(&node.metadata)?
+    {
+        policy.validate_complete_input(&edge.source.node_id, blocks, requested)?;
+    }
+    Ok(())
 }
 
 pub(crate) fn stacking_oof_refit_contract_for_edge(
