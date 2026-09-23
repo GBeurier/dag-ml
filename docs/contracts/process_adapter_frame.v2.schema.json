@@ -4,24 +4,51 @@
   "title": "DAG-ML Process Adapter Frame v2",
   "description": "V2 control frame. Result frames carry NodeResult v2; task payloads remain NodeTask v1 because producer_port changes only result-side prediction provenance.",
   "type": "object",
-  "required": ["type", "schema_version"],
+  "required": [
+    "type",
+    "schema_version"
+  ],
   "oneOf": [
-    { "$ref": "#/$defs/init_frame" },
-    { "$ref": "#/$defs/task_frame" },
-    { "$ref": "#/$defs/close_frame" },
-    { "$ref": "#/$defs/ack_frame" },
-    { "$ref": "#/$defs/result_frame" },
-    { "$ref": "#/$defs/error_frame" }
+    {
+      "$ref": "#/$defs/init_frame"
+    },
+    {
+      "$ref": "#/$defs/task_frame"
+    },
+    {
+      "$ref": "#/$defs/portable_artifact_request_frame"
+    },
+    {
+      "$ref": "#/$defs/close_frame"
+    },
+    {
+      "$ref": "#/$defs/ack_frame"
+    },
+    {
+      "$ref": "#/$defs/result_frame"
+    },
+    {
+      "$ref": "#/$defs/portable_artifact_response_frame"
+    },
+    {
+      "$ref": "#/$defs/error_frame"
+    }
   ],
   "$defs": {
-    "schema_version": { "type": "integer", "const": 2 },
+    "schema_version": {
+      "type": "integer",
+      "const": 2
+    },
     "identifier": {
       "type": "string",
       "minLength": 1,
       "maxLength": 128,
       "pattern": "^[A-Za-z0-9_.:-]+$"
     },
-    "non_empty_string": { "type": "string", "minLength": 1 },
+    "non_empty_string": {
+      "type": "string",
+      "minLength": 1
+    },
     "node_task": {
       "$ref": "https://github.com/GBeurier/dag-ml/schemas/node_task.v1.schema.json"
     },
@@ -39,85 +66,375 @@
         "worker_count"
       ],
       "properties": {
-        "type": { "const": "init" },
-        "schema_version": { "$ref": "#/$defs/schema_version" },
-        "controller_id": { "$ref": "#/$defs/identifier" },
-        "worker_index": { "type": "integer", "minimum": 0 },
-        "worker_count": { "type": "integer", "minimum": 1 }
+        "type": {
+          "const": "init"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/schema_version"
+        },
+        "controller_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "worker_index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "worker_count": {
+          "type": "integer",
+          "minimum": 1
+        }
       }
     },
     "task_frame": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["type", "schema_version", "task"],
+      "required": [
+        "type",
+        "schema_version",
+        "task"
+      ],
       "properties": {
-        "type": { "const": "task" },
-        "schema_version": { "$ref": "#/$defs/schema_version" },
-        "task": { "$ref": "#/$defs/node_task" }
+        "type": {
+          "const": "task"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/schema_version"
+        },
+        "task": {
+          "$ref": "#/$defs/node_task"
+        }
       }
     },
     "close_frame": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["type", "schema_version"],
+      "required": [
+        "type",
+        "schema_version"
+      ],
       "properties": {
-        "type": { "const": "close" },
-        "schema_version": { "$ref": "#/$defs/schema_version" }
+        "type": {
+          "const": "close"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/schema_version"
+        }
       }
     },
     "ack_frame": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["type", "schema_version", "status"],
+      "required": [
+        "type",
+        "schema_version",
+        "status"
+      ],
       "properties": {
-        "type": { "const": "ack" },
-        "schema_version": { "$ref": "#/$defs/schema_version" },
-        "status": { "enum": ["initialized", "closed"] }
+        "type": {
+          "const": "ack"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/schema_version"
+        },
+        "status": {
+          "enum": [
+            "initialized",
+            "closed"
+          ]
+        }
       }
     },
     "result_frame": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["type", "schema_version", "result"],
+      "required": [
+        "type",
+        "schema_version",
+        "result"
+      ],
       "properties": {
-        "type": { "const": "result" },
-        "schema_version": { "$ref": "#/$defs/schema_version" },
-        "result": { "$ref": "#/$defs/node_result" }
+        "type": {
+          "const": "result"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/schema_version"
+        },
+        "result": {
+          "$ref": "#/$defs/node_result"
+        }
       }
     },
     "adapter_error": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["code", "message"],
+      "required": [
+        "code",
+        "message"
+      ],
       "properties": {
-        "code": { "$ref": "#/$defs/identifier" },
-        "message": { "$ref": "#/$defs/non_empty_string" },
-        "retryable": { "type": "boolean", "default": false }
+        "code": {
+          "$ref": "#/$defs/identifier"
+        },
+        "message": {
+          "$ref": "#/$defs/non_empty_string"
+        },
+        "retryable": {
+          "type": "boolean",
+          "default": false
+        }
       }
     },
     "error_frame": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["type", "schema_version", "error"],
+      "required": [
+        "type",
+        "schema_version",
+        "error"
+      ],
       "properties": {
-        "type": { "const": "error" },
-        "schema_version": { "$ref": "#/$defs/schema_version" },
-        "error": { "$ref": "#/$defs/adapter_error" }
+        "type": {
+          "const": "error"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/schema_version"
+        },
+        "error": {
+          "$ref": "#/$defs/adapter_error"
+        }
       }
     },
     "request_frame": {
       "oneOf": [
-        { "$ref": "#/$defs/init_frame" },
-        { "$ref": "#/$defs/task_frame" },
-        { "$ref": "#/$defs/close_frame" }
+        {
+          "$ref": "#/$defs/init_frame"
+        },
+        {
+          "$ref": "#/$defs/task_frame"
+        },
+        {
+          "$ref": "#/$defs/portable_artifact_request_frame"
+        },
+        {
+          "$ref": "#/$defs/close_frame"
+        }
       ]
     },
     "response_frame": {
       "oneOf": [
-        { "$ref": "#/$defs/ack_frame" },
-        { "$ref": "#/$defs/result_frame" },
-        { "$ref": "#/$defs/error_frame" }
+        {
+          "$ref": "#/$defs/ack_frame"
+        },
+        {
+          "$ref": "#/$defs/result_frame"
+        },
+        {
+          "$ref": "#/$defs/portable_artifact_response_frame"
+        },
+        {
+          "$ref": "#/$defs/error_frame"
+        }
       ]
+    },
+    "portable_artifact_task": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "operation",
+            "schema_version",
+            "artifact_id"
+          ],
+          "properties": {
+            "operation": {
+              "const": "export_artifact_payload"
+            },
+            "schema_version": {
+              "const": 1
+            },
+            "artifact_id": {
+              "$ref": "#/$defs/identifier"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "operation",
+            "schema_version",
+            "request",
+            "payload"
+          ],
+          "properties": {
+            "operation": {
+              "const": "hydrate_artifact_payload"
+            },
+            "schema_version": {
+              "const": 1
+            },
+            "request": {
+              "type": "object"
+            },
+            "payload": {
+              "$ref": "#/$defs/byte_array"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "operation",
+            "schema_version",
+            "handle"
+          ],
+          "properties": {
+            "operation": {
+              "const": "release_hydrated_artifact_payload"
+            },
+            "schema_version": {
+              "const": 1
+            },
+            "handle": {
+              "$ref": "#/$defs/artifact_handle"
+            }
+          }
+        }
+      ]
+    },
+    "byte_array": {
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 255
+      }
+    },
+    "artifact_handle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "handle",
+        "kind",
+        "owner_controller"
+      ],
+      "properties": {
+        "handle": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "kind": {
+          "enum": [
+            "model",
+            "artifact"
+          ]
+        },
+        "owner_controller": {
+          "$ref": "#/$defs/identifier"
+        }
+      }
+    },
+    "portable_artifact_request_frame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "schema_version",
+        "task"
+      ],
+      "properties": {
+        "type": {
+          "const": "portable_artifact"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/schema_version"
+        },
+        "task": {
+          "$ref": "#/$defs/portable_artifact_task"
+        }
+      }
+    },
+    "portable_artifact_result": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "operation",
+            "schema_version",
+            "payload"
+          ],
+          "properties": {
+            "operation": {
+              "const": "exported_artifact_payload"
+            },
+            "schema_version": {
+              "const": 1
+            },
+            "payload": {
+              "$ref": "#/$defs/byte_array"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "operation",
+            "schema_version",
+            "handle"
+          ],
+          "properties": {
+            "operation": {
+              "const": "hydrated_artifact_payload"
+            },
+            "schema_version": {
+              "const": 1
+            },
+            "handle": {
+              "$ref": "#/$defs/artifact_handle"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "operation",
+            "schema_version"
+          ],
+          "properties": {
+            "operation": {
+              "const": "released_hydrated_artifact_payload"
+            },
+            "schema_version": {
+              "const": 1
+            }
+          }
+        }
+      ]
+    },
+    "portable_artifact_response_frame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "schema_version",
+        "result"
+      ],
+      "properties": {
+        "type": {
+          "const": "portable_artifact"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/schema_version"
+        },
+        "result": {
+          "$ref": "#/$defs/portable_artifact_result"
+        }
+      }
     }
   }
 }

@@ -6,27 +6,27 @@
   "artifacts": [
     {
       "path": ".github/workflows/ci.yml",
-      "sha256": "a87bedfd930154d5694bf83d82417a7a48d86411bd3d9721753154254dffbb7b",
+      "sha256": "0d61b195db6d5f04b7823495ee66ade572e1f6b0d56bcc0cf265a638124c18d6",
       "kind": "ci_gate"
     },
     {
       "path": "crates/dag-ml-capi/include/dag_ml.h",
-      "sha256": "49e4c54cac3e0ea416537feb94e68fdb3bf6049ea424c26d407ef46d68ab8e36",
+      "sha256": "c55afaee59d8d3761d2c37b6a517b027e0e3901a5cb4f913edf8967f5ee4255c",
       "kind": "c_abi_header"
     },
     {
       "path": "crates/dag-ml-capi/src/lib.rs",
-      "sha256": "5254bb48828a0bedcc046b0cf8bf9c079934882a63b95b7eba3497964c54f83b",
+      "sha256": "76642bd04683f0a738fba01a1b341d72bd68496a64a185bee8318c5102595e2a",
       "kind": "c_training_binding"
     },
     {
       "path": "crates/dag-ml-capi/tests/c_conformance.rs",
-      "sha256": "f46f594ff9cb86de5fb6cd6ffb7acc595a33d278db7318088aaa00fab4bf6147",
+      "sha256": "cea26a23519959022e65b06d594858970f1fa9f82b3233b384ad6d3ceb653aef",
       "kind": "c_binding_test"
     },
     {
       "path": "crates/dag-ml-capi/tests/training_execute.rs",
-      "sha256": "d5b066656b6d6e463c40593f657cea96719b6e0aae9b792a4a2f1cfcfbd7ecb2",
+      "sha256": "a846c1071c136e3b86b09e6442ac988cb1ddc9ae7ce3d5d0bea6316378e4a1be",
       "kind": "c_training_test"
     },
     {
@@ -41,12 +41,12 @@
     },
     {
       "path": "crates/dag-ml-core/src/aggregation.rs",
-      "sha256": "d739c84b7ff608faa479322bda3c3826da1332f331527b39658e293764803180",
+      "sha256": "93e04f17a255c9b772c67270f112b6ad9adb85b1c108733c5900d5b862c09ad9",
       "kind": "typed_cache_dependency"
     },
     {
       "path": "crates/dag-ml-core/src/bundle.rs",
-      "sha256": "575b50cb09f6f699b9aab75de6f317bf4737c689a0e277b822fe747038fd8a53",
+      "sha256": "5aa49e6ea665fbc26d4de47741a77e01003264876eefaedee578de276f774de2",
       "kind": "native_bundle_contract"
     },
     {
@@ -76,7 +76,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/data.rs",
-      "sha256": "8aabeb787a7e1ed1e298cba0f8fbabfd08b63b5419fd41c2085c01ccc5e9545e",
+      "sha256": "62e8e8bcccc3c96be528d6018cf1d67e72e217f3ddf93a28398a0bc5b7ee811c",
       "kind": "typed_contract_dependency"
     },
     {
@@ -96,7 +96,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/hpo.rs",
-      "sha256": "01b4357706c2933404927f243eade77ddd9aa51243a87bb22d11d4ca93d5228f",
+      "sha256": "0ffc1944737be7a33ee8c57aca4e6a2d02a49e109c6df8c341cc850dec537540",
       "kind": "native_hpo_controller"
     },
     {
@@ -106,12 +106,12 @@
     },
     {
       "path": "crates/dag-ml-core/src/metrics.rs",
-      "sha256": "2cb99667d227b584326b65e0687d2291fa021e165fed795172cb4b3be7549187",
+      "sha256": "d61cfd7039257287a2f9486eafca4c1fc43bad620153ffece8e0cf7eb5ab1baf",
       "kind": "typed_cache_dependency"
     },
     {
       "path": "crates/dag-ml-core/src/oof.rs",
-      "sha256": "1c27c7445091de597fad35e0ac283104f23ae496e7228a0ca4b8c0f470942ecc",
+      "sha256": "26a610716419ab417f47105c1d97a154ec6708c82a2d7efd24d875af7990577b",
       "kind": "typed_cache_dependency"
     },
     {
@@ -136,27 +136,27 @@
     },
     {
       "path": "crates/dag-ml-core/src/runtime/artifact.rs",
-      "sha256": "e0863b93dd4815e5c34042a55d7ae44a7229cd8a967bcd388c2cdf14da72e5d4",
+      "sha256": "14be68bbc4b6627d58ffd7441fc78d2726e64e39520718bd71858418fece42de",
       "kind": "typed_runtime_dependency"
     },
     {
       "path": "crates/dag-ml-core/src/runtime/dataview.rs",
-      "sha256": "f9c98a510ac1fceddf4d59069227e149e85af03afd806ad3501bd487bd540f95",
+      "sha256": "7dbe3c9d906e3cc25b7de08b177edcbf331bd69ecbdd14baec7f0f2491390a16",
       "kind": "native_hpo_runtime_session"
     },
     {
       "path": "crates/dag-ml-core/src/runtime/host_hpo.rs",
-      "sha256": "896050efc52821392456cc3d48ba09efa27f03cfc62e88316c5d6f4c6b23e8df",
+      "sha256": "a2dcaad171e623e80ac256978cf695faa9342ca12fa940d25a57109838cd9a65",
       "kind": "native_hpo_runtime_session"
     },
     {
       "path": "crates/dag-ml-core/src/runtime/mod.rs",
-      "sha256": "84838faecbb6f66c00a2def50d392341cd56213d7d940c6980225f2ed0280da5",
+      "sha256": "7d1f0f32bb3307b46e21f33bfb238f5ca09b69b227d7035b69aea11b6afc1e1d",
       "kind": "native_hpo_runtime_topology"
     },
     {
       "path": "crates/dag-ml-core/src/runtime/scheduler.rs",
-      "sha256": "57ce8ff329989ea2277fec6f6568579351bf63aacbabc0f19111988a76d41b44",
+      "sha256": "1c6aa282e608cdf2b36bd03e387106a62381dd5f9ff4bd60d21b669283821f28",
       "kind": "native_hpo_scheduler"
     },
     {
@@ -166,7 +166,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/runtime/task.rs",
-      "sha256": "f31224bb9297b242540b1f6e93b44cfee1b11912f33c22ecc753e09392aa5a88",
+      "sha256": "401aae75dea2709ed973b04caceab9484c1afda5b7eac63b17d6ed17df073f20",
       "kind": "typed_runtime_dependency"
     },
     {
@@ -176,17 +176,17 @@
     },
     {
       "path": "crates/dag-ml-core/src/training.rs",
-      "sha256": "28d659dd5aada71c67068b5eb76d0d119bcd8a57229e4025ea8fac008688df21",
+      "sha256": "3667985b15d06af331e67bd51a9de9af2e4d55882576b248a0c366094ff871f3",
       "kind": "native_contract"
     },
     {
       "path": "crates/dag-ml-core/src/training_runtime.rs",
-      "sha256": "93cf3c8cb9bbe910bae69facfa654b8ecd3a78df359041a1b3f11ef5e87f7cea",
+      "sha256": "84c45f46c236e0a282a0fce1e2f63d561961eebabe37528d28760f0093a8deba",
       "kind": "native_runtime_contract"
     },
     {
       "path": "crates/dag-ml-core/tests/training_runtime_operation.rs",
-      "sha256": "b466e0c747ad2b94ce72169459c0b293d64a8c861d433406f3f8553b6b18aafd",
+      "sha256": "aefa9548ef1509187e4fc109ffb94003fa2a73185e3be2a72d4030dfc10418fe",
       "kind": "native_integration_test"
     },
     {
@@ -201,37 +201,37 @@
     },
     {
       "path": "crates/dag-ml-py/python/dag_ml/__init__.py",
-      "sha256": "4ce03c2fb5e9272f2529509623807f5ba8ce9e6e11c9303583ca3b887cd4b0ac",
+      "sha256": "b376619625eeb5a03a97470090a994bda75d4577f3e7be30c1f651f654a083fa",
       "kind": "python_facade"
     },
     {
       "path": "crates/dag-ml-py/python/dag_ml/__init__.pyi",
-      "sha256": "1c52b7fe3031c8b203b00dd6364e887a822f15bccb976cfc3676dba0f0f6671f",
+      "sha256": "6358e734a4f1f366362526f92a13659a30564b8b7738969b4fa30501061cec9f",
       "kind": "python_typing"
     },
     {
       "path": "crates/dag-ml-py/src/in_process.rs",
-      "sha256": "1fd2fb1c3b757933a016cdf9cd4ec2e85c91316bb480222cd3e9ac6dc6897069",
+      "sha256": "59ef5ef9de1a20d0e6f0079a9b51604c849e705c8d8d13f3ad95d0cc2a8a838e",
       "kind": "python_controller_bridge"
     },
     {
       "path": "crates/dag-ml-py/src/lib.rs",
-      "sha256": "44c550284691496a82e9e3229446ddcb63cd071a73d7284459af75fc7c2f98ad",
+      "sha256": "bf3587f2112777a4ebc8789c6c37a2e00524b45f80b02545450c14a6cdeb54cc",
       "kind": "python_binding"
     },
     {
       "path": "crates/dag-ml-py/src/training.rs",
-      "sha256": "920fda3147b96b753ec54946ec8419403a33f4970883deb148c8dd0462202971",
+      "sha256": "291ce33d963db5f16e265376b232fb2badf0a30fa47e3e2fcd4f1099b4c32793",
       "kind": "python_training_binding"
     },
     {
       "path": "crates/dag-ml-py/tests/test_training_result.py",
-      "sha256": "144308b5046607348f4019dc8b939bc7f31bfea4e5142f3d2004977fdf8e7d76",
+      "sha256": "f708872bed4cd3af20cbadae55f1a27ee7b4cb787ae84e49f972bd01e5d714d7",
       "kind": "python_binding_test"
     },
     {
       "path": "crates/dag-ml-wasm/src/lib.rs",
-      "sha256": "8a35243ee4b5158cd8b22951f266177887abe1a98d42be0c84e814be0aab1c81",
+      "sha256": "1eb8c4cb0251c6d7219e2b0ff202049a44dbc6cba24213a8c9ffb5dc05109493",
       "kind": "wasm_binding"
     },
     {
@@ -246,7 +246,7 @@
     },
     {
       "path": "docs/contracts/README.md",
-      "sha256": "2828d82c2700934fbfa8781bd7bece8d218c56f04343a8ff81a74c07ee07d13e",
+      "sha256": "8c4f62eb2be36bdbd30f5ea0558c78be96d788b308e777d877c103c09223a2bc",
       "kind": "contract_index_documentation"
     },
     {
@@ -521,7 +521,7 @@
     },
     {
       "path": "scripts/validate_contracts.py",
-      "sha256": "4f5adcc3a36e03ffa3660cd85ef8d0dd399a695a3fee36ea741a96ccd6905b41",
+      "sha256": "d4bfbebee837068b46b84bb78dc9b5b167de5c946ca6efff694caa92eb8d614a",
       "kind": "production_validator"
     },
     {
@@ -599,5 +599,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "90402a7a2dacd46da5aafa66f5fe2d0715c9a571ed1db8e6062de118808fd059"
+  "pack_checksum": "ad5b0202ce6a44ae0fe9f5f29bdd143f401f511dc46e6e6b4c0e7ff004aaf0b5"
 }
