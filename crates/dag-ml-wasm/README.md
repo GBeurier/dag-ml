@@ -12,8 +12,10 @@ Worker loads its own WASM instance and calls `host_hpo_evaluate_worker_task_json
 with candidate-local controller state. The core dispatches a whole trial window
 before awaiting results, validates scores and checkpoints, then tells the
 optimizer in trial order. `host_hpo_search_json` remains the synchronous
-single-worker route and supports progressive pruning; the parallel route
-currently rejects progressive pruning.
+single-worker route. For progressive pruning, tagged fold tasks call
+`host_hpo_evaluate_worker_fold_json` and return to the coordinator after each
+fold; pruned candidates never execute later folds. Complete candidates run one
+full native FIT_CV pass for the exact global OOF result.
 
 `contract_manifest_json()` returns a stable JSON manifest with the package
 version, supported contract ids, exported Python/WASM function names and shared

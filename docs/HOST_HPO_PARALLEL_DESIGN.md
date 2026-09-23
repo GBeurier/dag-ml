@@ -78,18 +78,25 @@ with the same operations as `host_hpo_search_json`. It dispatches all tasks in
 each phase-bounded window before awaiting a result. Each worker calls
 `host_hpo_evaluate_worker_task_json` with its own controller callback, trusted
 manifest and data envelope; this runs FIT_CV and produces native fold scores.
+For `progressive_pruning`, the dispatcher receives tagged `fold` and
+`complete` messages. Each `fold` evaluates only the requested FIT_CV fold and
+returns a native score set; the coordinator reports its validated aggregate
+to the optimizer before dispatching that candidate's next fold. A pruned
+candidate has no later fold task or fabricated OOF score. Survivors run one
+full native FIT_CV pass to construct the exact global OOF result and cross-check
+its fold scores against all earlier feedback. This final pass adds compute for
+survivors until a stateful worker context protocol is available.
 Core checks the checkpoint/data fingerprint, exact candidate plan, fold
 reports, derived objective and complete trial-key coverage before any optimizer
-transition. `prepare_terminal` precedes ordered `tell`/`fail`; `checkpoint`
+transition. `prepare_terminal` precedes ordered `tell`/`pruned`/`fail`; `checkpoint`
 follows. A rejected worker Promise becomes a failed candidate with no
 manufactured score. Existing sequential behavior is unchanged.
 
 The browser host must give each candidate a fresh controller/model handle
 namespace, even when reusing a Web Worker. The Node smoke uses two
 `worker_threads` with separate WASM instances and checks simultaneous
-dispatch, ordered terminalization and checkpoint resume. Progressive
-cross-worker fold pruning is **not supported** by this window API yet; it is
-rejected before asking the optimizer. The synchronous single-worker API
-continues to support fold pruning. R/MATLAB JSONL adapters remain usable as
+dispatch, ordered terminalization, checkpoint resume, and an actual prune
+before the next fold. The synchronous single-worker API also supports fold
+pruning. R/MATLAB JSONL adapters remain usable as
 separate CLI processes; dynamic language validation requires Rscript with
 jsonlite or Octave/MATLAB installed.

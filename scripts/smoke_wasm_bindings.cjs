@@ -27,6 +27,7 @@ const REQUIRED_DTS_EXPORTS = [
   "host_hpo_search_json",
   "host_hpo_search_parallel_json",
   "host_hpo_evaluate_worker_task_json",
+  "host_hpo_evaluate_worker_fold_json",
   "recover_host_hpo_checkpoint_json",
   "loss_execution_attestation_json",
   "validate_fold_set_json",

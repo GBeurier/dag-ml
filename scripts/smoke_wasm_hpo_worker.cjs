@@ -29,9 +29,16 @@ const controller = (controllerId, taskJson) => {
 
 parentPort.on("message", (taskJson) => {
   try {
-    const result = dagMl.host_hpo_evaluate_worker_task_json(
-      taskJson, workerData.manifests, workerData.envelope, workerData.request, controller,
-    );
+    const packet = JSON.parse(taskJson);
+    const result = packet.kind === "fold"
+      ? dagMl.host_hpo_evaluate_worker_fold_json(
+        JSON.stringify(packet.task), packet.fold_index, workerData.manifests,
+        workerData.envelope, workerData.request, controller,
+      )
+      : dagMl.host_hpo_evaluate_worker_task_json(
+        packet.kind === "complete" ? JSON.stringify(packet.task) : taskJson,
+        workerData.manifests, workerData.envelope, workerData.request, controller,
+      );
     parentPort.postMessage({ result });
   } catch (error) {
     parentPort.postMessage({ error: String(error) });
