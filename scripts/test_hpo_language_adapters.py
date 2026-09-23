@@ -2,6 +2,7 @@
 """Check the JSONL HPO host contract across installed language runtimes."""
 
 import json
+import os
 import select
 import shutil
 import subprocess
@@ -60,15 +61,18 @@ class HostHpoLanguageAdapterTests(unittest.TestCase):
     def test_python_reference(self):
         self.check_adapter([sys.executable, str(ADAPTERS / "hpo_optimizer_jsonl.py")])
 
-    @unittest.skipUnless(shutil.which("Rscript"), "Rscript is not installed")
     def test_r_jsonl(self):
+        if not shutil.which("Rscript"):
+            if os.environ.get("DAGML_REQUIRE_HPO_R") == "1":
+                self.fail("Rscript is required for R HPO adapter parity")
+            self.skipTest("Rscript is not installed")
         self.check_adapter(["Rscript", str(ADAPTERS / "hpo_optimizer_jsonl.R")])
 
-    @unittest.skipUnless(
-        shutil.which("octave") or shutil.which("matlab"),
-        "Octave/MATLAB is not installed",
-    )
     def test_matlab_or_octave_jsonl(self):
+        if not (shutil.which("octave") or shutil.which("matlab")):
+            if os.environ.get("DAGML_REQUIRE_HPO_MATLAB") == "1":
+                self.fail("Octave or MATLAB is required for HPO adapter parity")
+            self.skipTest("Octave/MATLAB is not installed")
         self.check_adapter([str(ADAPTERS / "hpo_optimizer_matlab.sh")])
 
 
