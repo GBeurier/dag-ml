@@ -1134,6 +1134,33 @@ pub(crate) fn validate_prediction_scope(
     prediction: &PredictionBlock,
     task: &NodeTask,
 ) -> Result<()> {
+    if prediction.partition == PredictionPartition::Test && task.phase == Phase::FitCv {
+        if prediction.fold_id != task.fold_id {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "node `{}` emitted test predictions for fold {:?}, expected {:?}",
+                task.node_plan.node_id, prediction.fold_id, task.fold_id
+            )));
+        }
+        let test_ids: BTreeSet<_> = task
+            .data_views
+            .values()
+            .filter(|view| view.partition == DataRequestPartition::Predict)
+            .filter_map(|view| view.sample_ids.as_ref())
+            .flat_map(|ids| ids.iter().cloned())
+            .collect();
+        if test_ids.is_empty()
+            || prediction
+                .sample_ids
+                .iter()
+                .any(|id| !test_ids.contains(id))
+        {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "node `{}` emitted FIT_CV test predictions outside an attested external-test data view",
+                task.node_plan.node_id
+            )));
+        }
+        return Ok(());
+    }
     if prediction.partition != PredictionPartition::Validation {
         return Ok(());
     }

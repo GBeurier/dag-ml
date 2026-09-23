@@ -10,9 +10,8 @@ pub struct DataMaterializationRequest {
     pub variant_id: Option<VariantId>,
     pub fold_id: Option<FoldId>,
     pub binding: crate::data::DataBinding,
-    /// The optional, separately attested cohort selected only for a top-level
-    /// PREDICT operation.  It is absent for the V1 path and for every phase
-    /// that can fit, validate, select, refit, or calibrate a model.
+    /// Separately attested cohort for top-level PREDICT, or an external-test
+    /// companion read during FIT_CV. It never contributes to a fitting view.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub predict_cohort: Option<crate::data::PredictCohort>,
 }
@@ -303,8 +302,8 @@ pub struct DataViewRequest {
     pub binding: crate::data::DataBinding,
     pub data_handle: HandleRef,
     pub view: DataProviderViewSpec,
-    /// The same PREDICT-only authority carried by the materialization
-    /// request.  The envelope-attested wrapper compares it exactly before a
+    /// The same separately attested cohort carried by the materialization
+    /// request. The envelope-attested wrapper compares it exactly before a
     /// host provider can observe a data view.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub predict_cohort: Option<crate::data::PredictCohort>,
@@ -345,6 +344,11 @@ pub trait RuntimeDataProvider {
         phase: Phase,
     ) -> Result<Option<crate::data::PredictCohort>> {
         validate_predict_cohort_phase(phase)?;
+        Ok(None)
+    }
+
+    /// Optional separately attested external-test cohort for a non-fit FIT_CV companion view.
+    fn cv_test_cohort(&self, _binding: &DataBinding) -> Result<Option<crate::data::PredictCohort>> {
         Ok(None)
     }
 
@@ -772,6 +776,10 @@ impl RuntimeDataProvider for MethodsPlsPredictDataProvider {
         self.inner.predict_cohort(binding, phase)
     }
 
+    fn cv_test_cohort(&self, binding: &DataBinding) -> Result<Option<crate::data::PredictCohort>> {
+        self.inner.cv_test_cohort(binding)
+    }
+
     fn methods_pls_capability(&self) -> Result<()> {
         Ok(())
     }
@@ -954,13 +962,22 @@ impl<P> EnvelopeAttestedRuntimeDataProvider<P> {
     ) -> Result<()> {
         let attestation = self.attestation_for_binding(binding)?;
         match phase {
-            Phase::Predict => {
+            Phase::Predict | Phase::FitCv => {
                 if let Some(cohort) = supplied {
                     cohort.validate()?;
+                    if phase == Phase::FitCv
+                        && cohort.role != crate::data::PredictCohortRole::ExternalTest
+                    {
+                        return Err(DagMlError::RuntimeValidation(
+                            "FIT_CV may read only an external_test cohort".to_string(),
+                        ));
+                    }
                 }
-                if supplied != &attestation.envelope.predict_cohort {
+                if (phase == Phase::Predict || supplied.is_some())
+                    && supplied != &attestation.envelope.predict_cohort
+                {
                     return Err(DagMlError::RuntimeValidation(format!(
-                        "PREDICT cohort for runtime binding `{}` does not exactly match its envelope attestation",
+                    "predict cohort for runtime binding `{}` does not exactly match its envelope attestation",
                         data_binding_requirement_key(&binding.node_id, &binding.input_name)
                     )));
                 }
@@ -1025,6 +1042,20 @@ impl<P: RuntimeDataProvider> RuntimeDataProvider for EnvelopeAttestedRuntimeData
             .envelope
             .predict_cohort
             .clone())
+    }
+
+    fn cv_test_cohort(&self, binding: &DataBinding) -> Result<Option<crate::data::PredictCohort>> {
+        let cohort = self
+            .attestation_for_binding(binding)?
+            .envelope
+            .predict_cohort
+            .clone();
+        match cohort {
+            Some(cohort) if cohort.role == crate::data::PredictCohortRole::ExternalTest => {
+                Ok(Some(cohort))
+            }
+            _ => Ok(None),
+        }
     }
 
     fn methods_pls_capability(&self) -> Result<()> {
@@ -1373,7 +1404,7 @@ pub(crate) fn data_view_for_scope(
     )
 }
 
-/// Bind a separately attested PREDICT cohort to a scheduler-created view.
+/// Bind a separately attested cohort to a scheduler-created non-fit view.
 ///
 /// This replaces, rather than merges with, ordinary partition-derived sample
 /// identities. Those identities are CV-derived and must never expand a
@@ -1387,7 +1418,7 @@ pub(crate) fn bind_predict_cohort_to_view(
     cohort.validate()?;
     if view.partition != DataRequestPartition::Predict || view.fold_id.is_some() {
         return Err(DagMlError::RuntimeValidation(
-            "PREDICT cohort may only bind a top-level Predict data view".to_string(),
+            "predict cohort may only bind a Predict data view without a fold id".to_string(),
         ));
     }
     view.sample_ids = Some(cohort.physical_sample_ids.clone());

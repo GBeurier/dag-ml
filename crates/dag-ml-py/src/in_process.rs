@@ -1374,6 +1374,7 @@ pub fn run_cv_refit_predict_in_process(
     // CV selection evidence.
     ctx.collect_cross_fold_validation_scores(plan_oof_partition_mode(refit_plan))
         .map_err(py_core_error)?;
+    ctx.collect_cross_fold_test_scores(metric).map_err(py_core_error)?;
     let mut scores = ctx.build_score_set(refit_plan.id.clone(), None);
     stamp_winner_variant_label(&mut scores, winner_variant_label);
     merge_loser_validation_reports(&mut scores, &refit_plan.id, loser_validation_reports);
@@ -1582,6 +1583,7 @@ fn run_cv_refit_in_process_impl(
     //    `bundle.scores`.
     ctx.collect_cross_fold_validation_scores(plan_oof_partition_mode(refit_plan))
         .map_err(py_core_error)?;
+    ctx.collect_cross_fold_test_scores(metric).map_err(py_core_error)?;
     let mut scores = ctx.build_score_set(refit_plan.id.clone(), None);
     // Phase 5: the winner reports come from the REAL winner FIT_CV/REFIT pass above (not the
     // transient selection loop), so stamp the winner's operator-variant content fingerprint on them
@@ -1662,7 +1664,7 @@ fn run_cv_refit_in_process_impl(
         serde_json::Value::Array(frames) => frames,
         other => vec![other],
     };
-    for oof in &ctx.oof_average_blocks {
+    for oof in ctx.oof_average_blocks.iter().chain(&ctx.test_ensemble_blocks) {
         node_results.push(serde_json::json!({
             "node_id": oof.predictions.producer_node,
             "aggregated_predictions": [oof.predictions],

@@ -1577,7 +1577,8 @@ struct PredictCohortFingerprintInput<'a> {
     target_content_fingerprint: Option<&'a str>,
 }
 
-/// Closed, PREDICT-only relation authority introduced by envelope V2.
+/// Closed relation authority introduced by envelope V2. An external-test cohort may also be
+/// read through a non-fit FIT_CV companion view to score each fold estimator.
 ///
 /// It is never a supplement to `coordinator_relations`: CV, OOF, SELECT and
 /// training influence continue to consume only the latter. The explicit
@@ -1599,7 +1600,7 @@ pub struct PredictCohort {
 }
 
 impl PredictCohort {
-    /// Build the closed PREDICT-only authority from its authoritative relation
+    /// Build the closed cohort authority from its authoritative relation
     /// records.
     ///
     /// Producers must use this constructor instead of reimplementing the
@@ -2103,6 +2104,10 @@ impl RuntimeDataProvider for ExplicitPhaseDataProvider {
         self.inner.predict_cohort(binding, phase)
     }
 
+    fn cv_test_cohort(&self, binding: &DataBinding) -> Result<Option<PredictCohort>> {
+        self.inner.cv_test_cohort(binding)
+    }
+
     fn refit_sample_ids(&self, binding: &DataBinding) -> Result<Option<Vec<SampleId>>> {
         binding.validate_envelope(&self.envelope)?;
         Ok(self.training_sample_ids.clone())
@@ -2279,6 +2284,25 @@ impl RuntimeDataProvider for InMemoryDataProvider {
             })?;
         binding.validate_envelope(envelope)?;
         Ok(envelope.predict_cohort.clone())
+    }
+
+    fn cv_test_cohort(&self, binding: &DataBinding) -> Result<Option<PredictCohort>> {
+        let envelope = self
+            .envelopes
+            .get(&DataEnvelopeKey::from_binding(binding))
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "no external data-plan envelope registered for binding `{}` on `{}`",
+                    binding.input_name, binding.node_id
+                ))
+            })?;
+        binding.validate_envelope(envelope)?;
+        match &envelope.predict_cohort {
+            Some(cohort) if cohort.role == PredictCohortRole::ExternalTest => {
+                Ok(Some(cohort.clone()))
+            }
+            _ => Ok(None),
+        }
     }
 }
 
