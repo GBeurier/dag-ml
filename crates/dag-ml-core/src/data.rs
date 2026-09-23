@@ -1599,6 +1599,30 @@ pub struct PredictCohort {
     pub cohort_fingerprint: String,
 }
 
+/// Host input for a fresh PREDICT cohort; DAG-ML derives its IDs and TCV1 hashes.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PredictCohortConstructionRequest {
+    pub role: PredictCohortRole,
+    pub relations: SampleRelationSet,
+    pub target_names: Vec<String>,
+    pub data_content_fingerprint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_content_fingerprint: Option<String>,
+}
+
+impl PredictCohortConstructionRequest {
+    pub fn derive(self) -> Result<PredictCohort> {
+        PredictCohort::from_relations(
+            self.role,
+            self.relations,
+            self.target_names,
+            self.data_content_fingerprint,
+            self.target_content_fingerprint,
+        )
+    }
+}
+
 impl PredictCohort {
     /// Build the closed cohort authority from its authoritative relation
     /// records.

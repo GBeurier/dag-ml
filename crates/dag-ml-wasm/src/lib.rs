@@ -19,8 +19,9 @@ use dag_ml_core::{
     fold_set_fingerprint, parse_pipeline_dsl_json, select_candidate, select_candidate_groups,
     CampaignSpec, CandidateScore, ControllerManifest, ControllerRegistry,
     DagMlError as CoreDagMlError, ExecutionBundle, ExecutionPlan, FoldSet, GraphSpec,
-    HostControllerSpec, KFoldSpec, PortablePredictorPackage, SampleId, SelectionPolicy,
-    StratifiedKFoldSpec, TrainingLossRoleReference,
+    HostControllerSpec, InitialFullRefitPackage, KFoldSpec, PortablePredictorPackage,
+    PredictCohortConstructionRequest, SampleId, SelectionPolicy, StratifiedKFoldSpec,
+    TrainingLossRoleReference,
 };
 use dag_ml_core::{
     ControllerId, NodeResult, NodeTask, Phase, Result as CoreResult, RunContext, RunId,
@@ -28,12 +29,14 @@ use dag_ml_core::{
 };
 
 mod host_hpo;
+mod initial_refit;
 mod local_implementation;
 
 pub use host_hpo::{
     host_hpo_evaluate_worker_task_json, host_hpo_search_json, host_hpo_search_parallel_json,
     recover_host_hpo_checkpoint_json,
 };
+pub use initial_refit::{execute_initial_full_refit_json, replay_initial_full_refit_json};
 pub use local_implementation::{loss_execution_attestation_json, LocalImplementationRegistry};
 
 const SHARED_FOLD_SET_FINGERPRINT: &str =
@@ -194,6 +197,33 @@ pub fn select_portable_output_json(
     let package = PortablePredictorPackage::from_json(package_json).map_err(js_core_error)?;
     let selected = package.select_output(binding_id).map_err(js_core_error)?;
     serde_json::to_string(&selected).map_err(js_serde_error)
+}
+
+/// Validate a signed no-splitter REFIT package before any host operator callback.
+#[wasm_bindgen]
+pub fn validate_initial_full_refit_package_json(package_json: &str) -> Result<(), JsValue> {
+    InitialFullRefitPackage::from_json(package_json)
+        .map(|_| ())
+        .map_err(js_core_error)
+}
+
+/// Attach a new V2 PREDICT cohort to the package's signed training envelope.
+#[wasm_bindgen]
+pub fn initial_full_refit_predict_envelope_json(
+    package_json: &str,
+    cohort_json: &str,
+) -> Result<String, JsValue> {
+    let package = InitialFullRefitPackage::from_json(package_json).map_err(js_core_error)?;
+    let request: PredictCohortConstructionRequest = deserialize_external_contract(
+        cohort_json,
+        "predict cohort construction request",
+        CoreDagMlError::CampaignValidation,
+    )
+    .map_err(js_core_error)?;
+    let envelope = package
+        .predict_envelope(request.derive().map_err(js_core_error)?)
+        .map_err(js_core_error)?;
+    serde_json::to_string(&envelope).map_err(js_serde_error)
 }
 
 /// Validate named source/sample coverage and return identity-only row indices.
@@ -399,6 +429,10 @@ fn contract_manifest() -> serde_json::Value {
             "stratified_kfold_split_json",
             "select_candidates_json",
             "select_portable_output_json",
+            "validate_initial_full_refit_package_json",
+            "initial_full_refit_predict_envelope_json",
+            "execute_initial_full_refit_json",
+            "replay_initial_full_refit_json",
             "align_named_source_rows_json",
             "LocalImplementationRegistry",
             "loss_execution_attestation_json",
@@ -686,6 +720,61 @@ mod tests {
             role["loss"].clone()
         ]]);
         assert!(training_loss_roles_from_json(&positional.to_string()).is_err());
+    }
+
+    #[test]
+    fn initial_full_refit_package_predict_envelope_is_exposed() {
+        let package =
+            include_str!("../../dag-ml-core/tests/fixtures/initial_full_refit/package.json");
+        validate_initial_full_refit_package_json(package).unwrap();
+        let parsed = InitialFullRefitPackage::from_json(package).unwrap();
+        let heldout: dag_ml_core::SampleRelationSet =
+            serde_json::from_value(serde_json::json!({"records": [{
+                "observation_id": "obs.H001", "sample_id": "sample:heldout:1",
+                "target_id": "target:heldout:1", "group_id": "group:heldout",
+                "origin_sample_id": null, "source_id": "nir", "is_augmented": false
+            }]}))
+            .unwrap();
+        let cohort = dag_ml_core::PredictCohort::from_relations(
+            dag_ml_core::PredictCohortRole::ExternalTest,
+            heldout.clone(),
+            vec!["y".into()],
+            "a".repeat(64),
+            Some("b".repeat(64)),
+        )
+        .unwrap();
+        let request = PredictCohortConstructionRequest {
+            role: dag_ml_core::PredictCohortRole::ExternalTest,
+            relations: heldout,
+            target_names: vec!["y".into()],
+            data_content_fingerprint: "a".repeat(64),
+            target_content_fingerprint: Some("b".repeat(64)),
+        };
+        let envelope_json = initial_full_refit_predict_envelope_json(
+            package,
+            &serde_json::to_string(&request).unwrap(),
+        )
+        .unwrap();
+        let envelope: dag_ml_core::ExternalDataPlanEnvelope =
+            serde_json::from_str(&envelope_json).unwrap();
+        assert_eq!(envelope.schema_version, 2);
+        assert_eq!(envelope.predict_cohort, Some(cohort));
+        assert_eq!(
+            envelope.coordinator_relations,
+            Some(parsed.training_relations)
+        );
+        assert!(contract_manifest()["wasm_exports"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!(
+                "validate_initial_full_refit_package_json"
+            )));
+        assert!(contract_manifest()["wasm_exports"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!(
+                "initial_full_refit_predict_envelope_json"
+            )));
     }
 
     #[test]

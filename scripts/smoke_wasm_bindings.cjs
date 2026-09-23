@@ -19,6 +19,10 @@ const REQUIRED_DTS_EXPORTS = [
   "derive_controller_manifest_json",
   "derive_controller_manifest_list_json",
   "execute_execution_plan_phase_json",
+  "execute_initial_full_refit_json",
+  "replay_initial_full_refit_json",
+  "validate_initial_full_refit_package_json",
+  "initial_full_refit_predict_envelope_json",
   "fold_set_fingerprint_json",
   "host_hpo_search_json",
   "host_hpo_search_parallel_json",
@@ -547,6 +551,7 @@ require("./smoke_wasm_hpo.cjs")(dagMl, repo, pkgDir).catch((error) => {
   console.error(error);
   process.exitCode = 1;
 });
+require("./smoke_wasm_initial_refit.cjs")(dagMl, repo);
 try {
   dagMl.validate_graph_json('{"id":"","interface":{},"nodes":[],"edges":[]}');
   throw new Error("invalid graph JSON was accepted");
