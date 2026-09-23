@@ -788,8 +788,8 @@ impl ExplanationBlock {
     }
 }
 
-/// Class-aligned probabilities for one labelled test prediction block. This is evidence for
-/// cross-fold classification ensembles, not another numeric target prediction.
+/// Class-aligned probabilities for one labelled CV prediction block. This is
+/// evidence for cross-fold classification ensembles, not another numeric target prediction.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ClassificationProbabilityBlock {
@@ -805,9 +805,14 @@ pub struct ClassificationProbabilityBlock {
 
 impl ClassificationProbabilityBlock {
     pub fn validate(&self) -> Result<()> {
-        if self.partition != PredictionPartition::Test || self.fold_id.is_none() {
+        if !matches!(
+            self.partition,
+            PredictionPartition::Train | PredictionPartition::TrainPool | PredictionPartition::Test
+        ) || self.fold_id.is_none()
+        {
             return Err(DagMlError::RuntimeValidation(
-                "classification probabilities require a CV test fold".to_string(),
+                "classification probabilities require a CV train, train-pool or test fold"
+                    .to_string(),
             ));
         }
         if self.class_labels.is_empty()
