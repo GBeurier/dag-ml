@@ -10518,6 +10518,77 @@ fn variant_scoring_controllers() -> RuntimeControllerRegistry {
 }
 
 #[test]
+fn browser_hpo_worker_window_is_phase_bounded_and_checkpoint_keyed() {
+    struct Proposals;
+    impl HostHpoProposalSource for Proposals {
+        fn ask(&mut self, trial_index: u32) -> Result<Option<BTreeMap<String, serde_json::Value>>> {
+            Ok(Some(BTreeMap::from([(
+                "n_components".into(),
+                json!(trial_index + 1),
+            )])))
+        }
+        fn tell(&mut self, _trial_index: u32, _score: f64) -> Result<()> {
+            Ok(())
+        }
+    }
+    let mut campaign = variant_scoring_campaign(vec![("base", 0.0)]);
+    campaign.generation = GenerationSpec::default();
+    let plan = build_execution_plan(
+        "plan:host_hpo:browser.window",
+        simple_graph(),
+        campaign,
+        &manifests(),
+    )
+    .unwrap();
+    let mut request = HostHpoSearchRequest {
+        parameter_bindings: BTreeMap::new(),
+        phase_trial_budgets: vec![1, 2],
+        progressive_pruning: false,
+        fold_score_reduction: None,
+        target_node: NodeId::new("model:pls").unwrap(),
+        trial_budget: 3,
+        metric: RegressionMetricKind::Rmse,
+        direction: crate::selection::MetricObjective::Minimize,
+        optimizer_descriptor: BTreeMap::from([("owner".into(), json!("browser"))]),
+    };
+    let options = HostHpoResumeOptions {
+        data_fingerprint: "data:browser".into(),
+        checkpoint: None,
+    };
+    let first =
+        prepare_host_hpo_worker_window(&plan, &request, &options, &mut Proposals, 3).unwrap();
+    assert_eq!(
+        first.tasks.len(),
+        1,
+        "a window cannot cross a phase boundary"
+    );
+    assert_eq!(first.tasks[0].trial_index, 0);
+    assert_eq!(first.tasks[0].phase_index, Some(0));
+    assert_eq!(
+        first.tasks[0].candidate_plan.variants[0]
+            .variant_id
+            .as_str(),
+        "host_hpo:trial:0000000000"
+    );
+    assert_ne!(
+        first.tasks[0].candidate_plan.variants[0].fingerprint,
+        plan.variants[0].fingerprint
+    );
+    assert_eq!(
+        first.window_id,
+        prepare_host_hpo_worker_window(&plan, &request, &options, &mut Proposals, 3)
+            .unwrap()
+            .window_id
+    );
+    request.phase_trial_budgets.clear();
+    let parallel =
+        prepare_host_hpo_worker_window(&plan, &request, &options, &mut Proposals, 2).unwrap();
+    assert_eq!(parallel.tasks.len(), 2);
+    assert_eq!(parallel.tasks[1].trial_index, 1);
+    assert_ne!(first.window_id, parallel.window_id);
+}
+
+#[test]
 fn host_hpo_owns_budget_native_scores_and_selection_without_refit() {
     struct Proposals {
         asked: u32,
