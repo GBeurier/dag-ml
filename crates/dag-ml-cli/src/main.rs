@@ -1946,7 +1946,7 @@ fn main() -> Result<()> {
             plan.campaign.validate_data_envelope_relations(&envelope)?;
             let provider = ExplicitPhaseDataProvider::new(
                 ControllerId::new("controller:data.provider")?,
-                envelope,
+                envelope.clone(),
                 Some(ids.clone()),
             )?;
             let process_config = process_adapter_runtime_config(
@@ -1974,6 +1974,7 @@ fn main() -> Result<()> {
                         package_id,
                         run_id: RunId::new(run_id)?,
                         plan: &plan,
+                        training_envelope: &envelope,
                         training_sample_ids: &ids,
                         controllers: &runtime_controllers,
                         data_provider: &provider,

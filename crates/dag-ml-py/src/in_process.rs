@@ -165,7 +165,7 @@ pub fn execute_phase_in_process(
         .map_err(py_core_error)?;
     let provider = ExplicitPhaseDataProvider::new(
         ControllerId::new("controller:data.provider").map_err(py_core_error)?,
-        envelope,
+        envelope.clone(),
         training_sample_ids.clone(),
     )
     .map_err(py_core_error)?;
@@ -178,6 +178,7 @@ pub fn execute_phase_in_process(
                 package_id,
                 run_id,
                 plan: &plan,
+                training_envelope: &envelope,
                 training_sample_ids: training_sample_ids.as_deref().ok_or_else(|| {
                     py_core_error(CoreDagMlError::RuntimeValidation(
                         "REFIT package requires training ids".into(),
@@ -3082,6 +3083,10 @@ mod tests {
             assert!(package.get("selection").is_none());
             let parsed =
                 dag_ml_core::InitialFullRefitPackage::from_json(&package.to_string()).unwrap();
+            assert_eq!(
+                parsed.predict_envelope(envelope.predict_cohort.clone().unwrap()).unwrap(),
+                envelope,
+            );
             crate::validate_initial_full_refit_package_json(&package.to_string()).unwrap();
             assert_eq!(parsed.artifacts.len(), 1);
             assert_eq!(
