@@ -6,7 +6,7 @@
   "artifacts": [
     {
       "path": ".github/workflows/ci.yml",
-      "sha256": "0d61b195db6d5f04b7823495ee66ade572e1f6b0d56bcc0cf265a638124c18d6",
+      "sha256": "8a0b1a2deda5763a2e9ca13c104539949eab6675b654409609af05ccf76db000",
       "kind": "ci_gate"
     },
     {
@@ -111,7 +111,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/oof.rs",
-      "sha256": "26a610716419ab417f47105c1d97a154ec6708c82a2d7efd24d875af7990577b",
+      "sha256": "2d586f5c1a91c5fdff98e307106316e482fed48fa7dc4a1c8f518163362e42f2",
       "kind": "typed_cache_dependency"
     },
     {
@@ -156,7 +156,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/runtime/scheduler.rs",
-      "sha256": "710d0e9c33cdb494399bb050c2066d2e1d722507d706ea822efe930168e2188f",
+      "sha256": "25c4b190a7e9bd45051c9430e97605b3458d14a34bca28c5f40d85fb02b5e1fc",
       "kind": "native_hpo_scheduler"
     },
     {
@@ -599,5 +599,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "0f38dd5daada7d693d74e18159d30dcb4114bd713befc32bc1e4f491383417cd"
+  "pack_checksum": "aa799dcae484c4f4fd570c841d3511f85ae35c840c83239bfe1e138f0b940015"
 }
