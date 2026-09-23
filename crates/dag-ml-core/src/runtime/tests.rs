@@ -10899,6 +10899,74 @@ fn durable_host_fixture(
 }
 
 #[test]
+fn browser_hpo_worker_window_reduces_out_of_order_native_results() {
+    let (plan, controllers, _, mut request) = durable_host_fixture(false);
+    request.trial_budget = 2;
+    let options = HostHpoResumeOptions {
+        data_fingerprint: "browser-window-data".into(),
+        checkpoint: None,
+    };
+    let mut proposals = DurableHostProposals {
+        asked: Vec::new(),
+        told: Vec::new(),
+        failed: Vec::new(),
+    };
+    let window =
+        prepare_host_hpo_worker_window(&plan, &request, &options, &mut proposals, 2).unwrap();
+    assert_eq!(proposals.asked, vec![0, 1]);
+    assert_eq!(window.tasks.len(), 2);
+    let mut results = window
+        .tasks
+        .iter()
+        .map(|task| {
+            let provider = InMemoryDataProvider::new(ControllerId::new("controller:data").unwrap());
+            HostHpoWorkerResult::Complete {
+                evidence: evaluate_host_hpo_worker_task(task, &request, &controllers, &provider)
+                    .unwrap(),
+            }
+        })
+        .collect::<Vec<_>>();
+    results.reverse();
+    let mut tampered = results.clone();
+    if let HostHpoWorkerResult::Complete { evidence } = &mut tampered[0] {
+        evidence.score += 1.0;
+    }
+    let mut progress = DurableHostProgress {
+        stop_after: usize::MAX,
+        checkpoints: Vec::new(),
+    };
+    assert!(complete_host_hpo_worker_window(
+        &plan,
+        &request,
+        &options,
+        window.clone(),
+        tampered,
+        &mut proposals,
+        &mut progress,
+    )
+    .unwrap_err()
+    .to_string()
+    .contains("scalar/fold scores differ"));
+    assert!(proposals.told.is_empty());
+    assert!(progress.checkpoints.is_empty());
+    let outcome = complete_host_hpo_worker_window(
+        &plan,
+        &request,
+        &options,
+        window,
+        results,
+        &mut proposals,
+        &mut progress,
+    )
+    .unwrap();
+    assert_eq!(outcome.status, HostHpoSearchStatus::Completed);
+    assert_eq!(proposals.told, vec![0, 1]);
+    assert_eq!(outcome.result.unwrap().selected_trial_index, 0);
+    assert_eq!(outcome.checkpoint.unwrap().trials.len(), 2);
+    assert_eq!(progress.checkpoints.len(), 2);
+}
+
+#[test]
 fn host_hpo_sequential_prepares_terminal_before_optimizer_tell() {
     let (plan, controllers, provider, request) = durable_host_fixture(false);
     let prepared = Arc::new(AtomicUsize::new(0));
