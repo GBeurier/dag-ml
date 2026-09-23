@@ -161,6 +161,13 @@ impl RuntimeController for CandidateController {
     fn invoke(&self, task: &NodeTask) -> dag_ml_core::Result<NodeResult> {
         self.inner.invoke(task)
     }
+
+    fn invoke_aggregation(
+        &self,
+        task: &AggregationControllerTask,
+    ) -> dag_ml_core::Result<AggregationControllerResult> {
+        self.inner.invoke_aggregation(task)
+    }
 }
 
 struct CControllerFactory {
