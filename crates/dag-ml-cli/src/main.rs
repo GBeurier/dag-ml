@@ -3889,13 +3889,15 @@ fn oof_prediction_summary(
     blocks: &[PredictionBlock],
     aggregated_blocks: &[AggregatedPredictionBlock],
 ) -> Result<Vec<serde_json::Value>> {
-    let mut summaries = BTreeMap::<NodeId, OofPredictionSummary>::new();
+    let mut summaries = BTreeMap::<(NodeId, Option<String>), OofPredictionSummary>::new();
     for block in blocks
         .iter()
         .filter(|block| block.partition == PredictionPartition::Validation)
     {
         let width = block.validate_shape()?;
-        let entry = summaries.entry(block.producer_node.clone()).or_default();
+        let entry = summaries
+            .entry((block.producer_node.clone(), block.producer_port.clone()))
+            .or_default();
         entry.block_count += 1;
         if let Some(fold_id) = &block.fold_id {
             entry.fold_ids.insert(fold_id.to_string());
@@ -3925,10 +3927,17 @@ fn oof_prediction_summary(
         }
         entry.target_names = Some(block.target_names.clone());
     }
+    let sample_ports =
+        summaries
+            .keys()
+            .fold(BTreeMap::<NodeId, usize>::new(), |mut counts, (node, _)| {
+                *counts.entry(node.clone()).or_default() += 1;
+                counts
+            });
     let mut output = summaries
         .into_iter()
-        .map(|(producer_node, summary)| {
-            serde_json::json!({
+        .map(|((producer_node, producer_port), summary)| {
+            let mut record = serde_json::json!({
                 "producer_node": producer_node,
                 "prediction_level": PredictionLevel::Sample,
                 "block_count": summary.block_count,
@@ -3936,18 +3945,30 @@ fn oof_prediction_summary(
                 "sample_ids": summary.sample_ids.into_iter().collect::<Vec<_>>(),
                 "prediction_width": summary.prediction_width.unwrap_or_default(),
                 "target_names": summary.target_names.unwrap_or_default(),
-            })
+            });
+            if sample_ports
+                .get(&producer_node)
+                .is_some_and(|count| *count > 1)
+            {
+                record["producer_port"] = serde_json::json!(producer_port);
+            }
+            record
         })
         .collect::<Vec<_>>();
 
     let mut aggregated_summaries =
-        BTreeMap::<(NodeId, PredictionLevel), AggregatedOofPredictionSummary>::new();
+        BTreeMap::<(NodeId, Option<String>, PredictionLevel), AggregatedOofPredictionSummary>::new(
+        );
     for block in aggregated_blocks
         .iter()
         .filter(|block| block.partition == PredictionPartition::Validation)
     {
         let width = block.validate_shape()?;
-        let key = (block.producer_node.clone(), block.level);
+        let key = (
+            block.producer_node.clone(),
+            block.producer_port.clone(),
+            block.level,
+        );
         let entry = aggregated_summaries.entry(key).or_default();
         entry.block_count += 1;
         entry.prediction_level = Some(block.level);
@@ -3982,9 +4003,16 @@ fn oof_prediction_summary(
         }
         entry.target_names = Some(target_names);
     }
+    let aggregated_ports = aggregated_summaries.keys().fold(
+        BTreeMap::<(NodeId, PredictionLevel), usize>::new(),
+        |mut counts, (node, _, level)| {
+            *counts.entry((node.clone(), *level)).or_default() += 1;
+            counts
+        },
+    );
     output.extend(aggregated_summaries.into_iter().map(
-        |((producer_node, prediction_level), summary)| {
-            serde_json::json!({
+        |((producer_node, producer_port, prediction_level), summary)| {
+            let mut record = serde_json::json!({
                 "producer_node": producer_node,
                 "prediction_level": prediction_level,
                 "block_count": summary.block_count,
@@ -3992,7 +4020,14 @@ fn oof_prediction_summary(
                 "unit_ids": summary.unit_ids.into_iter().collect::<Vec<_>>(),
                 "prediction_width": summary.prediction_width.unwrap_or_default(),
                 "target_names": summary.target_names.unwrap_or_default(),
-            })
+            });
+            if aggregated_ports
+                .get(&(producer_node, prediction_level))
+                .is_some_and(|count| *count > 1)
+            {
+                record["producer_port"] = serde_json::json!(producer_port);
+            }
+            record
         },
     ));
     Ok(output)
@@ -6784,6 +6819,41 @@ mod tests {
         assert_eq!(summary.len(), 1);
         assert_eq!(summary[0]["prediction_level"], "group");
         assert_eq!(summary[0]["block_count"], 2);
+    }
+
+    #[test]
+    fn oof_summary_keeps_prediction_ports_independent() {
+        let producer_node = NodeId::new("model:base").unwrap();
+        let sample_id = dag_ml_core::SampleId::new("sample:0").unwrap();
+        let fold_id = Some(dag_ml_core::FoldId::new("fold:0").unwrap());
+        let blocks = [
+            PredictionBlock {
+                prediction_id: None,
+                producer_node: producer_node.clone(),
+                producer_port: Some("oof".to_string()),
+                partition: PredictionPartition::Validation,
+                fold_id: fold_id.clone(),
+                sample_ids: vec![sample_id.clone()],
+                values: vec![vec![1.0]],
+                target_names: vec!["label".to_string()],
+            },
+            PredictionBlock {
+                prediction_id: None,
+                producer_node,
+                producer_port: Some("proba".to_string()),
+                partition: PredictionPartition::Validation,
+                fold_id,
+                sample_ids: vec![sample_id],
+                values: vec![vec![0.2, 0.8]],
+                target_names: vec!["class:0".to_string(), "class:1".to_string()],
+            },
+        ];
+        let summary = oof_prediction_summary(&blocks, &[]).unwrap();
+        assert_eq!(summary.len(), 2);
+        assert_eq!(summary[0]["producer_port"], "oof");
+        assert_eq!(summary[0]["prediction_width"], 1);
+        assert_eq!(summary[1]["producer_port"], "proba");
+        assert_eq!(summary[1]["prediction_width"], 2);
     }
 
     use std::cell::Cell;
