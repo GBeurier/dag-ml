@@ -2006,6 +2006,71 @@ impl InMemoryDataProvider {
     }
 }
 
+/// An attested, explicitly ordered training universe for a single REFIT phase.
+///
+/// The CLI and language bindings share this provider so a no-splitter run never
+/// relies on relation serialization order or includes an external test cohort.
+pub struct ExplicitPhaseDataProvider {
+    inner: InMemoryDataProvider,
+    envelope: ExternalDataPlanEnvelope,
+    training_sample_ids: Option<Vec<SampleId>>,
+}
+
+impl ExplicitPhaseDataProvider {
+    pub fn new(
+        owner_controller: ControllerId,
+        envelope: ExternalDataPlanEnvelope,
+        training_sample_ids: Option<Vec<SampleId>>,
+    ) -> Result<Self> {
+        envelope.validate()?;
+        if let Some(ids) = &training_sample_ids {
+            let relations = envelope.coordinator_relations.as_ref().ok_or_else(|| {
+                DagMlError::RuntimeValidation("REFIT requires attested training relations".into())
+            })?;
+            let expected = relations
+                .records
+                .iter()
+                .map(|record| record.sample_id.clone())
+                .collect::<BTreeSet<_>>();
+            let supplied = ids.iter().cloned().collect::<BTreeSet<_>>();
+            if ids.is_empty() || supplied.len() != ids.len() || supplied != expected {
+                return Err(DagMlError::RuntimeValidation(
+                    "training_sample_ids must be an exact unique ordering of the attested training universe".into(),
+                ));
+            }
+        }
+        let inner = InMemoryDataProvider::with_envelope(owner_controller, envelope.clone())?;
+        Ok(Self {
+            inner,
+            envelope,
+            training_sample_ids,
+        })
+    }
+}
+
+impl RuntimeDataProvider for ExplicitPhaseDataProvider {
+    fn materialize(&self, request: &DataMaterializationRequest) -> Result<HandleRef> {
+        self.inner.materialize(request)
+    }
+
+    fn make_view(&self, request: &DataViewRequest) -> Result<HandleRef> {
+        self.inner.make_view(request)
+    }
+
+    fn coordinator_relations(&self, binding: &DataBinding) -> Result<Option<SampleRelationSet>> {
+        self.inner.coordinator_relations(binding)
+    }
+
+    fn predict_cohort(&self, binding: &DataBinding, phase: Phase) -> Result<Option<PredictCohort>> {
+        self.inner.predict_cohort(binding, phase)
+    }
+
+    fn refit_sample_ids(&self, binding: &DataBinding) -> Result<Option<Vec<SampleId>>> {
+        binding.validate_envelope(&self.envelope)?;
+        Ok(self.training_sample_ids.clone())
+    }
+}
+
 impl RuntimeDataProvider for InMemoryDataProvider {
     fn materialize(&self, request: &DataMaterializationRequest) -> Result<HandleRef> {
         if request.node_id != request.binding.node_id {
