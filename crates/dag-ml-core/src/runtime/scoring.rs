@@ -328,6 +328,13 @@ pub(crate) fn apply_result_scoring(
         }
     }
     for block in &result.aggregated_predictions {
+        if block
+            .producer_port
+            .as_ref()
+            .is_some_and(|port| auxiliary_ports.contains(port))
+        {
+            continue;
+        }
         if let Some(targets) = result
             .regression_targets
             .iter()

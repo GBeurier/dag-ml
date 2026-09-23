@@ -10861,6 +10861,54 @@ fn auxiliary_prediction_port_matches_primary_cohort_and_does_not_score() {
         .unwrap_err()
         .to_string()
         .contains("ordered sample IDs"));
+
+    // Group/target-level outputs obey the same primary-only scoring rule.
+    let target_id = PredictionUnitId::Target(TargetId::new("target:one").unwrap());
+    result.predictions.clear();
+    result.aggregated_predictions = vec![
+        crate::aggregation::AggregatedPredictionBlock {
+            prediction_id: None,
+            producer_node: result.node_id.clone(),
+            producer_port: Some("oof".to_string()),
+            partition: PredictionPartition::Validation,
+            fold_id: task.fold_id.clone(),
+            level: PredictionLevel::Target,
+            unit_ids: vec![target_id.clone()],
+            values: vec![vec![1.0]],
+            target_names: vec!["y".to_string()],
+        },
+        crate::aggregation::AggregatedPredictionBlock {
+            prediction_id: None,
+            producer_node: result.node_id.clone(),
+            producer_port: Some("proba".to_string()),
+            partition: PredictionPartition::Validation,
+            fold_id: task.fold_id.clone(),
+            level: PredictionLevel::Target,
+            unit_ids: vec![target_id.clone()],
+            values: vec![vec![0.2, 0.8]],
+            target_names: vec!["0".to_string(), "1".to_string()],
+        },
+    ];
+    result.regression_targets = vec![RegressionTargetBlock {
+        level: PredictionLevel::Target,
+        unit_ids: vec![target_id],
+        values: vec![vec![1.0]],
+        target_names: vec!["y".to_string()],
+        validity_masks: None,
+    }];
+    let mut aggregated = RunContext::new(task.run_id.clone(), None);
+    apply_result_scoring(
+        &result,
+        &BTreeSet::from(["proba".to_string()]),
+        &mut aggregated.score_collector,
+        &mut aggregated.regression_target_records,
+    )
+    .unwrap();
+    assert_eq!(aggregated.score_collector.len(), 1);
+    assert_eq!(
+        aggregated.score_collector[0].producer_port.as_deref(),
+        Some("oof")
+    );
 }
 
 #[test]
