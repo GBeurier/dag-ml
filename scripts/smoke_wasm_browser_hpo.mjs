@@ -12,6 +12,7 @@ const pkg = path.resolve(process.argv[2] || path.join(repo, "crates/dag-ml-wasm/
 const files = new Map([
   ["/", [path.join(repo, "scripts/browser_hpo/index.html"), "text/html"]],
   ["/worker.js", [path.join(repo, "scripts/browser_hpo/worker.js"), "text/javascript"]],
+  ["/ridge_operator.js", [path.join(repo, "scripts/browser_hpo/ridge_operator.js"), "text/javascript"]],
   ["/fixture.json", [path.join(repo, "crates/dag-ml-core/tests/fixtures/package/data/coordinator_data_plan_envelope_sample12.json"), "application/json"]],
   ["/pkg/dag_ml_wasm.js", [path.join(pkg, "dag_ml_wasm.js"), "text/javascript"]],
   ["/pkg/dag_ml_wasm_bg.wasm", [path.join(pkg, "dag_ml_wasm_bg.wasm"), "application/wasm"]],
@@ -91,7 +92,7 @@ try {
     child.kill();
     await rm(profile, {recursive: true, force: true, maxRetries: 3});
   }
-  process.stdout.write("Chrome Web Worker HPO parallel/resume: PASS\n");
+  process.stdout.write("Chrome ridge Web Worker HPO parallel/pruning/resume: PASS\n");
 } finally {
   await new Promise(resolve => server.close(resolve));
 }

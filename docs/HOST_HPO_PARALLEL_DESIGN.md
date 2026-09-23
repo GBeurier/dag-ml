@@ -106,5 +106,6 @@ The R and Octave CI jobs require their JSONL adapter, CLI wrapper, and native
 two-worker HPO/resume tests to pass; the latter exercises actual optimizer
 processes, not only a fake CLI. The web target is also exercised in headless
 Chrome with two actual module `Web Worker` instances, each loading its own
-WASM instance; the browser test verifies parallel dispatch and checkpoint
-resume. The Node smoke additionally verifies progressive pruning.
+WASM instance. Each browser worker fits the same host-local ridge from its
+fold-train IDs; the smoke checks native per-fold and pooled OOF scores,
+parallel dispatch, checkpoint resume, and pruning before the next fold.
