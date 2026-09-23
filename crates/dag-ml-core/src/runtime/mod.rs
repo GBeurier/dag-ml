@@ -1263,6 +1263,11 @@ fn pooled_operator_candidate_score(
             .filter(|average| {
                 active.contains(&average.predictions.producer_node)
                     && average.predictions.level == PredictionLevel::Sample
+                    && average
+                        .predictions
+                        .fold_id
+                        .as_ref()
+                        .is_some_and(|fold| fold.as_str() == "avg")
             })
             .collect::<Vec<_>>();
         let [average] = branch_averages.as_slice() else {
