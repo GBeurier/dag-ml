@@ -1306,49 +1306,38 @@ pub(crate) fn prediction_feature_data_view(
     task: &NodeTask,
     validation: bool,
 ) -> Result<Option<DataProviderViewSpec>> {
-    if validation && task.phase != Phase::FitCv {
+    let matrix = if validation {
+        task.prediction_feature_off_fold_matrix.as_ref()
+    } else {
+        task.prediction_feature_matrix.as_ref()
+    };
+    let Some(matrix) = matrix else {
         return Ok(None);
-    }
-    let sample_ids = if validation {
-        let outer = task
-            .prediction_inputs
-            .iter()
-            .filter(|(key, _)| key.ends_with(":outer"))
-            .map(|(_, input)| input)
-            .collect::<Vec<_>>();
-        let Some(first) = outer.first() else {
-            return Ok(None);
-        };
-        let expected = first.sample_ids.iter().collect::<BTreeSet<_>>();
+    };
+    if validation && task.phase == Phase::FitCv {
         let train_ids = task
             .prediction_feature_matrix
             .as_ref()
-            .map(|matrix| matrix.sample_ids.iter().collect::<BTreeSet<_>>())
+            .map(|train| train.sample_ids.iter().collect::<BTreeSet<_>>())
             .unwrap_or_default();
-        if first.partition != PredictionPartition::Validation
-            || expected.len() != first.sample_ids.len()
-            || !expected.is_disjoint(&train_ids)
-            || outer.iter().any(|input| {
-                input.partition != PredictionPartition::Validation
-                    || input.sample_ids.iter().collect::<BTreeSet<_>>() != expected
-            })
+        if !matrix
+            .sample_ids
+            .iter()
+            .collect::<BTreeSet<_>>()
+            .is_disjoint(&train_ids)
         {
             return Err(DagMlError::OofValidation(format!(
-                "prediction feature join `{}` has inconsistent outer-validation identities",
+                "prediction feature join `{}` has overlapping train/outer-validation identities",
                 task.node_plan.node_id
             )));
         }
-        first.sample_ids.clone()
-    } else {
-        let Some(matrix) = task.prediction_feature_matrix.as_ref() else {
-            return Ok(None);
-        };
-        matrix.sample_ids.clone()
-    };
+    }
+    let sample_ids = matrix.sample_ids.clone();
     let partition = match (task.phase, validation) {
         (Phase::FitCv, false) => DataRequestPartition::FoldTrain,
         (Phase::FitCv, true) => DataRequestPartition::FoldValidation,
         (Phase::Refit, false) => DataRequestPartition::FullTrain,
+        (Phase::Refit, true) => DataRequestPartition::Predict,
         (Phase::Predict, false) => DataRequestPartition::Predict,
         _ => return Ok(None),
     };

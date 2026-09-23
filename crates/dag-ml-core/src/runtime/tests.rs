@@ -6728,6 +6728,7 @@ fn fit_influence_validation_task(fit_influence: FitInfluenceTask) -> NodeTask {
         data_views: BTreeMap::new(),
         prediction_inputs: BTreeMap::new(),
         prediction_feature_matrix: None,
+        prediction_feature_off_fold_matrix: None,
         artifact_inputs: BTreeMap::new(),
         required_loss_attestations: Vec::new(),
         fit_influence,
@@ -6998,6 +6999,7 @@ fn node_result_validation_rejects_external_conformance_mismatches() {
         data_views: BTreeMap::new(),
         prediction_inputs: BTreeMap::new(),
         prediction_feature_matrix: None,
+        prediction_feature_off_fold_matrix: None,
         artifact_inputs: BTreeMap::new(),
         required_loss_attestations: Vec::new(),
         fit_influence: FitInfluenceTask::default(),
@@ -7467,6 +7469,7 @@ fn node_result_validation_checks_shape_fingerprints_and_feature_deltas() {
         data_views: BTreeMap::new(),
         prediction_inputs: BTreeMap::new(),
         prediction_feature_matrix: None,
+        prediction_feature_off_fold_matrix: None,
         artifact_inputs: BTreeMap::new(),
         required_loss_attestations: Vec::new(),
         fit_influence: FitInfluenceTask::default(),
@@ -7560,6 +7563,7 @@ fn node_result_validation_rejects_bad_artifact_handles() {
         data_views: BTreeMap::new(),
         prediction_inputs: BTreeMap::new(),
         prediction_feature_matrix: None,
+        prediction_feature_off_fold_matrix: None,
         artifact_inputs: BTreeMap::new(),
         required_loss_attestations: Vec::new(),
         fit_influence: FitInfluenceTask::default(),
@@ -7805,6 +7809,7 @@ fn node_result_validation_rejects_predictions_outside_validation_view() {
         )]),
         prediction_inputs: BTreeMap::new(),
         prediction_feature_matrix: None,
+        prediction_feature_off_fold_matrix: None,
         artifact_inputs: BTreeMap::new(),
         required_loss_attestations: Vec::new(),
         fit_influence: FitInfluenceTask::default(),
@@ -7926,6 +7931,7 @@ fn node_result_validation_rejects_aggregated_units_outside_validation_view() {
         )]),
         prediction_inputs: BTreeMap::new(),
         prediction_feature_matrix: None,
+        prediction_feature_off_fold_matrix: None,
         artifact_inputs: BTreeMap::new(),
         required_loss_attestations: Vec::new(),
         fit_influence: FitInfluenceTask::default(),
@@ -8067,6 +8073,7 @@ fn controller_emitted_aggregated_block_must_match_policy_level() {
         data_views: BTreeMap::new(),
         prediction_inputs: BTreeMap::new(),
         prediction_feature_matrix: None,
+        prediction_feature_off_fold_matrix: None,
         artifact_inputs: BTreeMap::new(),
         required_loss_attestations: Vec::new(),
         fit_influence: FitInfluenceTask::default(),
@@ -9388,37 +9395,25 @@ fn prediction_feature_views_keep_train_and_outer_validation_separate() {
         columns: vec!["model:a.pred__y".to_string()],
         values: vec![vec![1.0], vec![2.0]],
     });
-    task.prediction_inputs.insert(
-        "model:a.pred:outer".to_string(),
-        PredictionInputSpec {
-            producer_node: NodeId::new("model:a").unwrap(),
-            source_port: "pred".to_string(),
-            target_port: "a".to_string(),
-            partition: PredictionPartition::Validation,
-            prediction_level: PredictionLevel::Sample,
-            fold_id: task.fold_id.clone(),
-            fold_ids: Vec::new(),
-            unit_ids: Vec::new(),
-            sample_ids: validation.clone(),
-            values: vec![vec![3.0]],
-            prediction_width: 1,
-            target_names: vec!["y".to_string()],
-        },
-    );
+    task.prediction_feature_off_fold_matrix = Some(crate::oof::OofMatrix {
+        sample_ids: validation.clone(),
+        columns: vec!["model:a.pred__y".to_string()],
+        values: vec![vec![3.0]],
+    });
     let primary = prediction_feature_data_view(&task, false).unwrap().unwrap();
     let outer = prediction_feature_data_view(&task, true).unwrap().unwrap();
     assert_eq!(primary.sample_ids, Some(train));
     assert_eq!(primary.partition, DataRequestPartition::FoldTrain);
     assert_eq!(outer.sample_ids, Some(validation));
     assert_eq!(outer.partition, DataRequestPartition::FoldValidation);
-    task.prediction_inputs
-        .get_mut("model:a.pred:outer")
+    task.prediction_feature_off_fold_matrix
+        .as_mut()
         .unwrap()
         .sample_ids = vec![SampleId::new("s2").unwrap()];
     assert!(prediction_feature_data_view(&task, true)
         .unwrap_err()
         .to_string()
-        .contains("inconsistent outer-validation"));
+        .contains("overlapping train/outer-validation"));
 }
 
 #[test]
@@ -9435,7 +9430,7 @@ fn nested_residual_prediction_feature_plan_separates_source_and_base_scopes() {
     }
     .split("outer", &samples)
     .unwrap();
-    let original = nested_stacking_test_plan(outer, false);
+    let original = nested_stacking_test_plan(outer, true);
     let mut graph = original.graph_plan.graph;
     let join_id = NodeId::new("merge:prediction.features").unwrap();
     let base_id = NodeId::new("model:base.a").unwrap();
@@ -9524,6 +9519,86 @@ fn nested_residual_prediction_feature_plan_separates_source_and_base_scopes() {
     );
     assert!(feature.downstream_node_ids.contains(&base_id));
     assert!(!feature.downstream_node_ids.contains(&join_id));
+
+    let final_sample = SampleId::new("external:1").unwrap();
+    let mut inputs = BTreeMap::new();
+    for (name, value) in [("model:source.a", 1.0), ("model:source.b", 2.0)] {
+        inputs.insert(
+            format!("{name}.pred:predict"),
+            PredictionInputSpec {
+                producer_node: NodeId::new(name).unwrap(),
+                source_port: "pred".to_string(),
+                target_port: "x".to_string(),
+                partition: PredictionPartition::Final,
+                prediction_level: PredictionLevel::Sample,
+                fold_id: None,
+                fold_ids: Vec::new(),
+                unit_ids: Vec::new(),
+                sample_ids: vec![final_sample.clone()],
+                values: vec![vec![value]],
+                prediction_width: 1,
+                target_names: vec!["y".to_string()],
+            },
+        );
+    }
+    let scope = PhaseScope {
+        phase: Phase::Predict,
+        variant_id: None,
+        variant: None,
+        fold_id: None,
+        seed_root: None,
+    };
+    let matrix = prediction_feature_matrix_for_task(
+        &plan,
+        plan.node_plans.get(&join_id).unwrap(),
+        &inputs,
+        &scope,
+        &PhaseScopeResources::default(),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(matrix.sample_ids, vec![final_sample]);
+    assert_eq!(matrix.values, vec![vec![1.0, 2.0]]);
+
+    let refit = nested.refit_fold_set.as_ref().unwrap();
+    let edge = plan
+        .graph_plan
+        .graph
+        .edges
+        .iter()
+        .find(|edge| {
+            edge.target.node_id == join_id
+                && edge.source.node_id == NodeId::new("model:source.a").unwrap()
+        })
+        .unwrap();
+    let mut ctx = RunContext::new(RunId::new("run:prediction.feature.refit").unwrap(), None);
+    for fold in plan
+        .fold_set
+        .as_ref()
+        .unwrap()
+        .folds
+        .iter()
+        .chain(&refit.folds)
+    {
+        ctx.prediction_store
+            .append(PredictionBlock {
+                prediction_id: None,
+                producer_node: edge.source.node_id.clone(),
+                producer_port: Some(edge.source.port_name.clone()),
+                partition: PredictionPartition::Validation,
+                fold_id: Some(fold.fold_id.clone()),
+                sample_ids: fold.validation_sample_ids.clone(),
+                values: vec![vec![1.0]; fold.validation_sample_ids.len()],
+                target_names: vec!["y".to_string()],
+            })
+            .unwrap();
+    }
+    let refit_blocks = validate_refit_oof_edge(&plan, edge, &ctx).unwrap().unwrap();
+    assert_eq!(refit_blocks.len(), refit.folds.len());
+    assert!(refit_blocks.iter().all(|block| refit
+        .folds
+        .iter()
+        .any(|fold| block.fold_id.as_ref() == Some(&fold.fold_id))));
 }
 
 #[test]
