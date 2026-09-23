@@ -6602,6 +6602,7 @@ fn fit_influence_validation_task(fit_influence: FitInfluenceTask) -> NodeTask {
         .clone();
     NodeTask {
         inner_fold_set: None,
+        residual_targets: None,
         run_id: RunId::new("run:fit.influence.validation").unwrap(),
         node_plan,
         phase: Phase::FitCv,
@@ -6784,6 +6785,7 @@ fn node_result_validation_rejects_external_conformance_mismatches() {
         .clone();
     let task = NodeTask {
         inner_fold_set: None,
+        residual_targets: None,
         run_id: RunId::new("run:result.validation").unwrap(),
         node_plan: node_plan.clone(),
         phase: Phase::FitCv,
@@ -7251,6 +7253,7 @@ fn node_result_validation_checks_shape_fingerprints_and_feature_deltas() {
     let node_plan = plan.node_plans.get(&model_id).unwrap().clone();
     let task = NodeTask {
         inner_fold_set: None,
+        residual_targets: None,
         run_id: RunId::new("run:result.validation.shape").unwrap(),
         node_plan: node_plan.clone(),
         phase: Phase::FitCv,
@@ -7342,6 +7345,7 @@ fn node_result_validation_rejects_bad_artifact_handles() {
         .clone();
     let task = NodeTask {
         inner_fold_set: None,
+        residual_targets: None,
         run_id: RunId::new("run:result.validation.artifacts").unwrap(),
         node_plan: node_plan.clone(),
         phase: Phase::Refit,
@@ -7572,6 +7576,7 @@ fn node_result_validation_rejects_predictions_outside_validation_view() {
     let node_plan = plan.node_plans.get(&model_id).unwrap().clone();
     let task = NodeTask {
         inner_fold_set: None,
+        residual_targets: None,
         run_id: RunId::new("run:result.validation.samples").unwrap(),
         node_plan: node_plan.clone(),
         phase: Phase::FitCv,
@@ -7690,6 +7695,7 @@ fn node_result_validation_rejects_aggregated_units_outside_validation_view() {
     let node_plan = plan.node_plans.get(&model_id).unwrap().clone();
     let task = NodeTask {
         inner_fold_set: None,
+        residual_targets: None,
         run_id: RunId::new("run:result.validation.aggregated").unwrap(),
         node_plan: node_plan.clone(),
         phase: Phase::FitCv,
@@ -7841,6 +7847,7 @@ fn controller_emitted_aggregated_block_must_match_policy_level() {
     let node_plan = plan.node_plans.get(&model_id).unwrap().clone();
     let task = NodeTask {
         inner_fold_set: None,
+        residual_targets: None,
         run_id: RunId::new("run:agg.policy.level").unwrap(),
         node_plan: node_plan.clone(),
         phase: Phase::FitCv,
@@ -9133,6 +9140,7 @@ fn nested_stacking_campaign_requires_explicit_marker_and_parent_bound_inner_oof(
         &NestedStackingInput {
             meta_node_id: &meta_id,
             inner: &selected_outer.inner,
+            kind: NestedMetaKind::Stacking,
         },
         &mut handles,
         &mut prediction_inputs,
@@ -9161,6 +9169,131 @@ fn nested_stacking_campaign_requires_explicit_marker_and_parent_bound_inner_oof(
             "a meta training row cannot be an outer evaluation row"
         );
     }
+}
+
+#[test]
+fn nested_residual_campaign_delivers_only_parent_train_targets() {
+    use crate::fold::KFoldSpec;
+    let samples = (1..=6)
+        .map(|index| SampleId::new(format!("s{index}")).unwrap())
+        .collect::<Vec<_>>();
+    let outer = KFoldSpec {
+        n_splits: 3,
+        shuffle: false,
+        seed: Some(7),
+    }
+    .split("outer", &samples)
+    .unwrap();
+    let stacking = nested_stacking_test_plan(outer.clone(), true);
+    let mut graph = stacking.graph_plan.graph.clone();
+    let meta_id = NodeId::new("model:meta").unwrap();
+    let base_id = NodeId::new("model:base.a").unwrap();
+    graph
+        .nodes
+        .retain(|node| node.id != NodeId::new("model:base.b").unwrap());
+    graph.edges.retain(|edge| edge.source.node_id == base_id);
+    let meta = graph
+        .nodes
+        .iter_mut()
+        .find(|node| node.id == meta_id)
+        .unwrap();
+    meta.ports.inputs.retain(|port| port.name == "a");
+    meta.metadata.remove(NESTED_STACKING_EXECUTION_METADATA_KEY);
+    meta.metadata.insert(
+        RESIDUAL_TARGET_EXECUTION_METADATA_KEY.to_string(),
+        json!(RESIDUAL_TARGET_EXECUTION_V1),
+    );
+    let plan = build_execution_plan(
+        "plan:nested.residual",
+        graph,
+        stacking.campaign,
+        &manifests(),
+    )
+    .unwrap();
+    let nested = nested_stacking_campaign_plan(&plan).unwrap().unwrap();
+    assert_eq!(nested.kind, NestedMetaKind::Residual);
+    assert_eq!(nested.base_node_ids, BTreeSet::from([base_id.clone()]));
+    let selected = &nested.outer_scopes[0];
+    let scope = PhaseScope {
+        phase: Phase::FitCv,
+        variant_id: Some(plan.variants[0].variant_id.clone()),
+        variant: Some(VariantExecutionSpec::from_plan(&plan.variants[0])),
+        fold_id: Some(selected.outer_fold_id.clone()),
+        seed_root: Some(11),
+    };
+    let nested_input = NestedStackingInput {
+        meta_node_id: &meta_id,
+        inner: &selected.inner,
+        kind: NestedMetaKind::Residual,
+    };
+    let mut ctx = RunContext::new(RunId::new("run:nested.residual.inputs").unwrap(), Some(11));
+    for fold in &selected.inner.inner_fold_set.folds {
+        let ids = fold.validation_sample_ids.clone();
+        ctx.prediction_store
+            .append(PredictionBlock {
+                prediction_id: Some(format!("pred:base:{}", fold.fold_id)),
+                producer_node: base_id.clone(),
+                producer_port: Some("pred".to_string()),
+                partition: PredictionPartition::Validation,
+                fold_id: Some(fold.fold_id.clone()),
+                sample_ids: ids.clone(),
+                values: vec![vec![1.0]; ids.len()],
+                target_names: vec!["y".to_string()],
+            })
+            .unwrap();
+        ctx.regression_target_records
+            .push(crate::metrics::RegressionTargetRecord {
+                producer_node: base_id.clone(),
+                producer_port: Some("pred".to_string()),
+                variant_id: scope.variant_id.clone(),
+                partition: PredictionPartition::Validation,
+                fold_id: Some(fold.fold_id.clone()),
+                block: RegressionTargetBlock {
+                    level: PredictionLevel::Sample,
+                    unit_ids: ids.iter().cloned().map(PredictionUnitId::Sample).collect(),
+                    values: ids
+                        .iter()
+                        .map(|sample| vec![sample.as_str()[1..].parse::<f64>().unwrap() * 10.0])
+                        .collect(),
+                    validity_masks: None,
+                    target_names: vec!["y".to_string()],
+                },
+            });
+    }
+    let target = nested_residual_targets(
+        &plan,
+        plan.node_plans.get(&meta_id).unwrap(),
+        &ctx,
+        &scope,
+        Some(&nested_input),
+    )
+    .unwrap()
+    .unwrap();
+    let parent = outer
+        .folds
+        .iter()
+        .find(|fold| fold.fold_id == selected.outer_fold_id)
+        .unwrap();
+    assert_eq!(target.sample_ids, parent.train_sample_ids);
+    assert!(target
+        .sample_ids
+        .iter()
+        .all(|sample| !parent.validation_sample_ids.contains(sample)));
+    for (sample, row) in target.sample_ids.iter().zip(&target.values) {
+        assert_eq!(
+            row,
+            &vec![sample.as_str()[1..].parse::<f64>().unwrap() * 10.0 - 1.0]
+        );
+    }
+    ctx.regression_target_records.clear();
+    assert!(nested_residual_targets(
+        &plan,
+        plan.node_plans.get(&meta_id).unwrap(),
+        &ctx,
+        &scope,
+        Some(&nested_input),
+    )
+    .is_err());
 }
 
 #[test]

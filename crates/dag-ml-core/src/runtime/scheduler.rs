@@ -1148,6 +1148,7 @@ impl SequentialScheduler {
                         nested_stacking: Some(NestedStackingInput {
                             meta_node_id: &nested.meta_node_id,
                             inner: &outer.inner,
+                            kind: nested.kind,
                         }),
                         ..Default::default()
                     },
@@ -1312,6 +1313,7 @@ impl SequentialScheduler {
                         let task_node_plan = effective_node_plan_for_scope(node_plan, &scope)?;
                         let task = NodeTask {
                             inner_fold_set: None,
+                            residual_targets: None,
                             run_id: ctx.run_id.clone(),
                             node_plan: task_node_plan.clone(),
                             phase: scope.phase,
@@ -1423,6 +1425,13 @@ impl SequentialScheduler {
                 )?;
                 let task = NodeTask {
                     inner_fold_set,
+                    residual_targets: nested_residual_targets(
+                        plan,
+                        &task_node_plan,
+                        ctx,
+                        &scope,
+                        resources.nested_stacking.as_ref(),
+                    )?,
                     run_id: ctx.run_id.clone(),
                     node_plan: task_node_plan.clone(),
                     phase: scope.phase,
@@ -1943,6 +1952,7 @@ impl ParallelScheduler {
                     node_id: node_id.clone(),
                     task: NodeTask {
                         inner_fold_set,
+                        residual_targets: None,
                         run_id: ctx.run_id.clone(),
                         node_plan: task_node_plan.clone(),
                         phase: scope.phase,
@@ -2099,6 +2109,7 @@ impl ParallelScheduler {
                     let task_node_plan = effective_node_plan_for_scope(node_plan, &scope)?;
                     let task = NodeTask {
                         inner_fold_set: None,
+                        residual_targets: None,
                         run_id: ctx.run_id.clone(),
                         node_plan: task_node_plan.clone(),
                         phase: scope.phase,

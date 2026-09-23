@@ -81,6 +81,10 @@ pub struct NodeTask {
     pub data_views: BTreeMap<String, DataProviderViewSpec>,
     #[serde(default)]
     pub prediction_inputs: BTreeMap<String, PredictionInputSpec>,
+    /// Scheduler-derived `y - base OOF` target rows for a declared residual
+    /// learner. Rows are keyed by sample identity and scoped to inner folds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub residual_targets: Option<crate::residual::ResidualTargetSet>,
     #[serde(default)]
     pub artifact_inputs: BTreeMap<String, ArtifactInputSpec>,
     /// Native-produced attestation templates for the training losses that must
