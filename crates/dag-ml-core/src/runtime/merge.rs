@@ -33,6 +33,8 @@ fn fuse_native_residual_blocks(
     plan: &ExecutionPlan,
     node_plan: &NodePlan,
     blocks: &[PredictionBlock],
+    ctx: &RunContext,
+    scope: &PhaseScope,
 ) -> Result<PredictionBlock> {
     let node = plan
         .graph_plan
@@ -111,9 +113,15 @@ fn fuse_native_residual_blocks(
             DagMlError::RuntimeValidation("residual gate must be finite".to_string())
         })?,
         serde_json::Value::String(value) if value == "auto" => {
-            return Err(DagMlError::RuntimeValidation(
-                "automatic residual gate needs nested learner OOF evidence".to_string(),
-            ));
+            ctx.residual_gates
+                .get(&(scope.variant_id.clone(), scope.fold_id.clone()))
+                .ok_or_else(|| {
+                    DagMlError::RuntimeValidation(
+                        "automatic residual gate needs learner OOF calibration for this scope"
+                            .to_string(),
+                    )
+                })?
+                .gate
         }
         _ => {
             return Err(DagMlError::RuntimeValidation(
@@ -378,7 +386,7 @@ pub(crate) fn reassemble_branch_merge_off_fold(
             reduce_proba_mean_across_branches(&branch_blocks, &node_plan.node_id)?
         }
         MergeReduction::ResidualFusion => {
-            fuse_native_residual_blocks(plan, node_plan, &branch_blocks)?
+            fuse_native_residual_blocks(plan, node_plan, &branch_blocks, ctx, scope)?
         }
     };
 
@@ -995,7 +1003,7 @@ pub(crate) fn reassemble_fusion_merge(
             reduce_proba_mean_across_branches(&branch_blocks, &node_plan.node_id)?
         }
         MergeReduction::ResidualFusion => {
-            fuse_native_residual_blocks(plan, node_plan, &branch_blocks)?
+            fuse_native_residual_blocks(plan, node_plan, &branch_blocks, ctx, scope)?
         }
         MergeReduction::Concat => unreachable!("concat is handled by reassemble_separation_merge"),
     };

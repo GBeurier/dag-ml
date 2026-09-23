@@ -46,6 +46,7 @@ pub(crate) struct NestedStackingCampaignPlan {
 pub(crate) struct NestedStackingInput<'a> {
     pub(crate) meta_node_id: &'a NodeId,
     pub(crate) inner: &'a crate::fold::NestedFoldSet,
+    pub(crate) parent_fold_set: &'a FoldSet,
     pub(crate) kind: NestedMetaKind,
 }
 
@@ -301,11 +302,8 @@ pub(crate) fn replace_nested_stacking_fit_cv_inputs(
         )));
     }
     nested.inner.validate_for_outer(
-        plan.fold_set
-            .as_ref()
-            .ok_or_else(|| {
-                DagMlError::RuntimeValidation("nested stacking has no outer fold set".to_string())
-            })?
+        nested
+            .parent_fold_set
             .folds
             .iter()
             .find(|fold| fold.fold_id == nested.inner.parent_outer_fold_id)
@@ -316,10 +314,8 @@ pub(crate) fn replace_nested_stacking_fit_cv_inputs(
                 ))
             })?,
     )?;
-    let outer = plan
-        .fold_set
-        .as_ref()
-        .expect("checked above")
+    let outer = nested
+        .parent_fold_set
         .folds
         .iter()
         .find(|fold| fold.fold_id == nested.inner.parent_outer_fold_id)
@@ -536,6 +532,50 @@ pub(crate) fn nested_residual_targets(
     }
     crate::residual::derive_residual_targets(fold_set, &edge.source.node_id, &blocks, &observed)
         .map(Some)
+}
+
+/// Read exactly one held-out learner block for each fold of a calibration
+/// universe. Extra and duplicate rows are rejected before gate estimation.
+pub(crate) fn residual_learner_oof(
+    ctx: &RunContext,
+    learner_id: &NodeId,
+    folds: &FoldSet,
+) -> Result<BTreeMap<SampleId, Vec<f64>>> {
+    let mut oof = BTreeMap::new();
+    for fold in &folds.folds {
+        let blocks = ctx.prediction_store.find(
+            Some(learner_id),
+            Some(&PredictionPartition::Validation),
+            Some(&fold.fold_id),
+        );
+        if blocks.len() != 1 {
+            return Err(DagMlError::OofValidation(format!(
+                "automatic residual gate needs one learner OOF block for fold `{}`",
+                fold.fold_id
+            )));
+        }
+        let block = blocks[0];
+        if block.sample_ids.iter().cloned().collect::<BTreeSet<_>>()
+            != fold
+                .validation_sample_ids
+                .iter()
+                .cloned()
+                .collect::<BTreeSet<_>>()
+        {
+            return Err(DagMlError::OofValidation(format!(
+                "automatic residual gate learner OOF has wrong validation scope for fold `{}`",
+                fold.fold_id
+            )));
+        }
+        for (sample, value) in block.sample_ids.iter().zip(&block.values) {
+            if oof.insert(sample.clone(), value.clone()).is_some() {
+                return Err(DagMlError::OofValidation(
+                    "automatic residual gate learner OOF repeats a sample".to_string(),
+                ));
+            }
+        }
+    }
+    Ok(oof)
 }
 
 fn dependency_closure(plan: &ExecutionPlan, seeds: &BTreeSet<NodeId>) -> BTreeSet<NodeId> {

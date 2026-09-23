@@ -517,7 +517,13 @@ pub(crate) fn collect_oof_prediction_input(
         }));
     }
     let blocks = match scope.phase {
-        Phase::FitCv => Some(validate_fit_cv_oof_edge(plan, edge, ctx, scope)?),
+        Phase::FitCv => Some(validate_fit_cv_oof_edge(
+            plan,
+            edge,
+            ctx,
+            scope,
+            resources.fold_set_override,
+        )?),
         Phase::Refit => validate_refit_oof_edge(plan, edge, ctx)?,
         _ => Some(Vec::new()),
     };
@@ -627,6 +633,7 @@ pub(crate) fn validate_fit_cv_oof_edge<'a>(
     edge: &EdgeSpec,
     ctx: &'a RunContext,
     scope: &PhaseScope,
+    fold_set_override: Option<&FoldSet>,
 ) -> Result<Vec<&'a PredictionBlock>> {
     let fold_id = scope.fold_id.as_ref().ok_or_else(|| {
         DagMlError::RuntimeValidation(format!(
@@ -650,7 +657,10 @@ pub(crate) fn validate_fit_cv_oof_edge<'a>(
     // merely *exist*. The branch-merge concat partition exception ("unless an explicit aggregation
     // policy says otherwise"), where a branch legitimately covers only its partition, is intercepted
     // before this code path (the separation-merge handler) and so is never over-rejected here.
-    let fold_set = required_fold_set_for_oof(plan, edge)?;
+    let fold_set = match fold_set_override {
+        Some(folds) => folds,
+        None => required_fold_set_for_oof(plan, edge)?,
+    };
     validate_oof_blocks_match_fold(edge, fold_set, fold_id, &blocks)?;
     Ok(blocks)
 }

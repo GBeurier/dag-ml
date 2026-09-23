@@ -3423,6 +3423,12 @@ fn build_bundle_from_cv_with_refit_count(
     stamp_winner_variant_label(&mut scores, winner_variant_label);
     merge_loser_validation_reports(&mut scores, &plan.id, loser_validation_reports);
     bundle.scores = scores;
+    if !ctx.residual_gate_records().is_empty() {
+        bundle.metadata.insert(
+            "residual_gates".to_string(),
+            serde_json::to_value(ctx.residual_gate_records())?,
+        );
+    }
     let mut additional_artifacts = Vec::<RefitArtifactRecord>::new();
     let mut additional_refit_result_count = 0usize;
     let mut additional_refit_lineage_count = 0usize;

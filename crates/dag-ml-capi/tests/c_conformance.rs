@@ -2341,6 +2341,7 @@ fn node_task_result_fixture() -> (NodeTask, NodeResult) {
     let controller_id = ControllerId::new("controller:transform").unwrap();
     let node_id = NodeId::new("transform:scale").unwrap();
     let task = NodeTask {
+        residual_targets: None,
         inner_fold_set: None,
         residual_targets: None,
         run_id: RunId::new("run:c.conformance.node-result").unwrap(),
