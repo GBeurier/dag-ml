@@ -2371,6 +2371,18 @@ impl SequentialScheduler {
                         &mut prediction_inputs,
                     )?;
                 }
+                let candidate_score_folds = resources
+                    .nested_stacking
+                    .as_ref()
+                    .map(|nested| &nested.inner.inner_fold_set)
+                    .or(plan.fold_set.as_ref())
+                    .map(|fold_set| {
+                        fold_set
+                            .folds
+                            .iter()
+                            .map(|fold| fold.fold_id.clone())
+                            .collect::<BTreeSet<_>>()
+                    });
                 apply_stacking_prediction_aggregations(
                     plan,
                     node_plan,
@@ -2380,6 +2392,8 @@ impl SequentialScheduler {
                     } else {
                         &ctx.score_collector
                     },
+                    candidate_score_folds.as_ref(),
+                    scope.variant_id.as_ref(),
                 )?;
                 let prediction_feature_matrix = prediction_feature_matrix_for_task(
                     plan,
@@ -2950,6 +2964,13 @@ impl ParallelScheduler {
                 }
                 let mut input_handles = collected_inputs.handles;
                 let mut prediction_inputs = collected_inputs.prediction_inputs;
+                let candidate_score_folds = plan.fold_set.as_ref().map(|fold_set| {
+                    fold_set
+                        .folds
+                        .iter()
+                        .map(|fold| fold.fold_id.clone())
+                        .collect::<BTreeSet<_>>()
+                });
                 apply_stacking_prediction_aggregations(
                     plan,
                     node_plan,
@@ -2959,6 +2980,8 @@ impl ParallelScheduler {
                     } else {
                         &ctx.score_collector
                     },
+                    candidate_score_folds.as_ref(),
+                    scope.variant_id.as_ref(),
                 )?;
                 let prediction_feature_matrix = prediction_feature_matrix_for_task(
                     plan,

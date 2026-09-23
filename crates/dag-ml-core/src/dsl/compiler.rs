@@ -1231,15 +1231,22 @@ impl PipelineCompiler {
         }
         validate_merge_selectors(&step.id, &step.selectors, predictions)?;
         for (index, selector) in step.selectors.iter().enumerate() {
+            let global_candidate_selection = selector
+                .select
+                .as_ref()
+                .and_then(|value| value.as_object())
+                .is_some_and(|select| select.contains_key("fold_candidates_top_k"));
             if !matches!(
                 selector.aggregate.as_deref(),
                 None | Some("mean" | "weighted_mean" | "proba_mean")
-            ) || (selector.branch.is_none() && selector.model.is_none())
+            ) || (selector.branch.is_none()
+                && selector.model.is_none()
+                && !global_candidate_selection)
                 || selector.input_name.is_some()
                 || (selector.aggregate.is_some() && selector.branch.is_none())
             {
                 return Err(DagMlError::GraphValidation(format!(
-                    "pipeline DSL merge_model `{}` selector {index} requires a branch or model and aggregate=mean/weighted_mean/proba_mean when present",
+                    "pipeline DSL merge_model `{}` selector {index} requires a branch or model (except global fold candidate selection) and aggregate=mean/weighted_mean/proba_mean when present",
                     step.id
                 )));
             }
@@ -2089,7 +2096,7 @@ pub(crate) fn validate_merge_selector_select(
     }
     let Some(object) = select.as_object() else {
         return Err(DagMlError::GraphValidation(format!(
-            "pipeline DSL merge `{merge_id}` selector {selector_index} select must be `all`, `best` or an object with `top_k` or `models`"
+            "pipeline DSL merge `{merge_id}` selector {selector_index} select must be `all`, `best` or an object with `top_k`, `fold_candidates_top_k` or `models`"
         )));
     };
     if object.len() == 1 && object.contains_key("models") {
@@ -2119,6 +2126,29 @@ pub(crate) fn validate_merge_selector_select(
             )));
         }
         return Ok(());
+    }
+    if object.contains_key("fold_candidates_top_k") {
+        if object
+            .keys()
+            .any(|key| key != "fold_candidates_top_k" && key != "ascending")
+            || object
+                .get("ascending")
+                .is_some_and(|value| !value.is_boolean())
+            || object
+                .get("fold_candidates_top_k")
+                .and_then(|value| value.as_u64())
+                .is_none_or(|value| value == 0)
+        {
+            return Err(DagMlError::GraphValidation(format!(
+                "pipeline DSL merge `{merge_id}` selector {selector_index} fold_candidates_top_k must be a positive integer with optional boolean ascending"
+            )));
+        }
+        return require_selector_metric(
+            merge_id,
+            selector_index,
+            selector,
+            "fold_candidates_top_k",
+        );
     }
     if object.len() != 1 || !object.contains_key("top_k") {
         return Err(DagMlError::GraphValidation(format!(
