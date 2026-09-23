@@ -207,6 +207,19 @@ enum HostHpoEvaluation {
     Pruned(HostHpoPrunedTrialEvidence),
 }
 
+enum ParallelHostHpoEvent {
+    Intermediate {
+        trial_index: u32,
+        step: u32,
+        score: f64,
+        reply: std::sync::mpsc::Sender<Result<bool>>,
+    },
+    Completed {
+        trial_index: u32,
+        evaluated: Box<Result<HostHpoEvaluation>>,
+    },
+}
+
 /// Operational stopping state; cancellation never requests a REFIT.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -270,16 +283,92 @@ pub struct HostHpoCheckpoint {
     pub fingerprint: String,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostHpoInterruptedTrial {
+    pub trial_index: u32,
+    pub params: BTreeMap<String, serde_json::Value>,
+}
+
 impl HostHpoCheckpoint {
     fn seal(&mut self) -> Result<()> {
         self.fingerprint =
             stable_json_fingerprint(&(self.schema_version, &self.binding, &self.trials))?;
         Ok(())
     }
+
+    pub fn verify_seal(&self) -> Result<()> {
+        let mut sealed = self.clone();
+        sealed.seal()?;
+        if sealed.fingerprint != self.fingerprint {
+            return Err(DagMlError::RuntimeValidation(
+                "host HPO checkpoint integrity fingerprint mismatch".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Recover a trial prepared before an optimizer transition, then account
+    /// for any candidates that were still in flight when the host stopped.
+    /// In-flight candidates have no score evidence and become failed trials.
+    pub fn recover_interrupted_trials(
+        mut self,
+        prepared: Option<Self>,
+        interrupted: Vec<HostHpoInterruptedTrial>,
+    ) -> Result<Self> {
+        self.verify_seal()?;
+        if let Some(prepared) = prepared {
+            prepared.verify_seal()?;
+            if prepared.schema_version != self.schema_version
+                || prepared.binding != self.binding
+                || prepared.trials.len() != self.trials.len() + 1
+                || stable_json_fingerprint(&prepared.trials[..self.trials.len()])?
+                    != stable_json_fingerprint(&self.trials)?
+                || prepared
+                    .trials
+                    .last()
+                    .map(HostHpoTerminalTrial::trial_index)
+                    != Some(self.trials.len() as u32)
+            {
+                return Err(DagMlError::RuntimeValidation(
+                    "host HPO prepared terminal does not extend the paired checkpoint".into(),
+                ));
+            }
+            self = prepared;
+        }
+        for orphan in interrupted {
+            if orphan.trial_index != self.trials.len() as u32
+                || orphan.params.keys().any(|key| key.trim().is_empty())
+            {
+                return Err(DagMlError::RuntimeValidation(
+                    "host HPO interrupted trial indices must extend checkpoint contiguously".into(),
+                ));
+            }
+            self.trials.push(HostHpoTerminalTrial::Failed {
+                trial_index: orphan.trial_index,
+                params: orphan.params,
+                variant_id: VariantId::new(format!("host_hpo:trial:{:010}", orphan.trial_index))?,
+                error: "interrupted_before_native_evaluation".into(),
+            });
+        }
+        self.seal()?;
+        Ok(self)
+    }
 }
 
 /// Return false only to request cancellation at this completed-trial boundary.
 pub trait HostHpoProgress {
+    /// Persist a sealed prospective terminal checkpoint before the host
+    /// optimizer is told. A durable host can recover a crash between the
+    /// optimizer transition and the ordinary checkpoint publication.
+    fn prepare_terminal(
+        &mut self,
+        _checkpoint: &HostHpoCheckpoint,
+        _status: HostHpoSearchStatus,
+    ) -> Result<()> {
+        Ok(())
+    }
+
     fn checkpoint(
         &mut self,
         checkpoint: &HostHpoCheckpoint,
@@ -802,11 +891,9 @@ impl SequentialScheduler {
         .ok_or_else(|| DagMlError::RuntimeValidation("host HPO has no successful candidate".into()))
     }
 
-    /// Evaluate a bounded window of independent candidates concurrently.
-    /// The proposal source remains on the coordinator thread: asks happen in
-    /// trial order before dispatch and tells happen in that same order after
-    /// all workers in the window finish. Each worker owns its provider,
-    /// controller registry, plan, and run context.
+    /// Evaluate bounded candidate windows while the coordinator alone owns all
+    /// optimizer transitions. Intermediate fold reports cross a channel back
+    /// to that coordinator; no optimizer object enters a worker thread.
     #[allow(clippy::too_many_arguments)]
     pub fn execute_parallel_host_hpo_search_with_candidate_factories(
         &self,
@@ -817,9 +904,56 @@ impl SequentialScheduler {
         proposals: &mut dyn HostHpoProposalSource,
         max_parallel_trials: usize,
     ) -> Result<HostHpoSearchResult> {
-        if max_parallel_trials <= 1 || request.progressive_pruning {
+        self.execute_parallel_host_hpo_search_inner(
+            plan,
+            provider_factory,
+            controller_factory,
+            request,
+            proposals,
+            max_parallel_trials,
+            None,
+        )?
+        .result
+        .ok_or_else(|| DagMlError::RuntimeValidation("host HPO has no successful candidate".into()))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn execute_resumable_parallel_host_hpo_search_with_candidate_factories(
+        &self,
+        plan: &ExecutionPlan,
+        provider_factory: &dyn HostHpoCandidateProviderFactory,
+        controller_factory: &dyn HostHpoCandidateControllerFactory,
+        request: &HostHpoSearchRequest,
+        proposals: &mut dyn HostHpoProposalSource,
+        max_parallel_trials: usize,
+        options: &HostHpoResumeOptions,
+        progress: &mut dyn HostHpoProgress,
+    ) -> Result<HostHpoSearchOutcome> {
+        self.execute_parallel_host_hpo_search_inner(
+            plan,
+            provider_factory,
+            controller_factory,
+            request,
+            proposals,
+            max_parallel_trials,
+            Some((options, progress)),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn execute_parallel_host_hpo_search_inner(
+        &self,
+        plan: &ExecutionPlan,
+        provider_factory: &dyn HostHpoCandidateProviderFactory,
+        controller_factory: &dyn HostHpoCandidateControllerFactory,
+        request: &HostHpoSearchRequest,
+        proposals: &mut dyn HostHpoProposalSource,
+        max_parallel_trials: usize,
+        mut durable: Option<(&HostHpoResumeOptions, &mut dyn HostHpoProgress)>,
+    ) -> Result<HostHpoSearchOutcome> {
+        if max_parallel_trials <= 1 {
             return Err(DagMlError::RuntimeValidation(
-                "parallel host HPO requires at least two workers and no progressive pruning".into(),
+                "parallel host HPO requires at least two workers".into(),
             ));
         }
         plan.validate()?;
@@ -855,13 +989,63 @@ impl SequentialScheduler {
             ));
         }
         request.validate_parameter_bindings(plan)?;
-        let mut trials = Vec::new();
-        let mut candidates = Vec::new();
-        let mut next = 0u32;
-        let mut exhausted = false;
-        while next < request.trial_budget && !exhausted {
+        let mut checkpoint = durable
+            .as_ref()
+            .map(|(options, _)| prepare_host_hpo_checkpoint(plan, request, options))
+            .transpose()?;
+        let mut trials = checkpoint
+            .as_ref()
+            .map(|saved| {
+                saved
+                    .trials
+                    .iter()
+                    .filter_map(|trial| {
+                        if let HostHpoTerminalTrial::Complete { evidence } = trial {
+                            Some(evidence.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let mut pruned_trials = checkpoint
+            .as_ref()
+            .map(|saved| {
+                saved
+                    .trials
+                    .iter()
+                    .filter_map(|trial| {
+                        if let HostHpoTerminalTrial::Pruned { evidence } = trial {
+                            Some(evidence.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let mut candidates = trials
+            .iter()
+            .map(|trial| host_hpo_candidate(plan, request, trial))
+            .collect::<Result<Vec<_>>>()?;
+        let mut next = checkpoint
+            .as_ref()
+            .map_or(0, |saved| saved.trials.len() as u32);
+        let mut status = if next == request.trial_budget {
+            HostHpoSearchStatus::Completed
+        } else {
+            HostHpoSearchStatus::Running
+        };
+        if let (Some(saved), Some((_, progress))) = (&checkpoint, &mut durable) {
+            if !progress.checkpoint(saved, status)? && status == HostHpoSearchStatus::Running {
+                status = HostHpoSearchStatus::Cancelled;
+            }
+        }
+        while next < request.trial_budget && status == HostHpoSearchStatus::Running {
             let phase = request.phase_index(next);
             let mut pending = Vec::new();
+            let mut exhausted = false;
             while pending.len() < max_parallel_trials
                 && next < request.trial_budget
                 && request.phase_index(next) == phase
@@ -882,11 +1066,19 @@ impl SequentialScheduler {
                         active_subsequence: None,
                     },
                 );
-                variant.fingerprint = stable_json_fingerprint(&(
-                    &plan.variants[0].fingerprint,
-                    &variant.choices,
-                    request,
-                ))?;
+                variant.fingerprint = if let Some(saved) = &checkpoint {
+                    stable_json_fingerprint(&(
+                        &plan.variants[0].fingerprint,
+                        &variant.choices,
+                        &saved.binding.objective_fingerprint,
+                    ))?
+                } else {
+                    stable_json_fingerprint(&(
+                        &plan.variants[0].fingerprint,
+                        &variant.choices,
+                        request,
+                    ))?
+                };
                 let mut candidate_plan = plan.clone();
                 candidate_plan.variants = vec![variant.clone()];
                 candidate_plan.validate()?;
@@ -906,47 +1098,168 @@ impl SequentialScheduler {
                 ));
                 next += 1;
             }
-            let completed = std::thread::scope(|scope| {
-                let handles = pending.into_iter().map(|(trial_index, params, variant, candidate_plan, mut context, provider, controllers)| {
-                    let handle = scope.spawn(move || -> Result<(HostHpoTrialEvidence, crate::selection::CandidateScore)> {
-                        self.execute_campaign_phase_with_data_provider(
-                            &candidate_plan, &controllers, provider.as_ref(), &mut context, Phase::FitCv,
-                        )?;
-                        context.collect_cross_fold_validation_scores(plan_oof_partition_mode(plan))?;
-                        let scores = context.build_score_set(plan.id.clone(), None).ok_or_else(|| {
-                            DagMlError::RuntimeValidation("host HPO lost native score evidence".into())
-                        })?;
-                        let (score, objective_fold_scores, candidate) =
-                            host_hpo_score(plan, request, &variant.variant_id, &scores)?;
-                        Ok((HostHpoTrialEvidence {
-                            trial_index, params, score, variant_id: variant.variant_id,
-                            scores, objective_fold_scores,
-                        }, candidate))
+            let pending_params = pending
+                .iter()
+                .map(|(index, params, ..)| (*index, params.clone()))
+                .collect::<BTreeMap<_, _>>();
+            let count = pending.len();
+            if count == 0 {
+                status = HostHpoSearchStatus::Exhausted;
+                break;
+            }
+            let (events_tx, events_rx) = std::sync::mpsc::channel();
+            let mut completed = std::thread::scope(|scope| {
+                let handles = pending.into_iter().map(|(trial_index, params, variant,
+                    candidate_plan, mut context, provider, controllers)| {
+                    let tx = events_tx.clone();
+                    let handle = scope.spawn(move || {
+                        let evaluated: Result<HostHpoEvaluation> = (|| {
+                            if request.progressive_pruning {
+                                let mut intermediates = Vec::new();
+                                let pruned = self.execute_host_hpo_candidate_fit_cv(
+                                    &candidate_plan, &controllers, provider.as_ref(), &mut context,
+                                    request, &mut |step, score| {
+                                        intermediates.push(score);
+                                        let fold_scores = folds.folds.iter().zip(&intermediates)
+                                            .map(|(fold, value)| (fold.fold_id.as_str().to_owned(), *value))
+                                            .collect::<BTreeMap<_, _>>();
+                                        let aggregate = reduce_host_hpo_fold_scores(
+                                            &fold_scores,
+                                            request.fold_score_reduction.unwrap_or(HostHpoFoldReduction::Best),
+                                            request.direction,
+                                        )?;
+                                        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+                                        tx.send(ParallelHostHpoEvent::Intermediate {
+                                            trial_index, step, score: aggregate, reply: reply_tx,
+                                        }).map_err(|_| DagMlError::RuntimeValidation(
+                                            "host HPO pruning coordinator disconnected".into()))?;
+                                        reply_rx.recv().map_err(|_| DagMlError::RuntimeValidation(
+                                            "host HPO pruning coordinator dropped feedback".into()))?
+                                    },
+                                )?;
+                                if pruned {
+                                    let scores = context.build_score_set(plan.id.clone(), None)
+                                        .ok_or_else(|| DagMlError::RuntimeValidation(
+                                            "pruned host HPO trial lost native fold score evidence".into()))?;
+                                    return Ok(HostHpoEvaluation::Pruned(HostHpoPrunedTrialEvidence {
+                                        trial_index, params, variant_id: variant.variant_id,
+                                        scores, intermediate_scores: intermediates,
+                                    }));
+                                }
+                            } else {
+                                self.execute_campaign_phase_with_data_provider(&candidate_plan,
+                                    &controllers, provider.as_ref(), &mut context, Phase::FitCv)?;
+                            }
+                            context.collect_cross_fold_validation_scores(plan_oof_partition_mode(plan))?;
+                            let scores = context.build_score_set(plan.id.clone(), None)
+                                .ok_or_else(|| DagMlError::RuntimeValidation(
+                                    "host HPO lost native score evidence".into()))?;
+                            let (score, objective_fold_scores, candidate) =
+                                host_hpo_score(plan, request, &variant.variant_id, &scores)?;
+                            Ok(HostHpoEvaluation::Complete(HostHpoTrialEvidence {
+                                trial_index, params, score, variant_id: variant.variant_id,
+                                scores, objective_fold_scores,
+                            }, candidate))
+                        })();
+                        let _ = tx.send(ParallelHostHpoEvent::Completed {
+                            trial_index,
+                            evaluated: Box::new(evaluated),
+                        });
                     });
                     (trial_index, handle)
                 }).collect::<Vec<_>>();
-                handles
-                    .into_iter()
-                    .map(|(trial_index, handle)| {
-                        let evaluated = handle
-                            .join()
-                            .map_err(|_| {
-                                DagMlError::RuntimeValidation(
-                                    "host HPO candidate worker panicked".into(),
-                                )
-                            })
-                            .and_then(|result| result);
-                        (trial_index, evaluated)
-                    })
-                    .collect::<Vec<_>>()
+                drop(events_tx);
+                let mut completed = BTreeMap::new();
+                while completed.len() < count {
+                    let Ok(event) = events_rx.recv() else {
+                        break;
+                    };
+                    match event {
+                        ParallelHostHpoEvent::Intermediate {
+                            trial_index,
+                            step,
+                            score,
+                            reply,
+                        } => {
+                            let decision = proposals.report_intermediate(trial_index, step, score);
+                            let _ = reply.send(decision);
+                        }
+                        ParallelHostHpoEvent::Completed {
+                            trial_index,
+                            evaluated,
+                        } => {
+                            completed.insert(trial_index, *evaluated);
+                        }
+                    }
+                }
+                for (trial_index, handle) in handles {
+                    if handle.join().is_err() {
+                        completed.insert(
+                            trial_index,
+                            Err(DagMlError::RuntimeValidation(
+                                "host HPO candidate worker panicked".into(),
+                            )),
+                        );
+                    }
+                }
+                completed
             });
             let mut first_error = None;
-            for (trial_index, evaluated) in completed {
+            let mut cancel_requested = false;
+            for trial_index in next - count as u32..next {
+                let evaluated = completed.remove(&trial_index).unwrap_or_else(|| {
+                    Err(DagMlError::RuntimeValidation(
+                        "host HPO candidate worker returned no result".into(),
+                    ))
+                });
+                let trial_status = if evaluated.is_err() || first_error.is_some() {
+                    HostHpoSearchStatus::Failed
+                } else if trial_index + 1 == request.trial_budget {
+                    HostHpoSearchStatus::Completed
+                } else {
+                    HostHpoSearchStatus::Running
+                };
+                let prospective = if let Some(saved) = &checkpoint {
+                    let terminal = match &evaluated {
+                        Ok(HostHpoEvaluation::Complete(evidence, _)) => {
+                            HostHpoTerminalTrial::Complete {
+                                evidence: evidence.clone(),
+                            }
+                        }
+                        Ok(HostHpoEvaluation::Pruned(evidence)) => HostHpoTerminalTrial::Pruned {
+                            evidence: evidence.clone(),
+                        },
+                        Err(error) => HostHpoTerminalTrial::Failed {
+                            trial_index,
+                            params: pending_params
+                                .get(&trial_index)
+                                .expect("pending proposal")
+                                .clone(),
+                            variant_id: VariantId::new(format!(
+                                "host_hpo:trial:{trial_index:010}"
+                            ))?,
+                            error: error.to_string(),
+                        },
+                    };
+                    let mut prepared = saved.clone();
+                    prepared.trials.push(terminal);
+                    prepared.seal()?;
+                    if let Some((_, progress)) = &mut durable {
+                        progress.prepare_terminal(&prepared, trial_status)?;
+                    }
+                    Some(prepared)
+                } else {
+                    None
+                };
                 match evaluated {
-                    Ok((evidence, candidate)) => {
-                        proposals.tell(evidence.trial_index, evidence.score)?;
-                        trials.push(evidence);
+                    Ok(HostHpoEvaluation::Complete(evidence, candidate)) => {
+                        proposals.tell(trial_index, evidence.score)?;
                         candidates.push(candidate);
+                        trials.push(evidence);
+                    }
+                    Ok(HostHpoEvaluation::Pruned(evidence)) => {
+                        proposals.pruned(trial_index)?;
+                        pruned_trials.push(evidence);
                     }
                     Err(error) => {
                         proposals.fail(trial_index, &error.to_string())?;
@@ -955,15 +1268,40 @@ impl SequentialScheduler {
                         }
                     }
                 }
+                checkpoint = prospective;
+                if let (Some(saved), Some((_, progress))) = (&mut checkpoint, &mut durable) {
+                    if !progress.checkpoint(saved, trial_status)?
+                        && trial_status == HostHpoSearchStatus::Running
+                    {
+                        cancel_requested = true;
+                    }
+                }
             }
             if let Some(error) = first_error {
                 return Err(error);
             }
+            if cancel_requested {
+                status = HostHpoSearchStatus::Cancelled;
+            } else if exhausted {
+                status = HostHpoSearchStatus::Exhausted;
+            } else if next == request.trial_budget {
+                status = HostHpoSearchStatus::Completed;
+            }
+        }
+        if matches!(
+            status,
+            HostHpoSearchStatus::Cancelled | HostHpoSearchStatus::Exhausted
+        ) {
+            if let (Some(saved), Some((_, progress))) = (&checkpoint, &mut durable) {
+                progress.checkpoint(saved, status)?;
+            }
         }
         if candidates.is_empty() {
-            return Err(DagMlError::RuntimeValidation(
-                "host HPO has no successful candidate".into(),
-            ));
+            return Ok(HostHpoSearchOutcome {
+                result: None,
+                status,
+                checkpoint,
+            });
         }
         let policy = SelectionPolicy {
             id: "select:host_hpo".into(),
@@ -983,18 +1321,22 @@ impl SequentialScheduler {
             .iter()
             .find(|trial| trial.variant_id.as_str() == selected.selected_candidate_id)
             .expect("selection returns an observed candidate");
-        Ok(HostHpoSearchResult {
-            profile: "host_optimizer_search_v1".into(),
-            portable: false,
-            request_fingerprint: stable_json_fingerprint(request)?,
-            graph_fingerprint: plan.graph_fingerprint.clone(),
-            controller_fingerprint: plan.controller_fingerprint.clone(),
-            campaign_fingerprint: stable_json_fingerprint(&plan.campaign)?,
-            fold_set_fingerprint: stable_json_fingerprint(folds)?,
-            selected_trial_index: winner.trial_index,
-            selected_params: winner.params.clone(),
-            trials,
-            pruned_trials: Vec::new(),
+        Ok(HostHpoSearchOutcome {
+            result: Some(HostHpoSearchResult {
+                profile: "host_optimizer_search_v1".into(),
+                portable: false,
+                request_fingerprint: stable_json_fingerprint(request)?,
+                graph_fingerprint: plan.graph_fingerprint.clone(),
+                controller_fingerprint: plan.controller_fingerprint.clone(),
+                campaign_fingerprint: stable_json_fingerprint(&plan.campaign)?,
+                fold_set_fingerprint: stable_json_fingerprint(folds)?,
+                selected_trial_index: winner.trial_index,
+                selected_params: winner.params.clone(),
+                trials,
+                pruned_trials,
+            }),
+            status,
+            checkpoint,
         })
     }
 }
@@ -1061,6 +1403,9 @@ fn prepare_host_hpo_checkpoint(
                 "host HPO checkpoint trial indices must be unique and contiguous".into(),
             ));
         }
+        let interrupted_without_params = matches!(trial, HostHpoTerminalTrial::Failed {
+            params, error, ..
+        } if params.is_empty() && error == "interrupted_before_native_evaluation");
         let (params, variant_id) = match trial {
             HostHpoTerminalTrial::Complete { evidence } => {
                 host_hpo_candidate(plan, request, evidence)?;
@@ -1140,7 +1485,7 @@ fn prepare_host_hpo_checkpoint(
                 (params, variant_id)
             }
         };
-        if params.is_empty()
+        if (params.is_empty() && !interrupted_without_params)
             || params.keys().any(|key| key.trim().is_empty())
             || variant_id.as_str() != format!("host_hpo:trial:{index:010}")
         {
@@ -1148,7 +1493,9 @@ fn prepare_host_hpo_checkpoint(
                 "host HPO checkpoint has invalid parameter/variant identity".into(),
             ));
         }
-        request.parameter_overrides(params)?;
+        if !interrupted_without_params {
+            request.parameter_overrides(params)?;
+        }
     }
     Ok(checkpoint)
 }

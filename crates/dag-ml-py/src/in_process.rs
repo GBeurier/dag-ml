@@ -424,6 +424,21 @@ struct PyHostHpoProgress {
 }
 
 impl dag_ml_core::HostHpoProgress for PyHostHpoProgress {
+    fn prepare_terminal(
+        &mut self,
+        checkpoint: &dag_ml_core::HostHpoCheckpoint,
+        status: dag_ml_core::HostHpoSearchStatus,
+    ) -> dag_ml_core::Result<()> {
+        if let Some(callback) = &self.callback {
+            let _: Option<bool> = call_py_bridge(
+                callback,
+                &serde_json::json!({"operation": "prepare_terminal", "checkpoint": checkpoint, "status": status}),
+                "host HPO progress",
+            )?;
+        }
+        Ok(())
+    }
+
     fn checkpoint(
         &mut self,
         checkpoint: &dag_ml_core::HostHpoCheckpoint,
@@ -439,6 +454,27 @@ impl dag_ml_core::HostHpoProgress for PyHostHpoProgress {
         )?;
         Ok(keep_running.unwrap_or(true))
     }
+}
+
+/// Verify a prepared native terminal and append trials interrupted before
+/// native evaluation. The recovered checkpoint is revalidated by core when
+/// the search resumes; the host never constructs its fingerprint itself.
+#[pyfunction]
+pub fn recover_host_hpo_checkpoint_json(
+    checkpoint_json: &str,
+    prepared_json: &str,
+    interrupted_json: &str,
+) -> PyResult<String> {
+    let checkpoint: dag_ml_core::HostHpoCheckpoint = serde_json::from_str(checkpoint_json)
+        .map_err(py_serde_error)?;
+    let prepared: Option<dag_ml_core::HostHpoCheckpoint> =
+        serde_json::from_str(prepared_json).map_err(py_serde_error)?;
+    let interrupted: Vec<dag_ml_core::HostHpoInterruptedTrial> =
+        serde_json::from_str(interrupted_json).map_err(py_serde_error)?;
+    let recovered = checkpoint
+        .recover_interrupted_trials(prepared, interrupted)
+        .map_err(py_core_error)?;
+    serde_json::to_string(&recovered).map_err(py_serde_error)
 }
 
 /// Bounded nonportable host-optimizer search. Only proposals cross from the
@@ -571,12 +607,6 @@ pub fn run_host_hpo_search_in_process(
                 "host HPO n_jobs must be positive or -1".into(),
             )));
         }
-        if workers > 1 && (durable || request.progressive_pruning) {
-            return Err(py_core_error(CoreDagMlError::RuntimeValidation(
-                "parallel host HPO does not yet support durable checkpoints or progressive pruning"
-                    .into(),
-            )));
-        }
         // n_jobs=-1 on a one-core host remains sequential.
         if workers > 1 {
             let factory = candidate_controllers.as_ref().ok_or_else(|| {
@@ -584,9 +614,9 @@ pub fn run_host_hpo_search_in_process(
                     "parallel host HPO requires candidate-local operator callbacks".into(),
                 ))
             })?;
-            let result = py
-                .detach(|| {
-                    SequentialScheduler.execute_parallel_host_hpo_search_with_candidate_factories(
+            if durable {
+                let result = py.detach(|| {
+                    SequentialScheduler.execute_resumable_parallel_host_hpo_search_with_candidate_factories(
                         &plan,
                         &provider_factory,
                         factory,
@@ -595,9 +625,26 @@ pub fn run_host_hpo_search_in_process(
                             callback: optimizer_callback,
                         },
                         workers,
+                        &resume_options,
+                        &mut PyHostHpoProgress {
+                            callback: progress_callback,
+                        },
                     )
-                })
-                .map_err(py_core_error)?;
+                }).map_err(py_core_error)?;
+                return serde_json::to_string(&result).map_err(py_serde_error);
+            }
+            let result = py.detach(|| {
+                SequentialScheduler.execute_parallel_host_hpo_search_with_candidate_factories(
+                    &plan,
+                    &provider_factory,
+                    factory,
+                    &request,
+                    &mut PyHostHpoProposals {
+                        callback: optimizer_callback,
+                    },
+                    workers,
+                )
+            }).map_err(py_core_error)?;
             return serde_json::to_string(&result).map_err(py_serde_error);
         }
     }
