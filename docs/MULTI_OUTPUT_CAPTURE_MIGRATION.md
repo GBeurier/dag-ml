@@ -14,27 +14,31 @@ outputs. `PortablePredictorPackage::select_output` requires an explicit ID.
 `portable_package_replays_all_named_outputs_and_only_explicit_selection` tests
 this path with two different prediction ports and checks sample IDs.
 
-The nirs4all `by_source`/`merge: auto` paths currently bypass that training
-operation. The CV path in `pipeline/dagml/run_paths.py` constructs a DSL and
-calls `run_cv_refit_bundle`; the no-splitter path in `pipeline/dagml/full_train.py`
-calls `execute_phase_in_process` or the matching CLI command. Both paths retain
-the returned `ScoreSet`, `NodeResult` frames and host refit estimators in
-`RunResult`. `pipeline/dagml/native_results.py` persists those pieces and
-artifact hashes, but it does not persist a signed `TrainingRequest` or a
-`TrainingOutcome`. The core package cannot be reconstructed from a score set
-and artifact list: the effective plan, bundle, output bindings, training
-influence, data identities, and their cross-linked fingerprints would have to
-be invented after execution.
+The in-process one-refit `by_source`/`merge: auto` CV path now constructs a
+signed request and calls `execute_training`; it retains the resulting outcome
+and package in `RunResult`. The CLI, top-k refit and operator-generator CV
+paths still call `run_cv_refit_bundle`. The no-splitter path in
+`pipeline/dagml/full_train.py` calls `execute_phase_in_process` or its CLI
+equivalent. Those paths retain `ScoreSet`, `NodeResult` frames and host refit
+estimators; `pipeline/dagml/native_results.py` persists those pieces and
+artifact hashes, but does not persist a signed `TrainingOutcome`. A core
+package cannot be reconstructed from those pieces after execution: its
+effective plan, bindings, data identities and cross-linked fingerprints must
+come from the training operation itself.
 
 The current `.n4a` host archive is a useful Python replay profile: it stores
 all source estimators and a source-to-output descriptor. It can split one
 concatenated matrix by saved feature widths or accept named source blocks with
 sample IDs. For named blocks, `align_named_source_rows` in DAG-ML core validates
 exact source/sample coverage and returns row permutations; Python applies
-those permutations to its host-owned feature buffers. The primitive is exposed
-through Python, C and WASM. This host archive is still not a
-`PortablePredictorPackage`: it lacks the signed training outcome, portable
-artifact bindings and attested source-to-output relation.
+those permutations to its host-owned feature buffers. When training exposes
+a numeric cm⁻¹ axis matching the captured source width, the archive saves it
+and named replay requires the same axis. The primitive is exposed through
+Python, C and WASM. This host archive is still not a
+`PortablePredictorPackage`: even when the in-process CV run produced a signed
+outcome and package, the archive has not yet bound those portable artifact
+records to independently addressable host sidecars or attested each source
+input as its own data plan.
 
 ## Minimum honest CV capture
 
