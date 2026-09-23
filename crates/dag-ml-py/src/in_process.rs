@@ -701,6 +701,7 @@ struct ResolvedRefitVariant {
 /// its pruned plan, the losers' OOF reports, and the winner's content fingerprint. Returns
 /// `Ok(None)` when scoring is off (no host targets) so the caller falls back to the default. Keeps
 /// winner-ONLY refit (the multi-model 32-not-34 contract).
+#[allow(clippy::too_many_arguments)]
 fn resolve_operator_select(
     plan: &ExecutionPlan,
     operator_variant_models: &[OperatorVariantModel],
@@ -817,6 +818,7 @@ fn pruned_plan_for_operator_variant(
 /// * otherwise, a multi-variant plan runs one single-variant FIT_CV per variant and refits the best
 ///   by `selection_metric` (Mechanism A), or
 /// * a single-variant plan refits that variant (or the default when native scoring is off).
+#[allow(clippy::too_many_arguments)]
 fn resolve_refit_variant(
     plan: &ExecutionPlan,
     operator_variant_models: &[OperatorVariantModel],
@@ -1005,7 +1007,9 @@ fn surface_loser_validation_frames(
     op_callback,
     selection_metric,
     resource_limits_json = None,
+    refit = true,
 ))]
+#[allow(clippy::too_many_arguments)]
 pub fn run_cv_refit_in_process(
     py: Python<'_>,
     dsl_json: &str,
@@ -1014,6 +1018,7 @@ pub fn run_cv_refit_in_process(
     op_callback: Py<PyAny>,
     selection_metric: &str,
     resource_limits_json: Option<&str>,
+    refit: bool,
 ) -> PyResult<String> {
     run_cv_refit_in_process_impl(
         py,
@@ -1024,6 +1029,7 @@ pub fn run_cv_refit_in_process(
         op_callback,
         selection_metric,
         resource_limits_json,
+        refit,
     )
 }
 
@@ -1055,6 +1061,7 @@ pub fn run_cv_refit_in_process_with_training_losses(
         op_callback,
         selection_metric,
         None,
+        true,
     )
 }
 
@@ -1223,6 +1230,7 @@ pub fn run_cv_refit_predict_in_process(
     .map_err(py_serde_error)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_cv_refit_in_process_impl(
     py: Python<'_>,
     dsl_json: &str,
@@ -1232,6 +1240,7 @@ fn run_cv_refit_in_process_impl(
     op_callback: Py<PyAny>,
     selection_metric: &str,
     resource_limits_json: Option<&str>,
+    refit: bool,
 ) -> PyResult<String> {
     let metric = parse_selection_metric(selection_metric).map_err(py_core_error)?;
     let resource_limits = resource_limits_json
@@ -1332,7 +1341,6 @@ fn run_cv_refit_in_process_impl(
     // paths the union plan IS the refit plan.
     let refit_plan = resolved.pruned_plan.as_ref().unwrap_or(&plan);
 
-    let mut artifact_store = InMemoryArtifactStore::new();
     let mut ctx = RunContext::new(run_id, Some(root_seed));
     ctx.variant_id = Some(selected_variant_id);
     ctx.resource_limits = resource_limits;
@@ -1347,16 +1355,21 @@ fn run_cv_refit_in_process_impl(
         )
         .map_err(py_core_error)?;
 
-    let refit_results = SequentialScheduler
-        .execute_campaign_phase_with_data_provider_and_artifact_store(
-            refit_plan,
-            &runtime_controllers,
-            &data_provider,
-            &mut artifact_store,
-            &mut ctx,
-            Phase::Refit,
-        )
-        .map_err(py_core_error)?;
+    let refit_results = if refit {
+        let mut artifact_store = InMemoryArtifactStore::new();
+        SequentialScheduler
+            .execute_campaign_phase_with_data_provider_and_artifact_store(
+                refit_plan,
+                &runtime_controllers,
+                &data_provider,
+                &mut artifact_store,
+                &mut ctx,
+                Phase::Refit,
+            )
+            .map_err(py_core_error)?
+    } else {
+        Vec::new()
+    };
 
     // 5. Score: collect the cross-fold OOF average (cv_best_score) + the REFIT
     //    final/test reports. The loser variants' VALIDATION (OOF) reports captured
@@ -1413,6 +1426,7 @@ fn run_cv_refit_in_process_impl(
     let payload = serde_json::json!({
         "node_results": node_results,
         "scores": scores,
+        "refit_enabled": refit,
     });
     serde_json::to_string(&payload).map_err(py_serde_error)
 }

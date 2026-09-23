@@ -598,6 +598,9 @@ enum Command {
         adapter: PathBuf,
         #[arg(long)]
         persistent: bool,
+        /// Score CV folds without executing REFIT or capturing fitted artifacts.
+        #[arg(long)]
+        no_refit: bool,
         #[arg(long, default_value_t = 1)]
         process_workers: usize,
         #[arg(long, default_value_t = DEFAULT_PROCESS_TIMEOUT_MS)]
@@ -610,6 +613,9 @@ enum Command {
         lineage_output: Option<PathBuf>,
         #[arg(long)]
         prediction_cache_output: Option<PathBuf>,
+        /// Native sample-level OOF average frames for host result projection.
+        #[arg(long)]
+        oof_average_output: Option<PathBuf>,
         #[arg(long, default_value = "bundle:cli.process.dsl.cv.refit")]
         bundle_id: String,
         #[arg(long)]
@@ -1649,12 +1655,14 @@ fn main() -> Result<()> {
             envelope,
             adapter,
             persistent,
+            no_refit,
             process_workers,
             process_timeout_ms,
             process_retries,
             output,
             lineage_output,
             prediction_cache_output,
+            oof_average_output,
             bundle_id,
             variant_id,
             selection_metric,
@@ -1694,25 +1702,28 @@ fn main() -> Result<()> {
                 scheduler,
             )?;
             let selections = read_selection_decisions(selections.as_ref())?;
-            let captured = build_bundle_from_cv_then_captured_refit(CapturedRefitBundleInput {
-                plan: &plan,
-                data_provider: &data_provider,
-                runtime_controllers: &runtime_controllers,
-                bundle_id,
-                variant_id,
-                selections,
-                run_id,
-                root_seed,
-                scheduler,
-                selection_metric: selection_metric.into(),
-                operator_variant_models,
-                resource_limits: Some(TrainingResourceLimits {
-                    cpu_threads,
-                    memory_bytes: None,
-                    gpu_devices,
-                    wall_time_ms: None,
-                }),
-            })
+            let captured = build_bundle_from_cv_with_optional_refit(
+                CapturedRefitBundleInput {
+                    plan: &plan,
+                    data_provider: &data_provider,
+                    runtime_controllers: &runtime_controllers,
+                    bundle_id,
+                    variant_id,
+                    selections,
+                    run_id,
+                    root_seed,
+                    scheduler,
+                    selection_metric: selection_metric.into(),
+                    operator_variant_models,
+                    resource_limits: Some(TrainingResourceLimits {
+                        cpu_threads,
+                        memory_bytes: None,
+                        gpu_devices,
+                        wall_time_ms: None,
+                    }),
+                },
+                !no_refit,
+            )
             .with_context(|| "process DSL CV+refit bundle capture failed")?;
             println!(
                 "process DSL cv refit bundle run: {} fit_cv result(s), {} OOF prediction block(s), {} refit result(s), {} captured artifact handle(s), {} prediction cache(s), scheduler={}, scheduler worker(s)={}, configured process worker(s)={}, observed process worker(s)={}",
@@ -1731,6 +1742,11 @@ fn main() -> Result<()> {
                 }
             );
             emit_json(output.as_ref(), &captured.bundle, "execution bundle")?;
+            emit_json(
+                oof_average_output.as_ref(),
+                &captured.oof_average_results,
+                "OOF average results",
+            )?;
             emit_json(
                 lineage_output.as_ref(),
                 &captured.lineage_records,
@@ -2762,6 +2778,7 @@ struct CapturedRefitBundle {
     artifact_store: InMemoryArtifactStore,
     lineage_records: Vec<LineageRecord>,
     prediction_cache_payloads: Vec<BundlePredictionCachePayload>,
+    oof_average_results: Vec<serde_json::Value>,
     fit_cv_result_count: usize,
     fit_cv_oof_prediction_block_count: usize,
     refit_result_count: usize,
@@ -2845,6 +2862,7 @@ fn build_bundle_from_captured_refit(
         artifact_store,
         lineage_records: ctx.lineage.records().cloned().collect(),
         prediction_cache_payloads: Vec::new(),
+        oof_average_results: Vec::new(),
         fit_cv_result_count: 0,
         fit_cv_oof_prediction_block_count: 0,
         refit_result_count: results.len(),
@@ -3091,6 +3109,13 @@ fn stamp_winner_variant_label(scores: &mut Option<ScoreSet>, label: Option<Strin
 fn build_bundle_from_cv_then_captured_refit(
     input: CapturedRefitBundleInput<'_>,
 ) -> Result<CapturedRefitBundle> {
+    build_bundle_from_cv_with_optional_refit(input, true)
+}
+
+fn build_bundle_from_cv_with_optional_refit(
+    input: CapturedRefitBundleInput<'_>,
+    refit: bool,
+) -> Result<CapturedRefitBundle> {
     let resolved = resolve_refit_variant(&input)?;
     let selected_variant_id = resolved.variant_id;
     let loser_validation_reports = resolved.loser_validation_reports;
@@ -3153,17 +3178,21 @@ fn build_bundle_from_cv_then_captured_refit(
         ctx.aggregated_prediction_store.blocks(),
     )?;
 
-    let refit_results = execute_campaign_phase_with_artifact_store_and_scheduler(
-        input.scheduler,
-        plan,
-        input.runtime_controllers,
-        input.data_provider,
-        &mut artifact_store,
-        &mut ctx,
-        Phase::Refit,
-    )
-    .with_context(|| "refit execution after FIT_CV failed")?;
-    if artifact_store.is_empty() {
+    let refit_results = if refit {
+        execute_campaign_phase_with_artifact_store_and_scheduler(
+            input.scheduler,
+            plan,
+            input.runtime_controllers,
+            input.data_provider,
+            &mut artifact_store,
+            &mut ctx,
+            Phase::Refit,
+        )
+        .with_context(|| "refit execution after FIT_CV failed")?
+    } else {
+        Vec::new()
+    };
+    if refit && artifact_store.is_empty() {
         bail!("refit did not capture any refit artifacts");
     }
     let refit_lineage_count = ctx.lineage.len().saturating_sub(fit_cv_lineage_count);
@@ -3199,6 +3228,22 @@ fn build_bundle_from_cv_then_captured_refit(
     stamp_winner_variant_label(&mut scores, winner_variant_label);
     merge_loser_validation_reports(&mut scores, &plan.id, loser_validation_reports);
     bundle.scores = scores;
+    let oof_average_results = ctx
+        .oof_average_blocks
+        .iter()
+        .map(|oof| {
+            serde_json::json!({
+                "node_id": oof.predictions.producer_node,
+                "aggregated_predictions": [oof.predictions],
+                "regression_targets": [oof.y_true],
+            })
+        })
+        .collect();
+    if !refit {
+        bundle
+            .metadata
+            .insert("refit_enabled".to_string(), serde_json::json!(false));
+    }
     bundle.metadata.insert(
         "fit_cv_result_count".to_string(),
         serde_json::json!(fit_cv_results.len()),
@@ -3237,6 +3282,7 @@ fn build_bundle_from_cv_then_captured_refit(
         artifact_store,
         lineage_records: ctx.lineage.records().cloned().collect(),
         prediction_cache_payloads,
+        oof_average_results,
         fit_cv_result_count: fit_cv_results.len(),
         fit_cv_oof_prediction_block_count,
         refit_result_count: refit_results.len(),
@@ -6291,5 +6337,44 @@ mod tests {
         )
         .expect("no-variant replay against the union plan must succeed");
         assert!(!replay_results.is_empty());
+    }
+
+    #[test]
+    fn cv_only_capture_skips_refit_and_keeps_native_oof_scores() {
+        let plan = simple_no_variant_plan();
+        let data_provider =
+            InMemoryDataProvider::new(ControllerId::new("controller:data.provider").unwrap());
+        let controllers = operator_select_cli_controllers();
+        let scheduler = SchedulerConfig::new(CliScheduler::Sequential, 1).unwrap();
+        let captured = build_bundle_from_cv_with_optional_refit(
+            CapturedRefitBundleInput {
+                plan: &plan,
+                data_provider: &data_provider,
+                runtime_controllers: &controllers,
+                bundle_id: "bundle:cli.cv.only".to_string(),
+                variant_id: None,
+                selections: BTreeMap::new(),
+                run_id: "run:cli.cv.only".to_string(),
+                root_seed: 7,
+                scheduler,
+                selection_metric: RegressionMetricKind::Rmse,
+                operator_variant_models: Vec::new(),
+                resource_limits: None,
+            },
+            false,
+        )
+        .expect("native CV-only capture must succeed");
+
+        assert!(captured.fit_cv_result_count > 0);
+        assert_eq!(captured.refit_result_count, 0);
+        assert!(captured.artifact_store.is_empty());
+        assert!(captured.bundle.refit_artifacts.is_empty());
+        assert_eq!(
+            captured.bundle.metadata.get("refit_enabled"),
+            Some(&serde_json::json!(false))
+        );
+        assert!(captured.bundle.scores.is_some());
+        assert!(!captured.oof_average_results.is_empty());
+        captured.bundle.validate_against_plan(&plan).unwrap();
     }
 }
