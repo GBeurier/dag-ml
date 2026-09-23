@@ -2733,6 +2733,18 @@ fn is_cv_ensemble_partition(partition: &PredictionPartition) -> bool {
     }
 }
 
+fn is_bound_output_partition(
+    refit: bool,
+    partition: &PredictionPartition,
+    fold_id: Option<&crate::ids::FoldId>,
+) -> bool {
+    if refit {
+        partition == &PredictionPartition::Final && fold_id.is_none()
+    } else {
+        is_cv_ensemble_partition(partition)
+    }
+}
+
 fn producer_port_matches_graph_output(
     plan: &ExecutionPlan,
     node_id: &NodeId,
@@ -2823,8 +2835,11 @@ fn bind_training_outputs(
                                     &output.node_id,
                                     &output.port_name,
                                     &block.producer_port,
-                                ) && (request.options.refit
-                                    || is_cv_ensemble_partition(&block.partition))
+                                ) && is_bound_output_partition(
+                                    request.options.refit,
+                                    &block.partition,
+                                    block.fold_id.as_ref(),
+                                )
                             })
                             .cloned(),
                     );
@@ -2842,8 +2857,11 @@ fn bind_training_outputs(
                                     &output.node_id,
                                     &output.port_name,
                                     &block.producer_port,
-                                ) && (request.options.refit
-                                    || is_cv_ensemble_partition(&block.partition))
+                                ) && is_bound_output_partition(
+                                    request.options.refit,
+                                    &block.partition,
+                                    block.fold_id.as_ref(),
+                                )
                             })
                             .cloned(),
                     );
@@ -2858,8 +2876,11 @@ fn bind_training_outputs(
                                     &output.port_name,
                                     &block.producer_port,
                                 ) && block.level == PredictionLevel::Sample
-                                    && (request.options.refit
-                                        || is_cv_ensemble_partition(&block.partition))
+                                    && is_bound_output_partition(
+                                        request.options.refit,
+                                        &block.partition,
+                                        block.fold_id.as_ref(),
+                                    )
                             })
                             .cloned(),
                     );
@@ -2895,8 +2916,11 @@ fn bind_training_outputs(
                                     &output.port_name,
                                     &block.producer_port,
                                 ) && block.level == output.prediction_level
-                                    && (request.options.refit
-                                        || is_cv_ensemble_partition(&block.partition))
+                                    && is_bound_output_partition(
+                                        request.options.refit,
+                                        &block.partition,
+                                        block.fold_id.as_ref(),
+                                    )
                             })
                             .cloned(),
                     );
@@ -5386,6 +5410,28 @@ mod tests {
                 expected,
                 "unexpected CvEnsemble retention decision for {partition:?}"
             );
+        }
+    }
+
+    #[test]
+    fn refit_output_binding_retains_only_unfolded_final_blocks() {
+        let fold = crate::ids::FoldId::new("fold:0").unwrap();
+        assert!(is_bound_output_partition(
+            true,
+            &PredictionPartition::Final,
+            None,
+        ));
+        assert!(!is_bound_output_partition(
+            true,
+            &PredictionPartition::Final,
+            Some(&fold),
+        ));
+        for partition in [
+            PredictionPartition::Train,
+            PredictionPartition::Validation,
+            PredictionPartition::Test,
+        ] {
+            assert!(!is_bound_output_partition(true, &partition, None));
         }
     }
 
