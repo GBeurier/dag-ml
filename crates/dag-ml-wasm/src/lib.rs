@@ -33,8 +33,8 @@ mod initial_refit;
 mod local_implementation;
 
 pub use host_hpo::{
-    host_hpo_evaluate_worker_task_json, host_hpo_search_json, host_hpo_search_parallel_json,
-    recover_host_hpo_checkpoint_json,
+    host_hpo_evaluate_worker_fold_json, host_hpo_evaluate_worker_task_json, host_hpo_search_json,
+    host_hpo_search_parallel_json, recover_host_hpo_checkpoint_json,
 };
 pub use initial_refit::{execute_initial_full_refit_json, replay_initial_full_refit_json};
 pub use local_implementation::{loss_execution_attestation_json, LocalImplementationRegistry};
@@ -378,6 +378,7 @@ fn contract_manifest() -> serde_json::Value {
             "execute_execution_plan_phase",
             "host_hpo_search_sequential",
             "host_hpo_search_parallel_workers",
+            "host_hpo_search_parallel_pruning",
             "host_hpo_checkpoint_recovery",
             "fold_set_fingerprint",
             "process_local_implementation_registry",
@@ -440,6 +441,7 @@ fn contract_manifest() -> serde_json::Value {
             "execute_execution_plan_phase_json",
             "host_hpo_search_json",
             "host_hpo_search_parallel_json",
+            "host_hpo_evaluate_worker_fold_json",
             "host_hpo_evaluate_worker_task_json",
             "recover_host_hpo_checkpoint_json"
         ]

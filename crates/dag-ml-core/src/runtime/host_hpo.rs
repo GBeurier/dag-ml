@@ -497,11 +497,6 @@ pub fn prepare_host_hpo_worker_window(
         ));
     }
     request.validate_parameter_bindings(plan)?;
-    if request.progressive_pruning {
-        return Err(DagMlError::RuntimeValidation(
-            "browser worker windows do not yet support cross-worker fold pruning feedback".into(),
-        ));
-    }
     let checkpoint = prepare_host_hpo_checkpoint(plan, request, options)?;
     let first = checkpoint.trials.len() as u32;
     let phase_index = request.phase_index(first);
@@ -652,6 +647,117 @@ pub fn evaluate_host_hpo_worker_fold(
     })
 }
 
+/// Reject an altered worker fold before any optimizer feedback. The evidence
+/// must contain exactly the declared native target report for this fold.
+pub fn validate_host_hpo_worker_fold_result(
+    task: &HostHpoWorkerTask,
+    request: &HostHpoSearchRequest,
+    data_fingerprint: &str,
+    result: &HostHpoWorkerFoldResult,
+) -> Result<()> {
+    let fold = task
+        .candidate_plan
+        .fold_set
+        .as_ref()
+        .and_then(|set| set.folds.get(result.fold_index as usize))
+        .ok_or_else(|| DagMlError::RuntimeValidation("worker fold index is out of range".into()))?;
+    if result.trial_index != task.trial_index
+        || result.fold_id != fold.fold_id
+        || result.data_fingerprint != data_fingerprint
+        || result.scores.plan_id != task.candidate_plan.id
+        || !result.score.is_finite()
+        || result.scores.reports.iter().any(|report| {
+            report
+                .fold_id
+                .as_ref()
+                .is_some_and(|id| id != &fold.fold_id)
+                || report
+                    .variant_id
+                    .as_ref()
+                    .is_some_and(|id| id != &task.candidate_plan.variants[0].variant_id)
+        })
+    {
+        return Err(DagMlError::RuntimeValidation(
+            "worker fold identity, data or score provenance mismatch".into(),
+        ));
+    }
+    result.scores.validate()?;
+    let reports = result
+        .scores
+        .reports
+        .iter()
+        .filter(|report| {
+            report.producer_node == request.target_node
+                && report.partition == PredictionPartition::Validation
+                && report.fold_id.as_ref() == Some(&fold.fold_id)
+        })
+        .collect::<Vec<_>>();
+    let [report] = reports.as_slice() else {
+        return Err(DagMlError::RuntimeValidation(
+            "worker fold lacks exactly one native target score".into(),
+        ));
+    };
+    if host_hpo_metric(report, request.metric)? != result.score {
+        return Err(DagMlError::RuntimeValidation(
+            "worker fold score differs from native target report".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Validate a contiguous prefix of fold feedback and calculate the exact
+/// scalar passed to the optimizer's pruning callback.
+pub fn host_hpo_worker_intermediate_score(
+    task: &HostHpoWorkerTask,
+    request: &HostHpoSearchRequest,
+    data_fingerprint: &str,
+    folds: &[HostHpoWorkerFoldResult],
+) -> Result<f64> {
+    if folds.is_empty() {
+        return Err(DagMlError::RuntimeValidation(
+            "worker pruning feedback requires at least one fold".into(),
+        ));
+    }
+    let mut scores = BTreeMap::new();
+    for (index, result) in folds.iter().enumerate() {
+        if result.fold_index as usize != index {
+            return Err(DagMlError::RuntimeValidation(
+                "worker pruning feedback has a noncontiguous fold prefix".into(),
+            ));
+        }
+        validate_host_hpo_worker_fold_result(task, request, data_fingerprint, result)?;
+        scores.insert(result.fold_id.as_str().to_owned(), result.score);
+    }
+    reduce_host_hpo_fold_scores(
+        &scores,
+        request
+            .fold_score_reduction
+            .unwrap_or(HostHpoFoldReduction::Best),
+        request.direction,
+    )
+}
+
+pub fn host_hpo_worker_pruned_evidence(
+    task: &HostHpoWorkerTask,
+    request: &HostHpoSearchRequest,
+    data_fingerprint: &str,
+    folds: &[HostHpoWorkerFoldResult],
+) -> Result<HostHpoPrunedTrialEvidence> {
+    host_hpo_worker_intermediate_score(task, request, data_fingerprint, folds)?;
+    let mut scores = folds[0].scores.clone();
+    for fold in &folds[1..] {
+        scores.reports.extend(fold.scores.reports.iter().cloned());
+    }
+    scores.validate()?;
+    Ok(HostHpoPrunedTrialEvidence {
+        trial_index: task.trial_index,
+        params: task.params.clone(),
+        variant_id: task.candidate_plan.variants[0].variant_id.clone(),
+        scores,
+        intermediate_scores: folds.iter().map(|fold| fold.score).collect(),
+    })
+}
+
 /// A worker may finish in any order; the coordinator processes these keyed
 /// results only after every launched candidate has terminalized.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -660,6 +766,13 @@ pub enum HostHpoWorkerResult {
     Complete {
         evidence: HostHpoTrialEvidence,
         data_fingerprint: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        fold_evidence: Vec<HostHpoWorkerFoldResult>,
+    },
+    Pruned {
+        evidence: HostHpoPrunedTrialEvidence,
+        data_fingerprint: String,
+        fold_evidence: Vec<HostHpoWorkerFoldResult>,
     },
     Failed {
         trial_index: u32,
@@ -671,6 +784,7 @@ impl HostHpoWorkerResult {
     fn trial_index(&self) -> u32 {
         match self {
             Self::Complete { evidence, .. } => evidence.trial_index,
+            Self::Pruned { evidence, .. } => evidence.trial_index,
             Self::Failed { trial_index, .. } => *trial_index,
         }
     }
@@ -753,6 +867,7 @@ pub fn complete_host_hpo_worker_window(
             HostHpoWorkerResult::Complete {
                 evidence,
                 data_fingerprint,
+                fold_evidence,
             } => {
                 if evidence.params != task.params
                     || evidence.variant_id != task.candidate_plan.variants[0].variant_id
@@ -763,6 +878,115 @@ pub fn complete_host_hpo_worker_window(
                     ));
                 }
                 host_hpo_candidate(plan, request, evidence)?;
+                if request.progressive_pruning {
+                    if fold_evidence.len()
+                        != plan
+                            .fold_set
+                            .as_ref()
+                            .expect("validated FoldSet")
+                            .folds
+                            .len()
+                    {
+                        return Err(DagMlError::RuntimeValidation(
+                            "completed prunable worker lacks all fold feedback".into(),
+                        ));
+                    }
+                    host_hpo_worker_intermediate_score(
+                        task,
+                        request,
+                        &options.data_fingerprint,
+                        fold_evidence,
+                    )?;
+                    for fold in fold_evidence {
+                        let reports = evidence
+                            .scores
+                            .reports
+                            .iter()
+                            .filter(|report| {
+                                report.producer_node == request.target_node
+                                    && report.partition == PredictionPartition::Validation
+                                    && report.fold_id.as_ref() == Some(&fold.fold_id)
+                            })
+                            .collect::<Vec<_>>();
+                        let [report] = reports.as_slice() else {
+                            return Err(DagMlError::RuntimeValidation(
+                                "completed worker lacks a feedback fold report".into(),
+                            ));
+                        };
+                        if host_hpo_metric(report, request.metric)? != fold.score {
+                            return Err(DagMlError::RuntimeValidation(
+                                "completed worker changed a reported fold score".into(),
+                            ));
+                        }
+                    }
+                } else if !fold_evidence.is_empty() {
+                    return Err(DagMlError::RuntimeValidation(
+                        "nonprunable worker unexpectedly supplied fold feedback".into(),
+                    ));
+                }
+            }
+            HostHpoWorkerResult::Pruned {
+                evidence,
+                data_fingerprint,
+                fold_evidence,
+            } => {
+                if !request.progressive_pruning
+                    || data_fingerprint != &options.data_fingerprint
+                    || evidence.params != task.params
+                    || evidence.variant_id != task.candidate_plan.variants[0].variant_id
+                {
+                    return Err(DagMlError::RuntimeValidation(
+                        "pruned worker proposal or data identity mismatch".into(),
+                    ));
+                }
+                let observed = host_hpo_worker_pruned_evidence(
+                    task,
+                    request,
+                    &options.data_fingerprint,
+                    fold_evidence,
+                )?;
+                if stable_json_fingerprint(&observed)? != stable_json_fingerprint(evidence)? {
+                    return Err(DagMlError::RuntimeValidation(
+                        "pruned worker terminal differs from observed fold feedback".into(),
+                    ));
+                }
+                if evidence.intermediate_scores.is_empty()
+                    || evidence.intermediate_scores.len()
+                        > plan
+                            .fold_set
+                            .as_ref()
+                            .expect("validated FoldSet")
+                            .folds
+                            .len()
+                {
+                    return Err(DagMlError::RuntimeValidation(
+                        "pruned worker has an invalid fold prefix".into(),
+                    ));
+                }
+                evidence.scores.validate()?;
+                for (index, score) in evidence.intermediate_scores.iter().enumerate() {
+                    let fold = &plan.fold_set.as_ref().expect("validated FoldSet").folds[index];
+                    let reports = evidence
+                        .scores
+                        .reports
+                        .iter()
+                        .filter(|report| {
+                            report.producer_node == request.target_node
+                                && report.partition == PredictionPartition::Validation
+                                && report.fold_id.as_ref() == Some(&fold.fold_id)
+                        })
+                        .collect::<Vec<_>>();
+                    let [report] = reports.as_slice() else {
+                        return Err(DagMlError::RuntimeValidation(
+                            "pruned worker lacks a native fold report".into(),
+                        ));
+                    };
+                    if host_hpo_metric(report, request.metric)? != *score {
+                        return Err(DagMlError::RuntimeValidation(
+                            "pruned worker fold feedback differs from native score".into(),
+                        ));
+                    }
+                }
             }
             HostHpoWorkerResult::Failed { error, .. } if error.trim().is_empty() => {
                 return Err(DagMlError::RuntimeValidation(
@@ -781,6 +1005,9 @@ pub fn complete_host_hpo_worker_window(
             .expect("checked result coverage");
         let terminal = match &result {
             HostHpoWorkerResult::Complete { evidence, .. } => HostHpoTerminalTrial::Complete {
+                evidence: evidence.clone(),
+            },
+            HostHpoWorkerResult::Pruned { evidence, .. } => HostHpoTerminalTrial::Pruned {
                 evidence: evidence.clone(),
             },
             HostHpoWorkerResult::Failed { error, .. } => {
@@ -803,10 +1030,21 @@ pub fn complete_host_hpo_worker_window(
         let mut prepared = checkpoint.clone();
         prepared.trials.push(terminal);
         prepared.seal()?;
+        prepare_host_hpo_checkpoint(
+            plan,
+            request,
+            &HostHpoResumeOptions {
+                data_fingerprint: options.data_fingerprint.clone(),
+                checkpoint: Some(prepared.clone()),
+            },
+        )?;
         progress.prepare_terminal(&prepared, status)?;
         match result {
             HostHpoWorkerResult::Complete { evidence, .. } => {
                 proposals.tell(task.trial_index, evidence.score)?;
+            }
+            HostHpoWorkerResult::Pruned { .. } => {
+                proposals.pruned(task.trial_index)?;
             }
             HostHpoWorkerResult::Failed { error, .. } => {
                 proposals.fail(task.trial_index, &error)?;

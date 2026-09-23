@@ -4,9 +4,11 @@
 
 use super::*;
 use dag_ml_core::{
-    complete_host_hpo_worker_window, evaluate_host_hpo_worker_task, prepare_host_hpo_worker_window,
-    ExternalDataPlanEnvelope, HostHpoCheckpoint, HostHpoInterruptedTrial, HostHpoProgress,
-    HostHpoProposalSource, HostHpoResumeOptions, HostHpoSearchRequest, HostHpoSearchStatus,
+    complete_host_hpo_worker_window, evaluate_host_hpo_worker_fold, evaluate_host_hpo_worker_task,
+    host_hpo_worker_intermediate_score, host_hpo_worker_pruned_evidence,
+    prepare_host_hpo_worker_window, validate_host_hpo_worker_fold_result, ExternalDataPlanEnvelope,
+    HostHpoCheckpoint, HostHpoInterruptedTrial, HostHpoProgress, HostHpoProposalSource,
+    HostHpoResumeOptions, HostHpoSearchRequest, HostHpoSearchStatus, HostHpoWorkerFoldResult,
     HostHpoWorkerResult, HostHpoWorkerTask, InMemoryDataProvider,
 };
 use wasm_bindgen_futures::JsFuture;
@@ -284,8 +286,218 @@ pub fn host_hpo_evaluate_worker_task_json(
     serde_json::to_string(&HostHpoWorkerResult::Complete {
         evidence,
         data_fingerprint,
+        fold_evidence: Vec::new(),
     })
     .map_err(js_serde_error)
+}
+
+/// Evaluate one FIT_CV fold only, then return to the browser coordinator for
+/// its optimizer's prune decision before any later fold is dispatched.
+#[wasm_bindgen]
+#[allow(clippy::too_many_arguments)]
+pub fn host_hpo_evaluate_worker_fold_json(
+    task_json: &str,
+    fold_index: u32,
+    trusted_controller_manifests_json: &str,
+    data_envelope_json: &str,
+    request_json: &str,
+    js_invoke: &js_sys::Function,
+) -> Result<String, JsValue> {
+    let task: HostHpoWorkerTask = serde_json::from_str(task_json).map_err(js_serde_error)?;
+    let request: HostHpoSearchRequest =
+        serde_json::from_str(request_json).map_err(js_serde_error)?;
+    let trusted_manifests = controller_registry_from_json(trusted_controller_manifests_json)?;
+    validate_runtime_controller_manifests(&task.candidate_plan, &trusted_manifests)
+        .map_err(js_core_error)?;
+    let envelope: ExternalDataPlanEnvelope =
+        serde_json::from_str(data_envelope_json).map_err(js_serde_error)?;
+    let data_fingerprint = HostHpoResumeOptions::from_envelope(&envelope, None)
+        .map_err(js_core_error)?
+        .data_fingerprint;
+    let provider = InMemoryDataProvider::with_envelope(
+        ControllerId::new("controller:wasm.hpo.provider").map_err(js_core_error)?,
+        envelope,
+    )
+    .map_err(js_core_error)?;
+    let mut controllers = RuntimeControllerRegistry::new();
+    for manifest in task.candidate_plan.controller_manifests.values() {
+        controllers
+            .register(Box::new(JsRuntimeController {
+                id: manifest.controller_id.clone(),
+                js_invoke: js_invoke.clone(),
+            }))
+            .map_err(js_core_error)?;
+    }
+    let result = evaluate_host_hpo_worker_fold(
+        &task,
+        &request,
+        fold_index,
+        &controllers,
+        &provider,
+        &data_fingerprint,
+    )
+    .map_err(js_core_error)?;
+    serde_json::to_string(&result).map_err(js_serde_error)
+}
+
+async fn worker_json(promise: Result<js_sys::Promise, JsValue>) -> Result<String, String> {
+    let promise = promise.map_err(|error| format!("worker dispatch threw: {error:?}"))?;
+    let value = JsFuture::from(promise)
+        .await
+        .map_err(|error| format!("worker promise rejected: {error:?}"))?;
+    value
+        .as_string()
+        .ok_or_else(|| "worker returned a non-string result".to_string())
+}
+
+/// The worker dispatcher receives tagged `{kind, task, fold_index?}` JSON in
+/// pruning mode. Fold tasks are dispatched concurrently, but each candidate's
+/// next fold waits for its native score to reach `report_intermediate`.
+async fn dispatch_prunable_window(
+    window: &dag_ml_core::HostHpoWorkerWindow,
+    request: &HostHpoSearchRequest,
+    data_fingerprint: &str,
+    dispatch: &js_sys::Function,
+    proposal: &mut JsProposal,
+) -> Result<Vec<HostHpoWorkerResult>, JsValue> {
+    let tasks = &window.tasks;
+    let fold_count = tasks
+        .first()
+        .map(|task| {
+            task.candidate_plan
+                .fold_set
+                .as_ref()
+                .expect("validated FoldSet")
+                .folds
+                .len()
+        })
+        .unwrap_or(0);
+    let mut active = (0..tasks.len()).collect::<Vec<_>>();
+    let mut transcripts = vec![Vec::<HostHpoWorkerFoldResult>::new(); tasks.len()];
+    let mut terminal = vec![None; tasks.len()];
+    for fold_index in 0..fold_count {
+        if active.is_empty() {
+            break;
+        }
+        let pending = active
+            .iter()
+            .map(|&index| {
+                let payload = serde_json::json!({
+                    "kind": "fold",
+                    "task": &tasks[index],
+                    "fold_index": fold_index,
+                });
+                let payload = serde_json::to_string(&payload).map_err(js_serde_error)?;
+                let promise = dispatch
+                    .call1(&JsValue::NULL, &JsValue::from_str(&payload))
+                    .map(|value| js_sys::Promise::resolve(&value));
+                Ok::<_, JsValue>((index, promise))
+            })
+            .collect::<Result<Vec<_>, JsValue>>()?;
+        let mut observed = Vec::with_capacity(pending.len());
+        for (index, promise) in pending {
+            match worker_json(promise).await {
+                Ok(json) => {
+                    let result: HostHpoWorkerFoldResult =
+                        serde_json::from_str(&json).map_err(js_serde_error)?;
+                    if result.fold_index as usize != fold_index {
+                        return Err(JsValue::from_str("worker returned the wrong fold index"));
+                    }
+                    validate_host_hpo_worker_fold_result(
+                        &tasks[index],
+                        request,
+                        data_fingerprint,
+                        &result,
+                    )
+                    .map_err(js_core_error)?;
+                    observed.push((index, Ok(result)));
+                }
+                Err(error) => observed.push((index, Err(error))),
+            }
+        }
+        let mut next_active = Vec::new();
+        for (index, result) in observed {
+            let task = &tasks[index];
+            match result {
+                Err(error) => {
+                    terminal[index] = Some(HostHpoWorkerResult::Failed {
+                        trial_index: task.trial_index,
+                        error,
+                    });
+                }
+                Ok(result) => {
+                    transcripts[index].push(result);
+                    let intermediate = host_hpo_worker_intermediate_score(
+                        task,
+                        request,
+                        data_fingerprint,
+                        &transcripts[index],
+                    )
+                    .map_err(js_core_error)?;
+                    if proposal
+                        .report_intermediate(task.trial_index, fold_index as u32, intermediate)
+                        .map_err(js_core_error)?
+                    {
+                        let evidence = host_hpo_worker_pruned_evidence(
+                            task,
+                            request,
+                            data_fingerprint,
+                            &transcripts[index],
+                        )
+                        .map_err(js_core_error)?;
+                        terminal[index] = Some(HostHpoWorkerResult::Pruned {
+                            evidence,
+                            data_fingerprint: data_fingerprint.to_owned(),
+                            fold_evidence: std::mem::take(&mut transcripts[index]),
+                        });
+                    } else {
+                        next_active.push(index);
+                    }
+                }
+            }
+        }
+        active = next_active;
+    }
+    let pending = active
+        .iter()
+        .map(|&index| {
+            let payload = serde_json::json!({"kind": "complete", "task": &tasks[index]});
+            let payload = serde_json::to_string(&payload).map_err(js_serde_error)?;
+            let promise = dispatch
+                .call1(&JsValue::NULL, &JsValue::from_str(&payload))
+                .map(|value| js_sys::Promise::resolve(&value));
+            Ok::<_, JsValue>((index, promise))
+        })
+        .collect::<Result<Vec<_>, JsValue>>()?;
+    for (index, promise) in pending {
+        let task = &tasks[index];
+        let result = match worker_json(promise).await {
+            Ok(json) => {
+                let mut result: HostHpoWorkerResult =
+                    serde_json::from_str(&json).map_err(js_serde_error)?;
+                match &mut result {
+                    HostHpoWorkerResult::Complete { fold_evidence, .. } => {
+                        *fold_evidence = std::mem::take(&mut transcripts[index]);
+                    }
+                    _ => {
+                        return Err(JsValue::from_str(
+                            "full worker evaluation did not return complete evidence",
+                        ));
+                    }
+                }
+                result
+            }
+            Err(error) => HostHpoWorkerResult::Failed {
+                trial_index: task.trial_index,
+                error,
+            },
+        };
+        terminal[index] = Some(result);
+    }
+    terminal
+        .into_iter()
+        .map(|result| result.ok_or_else(|| JsValue::from_str("worker trial has no terminal")))
+        .collect()
 }
 
 /// Run a true browser worker window: dispatch every candidate before awaiting
@@ -330,41 +542,38 @@ pub async fn host_hpo_search_parallel_json(
                 .map_err(js_core_error)?;
         // All promises are created before the first await. Resolving each in
         // turn does not serialize worker execution.
-        let pending = window
-            .tasks
-            .iter()
-            .map(|task| {
-                let payload = serde_json::to_string(task).map_err(js_serde_error)?;
-                let response = dispatch.call1(&JsValue::NULL, &JsValue::from_str(&payload));
-                Ok::<_, JsValue>((
-                    task.trial_index,
-                    response.map(|value| js_sys::Promise::resolve(&value)),
-                ))
-            })
-            .collect::<Result<Vec<_>, JsValue>>()?;
-        let mut results = Vec::with_capacity(pending.len());
-        for (trial_index, promise) in pending {
-            let result = match promise {
-                Ok(promise) => match JsFuture::from(promise).await {
-                    Ok(value) => value
-                        .as_string()
-                        .ok_or_else(|| "worker returned a non-string result".to_string())
-                        .and_then(|json| {
-                            serde_json::from_str(&json).map_err(|error| error.to_string())
-                        })
-                        .unwrap_or_else(|error| HostHpoWorkerResult::Failed { trial_index, error }),
-                    Err(error) => HostHpoWorkerResult::Failed {
-                        trial_index,
-                        error: format!("worker promise rejected: {error:?}"),
-                    },
-                },
-                Err(error) => HostHpoWorkerResult::Failed {
-                    trial_index,
-                    error: format!("worker dispatch threw: {error:?}"),
-                },
-            };
-            results.push(result);
-        }
+        let results = if request.progressive_pruning {
+            dispatch_prunable_window(
+                &window,
+                &request,
+                &options.data_fingerprint,
+                &dispatch,
+                &mut proposal,
+            )
+            .await?
+        } else {
+            let pending = window
+                .tasks
+                .iter()
+                .map(|task| {
+                    let payload = serde_json::to_string(task).map_err(js_serde_error)?;
+                    let response = dispatch.call1(&JsValue::NULL, &JsValue::from_str(&payload));
+                    Ok::<_, JsValue>((
+                        task.trial_index,
+                        response.map(|value| js_sys::Promise::resolve(&value)),
+                    ))
+                })
+                .collect::<Result<Vec<_>, JsValue>>()?;
+            let mut results = Vec::with_capacity(pending.len());
+            for (trial_index, promise) in pending {
+                let result = worker_json(promise)
+                    .await
+                    .and_then(|json| serde_json::from_str(&json).map_err(|error| error.to_string()))
+                    .unwrap_or_else(|error| HostHpoWorkerResult::Failed { trial_index, error });
+                results.push(result);
+            }
+            results
+        };
         let next = complete_host_hpo_worker_window(
             &plan,
             &request,

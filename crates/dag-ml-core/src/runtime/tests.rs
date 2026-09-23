@@ -10658,6 +10658,130 @@ fn browser_hpo_worker_fold_stops_before_next_fold() {
 }
 
 #[test]
+fn browser_hpo_worker_window_terminalizes_real_pruned_prefix() {
+    struct Proposals {
+        told: Vec<u32>,
+        pruned: Vec<u32>,
+    }
+    impl HostHpoProposalSource for Proposals {
+        fn ask(&mut self, trial: u32) -> Result<Option<BTreeMap<String, serde_json::Value>>> {
+            Ok(Some(BTreeMap::from([(
+                "n_components".into(),
+                json!(trial + 1),
+            )])))
+        }
+        fn tell(&mut self, trial: u32, _: f64) -> Result<()> {
+            self.told.push(trial);
+            Ok(())
+        }
+        fn pruned(&mut self, trial: u32) -> Result<()> {
+            self.pruned.push(trial);
+            Ok(())
+        }
+    }
+    let mut campaign = variant_scoring_campaign(vec![("base", 0.0)]);
+    campaign.generation = GenerationSpec::default();
+    let plan = build_execution_plan(
+        "plan:host_hpo:worker.prune",
+        simple_graph(),
+        campaign,
+        &manifests(),
+    )
+    .unwrap();
+    let request = HostHpoSearchRequest {
+        parameter_bindings: BTreeMap::new(),
+        phase_trial_budgets: Vec::new(),
+        progressive_pruning: true,
+        fold_score_reduction: None,
+        target_node: NodeId::new("model:pls").unwrap(),
+        trial_budget: 2,
+        metric: RegressionMetricKind::Rmse,
+        direction: crate::selection::MetricObjective::Minimize,
+        optimizer_descriptor: BTreeMap::from([("owner".into(), json!("browser"))]),
+    };
+    let options = HostHpoResumeOptions {
+        data_fingerprint: "data:worker.prune".into(),
+        checkpoint: None,
+    };
+    let mut proposals = Proposals {
+        told: Vec::new(),
+        pruned: Vec::new(),
+    };
+    let window =
+        prepare_host_hpo_worker_window(&plan, &request, &options, &mut proposals, 2).unwrap();
+    let controllers = variant_scoring_controllers();
+    let provider = InMemoryDataProvider::new(ControllerId::new("controller:data").unwrap());
+    let complete_task = &window.tasks[0];
+    let complete_folds = (0..2)
+        .map(|index| {
+            evaluate_host_hpo_worker_fold(
+                complete_task,
+                &request,
+                index,
+                &controllers,
+                &provider,
+                &options.data_fingerprint,
+            )
+            .unwrap()
+        })
+        .collect::<Vec<_>>();
+    let pruned_task = &window.tasks[1];
+    let pruned_folds = vec![evaluate_host_hpo_worker_fold(
+        pruned_task,
+        &request,
+        0,
+        &controllers,
+        &provider,
+        &options.data_fingerprint,
+    )
+    .unwrap()];
+    let pruned = host_hpo_worker_pruned_evidence(
+        pruned_task,
+        &request,
+        &options.data_fingerprint,
+        &pruned_folds,
+    )
+    .unwrap();
+    assert_eq!(pruned.intermediate_scores.len(), 1);
+    let results = vec![
+        HostHpoWorkerResult::Pruned {
+            evidence: pruned,
+            data_fingerprint: options.data_fingerprint.clone(),
+            fold_evidence: pruned_folds,
+        },
+        HostHpoWorkerResult::Complete {
+            evidence: evaluate_host_hpo_worker_task(
+                complete_task,
+                &request,
+                &controllers,
+                &provider,
+            )
+            .unwrap(),
+            data_fingerprint: options.data_fingerprint.clone(),
+            fold_evidence: complete_folds,
+        },
+    ];
+    let mut progress = DurableHostProgress {
+        stop_after: usize::MAX,
+        checkpoints: Vec::new(),
+    };
+    let outcome = complete_host_hpo_worker_window(
+        &plan,
+        &request,
+        &options,
+        window,
+        results,
+        &mut proposals,
+        &mut progress,
+    )
+    .unwrap();
+    assert_eq!(outcome.status, HostHpoSearchStatus::Completed);
+    assert_eq!(proposals.told, vec![0]);
+    assert_eq!(proposals.pruned, vec![1]);
+    assert_eq!(outcome.result.unwrap().pruned_trials.len(), 1);
+}
+
+#[test]
 fn host_hpo_owns_budget_native_scores_and_selection_without_refit() {
     struct Proposals {
         asked: u32,
@@ -10993,6 +11117,7 @@ fn browser_hpo_worker_window_reduces_out_of_order_native_results() {
                 evidence: evaluate_host_hpo_worker_task(task, &request, &controllers, &provider)
                     .unwrap(),
                 data_fingerprint: options.data_fingerprint.clone(),
+                fold_evidence: Vec::new(),
             }
         })
         .collect::<Vec<_>>();

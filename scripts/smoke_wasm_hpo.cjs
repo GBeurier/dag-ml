@@ -121,7 +121,12 @@ module.exports = async function smokeHostHpo(dagMl, repo, pkgDir) {
   }));
   const busy = new Set();
   let maximumInFlight = 0;
+  const dispatchedFolds = [];
+  const dispatchedComplete = [];
   const dispatch = (taskJson) => new Promise((resolve, reject) => {
+    const packet = JSON.parse(taskJson);
+    if (packet.kind === "fold") dispatchedFolds.push([packet.task.trial_index, packet.fold_index]);
+    if (packet.kind === "complete") dispatchedComplete.push(packet.task.trial_index);
     const worker = workers.find((candidate) => !busy.has(candidate));
     if (!worker) return reject(new Error("native window dispatched beyond worker bound"));
     busy.add(worker);
@@ -179,6 +184,34 @@ module.exports = async function smokeHostHpo(dagMl, repo, pkgDir) {
     if (resumedParallel.checkpoint.trials.length !== 3 || parallelTold.join(",") !== "0,1,2"
         || resumedParallel.selected_trial_index !== 0) {
       throw new Error("WASM worker HPO replayed historical candidates or changed selection on resume");
+    }
+
+    request.trial_budget = 2;
+    request.progressive_pruning = true;
+    const pruningEvents = [];
+    const pruningTerminal = [];
+    const pruningOptimizer = (operation, payloadJson) => {
+      const payload = JSON.parse(payloadJson);
+      if (operation === "ask") return JSON.stringify({ params: { offset: payload.trial_index + 1 } });
+      if (operation === "report_intermediate") {
+        pruningEvents.push([payload.trial_index, payload.step, payload.score]);
+        return JSON.stringify({ prune: payload.trial_index === 1 && payload.step === 0 });
+      }
+      if (operation === "tell" || operation === "pruned") pruningTerminal.push([operation, payload.trial_index]);
+      if (operation === "checkpoint") return JSON.stringify({ continue: true });
+      return JSON.stringify({ ok: true });
+    };
+    const pruned = JSON.parse(await dagMl.host_hpo_search_parallel_json(
+      plan, JSON.stringify([manifest]), envelope, JSON.stringify(request), undefined,
+      2, dispatch, pruningOptimizer,
+    ));
+    if (pruned.status !== "completed" || pruned.checkpoint.trials.length !== 2
+        || pruned.pruned_trials.length !== 1 || pruned.pruned_trials[0].trial_index !== 1
+        || pruningEvents.map((event) => event.slice(0, 2).join(":")).join(",") !== "0:0,1:0,0:1"
+        || dispatchedFolds.map((event) => event.join(":")).join(",") !== "0:0,1:0,0:1"
+        || dispatchedComplete.join(",") !== "0"
+        || pruningTerminal.map((event) => event.join(":")).join(",") !== "tell:0,pruned:1") {
+      throw new Error("WASM worker pruning did not stop candidate 1 before its second fold");
     }
   } finally {
     await Promise.all(workers.map((worker) => worker.terminate()));
