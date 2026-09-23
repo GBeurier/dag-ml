@@ -9762,12 +9762,14 @@ fn host_hpo_owns_budget_native_scores_and_selection_without_refit() {
         asked: u32,
         phases: Vec<Option<u32>>,
         told: Vec<(u32, f64)>,
+        pruned: Vec<u32>,
+        intermediates: Vec<(u32, u32, f64)>,
     }
     impl HostHpoProposalSource for Proposals {
         fn ask(&mut self, trial_index: u32) -> Result<Option<BTreeMap<String, serde_json::Value>>> {
             assert_eq!(
                 trial_index as usize,
-                self.told.len(),
+                self.told.len() + self.pruned.len(),
                 "each proposal must be terminal before asking again"
             );
             self.asked += 1;
@@ -9787,6 +9789,14 @@ fn host_hpo_owns_budget_native_scores_and_selection_without_refit() {
         ) -> Result<Option<BTreeMap<String, serde_json::Value>>> {
             self.phases.push(phase_index);
             self.ask(trial_index)
+        }
+        fn report_intermediate(&mut self, trial_index: u32, step: u32, score: f64) -> Result<bool> {
+            self.intermediates.push((trial_index, step, score));
+            Ok(trial_index == 1 && step == 0)
+        }
+        fn pruned(&mut self, trial_index: u32) -> Result<()> {
+            self.pruned.push(trial_index);
+            Ok(())
         }
     }
     struct CvOnly(VariantScoringController);
@@ -9826,6 +9836,7 @@ fn host_hpo_owns_budget_native_scores_and_selection_without_refit() {
     let mut request = HostHpoSearchRequest {
         parameter_bindings: BTreeMap::new(),
         phase_trial_budgets: vec![1, 2],
+        progressive_pruning: false,
         fold_score_reduction: None,
         target_node: NodeId::new("model:pls").unwrap(),
         trial_budget: 3,
@@ -9837,6 +9848,8 @@ fn host_hpo_owns_budget_native_scores_and_selection_without_refit() {
         asked: 0,
         phases: Vec::new(),
         told: Vec::new(),
+        pruned: Vec::new(),
+        intermediates: Vec::new(),
     };
     let result = SequentialScheduler
         .execute_host_hpo_search(&plan, &controllers, &provider, &request, &mut proposals)
@@ -9865,6 +9878,8 @@ fn host_hpo_owns_budget_native_scores_and_selection_without_refit() {
         asked: 0,
         phases: Vec::new(),
         told: Vec::new(),
+        pruned: Vec::new(),
+        intermediates: Vec::new(),
     };
     let reduced = SequentialScheduler
         .execute_host_hpo_search(
@@ -9888,6 +9903,36 @@ fn host_hpo_owns_budget_native_scores_and_selection_without_refit() {
             "selection reduction cannot rewrite native per-fold/OOF reports"
         );
     }
+    request.progressive_pruning = true;
+    let mut pruning_proposals = Proposals {
+        asked: 0,
+        phases: Vec::new(),
+        told: Vec::new(),
+        pruned: Vec::new(),
+        intermediates: Vec::new(),
+    };
+    let pruned = SequentialScheduler
+        .execute_host_hpo_search(
+            &plan,
+            &controllers,
+            &provider,
+            &request,
+            &mut pruning_proposals,
+        )
+        .unwrap();
+    assert_eq!(pruning_proposals.asked, 3);
+    assert_eq!(pruning_proposals.pruned, vec![1]);
+    assert_eq!(
+        pruning_proposals
+            .intermediates
+            .iter()
+            .filter(|(trial, _, _)| *trial == 1)
+            .count(),
+        1
+    );
+    assert_eq!(pruned.trials.len(), 2);
+    assert_eq!(pruned.pruned_trials.len(), 1);
+    assert_eq!(pruned.pruned_trials[0].intermediate_scores.len(), 1);
     request.phase_trial_budgets = vec![1, 1];
     assert!(SequentialScheduler
         .execute_host_hpo_search(&plan, &controllers, &provider, &request, &mut proposals)
@@ -10007,6 +10052,7 @@ fn durable_host_fixture(
     let request = HostHpoSearchRequest {
         parameter_bindings: BTreeMap::new(),
         phase_trial_budgets: Vec::new(),
+        progressive_pruning: false,
         target_node: NodeId::new("model:pls").unwrap(),
         trial_budget: 3,
         metric: RegressionMetricKind::Rmse,

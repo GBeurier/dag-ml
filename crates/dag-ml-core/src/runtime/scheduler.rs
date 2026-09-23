@@ -630,6 +630,84 @@ impl SequentialScheduler {
         Ok(HpoCandidateFitCvOutcome::Completed)
     }
 
+    /// Execute a host-optimizer candidate one fold at a time so the host can
+    /// decide whether to prune from native, report-grade intermediate scores.
+    /// A pruned candidate never receives a fabricated OOF score.
+    pub(super) fn execute_host_hpo_candidate_fit_cv(
+        &self,
+        plan: &ExecutionPlan,
+        controllers: &RuntimeControllerRegistry,
+        data_provider: &dyn RuntimeDataProvider,
+        ctx: &mut RunContext,
+        request: &HostHpoSearchRequest,
+        on_fold: &mut dyn FnMut(u32, f64) -> Result<bool>,
+    ) -> Result<bool> {
+        if nested_stacking_campaign_plan(plan)?.is_some() {
+            return Err(DagMlError::RuntimeValidation(
+                "host HPO progressive pruning cannot attest nested-stacking outer folds".into(),
+            ));
+        }
+        let folds = &plan
+            .fold_set
+            .as_ref()
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation("host HPO pruning requires evaluation folds".into())
+            })?
+            .folds;
+        ctx.configure_global_oof_aggregation(plan, data_provider)?;
+        let variant = &plan.variants[0];
+        for (step, fold) in folds.iter().enumerate() {
+            let score_start = ctx.score_collector.len();
+            self.execute_phase_scope(
+                plan,
+                controllers,
+                ctx,
+                PhaseScope {
+                    phase: Phase::FitCv,
+                    variant_id: Some(variant.variant_id.clone()),
+                    variant: Some(VariantExecutionSpec::from_plan(variant)),
+                    fold_id: Some(fold.fold_id.clone()),
+                    seed_root: variant.seed.or(ctx.root_seed),
+                },
+                PhaseScopeResources {
+                    data_provider: Some(data_provider),
+                    ..Default::default()
+                },
+            )?;
+            let reports = ctx.score_collector[score_start..]
+                .iter()
+                .filter(|report| {
+                    report.producer_node == request.target_node
+                        && report.partition == PredictionPartition::Validation
+                        && report.fold_id.as_ref() == Some(&fold.fold_id)
+                })
+                .collect::<Vec<_>>();
+            let [report] = reports.as_slice() else {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "host HPO pruning requires one target validation score in fold {}",
+                    fold.fold_id
+                )));
+            };
+            let score = report
+                .metrics
+                .get(request.metric.name())
+                .copied()
+                .filter(|score| score.is_finite())
+                .ok_or_else(|| {
+                    DagMlError::RuntimeValidation(
+                        "host HPO pruning requires a finite native fold score".into(),
+                    )
+                })?;
+            let step = u32::try_from(step).map_err(|_| {
+                DagMlError::RuntimeValidation("host HPO pruning fold count exceeds u32".into())
+            })?;
+            if on_fold(step, score)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     pub fn execute_phase(
         &self,
         plan: &ExecutionPlan,

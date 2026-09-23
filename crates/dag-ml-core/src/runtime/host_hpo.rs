@@ -6,6 +6,10 @@
 
 use super::*;
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HostHpoFoldReduction {
@@ -34,6 +38,9 @@ pub struct HostHpoSearchRequest {
     /// phase boundary while the proposal source owns sampler-specific state.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub phase_trial_budgets: Vec<u32>,
+    /// Ask the host optimizer for a pruning decision after each native fold.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub progressive_pruning: bool,
     /// None preserves the original global OOF objective. Fold reductions are
     /// explicit selection evidence, never synthetic OOF ScoreSet reports.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -134,6 +141,13 @@ pub trait HostHpoProposalSource {
         self.ask(trial_index)
     }
     fn tell(&mut self, trial_index: u32, score: f64) -> Result<()>;
+    /// Return true to prune this trial after a report-grade intermediate score.
+    fn report_intermediate(&mut self, _trial_index: u32, _step: u32, _score: f64) -> Result<bool> {
+        Ok(false)
+    }
+    fn pruned(&mut self, _trial_index: u32) -> Result<()> {
+        Ok(())
+    }
     /// Terminalize a failed candidate before pairing durable optimizer state.
     fn fail(&mut self, _trial_index: u32, _error: &str) -> Result<()> {
         Ok(())
@@ -161,8 +175,24 @@ pub struct HostHpoSearchResult {
     pub campaign_fingerprint: String,
     pub fold_set_fingerprint: String,
     pub trials: Vec<HostHpoTrialEvidence>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pruned_trials: Vec<HostHpoPrunedTrialEvidence>,
     pub selected_trial_index: u32,
     pub selected_params: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HostHpoPrunedTrialEvidence {
+    pub trial_index: u32,
+    pub params: BTreeMap<String, serde_json::Value>,
+    pub variant_id: VariantId,
+    pub scores: ScoreSet,
+    pub intermediate_scores: Vec<f64>,
+}
+
+enum HostHpoEvaluation {
+    Complete(HostHpoTrialEvidence, crate::selection::CandidateScore),
+    Pruned(HostHpoPrunedTrialEvidence),
 }
 
 /// Operational stopping state; cancellation never requests a REFIT.
@@ -183,6 +213,9 @@ pub enum HostHpoTerminalTrial {
     Complete {
         evidence: HostHpoTrialEvidence,
     },
+    Pruned {
+        evidence: HostHpoPrunedTrialEvidence,
+    },
     Failed {
         trial_index: u32,
         params: BTreeMap<String, serde_json::Value>,
@@ -195,6 +228,7 @@ impl HostHpoTerminalTrial {
     pub fn trial_index(&self) -> u32 {
         match self {
             Self::Complete { evidence } => evidence.trial_index,
+            Self::Pruned { evidence } => evidence.trial_index,
             Self::Failed { trial_index, .. } => *trial_index,
         }
     }
@@ -364,7 +398,21 @@ impl SequentialScheduler {
                     .iter()
                     .filter_map(|trial| match trial {
                         HostHpoTerminalTrial::Complete { evidence } => Some(evidence.clone()),
-                        HostHpoTerminalTrial::Failed { .. } => None,
+                        HostHpoTerminalTrial::Pruned { .. }
+                        | HostHpoTerminalTrial::Failed { .. } => None,
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let mut pruned_trials = checkpoint
+            .as_ref()
+            .map(|checkpoint| {
+                checkpoint
+                    .trials
+                    .iter()
+                    .filter_map(|trial| match trial {
+                        HostHpoTerminalTrial::Pruned { evidence } => Some(evidence.clone()),
+                        _ => None,
                     })
                     .collect::<Vec<_>>()
             })
@@ -429,8 +477,52 @@ impl SequentialScheduler {
                 variant.seed.or(plan.campaign.root_seed),
             );
             context.variant_id = Some(variant.variant_id.clone());
-            let evaluated: Result<(HostHpoTrialEvidence, crate::selection::CandidateScore)> =
-                (|| {
+            let evaluated: Result<HostHpoEvaluation> = (|| {
+                if request.progressive_pruning {
+                    let mut intermediates = Vec::new();
+                    let pruned = self.execute_host_hpo_candidate_fit_cv(
+                        &candidate_plan,
+                        controllers,
+                        provider,
+                        &mut context,
+                        request,
+                        &mut |step, score| {
+                            intermediates.push(score);
+                            let fold_scores = folds
+                                .folds
+                                .iter()
+                                .zip(&intermediates)
+                                .map(|(fold, value)| (fold.fold_id.as_str().to_owned(), *value))
+                                .collect::<BTreeMap<_, _>>();
+                            let aggregate = reduce_host_hpo_fold_scores(
+                                &fold_scores,
+                                request
+                                    .fold_score_reduction
+                                    .unwrap_or(HostHpoFoldReduction::Best),
+                                request.direction,
+                            )?;
+                            proposals.report_intermediate(trial_index, step, aggregate)
+                        },
+                    )?;
+                    if pruned {
+                        let scores =
+                            context
+                                .build_score_set(plan.id.clone(), None)
+                                .ok_or_else(|| {
+                                    DagMlError::RuntimeValidation(
+                                        "pruned host HPO trial lost native fold score evidence"
+                                            .into(),
+                                    )
+                                })?;
+                        return Ok(HostHpoEvaluation::Pruned(HostHpoPrunedTrialEvidence {
+                            trial_index,
+                            params: params.clone(),
+                            variant_id: variant.variant_id.clone(),
+                            scores,
+                            intermediate_scores: intermediates,
+                        }));
+                    }
+                } else {
                     self.execute_campaign_phase_with_data_provider(
                         &candidate_plan,
                         controllers,
@@ -438,30 +530,28 @@ impl SequentialScheduler {
                         &mut context,
                         Phase::FitCv,
                     )?;
-                    context.collect_cross_fold_validation_scores(plan_oof_partition_mode(plan))?;
-                    let scores =
-                        context
-                            .build_score_set(plan.id.clone(), None)
-                            .ok_or_else(|| {
-                                DagMlError::RuntimeValidation(
-                                    "host HPO lost native score evidence".into(),
-                                )
-                            })?;
-                    let (score, objective_fold_scores, candidate) =
-                        host_hpo_score(plan, request, &variant.variant_id, &scores)?;
-                    Ok((
-                        HostHpoTrialEvidence {
-                            trial_index,
-                            params: params.clone(),
-                            score,
-                            variant_id: variant.variant_id.clone(),
-                            scores,
-                            objective_fold_scores,
-                        },
-                        candidate,
-                    ))
-                })();
-            let (evidence, candidate) = match evaluated {
+                }
+                context.collect_cross_fold_validation_scores(plan_oof_partition_mode(plan))?;
+                let scores = context
+                    .build_score_set(plan.id.clone(), None)
+                    .ok_or_else(|| {
+                        DagMlError::RuntimeValidation("host HPO lost native score evidence".into())
+                    })?;
+                let (score, objective_fold_scores, candidate) =
+                    host_hpo_score(plan, request, &variant.variant_id, &scores)?;
+                Ok(HostHpoEvaluation::Complete(
+                    HostHpoTrialEvidence {
+                        trial_index,
+                        params: params.clone(),
+                        score,
+                        variant_id: variant.variant_id.clone(),
+                        scores,
+                        objective_fold_scores,
+                    },
+                    candidate,
+                ))
+            })();
+            let evaluated = match evaluated {
                 Ok(result) => result,
                 Err(error) => {
                     if let (Some(checkpoint), Some((_, progress))) = (&mut checkpoint, &mut durable)
@@ -478,6 +568,30 @@ impl SequentialScheduler {
                     }
                     return Err(error);
                 }
+            };
+            if let HostHpoEvaluation::Pruned(evidence) = evaluated {
+                proposals.pruned(trial_index)?;
+                pruned_trials.push(evidence.clone());
+                status = if trial_index + 1 == request.trial_budget {
+                    HostHpoSearchStatus::Completed
+                } else {
+                    HostHpoSearchStatus::Running
+                };
+                if let (Some(checkpoint), Some((_, progress))) = (&mut checkpoint, &mut durable) {
+                    checkpoint
+                        .trials
+                        .push(HostHpoTerminalTrial::Pruned { evidence });
+                    checkpoint.seal()?;
+                    if !progress.checkpoint(checkpoint, status)?
+                        && status == HostHpoSearchStatus::Running
+                    {
+                        status = HostHpoSearchStatus::Cancelled;
+                    }
+                }
+                continue;
+            }
+            let HostHpoEvaluation::Complete(evidence, candidate) = evaluated else {
+                unreachable!("pruned host HPO candidate was handled above")
             };
             proposals.tell(trial_index, evidence.score)?;
             candidates.push(candidate);
@@ -544,6 +658,7 @@ impl SequentialScheduler {
                 selected_trial_index: winner.trial_index,
                 selected_params: winner.params.clone(),
                 trials,
+                pruned_trials,
             }),
             status,
             checkpoint,
@@ -616,6 +731,66 @@ fn prepare_host_hpo_checkpoint(
         let (params, variant_id) = match trial {
             HostHpoTerminalTrial::Complete { evidence } => {
                 host_hpo_candidate(plan, request, evidence)?;
+                (&evidence.params, &evidence.variant_id)
+            }
+            HostHpoTerminalTrial::Pruned { evidence } => {
+                evidence.scores.validate()?;
+                if evidence.scores.plan_id != plan.id
+                    || evidence.intermediate_scores.is_empty()
+                    || evidence.intermediate_scores.len()
+                        > plan
+                            .fold_set
+                            .as_ref()
+                            .expect("validated FoldSet")
+                            .folds
+                            .len()
+                    || evidence
+                        .intermediate_scores
+                        .iter()
+                        .any(|value| !value.is_finite())
+                    || evidence.scores.reports.iter().any(|report| {
+                        report
+                            .variant_id
+                            .as_ref()
+                            .is_some_and(|id| id != &evidence.variant_id)
+                    })
+                {
+                    return Err(DagMlError::RuntimeValidation(
+                        "host HPO checkpoint pruned trial has invalid native intermediate evidence"
+                            .into(),
+                    ));
+                }
+                for (fold, recorded) in plan
+                    .fold_set
+                    .as_ref()
+                    .expect("validated FoldSet")
+                    .folds
+                    .iter()
+                    .zip(&evidence.intermediate_scores)
+                {
+                    let reports = evidence
+                        .scores
+                        .reports
+                        .iter()
+                        .filter(|report| {
+                            report.producer_node == request.target_node
+                                && report.partition == PredictionPartition::Validation
+                                && report.fold_id.as_ref() == Some(&fold.fold_id)
+                        })
+                        .collect::<Vec<_>>();
+                    let [report] = reports.as_slice() else {
+                        return Err(DagMlError::RuntimeValidation(
+                            "host HPO pruned checkpoint lacks one native score per observed fold"
+                                .into(),
+                        ));
+                    };
+                    if host_hpo_metric(report, request.metric)? != *recorded {
+                        return Err(DagMlError::RuntimeValidation(
+                            "host HPO pruned checkpoint intermediate differs from native score"
+                                .into(),
+                        ));
+                    }
+                }
                 (&evidence.params, &evidence.variant_id)
             }
             HostHpoTerminalTrial::Failed {

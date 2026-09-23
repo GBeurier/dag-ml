@@ -334,6 +334,22 @@ impl dag_ml_core::HostHpoProposalSource for PyHostHpoProposals {
         )
     }
 
+    fn report_intermediate(&mut self, trial_index: u32, step: u32, score: f64) -> dag_ml_core::Result<bool> {
+        call_py_bridge(
+            &self.callback,
+            &serde_json::json!({"operation": "report_intermediate", "trial_index": trial_index, "step": step, "score": score}),
+            "host optimizer",
+        )
+    }
+
+    fn pruned(&mut self, trial_index: u32) -> dag_ml_core::Result<()> {
+        call_py_bridge(
+            &self.callback,
+            &serde_json::json!({"operation": "pruned", "trial_index": trial_index}),
+            "host optimizer",
+        )
+    }
+
     fn fail(&mut self, trial_index: u32, error: &str) -> dag_ml_core::Result<()> {
         call_py_bridge(
             &self.callback,
