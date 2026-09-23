@@ -11894,6 +11894,44 @@ fn data_view_extra_carries_source_index_metadata() {
 }
 
 #[test]
+fn feature_axes_are_validated_and_carried_to_source_views() {
+    let node_id = NodeId::new("node:model").unwrap();
+    let mut binding = data_binding(&node_id);
+    binding.source_ids = vec!["nir".to_string(), "chem".to_string()];
+    binding.metadata.insert(
+        crate::data::FEATURE_AXES_METADATA_KEY.to_string(),
+        json!({"nir": ["1000", "1100"], "chem": ["a", "b", "c"]}),
+    );
+    binding.validate().unwrap();
+    let scope = PhaseScope {
+        phase: Phase::Predict,
+        variant_id: None,
+        variant: None,
+        fold_id: None,
+        seed_root: None,
+    };
+    let view = data_view_for_partition(
+        &binding,
+        None,
+        &scope,
+        DataRequestPartition::Predict,
+        None,
+        DataViewRole::NonFit,
+        &BTreeSet::new(),
+    )
+    .unwrap();
+    assert_eq!(
+        view.extra.get(crate::data::FEATURE_AXES_METADATA_KEY),
+        Some(&json!({"nir": ["1000", "1100"], "chem": ["a", "b", "c"]})),
+    );
+    binding.metadata.insert(
+        crate::data::FEATURE_AXES_METADATA_KEY.to_string(),
+        json!({"nir": ["1000", "1100"]}),
+    );
+    assert!(binding.validate().is_err());
+}
+
+#[test]
 fn by_source_data_view_uses_branch_source_ids() {
     use crate::data::{BranchViewMode, BranchViewPlan, DataViewSelector};
 
