@@ -599,6 +599,7 @@ DagMlStatusCode dagml_selection_policy_validate_json(const uint8_t *json_ptr, si
 DagMlStatusCode dagml_selection_decision_contract_json(DagMlOwnedBytes *out_json, DagMlString *error_out);
 DagMlStatusCode dagml_selection_decision_validate_json(const uint8_t *json_ptr, size_t json_len, DagMlString *error_out);
 DagMlStatusCode dagml_select_candidate_json(const uint8_t *policy_ptr, size_t policy_len, const uint8_t *candidates_ptr, size_t candidates_len, DagMlOwnedBytes *out_json, DagMlString *error_out);
+DagMlStatusCode dagml_select_portable_output_json(const uint8_t *package_ptr, size_t package_len, DagMlBytesView binding_id, DagMlOwnedBytes *out_json, DagMlString *error_out);
 DagMlStatusCode dagml_select_candidate_groups_json(const uint8_t *policy_ptr, size_t policy_len, const uint8_t *candidates_ptr, size_t candidates_len, const uint8_t *groups_ptr, size_t groups_len, DagMlOwnedBytes *out_json, DagMlString *error_out);
 DagMlStatusCode dagml_score_regression_prediction_block_json(const uint8_t *predictions_ptr, size_t predictions_len, const uint8_t *targets_ptr, size_t targets_len, const uint8_t *metrics_ptr, size_t metrics_len, DagMlOwnedBytes *out_json, DagMlString *error_out);
 DagMlStatusCode dagml_score_regression_aggregated_block_json(const uint8_t *predictions_ptr, size_t predictions_len, const uint8_t *targets_ptr, size_t targets_len, const uint8_t *metrics_ptr, size_t metrics_len, DagMlOwnedBytes *out_json, DagMlString *error_out);

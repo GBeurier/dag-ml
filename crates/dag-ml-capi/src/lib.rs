@@ -19,11 +19,11 @@ use dag_ml_core::{
     ExternalDataPlanEnvelope, FileArtifactManifest, FilePredictionCacheManifest, GraphSpec,
     HandleKind, HandleRef, InMemoryArtifactStore, InMemoryDataProvider, LineageId, LineageRecord,
     ModelInputSpec, NodeResult, NodeTask, OpenLineageRunEventOptions, Phase, PipelineDslSpec,
-    PredictionBlock, PredictionCacheMaterializationRequest, PredictionLevel, PredictionPartition,
-    PredictionUnitId, RegressionMetricKind, RegressionMetricReport, RegressionTargetBlock,
-    ReplayPhaseRequest, RunContext, RunId, RuntimeArtifactStore, RuntimeController,
-    RuntimeControllerRegistry, RuntimeDataProvider, RuntimePredictionCacheStore, SampleId,
-    SelectionDecision, SelectionPolicy, SequentialScheduler,
+    PortablePredictorPackage, PredictionBlock, PredictionCacheMaterializationRequest,
+    PredictionLevel, PredictionPartition, PredictionUnitId, RegressionMetricKind,
+    RegressionMetricReport, RegressionTargetBlock, ReplayPhaseRequest, RunContext, RunId,
+    RuntimeArtifactStore, RuntimeController, RuntimeControllerRegistry, RuntimeDataProvider,
+    RuntimePredictionCacheStore, SampleId, SelectionDecision, SelectionPolicy, SequentialScheduler,
     AGGREGATION_CONTROLLER_RESULT_SCHEMA_ID, AGGREGATION_CONTROLLER_RESULT_SCHEMA_VERSION,
     AGGREGATION_CONTROLLER_TASK_SCHEMA_ID, AGGREGATION_CONTROLLER_TASK_SCHEMA_VERSION,
     CAMPAIGN_SPEC_SCHEMA_ID, CAMPAIGN_SPEC_SCHEMA_VERSION, CONTROLLER_MANIFEST_SCHEMA_ID,
@@ -1919,6 +1919,42 @@ pub unsafe extern "C" fn dagml_select_candidate_json(
     };
     match select_candidate(&policy, &candidates) {
         Ok(decision) => write_owned_json(out_json, error_out, &decision),
+        Err(error) => validation_error(error_out, error),
+    }
+}
+
+/// Resolve one explicitly named output of a signed portable package.
+///
+/// # Safety
+///
+/// All input pointers must address their declared byte lengths. The caller
+/// releases `out_json` with `dagml_owned_bytes_free`.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_select_portable_output_json(
+    package_ptr: *const u8,
+    package_len: usize,
+    binding_id: DagMlBytesView,
+    out_json: *mut DagMlOwnedBytes,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    clear_error(error_out);
+    clear_owned_bytes(out_json);
+    let package = match parse_external_contract_ptr(
+        package_ptr,
+        package_len,
+        error_out,
+        "portable predictor package",
+        PortablePredictorPackage::from_json,
+    ) {
+        Ok(package) => package,
+        Err(status) => return status,
+    };
+    let binding_id = match parse_utf8_view(binding_id, error_out, "output binding id") {
+        Ok(binding_id) => binding_id,
+        Err(status) => return status,
+    };
+    match package.select_output(&binding_id) {
+        Ok(selected) => write_owned_json(out_json, error_out, &selected),
         Err(error) => validation_error(error_out, error),
     }
 }
@@ -8858,6 +8894,48 @@ mod tests {
         assert!(out.ptr.is_null());
         assert!(error_message(&error).contains("borrowed controller vtables"));
         assert_eq!(transform_state.invocation_count, 0);
+        unsafe { dagml_string_free(error) };
+    }
+
+    #[test]
+    fn selects_portable_output_by_explicit_id_over_abi() {
+        let package = include_bytes!(
+            "../../../examples/fixtures/training/portable_predictor_package.v1.json"
+        );
+        let mut out = DagMlOwnedBytes::default();
+        let mut error = DagMlString::default();
+        let status = unsafe {
+            dagml_select_portable_output_json(
+                package.as_ptr(),
+                package.len(),
+                bytes_view(b"output:meta.final"),
+                &mut out,
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        let selected: serde_json::Value =
+            serde_json::from_slice(unsafe { slice::from_raw_parts(out.ptr, out.len) }).unwrap();
+        assert_eq!(
+            selected["output_binding"]["binding_id"],
+            "output:meta.final"
+        );
+        assert_eq!(selected["package_id"], "predictor:package.fixture");
+        unsafe { dagml_owned_bytes_free(out) };
+
+        let mut out = DagMlOwnedBytes::default();
+        let status = unsafe {
+            dagml_select_portable_output_json(
+                package.as_ptr(),
+                package.len(),
+                bytes_view(b"output:missing"),
+                &mut out,
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlStatusCode::VALIDATION_ERROR);
+        assert!(out.ptr.is_null());
+        assert!(error_message(&error).contains("no output binding"));
         unsafe { dagml_string_free(error) };
     }
 

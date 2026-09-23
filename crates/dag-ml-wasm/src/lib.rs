@@ -19,8 +19,8 @@ use dag_ml_core::{
     fold_set_fingerprint, parse_pipeline_dsl_json, select_candidate, select_candidate_groups,
     CampaignSpec, CandidateScore, ControllerManifest, ControllerRegistry,
     DagMlError as CoreDagMlError, ExecutionBundle, ExecutionPlan, FoldSet, GraphSpec,
-    HostControllerSpec, KFoldSpec, SampleId, SelectionPolicy, StratifiedKFoldSpec,
-    TrainingLossRoleReference,
+    HostControllerSpec, KFoldSpec, PortablePredictorPackage, SampleId, SelectionPolicy,
+    StratifiedKFoldSpec, TrainingLossRoleReference,
 };
 use dag_ml_core::{
     ControllerId, NodeResult, NodeTask, Phase, Result as CoreResult, RunContext, RunId,
@@ -180,6 +180,17 @@ pub fn select_candidates_json(
             serde_json::to_string(&decision).map_err(js_serde_error)
         }
     }
+}
+
+/// Resolve one explicitly named output of a signed portable package.
+#[wasm_bindgen]
+pub fn select_portable_output_json(
+    package_json: &str,
+    binding_id: &str,
+) -> Result<String, JsValue> {
+    let package = PortablePredictorPackage::from_json(package_json).map_err(js_core_error)?;
+    let selected = package.select_output(binding_id).map_err(js_core_error)?;
+    serde_json::to_string(&selected).map_err(js_serde_error)
 }
 
 #[wasm_bindgen]
@@ -374,6 +385,7 @@ fn contract_manifest() -> serde_json::Value {
             "kfold_split_json",
             "stratified_kfold_split_json",
             "select_candidates_json",
+            "select_portable_output_json",
             "LocalImplementationRegistry",
             "loss_execution_attestation_json",
             "execute_campaign_phase_json",
@@ -658,5 +670,21 @@ mod tests {
             role["loss"].clone()
         ]]);
         assert!(training_loss_roles_from_json(&positional.to_string()).is_err());
+    }
+
+    #[test]
+    fn portable_package_output_requires_explicit_binding_id() {
+        let package =
+            include_str!("../../../examples/fixtures/training/portable_predictor_package.v1.json");
+        let selected = select_portable_output_json(package, "output:meta.final").unwrap();
+        let selected: serde_json::Value = serde_json::from_str(&selected).unwrap();
+        assert_eq!(
+            selected["output_binding"]["binding_id"],
+            "output:meta.final"
+        );
+        assert!(contract_manifest()["wasm_exports"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("select_portable_output_json")));
     }
 }
