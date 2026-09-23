@@ -199,3 +199,234 @@ fn cli_captures_closed_initial_full_refit_without_cv() {
     assert!(!rejected.status.success());
     std::fs::remove_dir_all(temp).unwrap();
 }
+
+#[test]
+fn cli_replays_portable_methods_pls_payload_in_fresh_process() {
+    let root = root();
+    let methods_python = std::env::var_os("PLS4ALL_PYTHONPATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            root.parent()
+                .unwrap()
+                .join("nirs4all-methods/bindings/python/src")
+        });
+    if !methods_python.join("pls4all").is_dir() {
+        eprintln!("skipping concrete Methods PLS bridge: sibling Python binding unavailable");
+        return;
+    }
+    let temp = std::env::temp_dir().join(format!(
+        "dag_ml_methods_raw_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&temp).unwrap();
+    let mut dsl = json!({
+        "id": "dsl:methods.pls.raw",
+        "input": {"name": "x", "representation": "tabular_numeric"},
+        "campaign_id": "campaign:methods.pls.raw",
+        "root_seed": 7,
+        "leakage_policy": {"split_unit": "sample", "forbid_origin_cross_fold": true,
+            "allow_observation_split_with_shared_target": false, "require_group_ids": false, "unsafe_flags": []},
+        "data_bindings": [{"node_id": "model:initial", "input_name": "x",
+            "request_id": "nir-to-tabular",
+            "schema_fingerprint": "f97b37872fa22134b508f98fd8e207e5b776b52594fb8f6f5c3e15bee212246b",
+            "plan_fingerprint": "7c5431d85574b3f337022fa5d25971d5b5cf445b90331b49938f573ff6901e4d",
+            "relation_fingerprint": "a3a7e329df35db9f2883a17b8611b7fae6dcaa031875e3ec2c9be1b9e29cbe10",
+            "output_representation": "tabular_numeric", "feature_set_id": "x",
+            "source_ids": ["nir"], "require_relations": true}],
+        "steps": [{"kind": "model", "id": "model:initial",
+            "operator": {"type": "MethodsPLSRegression"}, "params": {"n_components": 1}}]
+    });
+    let mut envelope: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(
+            root.join("examples/fixtures/data/coordinator_data_plan_envelope_sample12.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    envelope["data_content_fingerprint"] = json!("e".repeat(64));
+    envelope["target_content_fingerprint"] = json!("f".repeat(64));
+    let typed_envelope: ExternalDataPlanEnvelope =
+        serde_json::from_value(envelope.clone()).unwrap();
+    let relation_fingerprint = typed_envelope
+        .coordinator_relations
+        .as_ref()
+        .unwrap()
+        .fingerprint()
+        .unwrap();
+    envelope["relation_fingerprint"] = json!(relation_fingerprint);
+    dsl["data_bindings"][0]["relation_fingerprint"] = json!(relation_fingerprint);
+    let data = json!({
+        "sample:1": {"x": [1.0, 2.0, 3.0, 4.0], "y": 1.0},
+        "sample:2": {"x": [3.0, 4.0, 2.0, 1.0], "y": 3.0},
+        "sample:holdout:1": {"x": [2.0, 3.0, 2.5, 2.0]},
+        "sample:holdout:2": {"x": [4.0, 1.0, 3.0, 2.0]}
+    });
+    let dsl_path = temp.join("dsl.json");
+    let envelope_path = temp.join("envelope.json");
+    let ids_path = temp.join("ids.json");
+    let data_path = temp.join("data.json");
+    let artifact_log = temp.join("artifact_operations.txt");
+    let package_path = temp.join("package.json");
+    let outcome_path = temp.join("outcome.json");
+    std::fs::write(&dsl_path, dsl.to_string()).unwrap();
+    std::fs::write(&envelope_path, envelope.to_string()).unwrap();
+    std::fs::write(&ids_path, json!(["sample:1", "sample:2"]).to_string()).unwrap();
+    std::fs::write(&data_path, data.to_string()).unwrap();
+    let adapter = root.join("examples/adapters/python_methods_pls_process_controller.py");
+    let python_path = match std::env::var_os("PYTHONPATH") {
+        Some(existing) => format!(
+            "{}:{}",
+            methods_python.display(),
+            existing.to_string_lossy()
+        ),
+        None => methods_python.display().to_string(),
+    };
+    let training = Command::new(env!("CARGO_BIN_EXE_dag-ml-cli"))
+        .current_dir(&root)
+        .env("PYTHONPATH", &python_path)
+        .env("DAGML_METHODS_DATA_JSON", &data_path)
+        .env("DAGML_METHODS_ARTIFACT_LOG", &artifact_log)
+        .arg("run-process-dsl-refit-phase")
+        .args([
+            "--dsl",
+            dsl_path.to_str().unwrap(),
+            "--controllers",
+            "examples/controller_manifests.json",
+            "--envelope",
+            envelope_path.to_str().unwrap(),
+            "--training-sample-ids",
+            ids_path.to_str().unwrap(),
+            "--adapter",
+            adapter.to_str().unwrap(),
+            "--persistent",
+            "--package-output",
+            package_path.to_str().unwrap(),
+            "--output",
+            outcome_path.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        training.status.success(),
+        "{}",
+        String::from_utf8_lossy(&training.stderr)
+    );
+    let package_json = std::fs::read_to_string(&package_path).unwrap();
+    let package = InitialFullRefitPackage::from_json(&package_json).unwrap();
+    assert_eq!(package.artifacts.len(), 1);
+    assert_eq!(package.artifacts[0].record.artifact.kind, "n4m_model");
+    assert_eq!(package.raw_artifact_payloads.len(), 1);
+    assert_eq!(std::fs::read_to_string(&artifact_log).unwrap(), "export\n");
+    assert!(package.raw_artifact_payloads.values().next().unwrap().len() > 100);
+    let mut replay_envelope: ExternalDataPlanEnvelope = serde_json::from_value(envelope).unwrap();
+    let heldout: SampleRelationSet = serde_json::from_value(json!({"records": [
+        {"observation_id": "obs.H001", "sample_id": "sample:holdout:1", "target_id": "target:holdout:1", "group_id": "group:holdout", "origin_sample_id": null, "source_id": "nir", "is_augmented": false},
+        {"observation_id": "obs.H002", "sample_id": "sample:holdout:2", "target_id": "target:holdout:2", "group_id": "group:holdout", "origin_sample_id": null, "source_id": "nir", "is_augmented": false}
+    ]})).unwrap();
+    replay_envelope.schema_version = EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION_V2;
+    replay_envelope.predict_cohort = Some(
+        PredictCohort::from_relations(
+            PredictCohortRole::ExternalTest,
+            heldout,
+            vec!["y".into()],
+            "a".repeat(64),
+            Some("b".repeat(64)),
+        )
+        .unwrap(),
+    );
+    let replay_envelope_path = temp.join("predict_envelope.json");
+    let handles_path = temp.join("artifact_handles.json");
+    let output_ids_path = temp.join("output_ids.json");
+    let replay_path = temp.join("predict.json");
+    std::fs::write(
+        &replay_envelope_path,
+        serde_json::to_vec(&replay_envelope).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(&handles_path, b"{}").unwrap();
+    std::fs::write(
+        &output_ids_path,
+        json!([package.outputs[0].output_id]).to_string(),
+    )
+    .unwrap();
+    let replay = Command::new(env!("CARGO_BIN_EXE_dag-ml-cli"))
+        .current_dir(&root)
+        .env("PYTHONPATH", &python_path)
+        .env("DAGML_METHODS_DATA_JSON", &data_path)
+        .env("DAGML_METHODS_ARTIFACT_LOG", &artifact_log)
+        .arg("run-process-initial-full-refit-predict")
+        .args([
+            "--package",
+            package_path.to_str().unwrap(),
+            "--envelope",
+            replay_envelope_path.to_str().unwrap(),
+            "--adapter",
+            adapter.to_str().unwrap(),
+            "--persistent",
+            "--artifact-handles",
+            handles_path.to_str().unwrap(),
+            "--output-ids",
+            output_ids_path.to_str().unwrap(),
+            "--output",
+            replay_path.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        replay.status.success(),
+        "{}",
+        String::from_utf8_lossy(&replay.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(&artifact_log).unwrap(),
+        "export\nhydrate\nrelease\n"
+    );
+    let replay: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&replay_path).unwrap()).unwrap();
+    let prediction = &replay["replay_outcome"]["outputs"][0]["prediction"];
+    assert_eq!(
+        prediction["sample_ids"],
+        json!(["sample:holdout:1", "sample:holdout:2"])
+    );
+    assert_eq!(prediction["values"].as_array().unwrap().len(), 2);
+    assert!(prediction["values"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|row| row[0].as_f64().unwrap().is_finite()));
+    // Independent Rust Methods binding imports the Python-produced N4MM
+    // payload from the signed package and predicts the same held-out rows.
+    let library = std::env::var_os("N4M_LIBRARY_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| methods_python.join("pls4all/lib/libn4m.so"));
+    n4m::configure_library(&library).unwrap();
+    let context = n4m::Context::new().unwrap();
+    let payload = package.raw_artifact_payloads.values().next().unwrap();
+    let model = n4m::Model::import_n4mm(&context, payload).unwrap();
+    let x = [2.0, 3.0, 2.5, 2.0, 4.0, 1.0, 3.0, 2.0];
+    let matrix = n4m::MatrixRef::row_major(&x, 2, 4).unwrap();
+    let rust_predictions = model.predict(&context, matrix).unwrap();
+    for (row, expected) in prediction["values"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .zip(rust_predictions.data.iter())
+    {
+        assert!((row[0].as_f64().unwrap() - expected).abs() < 1e-10);
+    }
+    let mut tampered: serde_json::Value = serde_json::from_str(&package_json).unwrap();
+    tampered["raw_artifact_payloads"]["artifact:model:initial:refit"][0] = json!(9);
+    let tampered_path = temp.join("tampered.json");
+    std::fs::write(&tampered_path, tampered.to_string()).unwrap();
+    let rejected = Command::new(env!("CARGO_BIN_EXE_dag-ml-cli"))
+        .arg("validate-initial-full-refit-package")
+        .arg(&tampered_path)
+        .output()
+        .unwrap();
+    assert!(!rejected.status.success());
+    std::fs::remove_dir_all(temp).unwrap();
+}

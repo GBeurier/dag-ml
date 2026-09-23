@@ -501,6 +501,7 @@ dependencies = [
  "clap",
  "dag-ml-arrow",
  "dag-ml-core 0.3.26",
+ "n4m",
  "serde",
  "serde_json",
  "sha2 0.10.9",
