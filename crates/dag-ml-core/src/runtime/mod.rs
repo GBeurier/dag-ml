@@ -639,8 +639,31 @@ pub fn select_best_operator_variant_by_cv<F>(
     run_id: &RunId,
     root_seed: Option<u64>,
     selection_metric: RegressionMetricKind,
-    mut run_single_variant_fit_cv: F,
+    run_single_variant_fit_cv: F,
 ) -> Result<Option<VariantSelection>>
+where
+    F: FnMut(&ExecutionPlan, &mut RunContext) -> Result<()>,
+{
+    Ok(select_best_operator_variant_outcome_by_cv(
+        union_plan,
+        model,
+        run_id,
+        root_seed,
+        selection_metric,
+        run_single_variant_fit_cv,
+    )?
+    .map(|outcome| outcome.selection))
+}
+
+/// Select an operator variant while retaining the native ranking for multi-refit callers.
+pub fn select_best_operator_variant_outcome_by_cv<F>(
+    union_plan: &ExecutionPlan,
+    model: &OperatorVariantModel,
+    run_id: &RunId,
+    root_seed: Option<u64>,
+    selection_metric: RegressionMetricKind,
+    mut run_single_variant_fit_cv: F,
+) -> Result<Option<VariantSelectionOutcome>>
 where
     F: FnMut(&ExecutionPlan, &mut RunContext) -> Result<()>,
 {
@@ -664,7 +687,7 @@ where
     // Map each enumerated variant back to its operator choice (the choice's `active_subsequence`
     // keys `active_nodes`) via `operator_variant_active_subsequence`. The model is a single operator
     // dimension, so each variant carries exactly one choice.
-    Ok(score_and_rank_variants_by_cv(
+    score_and_rank_variants_by_cv(
         &variants,
         run_id,
         root_seed,
@@ -690,8 +713,7 @@ where
         },
         None,
         &mut run_single_variant_fit_cv,
-    )?
-    .map(|outcome| outcome.selection))
+    )
 }
 
 /// Resolve the `active_subsequence` (choice key) of an enumerated operator variant against its
@@ -797,9 +819,32 @@ pub fn select_best_operator_variant_from_models<F>(
 where
     F: FnMut(&ExecutionPlan, &mut RunContext) -> Result<()>,
 {
+    Ok(select_best_operator_variant_outcome_from_models(
+        union_plan,
+        models,
+        run_id,
+        root_seed,
+        selection_metric,
+        run_single_variant_fit_cv,
+    )?
+    .map(|outcome| outcome.selection))
+}
+
+/// Select an operator variant and expose its full native ranking to refit orchestration.
+pub fn select_best_operator_variant_outcome_from_models<F>(
+    union_plan: &ExecutionPlan,
+    models: &[OperatorVariantModel],
+    run_id: &RunId,
+    root_seed: Option<u64>,
+    selection_metric: RegressionMetricKind,
+    run_single_variant_fit_cv: F,
+) -> Result<Option<VariantSelectionOutcome>>
+where
+    F: FnMut(&ExecutionPlan, &mut RunContext) -> Result<()>,
+{
     match models {
         [] => Ok(None),
-        [model] => select_best_operator_variant_by_cv(
+        [model] => select_best_operator_variant_outcome_by_cv(
             union_plan,
             model,
             run_id,

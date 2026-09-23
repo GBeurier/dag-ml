@@ -20,24 +20,25 @@ use dag_ml_core::{
     oof_campaign_fingerprint, parse_pipeline_dsl_json, plan_oof_partition_mode,
     pruned_plan_for_operator_models, regression_report_to_candidate_score,
     score_regression_aggregated_block, score_regression_prediction_block,
-    select_best_operator_variant_from_models, select_best_variant_outcome_by_cv, select_candidate,
-    select_candidate_groups, validate_oof_campaign, validate_research_provenance_package_files,
-    AggregatedPredictionBlock, ArtifactId, BundleId, BundlePredictionCachePayload,
-    BundlePredictionCachePayloadSet, BundlePredictionCacheRecord, BundlePredictionRequirement,
-    BundleReplayExecution, CacheNamespace, CampaignSpec, CandidateScore,
-    ColumnarPredictionCacheStore, ControllerId, ControllerManifest, ControllerRegistry, DagMlError,
-    DataRequestPartition, ExecutionBundle, ExplanationBlock, ExplicitPhaseDataProvider,
-    ExternalDataPlanEnvelope, FileArtifactManifestStore, FileArtifactPayloadStore,
-    FilePredictionCacheStore, GraphSpec, HandleKind, HandleRef, InMemoryArtifactStore,
-    InMemoryDataProvider, LineageId, LineageRecord, LossSpec, MetricObjective, MetricSpec, NodeId,
-    NodeResult, NodeTask, OofCampaign, OperatorVariantModel, ParallelScheduler, Phase,
-    PipelineDslSpec, PortablePredictorPackage, PredictionBlock, PredictionLevel,
-    PredictionPartition, PredictionUnitId, RefitArtifactRecord, RegressionMetricKind,
-    RegressionMetricReport, RegressionTargetBlock, ReplayPhaseRequest, ResearchProvenancePackage,
-    RunContext, RunId, RuntimeArtifactStore, RuntimeController, RuntimeControllerRegistry,
-    RuntimeDataProvider, RuntimePredictionCacheStore, RuntimeTunerSession, SampleId, ScoreSet,
-    SelectionDecision, SelectionMetric, SelectionPolicy, SequentialScheduler, TrainingRequest,
-    TrainingResourceLimits, VariantId, SCORE_SET_SCHEMA_VERSION,
+    select_best_operator_variant_outcome_from_models, select_best_variant_outcome_by_cv,
+    select_candidate, select_candidate_groups, validate_oof_campaign,
+    validate_research_provenance_package_files, AggregatedPredictionBlock, ArtifactId, BundleId,
+    BundlePredictionCachePayload, BundlePredictionCachePayloadSet, BundlePredictionCacheRecord,
+    BundlePredictionRequirement, BundleReplayExecution, CacheNamespace, CampaignSpec,
+    CandidateScore, ColumnarPredictionCacheStore, ControllerId, ControllerManifest,
+    ControllerRegistry, DagMlError, DataRequestPartition, ExecutionBundle, ExplanationBlock,
+    ExplicitPhaseDataProvider, ExternalDataPlanEnvelope, FileArtifactManifestStore,
+    FileArtifactPayloadStore, FilePredictionCacheStore, GraphSpec, HandleKind, HandleRef,
+    InMemoryArtifactStore, InMemoryDataProvider, LineageId, LineageRecord, LossSpec,
+    MetricObjective, MetricSpec, NodeId, NodeResult, NodeTask, OofCampaign, OperatorVariantModel,
+    ParallelScheduler, Phase, PipelineDslSpec, PortablePredictorPackage, PredictionBlock,
+    PredictionLevel, PredictionPartition, PredictionUnitId, RefitArtifactRecord,
+    RegressionMetricKind, RegressionMetricReport, RegressionTargetBlock, ReplayPhaseRequest,
+    ResearchProvenancePackage, RunContext, RunId, RuntimeArtifactStore, RuntimeController,
+    RuntimeControllerRegistry, RuntimeDataProvider, RuntimePredictionCacheStore,
+    RuntimeTunerSession, SampleId, ScoreSet, SelectionDecision, SelectionMetric, SelectionPolicy,
+    SequentialScheduler, TrainingRequest, TrainingResourceLimits, VariantId,
+    SCORE_SET_SCHEMA_VERSION,
 };
 use serde::{Deserialize, Serialize};
 
@@ -3025,7 +3026,7 @@ struct ResolvedRefitVariant {
 fn resolve_operator_select(
     input: &CapturedRefitBundleInput<'_>,
 ) -> Result<Option<ResolvedRefitVariant>> {
-    let selected = select_best_operator_variant_from_models(
+    let selected = select_best_operator_variant_outcome_from_models(
         input.plan,
         &input.operator_variant_models,
         &RunId::new(input.run_id.clone())?,
@@ -3050,9 +3051,16 @@ fn resolve_operator_select(
         },
     )
     .with_context(|| "native operator-variant selection failed")?;
-    let Some(selection) = selected else {
+    let Some(outcome) = selected else {
         return Ok(None);
     };
+    let ranked_variant_ids = outcome
+        .decision
+        .ranked_candidates
+        .iter()
+        .map(|candidate| VariantId::new(candidate.candidate_id.clone()))
+        .collect::<dag_ml_core::Result<Vec<_>>>()?;
+    let selection = outcome.selection;
     let variant_id = selection.selected_variant_id.clone();
     // The winner's operator-variant content fingerprint (Phase 5) — recovered from its OWN report in
     // the selection loop (already stamped there), so the fresh winner FIT_CV/REFIT reports get the
@@ -3075,7 +3083,7 @@ fn resolve_operator_select(
         input.root_seed,
     )?;
     Ok(Some(ResolvedRefitVariant {
-        ranked_variant_ids: vec![variant_id.clone()],
+        ranked_variant_ids,
         variant_id,
         loser_validation_reports,
         pruned_plan: Some(pruned_plan),
@@ -3244,9 +3252,6 @@ fn build_bundle_from_cv_with_refit_count(
         bail!("refit_top_k must be positive and requires refit enabled");
     }
     let resolved = resolve_refit_variant(&input)?;
-    if top_k > 1 && !input.operator_variant_models.is_empty() {
-        bail!("refit_top_k > 1 for operator variants requires per-candidate plan pruning");
-    }
     let selected_variant_id = resolved.variant_id;
     let additional_variant_ids = resolved
         .ranked_variant_ids
@@ -3255,6 +3260,10 @@ fn build_bundle_from_cv_with_refit_count(
         .take(top_k.saturating_sub(1))
         .collect::<Vec<_>>();
     let loser_validation_reports = resolved.loser_validation_reports;
+    let additional_variant_labels = loser_validation_reports
+        .iter()
+        .filter_map(|report| Some((report.variant_id.clone()?, report.variant_label.clone()?)))
+        .collect::<BTreeMap<_, _>>();
     let winner_variant_label = resolved.winner_variant_label;
     // For operator-SELECT the winner FIT_CV + REFIT + bundle capture run on the WINNER's PRUNED plan
     // (merge + meta-model + inactive choices elided), NOT the Mechanism-B stacking union. For all
@@ -3370,13 +3379,24 @@ fn build_bundle_from_cv_with_refit_count(
     let mut additional_refit_prediction_block_count = 0usize;
     let mut additional_lineage_records = Vec::<LineageRecord>::new();
     for variant_id in &additional_variant_ids {
+        let extra_pruned_plan = if let Some(model) = input.operator_variant_models.first() {
+            Some(pruned_plan_for_operator_variant(
+                input.plan,
+                model,
+                variant_id,
+                input.root_seed,
+            )?)
+        } else {
+            None
+        };
+        let extra_plan = extra_pruned_plan.as_ref().unwrap_or(plan);
         let mut extra_ctx =
             RunContext::new(RunId::new(input.run_id.clone())?, Some(input.root_seed));
         extra_ctx.variant_id = Some(variant_id.clone());
         extra_ctx.resource_limits = input.resource_limits.clone();
         execute_campaign_phase_with_scheduler(
             input.scheduler,
-            plan,
+            extra_plan,
             input.runtime_controllers,
             input.data_provider,
             &mut extra_ctx,
@@ -3387,7 +3407,7 @@ fn build_bundle_from_cv_with_refit_count(
         let mut extra_store = InMemoryArtifactStore::new();
         let extra_results = execute_campaign_phase_with_artifact_store_and_scheduler(
             input.scheduler,
-            plan,
+            extra_plan,
             input.runtime_controllers,
             input.data_provider,
             &mut extra_store,
@@ -3408,7 +3428,10 @@ fn build_bundle_from_cv_with_refit_count(
             .filter(|block| block.partition == PredictionPartition::Final)
             .count();
         additional_artifacts.extend(extra_store.refit_artifacts());
-        if let Some(extra_scores) = extra_ctx.build_score_set(plan.id.clone(), None) {
+        if let Some(mut extra_scores) = extra_ctx.build_score_set(plan.id.clone(), None) {
+            for report in &mut extra_scores.reports {
+                report.variant_label = additional_variant_labels.get(variant_id).cloned();
+            }
             if let Some(primary_scores) = bundle.scores.as_mut() {
                 primary_scores.reports.extend(
                     extra_scores

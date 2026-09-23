@@ -33,6 +33,7 @@
 //! returned `scores` is byte-identical to the bundle's `scores` the subprocess
 //! path reads back.
 
+use std::collections::BTreeMap;
 use std::panic::AssertUnwindSafe;
 
 use pyo3::prelude::*;
@@ -44,7 +45,7 @@ use dag_ml_core::{
     compile_pipeline_dsl_with_generation_and_controller_registry,
     execute_terminal_prediction, fan_out_data_aware_branches, parse_pipeline_dsl_json,
     enumerate_operator_variants, plan_oof_partition_mode, pruned_plan_for_operator_models,
-    select_best_operator_variant_from_models,
+    select_best_operator_variant_outcome_from_models,
     select_best_variant_outcome_by_cv, validate_terminal_prediction_preflight, AggregationControllerResult,
     AggregationControllerTask, ArtifactMaterializationRequest, BundleId, ControllerId,
     ControllerRegistry, DagMlError as CoreDagMlError, ExecutionPlan, ExplicitPhaseDataProvider,
@@ -644,7 +645,7 @@ struct ResolvedRefitVariant {
 /// `resolve_operator_select`: score each choice on its PRUNED plan, return the winner together with
 /// its pruned plan, the losers' OOF reports, and the winner's content fingerprint. Returns
 /// `Ok(None)` when scoring is off (no host targets) so the caller falls back to the default. Keeps
-/// winner-ONLY refit (the multi-model 32-not-34 contract).
+/// The caller may subsequently refit several ranked candidates on their own pruned plans.
 #[allow(clippy::too_many_arguments)]
 fn resolve_operator_select(
     plan: &ExecutionPlan,
@@ -656,7 +657,7 @@ fn resolve_operator_select(
     data_provider: &InMemoryDataProvider,
     resource_limits: Option<&TrainingResourceLimits>,
 ) -> Result<Option<ResolvedRefitVariant>, CoreDagMlError> {
-    let selected = select_best_operator_variant_from_models(
+    let selected = select_best_operator_variant_outcome_from_models(
         plan,
         operator_variant_models,
         run_id,
@@ -675,9 +676,16 @@ fn resolve_operator_select(
                 .map(|_results| ())
         },
     )?;
-    let Some(selection) = selected else {
+    let Some(outcome) = selected else {
         return Ok(None);
     };
+    let ranked_variant_ids = outcome
+        .decision
+        .ranked_candidates
+        .iter()
+        .map(|candidate| VariantId::new(candidate.candidate_id.clone()))
+        .collect::<dag_ml_core::Result<Vec<_>>>()?;
+    let selection = outcome.selection;
     let variant_id = selection.selected_variant_id.clone();
     // The winner's content fingerprint (Phase 5) — recovered from its OWN report in the selection
     // loop (already stamped there) so the fresh winner FIT_CV/REFIT reports get the SAME label.
@@ -702,7 +710,7 @@ fn resolve_operator_select(
     let pruned_plan =
         pruned_plan_for_operator_variant(plan, operator_variant_models, &variant_id, root_seed)?;
     Ok(Some(ResolvedRefitVariant {
-        ranked_variant_ids: vec![variant_id.clone()],
+        ranked_variant_ids,
         variant_id,
         loser_validation_reports,
         loser_validation_predictions,
@@ -1274,11 +1282,6 @@ fn run_cv_refit_in_process_impl(
     )
     .map_err(py_core_error)?;
     let selected_variant_id = resolved.variant_id;
-    if refit_top_k > 1 && !operator_variant_models.is_empty() {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "refit_top_k > 1 for operator variants requires per-candidate plan pruning",
-        ));
-    }
     let additional_variant_ids = resolved
         .ranked_variant_ids
         .into_iter()
@@ -1286,6 +1289,10 @@ fn run_cv_refit_in_process_impl(
         .take(refit_top_k.saturating_sub(1))
         .collect::<Vec<_>>();
     let loser_validation_reports = resolved.loser_validation_reports;
+    let additional_variant_labels = loser_validation_reports
+        .iter()
+        .filter_map(|report| Some((report.variant_id.clone()?, report.variant_label.clone()?)))
+        .collect::<BTreeMap<_, _>>();
     let loser_validation_predictions = resolved.loser_validation_predictions;
     let winner_variant_label = resolved.winner_variant_label;
     // For operator-SELECT the winner FIT_CV + REFIT run on the WINNER's PRUNED plan; for all other
@@ -1342,12 +1349,21 @@ fn run_cv_refit_in_process_impl(
     let mut node_results = fit_cv_results;
     node_results.extend(refit_results);
     for variant_id in &additional_variant_ids {
+        let extra_pruned_plan = if let Some(model) = operator_variant_models.first() {
+            Some(
+                pruned_plan_for_operator_variant(&plan, model, variant_id, root_seed)
+                    .map_err(py_core_error)?,
+            )
+        } else {
+            None
+        };
+        let extra_plan = extra_pruned_plan.as_ref().unwrap_or(refit_plan);
         let mut extra_ctx = RunContext::new(run_id.clone(), Some(root_seed));
         extra_ctx.variant_id = Some(variant_id.clone());
         extra_ctx.resource_limits = resource_limits.clone();
         SequentialScheduler
             .execute_campaign_phase_with_data_provider(
-                refit_plan,
+                extra_plan,
                 &runtime_controllers,
                 &data_provider,
                 &mut extra_ctx,
@@ -1357,7 +1373,7 @@ fn run_cv_refit_in_process_impl(
         let mut extra_store = InMemoryArtifactStore::new();
         let extra_results = SequentialScheduler
             .execute_campaign_phase_with_data_provider_and_artifact_store(
-                refit_plan,
+                extra_plan,
                 &runtime_controllers,
                 &data_provider,
                 &mut extra_store,
@@ -1371,7 +1387,10 @@ fn run_cv_refit_in_process_impl(
             )));
         }
         node_results.extend(extra_results);
-        if let Some(extra_scores) = extra_ctx.build_score_set(refit_plan.id.clone(), None) {
+        if let Some(mut extra_scores) = extra_ctx.build_score_set(refit_plan.id.clone(), None) {
+            for report in &mut extra_scores.reports {
+                report.variant_label = additional_variant_labels.get(variant_id).cloned();
+            }
             if let Some(primary_scores) = scores.as_mut() {
                 primary_scores.reports.extend(
                     extra_scores
