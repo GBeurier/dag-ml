@@ -215,6 +215,7 @@ fn residual_merge_model_compiles_native_base_learner_fusion_graph() {
         r#"{
       "id": "dsl-residual",
       "steps": [
+        {"kind": "transform", "id": "transform:scale", "operator": {"type": "StandardScaler"}},
         {"kind": "branch", "mode": "duplication", "branches": [
           {"id": "base", "steps": [
             {"kind": "model", "id": "model:base", "operator": {"type": "PLSRegression"}}
@@ -236,6 +237,15 @@ fn residual_merge_model_compiles_native_base_learner_fusion_graph() {
         .find(|node| node.id.as_str() == "model:learner")
         .unwrap();
     assert_eq!(learner.ports.inputs.len(), 2);
+    assert!(graph.edges.iter().any(|edge| {
+        edge.source.node_id.as_str() == "transform:scale"
+            && edge.target.node_id == learner.id
+            && edge.target.port_name == "x_original"
+    }));
+    assert!(graph.edges.iter().any(|edge| {
+        edge.source.node_id.as_str() == "transform:scale"
+            && edge.target.node_id.as_str() == "model:base"
+    }));
     assert!(learner
         .ports
         .inputs
