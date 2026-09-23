@@ -10589,6 +10589,75 @@ fn browser_hpo_worker_window_is_phase_bounded_and_checkpoint_keyed() {
 }
 
 #[test]
+fn browser_hpo_worker_fold_stops_before_next_fold() {
+    struct Proposals;
+    impl HostHpoProposalSource for Proposals {
+        fn ask(&mut self, _: u32) -> Result<Option<BTreeMap<String, serde_json::Value>>> {
+            Ok(Some(BTreeMap::from([("n_components".into(), json!(2.0))])))
+        }
+        fn tell(&mut self, _: u32, _: f64) -> Result<()> {
+            Ok(())
+        }
+    }
+    let mut campaign = variant_scoring_campaign(vec![("base", 0.0)]);
+    campaign.generation = GenerationSpec::default();
+    let plan = build_execution_plan(
+        "plan:host_hpo:worker.fold",
+        simple_graph(),
+        campaign,
+        &manifests(),
+    )
+    .unwrap();
+    let request = HostHpoSearchRequest {
+        parameter_bindings: BTreeMap::new(),
+        phase_trial_budgets: Vec::new(),
+        progressive_pruning: false,
+        fold_score_reduction: None,
+        target_node: NodeId::new("model:pls").unwrap(),
+        trial_budget: 1,
+        metric: RegressionMetricKind::Rmse,
+        direction: crate::selection::MetricObjective::Minimize,
+        optimizer_descriptor: BTreeMap::from([("owner".into(), json!("browser"))]),
+    };
+    let options = HostHpoResumeOptions {
+        data_fingerprint: "data:browser".into(),
+        checkpoint: None,
+    };
+    let task = prepare_host_hpo_worker_window(&plan, &request, &options, &mut Proposals, 2)
+        .unwrap()
+        .tasks
+        .remove(0);
+    let provider = InMemoryDataProvider::new(ControllerId::new("controller:data").unwrap());
+    let controllers = variant_scoring_controllers();
+    let first = evaluate_host_hpo_worker_fold(
+        &task,
+        &request,
+        0,
+        &controllers,
+        &provider,
+        &options.data_fingerprint,
+    )
+    .unwrap();
+    assert_eq!(
+        first.fold_id,
+        plan.fold_set.as_ref().unwrap().folds[0].fold_id
+    );
+    assert_eq!(first.score, 2.0);
+    assert!(first.scores.reports.iter().all(|report| {
+        report.fold_id.as_ref() != Some(&plan.fold_set.as_ref().unwrap().folds[1].fold_id)
+    }));
+    assert!(evaluate_host_hpo_worker_fold(
+        &task,
+        &request,
+        99,
+        &controllers,
+        &provider,
+        &options.data_fingerprint,
+    )
+    .is_err());
+}
+
+#[test]
 fn host_hpo_owns_budget_native_scores_and_selection_without_refit() {
     struct Proposals {
         asked: u32,
