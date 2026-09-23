@@ -16,27 +16,28 @@ use dag_ml_core::{
     build_openlineage_run_event_from_package_files, build_research_provenance_package,
     compile_operator_variant_models, compile_pipeline_dsl,
     compile_pipeline_dsl_with_controller_registry, compile_pipeline_dsl_with_generation,
-    compile_pipeline_dsl_with_generation_and_controller_registry, oof_campaign_fingerprint,
-    parse_pipeline_dsl_json, plan_oof_partition_mode, prune_plan_to_active,
-    regression_report_to_candidate_score, score_regression_aggregated_block,
-    score_regression_prediction_block, select_best_operator_variant_from_models,
-    select_best_variant_by_cv, select_candidate, select_candidate_groups, validate_oof_campaign,
-    validate_research_provenance_package_files, AggregatedPredictionBlock, ArtifactId, BundleId,
-    BundlePredictionCachePayload, BundlePredictionCachePayloadSet, BundlePredictionCacheRecord,
-    BundlePredictionRequirement, BundleReplayExecution, CacheNamespace, CampaignSpec,
-    CandidateScore, ColumnarPredictionCacheStore, ControllerId, ControllerManifest,
-    ControllerRegistry, DagMlError, DataRequestPartition, ExecutionBundle, ExplanationBlock,
-    ExternalDataPlanEnvelope, FileArtifactManifestStore, FileArtifactPayloadStore,
-    FilePredictionCacheStore, GraphSpec, HandleKind, HandleRef, InMemoryArtifactStore,
-    InMemoryDataProvider, LineageId, LineageRecord, LossSpec, MetricObjective, MetricSpec, NodeId,
-    NodeResult, NodeTask, OofCampaign, OperatorVariantModel, ParallelScheduler, Phase,
-    PipelineDslSpec, PortablePredictorPackage, PredictionBlock, PredictionLevel,
-    PredictionPartition, PredictionUnitId, RefitArtifactRecord, RegressionMetricKind,
-    RegressionMetricReport, RegressionTargetBlock, ReplayPhaseRequest, ResearchProvenancePackage,
-    RunContext, RunId, RuntimeArtifactStore, RuntimeController, RuntimeControllerRegistry,
-    RuntimeDataProvider, RuntimePredictionCacheStore, RuntimeTunerSession, SampleId, ScoreSet,
-    SelectionDecision, SelectionMetric, SelectionPolicy, SequentialScheduler, TrainingRequest,
-    TrainingResourceLimits, VariantId, SCORE_SET_SCHEMA_VERSION,
+    compile_pipeline_dsl_with_generation_and_controller_registry, enumerate_operator_variants,
+    oof_campaign_fingerprint, parse_pipeline_dsl_json, plan_oof_partition_mode,
+    pruned_plan_for_operator_models, regression_report_to_candidate_score,
+    score_regression_aggregated_block, score_regression_prediction_block,
+    select_best_operator_variant_from_models, select_best_variant_by_cv, select_candidate,
+    select_candidate_groups, validate_oof_campaign, validate_research_provenance_package_files,
+    AggregatedPredictionBlock, ArtifactId, BundleId, BundlePredictionCachePayload,
+    BundlePredictionCachePayloadSet, BundlePredictionCacheRecord, BundlePredictionRequirement,
+    BundleReplayExecution, CacheNamespace, CampaignSpec, CandidateScore,
+    ColumnarPredictionCacheStore, ControllerId, ControllerManifest, ControllerRegistry, DagMlError,
+    DataRequestPartition, ExecutionBundle, ExplanationBlock, ExternalDataPlanEnvelope,
+    FileArtifactManifestStore, FileArtifactPayloadStore, FilePredictionCacheStore, GraphSpec,
+    HandleKind, HandleRef, InMemoryArtifactStore, InMemoryDataProvider, LineageId, LineageRecord,
+    LossSpec, MetricObjective, MetricSpec, NodeId, NodeResult, NodeTask, OofCampaign,
+    OperatorVariantModel, ParallelScheduler, Phase, PipelineDslSpec, PortablePredictorPackage,
+    PredictionBlock, PredictionLevel, PredictionPartition, PredictionUnitId, RefitArtifactRecord,
+    RegressionMetricKind, RegressionMetricReport, RegressionTargetBlock, ReplayPhaseRequest,
+    ResearchProvenancePackage, RunContext, RunId, RuntimeArtifactStore, RuntimeController,
+    RuntimeControllerRegistry, RuntimeDataProvider, RuntimePredictionCacheStore,
+    RuntimeTunerSession, SampleId, ScoreSet, SelectionDecision, SelectionMetric, SelectionPolicy,
+    SequentialScheduler, TrainingRequest, TrainingResourceLimits, VariantId,
+    SCORE_SET_SCHEMA_VERSION,
 };
 use serde::{Deserialize, Serialize};
 
@@ -2942,11 +2943,13 @@ fn resolve_operator_select(
         .into_iter()
         .filter(|report| report.variant_id.as_ref() != Some(&variant_id))
         .collect();
-    // Recompute the WINNER's pruned plan so FIT_CV + REFIT + bundle run on it (not the union). The
-    // single operator model has been guarded to exactly one by `select_best_operator_variant_from_models`.
-    let model = &input.operator_variant_models[0];
-    let pruned_plan =
-        pruned_plan_for_operator_variant(input.plan, model, &variant_id, input.root_seed)?;
+    // Recompute the winning combination so FIT_CV + REFIT use every selected branch.
+    let pruned_plan = pruned_plan_for_operator_variant(
+        input.plan,
+        &input.operator_variant_models,
+        &variant_id,
+        input.root_seed,
+    )?;
     Ok(Some(ResolvedRefitVariant {
         variant_id,
         loser_validation_reports,
@@ -2955,17 +2958,15 @@ fn resolve_operator_select(
     }))
 }
 
-/// Rebuild the PRUNED plan for a chosen operator variant id by re-enumerating the model's variants
-/// (deterministic), matching the winner, and pruning the union to its active choice. Used to recover
-/// the winner's pruned plan after operator-SELECT picks it, so the real FIT_CV + REFIT run on the
-/// pruned candidate rather than the stacking union.
+/// Rebuild the PRUNED plan for the chosen Cartesian combination of independent
+/// operator generators, retaining every selected branch for refit.
 fn pruned_plan_for_operator_variant(
     union_plan: &dag_ml_core::ExecutionPlan,
-    model: &OperatorVariantModel,
+    models: &[OperatorVariantModel],
     variant_id: &VariantId,
     root_seed: u64,
 ) -> Result<dag_ml_core::ExecutionPlan> {
-    let variants = dag_ml_core::enumerate_variants(&model.generation_spec(), Some(root_seed))
+    let variants = enumerate_operator_variants(models, Some(root_seed))
         .with_context(|| "failed to enumerate operator variants for winner prune")?;
     let variant = variants
         .iter()
@@ -2973,26 +2974,7 @@ fn pruned_plan_for_operator_variant(
         .with_context(|| {
             format!("operator-SELECT winner `{variant_id}` not found in enumerated variants")
         })?;
-    let choice = variant
-        .choices
-        .get(&model.dimension.name)
-        .with_context(|| format!("operator winner `{variant_id}` missing operator dimension"))?;
-    let active_subsequence = choice.active_subsequence.as_ref().with_context(|| {
-        format!("operator winner `{variant_id}` choice has no active_subsequence")
-    })?;
-    let active_nodes = model
-        .active_nodes
-        .get(active_subsequence)
-        .with_context(|| {
-            format!("operator model has no active-node set for `{active_subsequence}`")
-        })?;
-    let all_choice_nodes = model
-        .active_nodes
-        .values()
-        .flatten()
-        .cloned()
-        .collect::<std::collections::BTreeSet<_>>();
-    prune_plan_to_active(union_plan, active_nodes, &all_choice_nodes, variant)
+    pruned_plan_for_operator_models(union_plan, models, variant)
         .with_context(|| "failed to prune union plan to operator-SELECT winner")
 }
 

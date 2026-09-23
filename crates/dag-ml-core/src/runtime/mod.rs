@@ -38,7 +38,8 @@ pub(crate) use crate::data::{
 pub(crate) use crate::error::{DagMlError, Result};
 pub(crate) use crate::fold::{FoldAssignment, FoldPartitionMode, FoldSet};
 pub(crate) use crate::generation::{
-    enumerate_variants, GenerationChoice, OperatorVariantModel, VariantPlan,
+    enumerate_variants, GenerationChoice, GenerationConstraints, GenerationSpec,
+    GenerationStrategy, OperatorVariantModel, VariantPlan,
 };
 pub(crate) use crate::graph::{EdgeSpec, NodeKind, PortKind};
 pub(crate) use crate::ids::{
@@ -559,6 +560,7 @@ where
         // Param-variant SELECT (Mechanism A) has no operator-variant content fingerprint, so reports
         // carry `variant_id` only (no `variant_label`) — exactly the pre-Phase-5 shape.
         |_variant| Ok(None),
+        None,
         &mut run_single_variant_fit_cv,
     )
 }
@@ -600,6 +602,7 @@ where
             })
         },
         |_variant| Ok(None),
+        None,
         &mut run_single_variant_fit_cv,
     )
 }
@@ -682,6 +685,7 @@ where
             let active_subsequence = operator_variant_active_subsequence(model, variant)?;
             Ok(model.variant_labels.get(active_subsequence).cloned())
         },
+        None,
         &mut run_single_variant_fit_cv,
     )?
     .map(|outcome| outcome.selection))
@@ -709,21 +713,83 @@ fn operator_variant_active_subsequence<'a>(
     })
 }
 
+/// Enumerate the Cartesian product of independent operator generators. A generator
+/// copied by data fan-out is a separate decision site; each combination is one
+/// complete pipeline candidate, scored with all of its selected branches together.
+pub fn enumerate_operator_variants(
+    models: &[OperatorVariantModel],
+    root_seed: Option<u64>,
+) -> Result<Vec<VariantPlan>> {
+    if models.is_empty() {
+        return Err(DagMlError::RuntimeValidation(
+            "operator-SELECT requires at least one operator generator".to_string(),
+        ));
+    }
+    let mut max_variants = 1usize;
+    for model in models {
+        model.validate()?;
+        max_variants = max_variants
+            .checked_mul(model.dimension.choices.len())
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(
+                    "operator-SELECT candidate count overflows usize".to_string(),
+                )
+            })?;
+    }
+    enumerate_variants(
+        &GenerationSpec {
+            strategy: GenerationStrategy::Cartesian,
+            dimensions: models.iter().map(|model| model.dimension.clone()).collect(),
+            max_variants: Some(max_variants),
+            constraints: GenerationConstraints::default(),
+        },
+        root_seed,
+    )
+}
+
+/// Prune every inactive operator choice, retaining the complete selected set
+/// across independent generators. This is also the refit plan for the winner.
+pub fn pruned_plan_for_operator_models(
+    union_plan: &ExecutionPlan,
+    models: &[OperatorVariantModel],
+    variant: &VariantPlan,
+) -> Result<ExecutionPlan> {
+    let mut active_nodes = BTreeSet::new();
+    let mut all_choice_nodes = BTreeSet::new();
+    for model in models {
+        let active_subsequence = operator_variant_active_subsequence(model, variant)?;
+        active_nodes.extend(
+            model
+                .active_nodes
+                .get(active_subsequence)
+                .ok_or_else(|| {
+                    DagMlError::RuntimeValidation(format!(
+                        "operator variant model `{}` has no active-node set for `{active_subsequence}`",
+                        model.generator_id
+                    ))
+                })?
+                .iter()
+                .cloned(),
+        );
+        all_choice_nodes.extend(model.active_nodes.values().flatten().cloned());
+    }
+    prune_plan_to_active(union_plan, &active_nodes, &all_choice_nodes, variant)
+}
+
 /// Route operator-SELECT from the operator-variant models lowered off a pipeline DSL
 /// ([`compile_operator_variant_models`](crate::compile_operator_variant_models)).
 ///
-/// This phase scopes to a FLAT, SINGLE operator generator (consistent with the Phase-3
-/// nested-generator rejection), so MORE THAN ONE operator generator is rejected with a clear error.
-/// An empty slice means the spec has no operator generator at all — there is nothing to operator-SELECT,
-/// so it returns `Ok(None)` (the caller keeps its default variant). Exactly one model delegates to
-/// [`select_best_operator_variant_by_cv`].
+/// An empty slice means the spec has no operator generator. One model retains
+/// the historical single-producer behavior. Multiple independent models are
+/// enumerated as a Cartesian product and ranked on their pooled, id-aligned
+/// out-of-fold predictions. Nested generators remain invalid at DSL compile time.
 pub fn select_best_operator_variant_from_models<F>(
     union_plan: &ExecutionPlan,
     models: &[OperatorVariantModel],
     run_id: &RunId,
     root_seed: Option<u64>,
     selection_metric: RegressionMetricKind,
-    run_single_variant_fit_cv: F,
+    mut run_single_variant_fit_cv: F,
 ) -> Result<Option<VariantSelection>>
 where
     F: FnMut(&ExecutionPlan, &mut RunContext) -> Result<()>,
@@ -738,15 +804,23 @@ where
             selection_metric,
             run_single_variant_fit_cv,
         ),
-        _ => Err(DagMlError::RuntimeValidation(format!(
-            "operator-SELECT does not support {} operator generators in one pipeline; this phase scopes to a flat single operator generator (generators: {})",
-            models.len(),
-            models
-                .iter()
-                .map(|model| model.generator_id.to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
-        ))),
+        _ => {
+            union_plan.validate()?;
+            let variants = enumerate_operator_variants(models, root_seed)?;
+            Ok(score_and_rank_variants_by_cv(
+                &variants,
+                run_id,
+                root_seed,
+                selection_metric,
+                plan_oof_partition_mode(union_plan),
+                None,
+                |variant| pruned_plan_for_operator_models(union_plan, models, variant),
+                |_variant| Ok(None),
+                Some(models),
+                &mut run_single_variant_fit_cv,
+            )?
+            .map(|outcome| outcome.selection))
+        }
     }
 }
 
@@ -768,6 +842,7 @@ fn score_and_rank_variants_by_cv<M, L, F>(
     score_target: Option<(&NodeId, Option<&str>, PredictionLevel)>,
     mut make_variant_plan: M,
     mut resolve_variant_label: L,
+    pooled_operator_models: Option<&[OperatorVariantModel]>,
     run_single_variant_fit_cv: &mut F,
 ) -> Result<Option<VariantSelectionOutcome>>
 where
@@ -844,19 +919,30 @@ where
                         .is_some_and(|fold| fold.as_str() == "avg")
             })
             .collect::<Vec<_>>();
-        match avg_reports.as_slice() {
-            [] => {}
-            [report] => candidates.push(
-                (*report)
-                    .clone()
-                    .into_candidate_score(variant.variant_id.as_str())?,
-            ),
-            _ => {
-                return Err(DagMlError::RuntimeValidation(format!(
-                    "variant `{}` produced {} cross-fold OOF averages (multiple prediction producers); native SELECT needs a single score target",
-                    variant.variant_id,
-                    avg_reports.len()
-                )));
+        if let Some(models) = pooled_operator_models {
+            if !avg_reports.is_empty() {
+                candidates.push(pooled_operator_candidate_score(
+                    variant,
+                    models,
+                    &ctx.oof_average_blocks,
+                    selection_metric,
+                )?);
+            }
+        } else {
+            match avg_reports.as_slice() {
+                [] => {}
+                [report] => candidates.push(
+                    (*report)
+                        .clone()
+                        .into_candidate_score(variant.variant_id.as_str())?,
+                ),
+                _ => {
+                    return Err(DagMlError::RuntimeValidation(format!(
+                        "variant `{}` produced {} cross-fold OOF averages (multiple prediction producers); native SELECT needs a single score target",
+                        variant.variant_id,
+                        avg_reports.len()
+                    )));
+                }
             }
         }
         // Retain this variant's VALIDATION reports (per-fold + cross-fold avg) tagged with its own
@@ -919,6 +1005,117 @@ where
         },
         decision,
     }))
+}
+
+/// Rank a multi-branch operator combination on the metric of the pooled OOF
+/// observations, never on an unweighted mean of already-reduced branch scores.
+/// This preserves RMSE's squared-error weighting, R2's global target baseline,
+/// and balanced accuracy's class counts. The synthetic unit ids are scoped by
+/// branch so the same physical sample in two sources is counted twice without
+/// colliding; the original, id-aligned blocks remain in the audit reports.
+fn pooled_operator_candidate_score(
+    variant: &VariantPlan,
+    models: &[OperatorVariantModel],
+    averages: &[OofAverageBlock],
+    metric: RegressionMetricKind,
+) -> Result<CandidateScore> {
+    let mut unit_ids = Vec::new();
+    let mut predictions = Vec::new();
+    let mut targets = Vec::new();
+    let mut masks = Vec::new();
+    let mut has_missing = false;
+    let mut target_names: Option<Vec<String>> = None;
+    let mut target_width: Option<usize> = None;
+    for (branch_index, model) in models.iter().enumerate() {
+        let key = operator_variant_active_subsequence(model, variant)?;
+        let active = model.active_nodes.get(key).ok_or_else(|| {
+            DagMlError::RuntimeValidation(format!(
+                "operator-SELECT branch `{}` has no active nodes for `{key}`",
+                model.generator_id
+            ))
+        })?;
+        let branch_averages = averages
+            .iter()
+            .filter(|average| {
+                active.contains(&average.predictions.producer_node)
+                    && average.predictions.level == PredictionLevel::Sample
+            })
+            .collect::<Vec<_>>();
+        let [average] = branch_averages.as_slice() else {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "operator-SELECT variant `{}` requires exactly one sample-level OOF producer for branch `{}`; found {}",
+                variant.variant_id,
+                model.generator_id,
+                branch_averages.len()
+            )));
+        };
+        let block = &average.predictions;
+        let truth = &average.y_true;
+        let width = block.validate_shape()?;
+        truth.validate_shape()?;
+        if block.level != truth.level || block.unit_ids != truth.unit_ids {
+            return Err(DagMlError::OofValidation(format!(
+                "operator-SELECT branch `{}` has unaligned OOF predictions and targets",
+                model.generator_id
+            )));
+        }
+        if target_width.is_some_and(|previous| previous != width)
+            || target_names.as_ref().is_some_and(|previous| {
+                !previous.is_empty()
+                    && !block.target_names.is_empty()
+                    && previous != &block.target_names
+            })
+        {
+            return Err(DagMlError::OofValidation(
+                "operator-SELECT branches have incompatible target shapes or names".to_string(),
+            ));
+        }
+        target_width = Some(width);
+        if target_names.as_ref().is_none_or(Vec::is_empty) && !block.target_names.is_empty() {
+            target_names = Some(block.target_names.clone());
+        }
+        for (row_index, (prediction, target)) in block.values.iter().zip(&truth.values).enumerate()
+        {
+            unit_ids.push(PredictionUnitId::Sample(SampleId::new(format!(
+                "select:{branch_index}:{row_index}"
+            ))?));
+            predictions.push(prediction.clone());
+            targets.push(target.clone());
+            let mask = truth
+                .validity_masks
+                .as_ref()
+                .map_or_else(|| vec![true; width], |rows| rows[row_index].clone());
+            has_missing |= mask.iter().any(|valid| !valid);
+            masks.push(mask);
+        }
+    }
+    let names = target_names.unwrap_or_default();
+    let pooled_predictions = AggregatedPredictionBlock {
+        prediction_id: None,
+        producer_node: NodeId::new("select:pooled")?,
+        producer_port: None,
+        partition: PredictionPartition::Validation,
+        fold_id: Some(FoldId::new("avg")?),
+        level: PredictionLevel::Sample,
+        unit_ids: unit_ids.clone(),
+        values: predictions,
+        target_names: names.clone(),
+    };
+    let pooled_targets = RegressionTargetBlock {
+        level: PredictionLevel::Sample,
+        unit_ids,
+        values: targets,
+        validity_masks: has_missing.then_some(masks),
+        target_names: names,
+    };
+    let mut candidate =
+        score_regression_aggregated_block(&pooled_predictions, &pooled_targets, &[metric])?
+            .into_candidate_score(variant.variant_id.as_str())?;
+    candidate.metadata.insert(
+        "operator_branch_count".to_string(),
+        serde_json::json!(models.len()),
+    );
+    Ok(candidate)
 }
 
 /// Capture one variant's per-fold VALIDATION (OOF) predictions (paired with id-matched y_true) and

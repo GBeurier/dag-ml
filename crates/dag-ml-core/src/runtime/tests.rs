@@ -16327,11 +16327,11 @@ fn select_best_operator_variant_is_leakage_safe_inactive_choice_writes_no_valida
 }
 
 #[test]
-fn select_best_operator_variant_from_models_rejects_multiple_generators() {
+fn select_best_operator_variant_from_models_enumerates_multiple_generators() {
     use crate::metrics::RegressionMetricKind;
 
-    // (6) Multiple operator generators are rejected for this phase (flat single operator generator
-    // scope), consistent with the Phase-3 nested rejection.
+    // Independent operator generators form a Cartesian product. No host targets
+    // means SELECT is off, so the run keeps its default variant.
     let (plan, model) = operator_select_union();
     let mut second = model.clone();
     second.generator_id = NodeId::new("generator:other").unwrap();
@@ -16339,7 +16339,11 @@ fn select_best_operator_variant_from_models_rejects_multiple_generators() {
     let models = vec![model, second];
     let run_id = RunId::new("run:operator.multi").unwrap();
 
-    let error = select_best_operator_variant_from_models(
+    let variants = enumerate_operator_variants(&models, Some(7)).unwrap();
+    assert_eq!(variants.len(), 4);
+    assert!(variants.iter().all(|variant| variant.choices.len() == 2));
+
+    let selected = select_best_operator_variant_from_models(
         &plan,
         &models,
         &run_id,
@@ -16347,12 +16351,8 @@ fn select_best_operator_variant_from_models_rejects_multiple_generators() {
         RegressionMetricKind::Rmse,
         |_plan, _ctx| Ok(()),
     )
-    .unwrap_err()
-    .to_string();
-    assert!(
-        error.contains("does not support 2 operator generators"),
-        "multiple operator generators must be rejected: {error}"
-    );
+    .unwrap();
+    assert!(selected.is_none());
 
     // An empty model slice is a no-op (no operator generator to SELECT): returns Ok(None).
     let none = select_best_operator_variant_from_models(
@@ -16365,4 +16365,250 @@ fn select_best_operator_variant_from_models_rejects_multiple_generators() {
     )
     .unwrap();
     assert!(none.is_none());
+}
+
+#[test]
+fn multi_operator_select_pools_oof_rows_with_branch_scoped_ids() {
+    let (_, mut left) = operator_select_union();
+    let mut right = left.clone();
+    right.generator_id = NodeId::new("generator:right").unwrap();
+    right.dimension.name = "generator:right.operators".to_string();
+    left.active_nodes.insert(
+        "choice0".into(),
+        BTreeSet::from([NodeId::new("model:left").unwrap()]),
+    );
+    right.active_nodes.insert(
+        "choice0".into(),
+        BTreeSet::from([NodeId::new("model:right").unwrap()]),
+    );
+    let models = [left, right];
+    let variant = enumerate_operator_variants(&models, Some(7))
+        .unwrap()
+        .into_iter()
+        .find(|variant| {
+            variant
+                .choices
+                .values()
+                .all(|choice| choice.label == "choice0")
+        })
+        .unwrap();
+    let average = |producer: &str, predictions: Vec<f64>| {
+        let units = (0..predictions.len())
+            .map(|index| PredictionUnitId::Sample(SampleId::new(format!("same:{index}")).unwrap()))
+            .collect::<Vec<_>>();
+        OofAverageBlock {
+            predictions: AggregatedPredictionBlock {
+                prediction_id: None,
+                producer_node: NodeId::new(producer).unwrap(),
+                producer_port: None,
+                partition: PredictionPartition::Validation,
+                fold_id: Some(FoldId::new("avg").unwrap()),
+                level: PredictionLevel::Sample,
+                unit_ids: units.clone(),
+                values: predictions.into_iter().map(|value| vec![value]).collect(),
+                target_names: Vec::new(),
+            },
+            y_true: RegressionTargetBlock {
+                level: PredictionLevel::Sample,
+                unit_ids: units.clone(),
+                values: vec![vec![0.0]; units.len()],
+                validity_masks: None,
+                target_names: Vec::new(),
+            },
+        }
+    };
+    let score = pooled_operator_candidate_score(
+        &variant,
+        &models,
+        &[
+            average("model:left", vec![0.0]),
+            average("model:right", vec![2.0, 2.0, 2.0]),
+        ],
+        RegressionMetricKind::Rmse,
+    )
+    .unwrap();
+    assert!((score.metrics["rmse"] - 3.0_f64.sqrt()).abs() < 1e-12);
+    assert_eq!(score.metadata["row_count"], 4);
+    assert_eq!(score.metadata["operator_branch_count"], 2);
+}
+
+#[test]
+fn multi_operator_select_scores_each_pruned_combination_and_refits_winner() {
+    let (base, left) = operator_select_union();
+    let mut graph = base.graph_plan.graph.clone();
+    let template = graph
+        .nodes
+        .iter()
+        .find(|node| node.id.as_str() == "model:choice0__pls")
+        .unwrap()
+        .clone();
+    let prefix_edge = graph
+        .edges
+        .iter()
+        .find(|edge| {
+            edge.source.node_id.as_str() == "filter:y_outlier" && edge.target.port_name == "x"
+        })
+        .unwrap()
+        .clone();
+    for id in ["model:right0", "model:right1"] {
+        let mut node = template.clone();
+        node.id = NodeId::new(id).unwrap();
+        graph.nodes.push(node);
+        let mut edge = prefix_edge.clone();
+        edge.target.node_id = NodeId::new(id).unwrap();
+        graph.edges.push(edge);
+    }
+    let plan = build_execution_plan(
+        "plan:multi.operator.select",
+        graph,
+        base.campaign.clone(),
+        &operator_select_manifests(),
+    )
+    .unwrap();
+    let right = OperatorVariantModel {
+        generator_id: NodeId::new("generator:right").unwrap(),
+        dimension: GenerationDimension {
+            name: "generator:right.operators".into(),
+            choices: ["right0", "right1"]
+                .into_iter()
+                .map(|label| GenerationChoice {
+                    label: label.into(),
+                    value: json!(label),
+                    param_overrides: Vec::new(),
+                    active_subsequence: Some(label.into()),
+                })
+                .collect(),
+        },
+        active_nodes: BTreeMap::from([
+            (
+                "right0".into(),
+                BTreeSet::from([NodeId::new("model:right0").unwrap()]),
+            ),
+            (
+                "right1".into(),
+                BTreeSet::from([NodeId::new("model:right1").unwrap()]),
+            ),
+        ]),
+        variant_labels: BTreeMap::new(),
+    };
+    let models = [left, right];
+    let run_id = RunId::new("run:multi.operator.select").unwrap();
+    let mut seen = BTreeSet::new();
+    let selection = select_best_operator_variant_from_models(
+        &plan,
+        &models,
+        &run_id,
+        Some(7),
+        RegressionMetricKind::Rmse,
+        |pruned, ctx| {
+            let active_left = ["model:choice0__pls", "model:choice1__ridge"]
+                .into_iter()
+                .filter(|id| pruned.node_plans.contains_key(&NodeId::new(*id).unwrap()))
+                .collect::<Vec<_>>();
+            let active_right = ["model:right0", "model:right1"]
+                .into_iter()
+                .filter(|id| pruned.node_plans.contains_key(&NodeId::new(*id).unwrap()))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                active_left.len(),
+                1,
+                "inactive left choice leaked into candidate"
+            );
+            assert_eq!(
+                active_right.len(),
+                1,
+                "inactive right choice leaked into candidate"
+            );
+            assert!(!pruned
+                .node_plans
+                .contains_key(&NodeId::new("merge:gen").unwrap()));
+            seen.insert((active_left[0].to_string(), active_right[0].to_string()));
+            for (branch_index, (producer, offset, count)) in [
+                (
+                    active_left[0],
+                    if active_left[0].contains("choice0") {
+                        1.0
+                    } else {
+                        0.0
+                    },
+                    1,
+                ),
+                (
+                    active_right[0],
+                    if active_right[0].ends_with('0') {
+                        0.0
+                    } else {
+                        2.0
+                    },
+                    3,
+                ),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let unit_ids = (0..count)
+                    .map(|i| {
+                        PredictionUnitId::Sample(SampleId::new(format!("shared:{i}")).unwrap())
+                    })
+                    .collect::<Vec<_>>();
+                let block = AggregatedPredictionBlock {
+                    prediction_id: None,
+                    producer_node: NodeId::new(producer).unwrap(),
+                    producer_port: None,
+                    partition: PredictionPartition::Validation,
+                    fold_id: Some(FoldId::new("avg").unwrap()),
+                    level: PredictionLevel::Sample,
+                    unit_ids: unit_ids.clone(),
+                    values: vec![vec![offset]; count],
+                    target_names: Vec::new(),
+                };
+                let truth = RegressionTargetBlock {
+                    level: PredictionLevel::Sample,
+                    unit_ids,
+                    values: vec![vec![0.0]; count],
+                    validity_masks: None,
+                    target_names: Vec::new(),
+                };
+                let report = score_regression_aggregated_block(
+                    &block,
+                    &truth,
+                    &[RegressionMetricKind::Rmse],
+                )?;
+                assert_eq!(branch_index, ctx.oof_average_blocks.len());
+                ctx.score_collector.push(report);
+                ctx.oof_average_blocks.push(OofAverageBlock {
+                    predictions: block,
+                    y_true: truth,
+                });
+            }
+            Ok(())
+        },
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        seen.len(),
+        4,
+        "every Cartesian candidate must run exactly once"
+    );
+    let variants = enumerate_operator_variants(&models, Some(7)).unwrap();
+    let winner = variants
+        .iter()
+        .find(|variant| {
+            variant.choices["generator:preproc_model.operators"].label == "choice1"
+                && variant.choices["generator:right.operators"].label == "right0"
+        })
+        .unwrap();
+    assert_eq!(selection.selected_variant_id, winner.variant_id);
+    assert_eq!(selection.validation_reports.len(), 8);
+    let refit = pruned_plan_for_operator_models(&plan, &models, winner).unwrap();
+    assert!(refit
+        .node_plans
+        .contains_key(&NodeId::new("model:choice1__ridge").unwrap()));
+    assert!(refit
+        .node_plans
+        .contains_key(&NodeId::new("model:right0").unwrap()));
+    assert!(!refit
+        .node_plans
+        .contains_key(&NodeId::new("model:right1").unwrap()));
 }

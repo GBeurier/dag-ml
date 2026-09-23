@@ -41,9 +41,10 @@ use pythonize::{depythonize, pythonize};
 
 use dag_ml_core::{
     build_execution_bundle, build_execution_plan, compile_operator_variant_models,
-    compile_pipeline_dsl_with_generation_and_controller_registry, enumerate_variants,
+    compile_pipeline_dsl_with_generation_and_controller_registry,
     execute_terminal_prediction, fan_out_data_aware_branches, parse_pipeline_dsl_json,
-    plan_oof_partition_mode, prune_plan_to_active, select_best_operator_variant_from_models,
+    enumerate_operator_variants, plan_oof_partition_mode, pruned_plan_for_operator_models,
+    select_best_operator_variant_from_models,
     select_best_variant_by_cv, validate_terminal_prediction_preflight, AggregationControllerResult,
     AggregationControllerTask, ArtifactMaterializationRequest, BundleId, ControllerId,
     ControllerRegistry, DagMlError as CoreDagMlError, ExecutionPlan, ExternalDataPlanEnvelope,
@@ -754,10 +755,9 @@ fn resolve_operator_select(
         .into_iter()
         .filter(|captured| captured.variant_id != variant_id)
         .collect();
-    // Recompute the WINNER's pruned plan so FIT_CV + REFIT run on it (not the union). The single
-    // operator model is guaranteed by `select_best_operator_variant_from_models`.
-    let model = &operator_variant_models[0];
-    let pruned_plan = pruned_plan_for_operator_variant(plan, model, &variant_id, root_seed)?;
+    // Recompute the complete winning combination so FIT_CV + REFIT use all selected branches.
+    let pruned_plan =
+        pruned_plan_for_operator_variant(plan, operator_variant_models, &variant_id, root_seed)?;
     Ok(Some(ResolvedRefitVariant {
         variant_id,
         loser_validation_reports,
@@ -767,17 +767,15 @@ fn resolve_operator_select(
     }))
 }
 
-/// Rebuild the PRUNED plan for a chosen operator variant id by re-enumerating the model's variants
-/// (deterministic), matching the winner, and pruning the union to its active choice. Mirrors the
-/// CLI's `pruned_plan_for_operator_variant` so the in-process winner refits on the pruned candidate
-/// rather than the stacking union.
+/// Rebuild the PRUNED plan for a chosen operator combination by re-enumerating
+/// the product deterministically, then pruning all inactive choices.
 fn pruned_plan_for_operator_variant(
     union_plan: &ExecutionPlan,
-    model: &OperatorVariantModel,
+    models: &[OperatorVariantModel],
     variant_id: &VariantId,
     root_seed: u64,
 ) -> Result<ExecutionPlan, CoreDagMlError> {
-    let variants = enumerate_variants(&model.generation_spec(), Some(root_seed))?;
+    let variants = enumerate_operator_variants(models, Some(root_seed))?;
     let variant = variants
         .iter()
         .find(|variant| &variant.variant_id == variant_id)
@@ -786,28 +784,7 @@ fn pruned_plan_for_operator_variant(
                 "operator-SELECT winner `{variant_id}` not found in enumerated variants"
             ))
         })?;
-    let choice = variant.choices.get(&model.dimension.name).ok_or_else(|| {
-        CoreDagMlError::RuntimeValidation(format!(
-            "operator winner `{variant_id}` missing operator dimension"
-        ))
-    })?;
-    let active_subsequence = choice.active_subsequence.as_ref().ok_or_else(|| {
-        CoreDagMlError::RuntimeValidation(format!(
-            "operator winner `{variant_id}` choice has no active_subsequence"
-        ))
-    })?;
-    let active_nodes = model.active_nodes.get(active_subsequence).ok_or_else(|| {
-        CoreDagMlError::RuntimeValidation(format!(
-            "operator model has no active-node set for `{active_subsequence}`"
-        ))
-    })?;
-    let all_choice_nodes = model
-        .active_nodes
-        .values()
-        .flatten()
-        .cloned()
-        .collect::<std::collections::BTreeSet<_>>();
-    prune_plan_to_active(union_plan, active_nodes, &all_choice_nodes, variant)
+    pruned_plan_for_operator_models(union_plan, models, variant)
 }
 
 /// Resolve the variant REFIT targets, mirroring the CLI's `resolve_refit_variant`:
@@ -2190,35 +2167,34 @@ mod tests {
     }
 
     #[test]
-    fn in_process_resolve_refit_variant_rejects_multiple_operator_generators() {
-        // (6) Multiple operator generators are rejected for this phase (flat single operator generator
-        // scope), exactly as the CLI / core do.
+    fn in_process_refit_plan_replays_multiple_operator_choices() {
+        // Product IDs are resolved to the same selected choices during refit.
         let union_plan = operator_select_union_plan();
         let model = operator_select_model();
         let mut second = model.clone();
         second.generator_id = NodeId::new("generator:other").unwrap();
         second.dimension.name = "generator:other.operators".to_string();
         let models = vec![model, second];
-        let controllers = operator_select_controllers();
-        let provider = empty_provider();
-        let run_id = RunId::new("run:in_process.operator.multi").unwrap();
-
-        let error = resolve_refit_variant(
+        let variant = enumerate_operator_variants(&models, Some(7))
+            .unwrap()
+            .into_iter()
+            .find(|variant| {
+                variant
+                    .choices
+                    .values()
+                    .all(|choice| choice.label == "choice0")
+            })
+            .unwrap();
+        let pruned = pruned_plan_for_operator_variant(
             &union_plan,
             &models,
-            &run_id,
+            &variant.variant_id,
             7,
-            RegressionMetricKind::Rmse,
-            &controllers,
-            &provider,
-            None,
         )
-        .unwrap_err()
-        .to_string();
-        assert!(
-            error.contains("does not support 2 operator generators"),
-            "multiple operator generators must be rejected: {error}"
-        );
+        .unwrap();
+        assert_eq!(pruned.variants[0].variant_id, variant.variant_id);
+        assert!(pruned.node_plans.contains_key(&NodeId::new("model:choice0__pls").unwrap()));
+        assert!(!pruned.node_plans.contains_key(&NodeId::new("model:choice1__ridge").unwrap()));
     }
 
     #[derive(Default)]
