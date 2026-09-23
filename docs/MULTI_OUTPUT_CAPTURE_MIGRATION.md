@@ -66,6 +66,32 @@ the current full-train semantics and must not manufacture CV scores or folds.
 The existing portable refit package contract is a candidate for that route;
 it should be tested before replacing the phase runner.
 
+## Executable CV seam and remaining production blockers
+
+`nirs4all.pipeline.dagml.attested_by_source.execute_attested_by_source_cv`
+now builds a signed request before execution, calls `dag_ml.execute_training`,
+and obtains one genuine `TrainingOutcome` and `PortablePredictorPackage` with
+all source output bindings and refit artifact records. The integration test
+uses three source-local Ridge models on a real CV dataset. The public
+in-process runner now calls this operation for one-refit campaigns without
+operator generators. DAG-ML builds its `ScoreSet` after REFIT and retains the
+selected run's final/test reports alongside selection's validation reports.
+The public projection has the same 18 reports and prediction rows as the CLI
+runner (three validation folds, validation average, final train and external
+test for each source); an integration test compares every predicted block
+against CLI. The CLI route, top-k refits and operator-generator campaigns
+still use the existing runner.
+
+The prototype currently gives each model requirement the same signed
+multi-source data-plan envelope. Attempting distinct source-local content
+fingerprints under that shared external plan fails with
+`duplicate external data-plan envelope with different payload`. To attest
+each source independently, the compiler must mint distinct plan identities
+and bindings for the source views before training; changing fingerprints after
+execution is not acceptable. The host Python/joblib artifact sidecars also
+need an exact package artifact-binding map before claiming a cross-language
+portable archive.
+
 ## Gate before claiming portable parity
 
 - Train two genuinely different source models and export one package with two

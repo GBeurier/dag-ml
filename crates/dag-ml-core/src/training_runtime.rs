@@ -2046,14 +2046,6 @@ pub fn execute_training(input: TrainingExecutionInput<'_>) -> Result<TrainingOut
         &selected_variant_id,
     )?;
 
-    let score_set = ScoreSet {
-        schema_version: SCORE_SET_SCHEMA_VERSION,
-        plan_id: effective_plan.id.clone(),
-        selection_metric: Some(selection_metric.name().to_string()),
-        reports: selection.selection.validation_reports,
-    };
-    score_set.validate()?;
-
     let prediction_requirements = build_oof_prediction_requirements(
         &effective_plan,
         selected_ctx.prediction_store.blocks(),
@@ -2105,6 +2097,29 @@ pub fn execute_training(input: TrainingExecutionInput<'_>) -> Result<TrainingOut
     } else {
         Vec::new()
     };
+    // SELECT owns the validation reports across all candidates. The selected
+    // run owns the actual REFIT final/test reports; attach those only after
+    // REFIT has executed so the outcome retains the same scored partitions as
+    // a normal native CV+refit campaign. Methods HPO has a strict terminal-OOF
+    // score contract and keeps its existing validation-only ScoreSet.
+    let mut reports = selection.selection.validation_reports;
+    if native_hpo_descriptor.is_none() {
+        selected_ctx.collect_cross_fold_test_scores(selection_metric)?;
+        reports.extend(
+            selected_ctx
+                .score_collector
+                .iter()
+                .filter(|report| report.partition != PredictionPartition::Validation)
+                .cloned(),
+        );
+    }
+    let score_set = ScoreSet {
+        schema_version: SCORE_SET_SCHEMA_VERSION,
+        plan_id: effective_plan.id.clone(),
+        selection_metric: Some(selection_metric.name().to_string()),
+        reports,
+    };
+    score_set.validate()?;
 
     let mut execution_bundle = build_execution_bundle_with_prediction_contracts(
         input.bundle_id.clone(),
