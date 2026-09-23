@@ -11928,6 +11928,11 @@ fn feature_axes_are_validated_and_carried_to_source_views() {
         crate::data::FEATURE_AXES_METADATA_KEY.to_string(),
         json!({"nir": ["1000", "1100"]}),
     );
+    binding.validate().unwrap();
+    binding.metadata.insert(
+        crate::data::FEATURE_AXES_METADATA_KEY.to_string(),
+        json!({"unknown": ["1000", "1100"]}),
+    );
     assert!(binding.validate().is_err());
 }
 

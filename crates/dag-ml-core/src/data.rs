@@ -1439,17 +1439,22 @@ impl DataBinding {
                         .to_string(),
                 )
             })?;
-            if axes.is_empty() || axes.len() != self.source_ids.len() {
+            if axes.is_empty() {
                 return Err(DagMlError::CampaignValidation(
-                    "data binding metadata.feature_axes must cover every source exactly once"
+                    "data binding metadata.feature_axes must declare at least one source"
                         .to_string(),
                 ));
             }
-            for source_id in &self.source_ids {
-                let coordinates = axes.get(source_id).and_then(serde_json::Value::as_array)
+            for (source_id, values) in axes {
+                if !self.source_ids.contains(source_id) {
+                    return Err(DagMlError::CampaignValidation(format!(
+                        "data binding metadata.feature_axes declares unknown source `{source_id}`"
+                    )));
+                }
+                let coordinates = values.as_array()
                     .filter(|coordinates| !coordinates.is_empty())
                     .ok_or_else(|| DagMlError::CampaignValidation(format!(
-                        "data binding metadata.feature_axes is missing coordinates for source `{source_id}`"
+                        "data binding metadata.feature_axes has no coordinates for source `{source_id}`"
                     )))?;
                 if coordinates.iter().any(|coordinate| {
                     coordinate
