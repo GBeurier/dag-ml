@@ -1013,6 +1013,50 @@ fn merge_selector_explicit_models_stay_inside_branch_scope() {
 }
 
 #[test]
+fn merge_model_ordered_sources_retain_branch_selection_scope() {
+    let spec: PipelineDslSpec = serde_json::from_value(serde_json::json!({
+        "id": "dsl-ordered-selected-merge",
+        "steps": [
+            {"kind": "branch", "branches": [
+                {"id": "left", "steps": [
+                    {"kind": "model", "id": "model:left.a", "operator": {"type": "Ridge"}},
+                    {"kind": "model", "id": "model:left.b", "operator": {"type": "Ridge"}}
+                ]},
+                {"id": "right", "steps": [
+                    {"kind": "model", "id": "model:right", "operator": {"type": "Ridge"}}
+                ]}
+            ]},
+            {"kind": "merge_model", "id": "model:meta", "operator": {"type": "Ridge"},
+             "sources": ["model:left.b", "model:left.a", "model:right"],
+             "selectors": [
+                {"branch": "left", "select": {"models": ["model:left.b", "model:left.a"]}},
+                {"branch": "right", "select": "all"}
+             ]}
+        ]
+    }))
+    .unwrap();
+    let graph = compile_pipeline_dsl(&spec).unwrap();
+    let meta = graph
+        .nodes
+        .iter()
+        .find(|node| node.id.as_str() == "model:meta")
+        .unwrap();
+    assert_eq!(
+        meta.metadata["prediction_source_order"],
+        serde_json::json!(["model:left.b", "model:left.a", "model:right"])
+    );
+    assert_eq!(
+        graph
+            .edges
+            .iter()
+            .filter(|edge| edge.target.node_id == meta.id && edge.contract.requires_oof)
+            .map(|edge| edge.source.node_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["model:left.b", "model:left.a", "model:right"]
+    );
+}
+
+#[test]
 fn compiles_nirs4all_shape_changing_and_tuning_surface() {
     let spec: PipelineDslSpec = serde_json::from_str(
         r#"{
