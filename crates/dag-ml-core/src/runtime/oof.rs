@@ -651,6 +651,37 @@ impl StackingProducerSelectionRequest {
                 return Ok(self.producer_nodes.clone())
             }
             serde_json::Value::String(mode) if mode == "best" => 1,
+            serde_json::Value::Object(config)
+                if config.len() == 1 && config.contains_key("models") =>
+            {
+                let models = config["models"].as_array().ok_or_else(|| {
+                    DagMlError::RuntimeValidation(
+                        "stacking models must be a non-empty array of producer node ids"
+                            .to_string(),
+                    )
+                })?;
+                let selected = models
+                    .iter()
+                    .map(|value| value.as_str().and_then(|id| NodeId::new(id).ok()))
+                    .collect::<Option<Vec<_>>>()
+                    .ok_or_else(|| {
+                        DagMlError::RuntimeValidation(
+                            "stacking models must contain valid producer node ids".to_string(),
+                        )
+                    })?;
+                if selected.is_empty()
+                    || selected.iter().collect::<BTreeSet<_>>().len() != selected.len()
+                    || selected
+                        .iter()
+                        .any(|node| !self.producer_nodes.contains(node))
+                {
+                    return Err(DagMlError::RuntimeValidation(
+                        "stacking models must be distinct producers in the selection scope"
+                            .to_string(),
+                    ));
+                }
+                return Ok(selected);
+            }
             serde_json::Value::Object(config) if config.len() == 1 => config
                 .get("top_k")
                 .and_then(serde_json::Value::as_u64)
@@ -662,7 +693,8 @@ impl StackingProducerSelectionRequest {
                 })?,
             _ => {
                 return Err(DagMlError::RuntimeValidation(
-                    "stacking select must be all, best or an object with top_k".to_string(),
+                    "stacking select must be all, best or an object with top_k or models"
+                        .to_string(),
                 ))
             }
         };

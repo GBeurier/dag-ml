@@ -2735,6 +2735,27 @@ fn stacking_selection_ignores_test_scores_and_rejects_duplicate_producers() {
 }
 
 #[test]
+fn stacking_selection_accepts_only_explicit_producers_in_scope() {
+    let mut request: StackingProducerSelectionRequest = serde_json::from_value(json!({
+        "producer_nodes": ["model:a", "model:b", "model:c"],
+        "select": {"models": ["model:c", "model:a"]}, "metric": "rmse",
+        "reports": []
+    }))
+    .unwrap();
+    assert_eq!(
+        request.selected_producer_nodes().unwrap(),
+        vec![
+            NodeId::new("model:c").unwrap(),
+            NodeId::new("model:a").unwrap()
+        ]
+    );
+    request.select = json!({"models": ["model:other"]});
+    assert!(request.selected_producer_nodes().is_err());
+    request.select = json!({"models": ["model:a", "model:a"]});
+    assert!(request.selected_producer_nodes().is_err());
+}
+
+#[test]
 fn stacking_best_fold_uses_validation_score_only_and_stable_ties() {
     let mut request: StackingFoldSelectionRequest = serde_json::from_value(json!({
         "producer_node": "model:base", "fold_ids": ["fold:0", "fold:1", "fold:2"],

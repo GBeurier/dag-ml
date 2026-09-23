@@ -843,6 +843,34 @@ fn merge_selectors_reject_top_k_above_scope() {
 }
 
 #[test]
+fn merge_selector_explicit_models_stay_inside_branch_scope() {
+    let mut value = serde_json::json!({
+        "id": "dsl-explicit-merge-models",
+        "steps": [
+            {"kind": "branch", "branches": [
+                {"id": "left", "steps": [
+                    {"kind": "model", "id": "branch:left.model:a", "operator": {"type": "Ridge"}},
+                    {"kind": "model", "id": "branch:left.model:b", "operator": {"type": "Ridge"}}
+                ]},
+                {"id": "right", "steps": [
+                    {"kind": "model", "id": "branch:right.model:c", "operator": {"type": "Ridge"}}
+                ]}
+            ]},
+            {"kind": "merge", "id": "merge:explicit", "selectors": [
+                {"branch": "left", "select": {"models": ["branch:left.model:b"]}}
+            ]}
+        ]
+    });
+    let spec: PipelineDslSpec = serde_json::from_value(value.clone()).unwrap();
+    compile_pipeline_dsl_with_generation(&spec).unwrap();
+    value["steps"][1]["selectors"][0]["select"] =
+        serde_json::json!({"models": ["branch:right.model:c"]});
+    let out_of_scope: PipelineDslSpec = serde_json::from_value(value).unwrap();
+    let error = compile_pipeline_dsl_with_generation(&out_of_scope).unwrap_err();
+    assert!(format!("{error}").contains("matched prediction scope"));
+}
+
+#[test]
 fn compiles_nirs4all_shape_changing_and_tuning_surface() {
     let spec: PipelineDslSpec = serde_json::from_str(
         r#"{

@@ -1965,7 +1965,7 @@ pub(crate) fn validate_merge_selectors(
                 "pipeline DSL merge `{merge_id}` selector {selector_index} does not match any pending prediction input"
             )));
         }
-        validate_merge_selector_select(merge_id, selector_index, selector, matched.len())?;
+        validate_merge_selector_select(merge_id, selector_index, selector, &matched)?;
     }
     Ok(())
 }
@@ -1973,7 +1973,7 @@ pub(crate) fn validate_merge_selector_select(
     merge_id: &NodeId,
     selector_index: usize,
     selector: &PipelineDslMergeSelector,
-    matched_count: usize,
+    matched: &[&PredictionSource],
 ) -> Result<()> {
     let Some(select) = &selector.select else {
         return Ok(());
@@ -1994,12 +1994,40 @@ pub(crate) fn validate_merge_selector_select(
     }
     let Some(object) = select.as_object() else {
         return Err(DagMlError::GraphValidation(format!(
-            "pipeline DSL merge `{merge_id}` selector {selector_index} select must be `all`, `best` or an object with `top_k`"
+            "pipeline DSL merge `{merge_id}` selector {selector_index} select must be `all`, `best` or an object with `top_k` or `models`"
         )));
     };
+    if object.len() == 1 && object.contains_key("models") {
+        let Some(models) = object.get("models").and_then(|value| value.as_array()) else {
+            return Err(DagMlError::GraphValidation(format!(
+                "pipeline DSL merge `{merge_id}` selector {selector_index} models must be an array of producer node ids"
+            )));
+        };
+        let selected = models
+            .iter()
+            .map(|value| value.as_str())
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| DagMlError::GraphValidation(format!(
+                "pipeline DSL merge `{merge_id}` selector {selector_index} models must contain producer node ids"
+            )))?;
+        if selected.is_empty() || selected.iter().collect::<BTreeSet<_>>().len() != selected.len() {
+            return Err(DagMlError::GraphValidation(format!(
+                "pipeline DSL merge `{merge_id}` selector {selector_index} models must be non-empty and distinct"
+            )));
+        }
+        if selected
+            .iter()
+            .any(|id| !matched.iter().any(|source| source.node_id.as_str() == *id))
+        {
+            return Err(DagMlError::GraphValidation(format!(
+                "pipeline DSL merge `{merge_id}` selector {selector_index} models must be producers in the matched prediction scope"
+            )));
+        }
+        return Ok(());
+    }
     if object.len() != 1 || !object.contains_key("top_k") {
         return Err(DagMlError::GraphValidation(format!(
-            "pipeline DSL merge `{merge_id}` selector {selector_index} object select currently supports only `top_k`"
+            "pipeline DSL merge `{merge_id}` selector {selector_index} object select supports only `top_k` or `models`"
         )));
     }
     let Some(top_k) = object.get("top_k").and_then(|value| value.as_u64()) else {
@@ -2012,9 +2040,9 @@ pub(crate) fn validate_merge_selector_select(
             "pipeline DSL merge `{merge_id}` selector {selector_index} top_k must be positive"
         )));
     }
-    if top_k as usize > matched_count {
+    if top_k as usize > matched.len() {
         return Err(DagMlError::GraphValidation(format!(
-            "pipeline DSL merge `{merge_id}` selector {selector_index} top_k={top_k} exceeds {matched_count} matched prediction inputs"
+            "pipeline DSL merge `{merge_id}` selector {selector_index} top_k={top_k} exceeds {} matched prediction inputs", matched.len()
         )));
     }
     require_selector_metric(merge_id, selector_index, selector, "top_k")
