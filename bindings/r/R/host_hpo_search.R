@@ -12,8 +12,8 @@
 #' @param checkpoint Optional native checkpoint path for durable resume.
 #' @param output Optional result JSON path. A temporary file is used otherwise.
 #' @param operator_persistent Keep an operator process per candidate across folds.
-#' @param parallel_trials Must be 1. Parallel R adapters require isolated worker
-#'   processes and are not exposed through this wrapper yet.
+#' @param parallel_trials Positive number of candidate trials to run concurrently.
+#'   DAG-ML starts an isolated operator-adapter process for each candidate.
 #' @param adapter_timeout_ms Positive adapter response timeout.
 #' @return The native HPO result decoded as a list, without simplifying arrays.
 #' @export
@@ -39,8 +39,9 @@ dagml_host_hpo_search <- function(
   optimizer_adapter <- scalar_path(optimizer_adapter, "optimizer_adapter")
   cli <- scalar_path(cli, "cli", must_exist = FALSE)
   if (!is.numeric(parallel_trials) || length(parallel_trials) != 1L ||
-      is.na(parallel_trials) || parallel_trials != 1) {
-    stop("R host HPO currently supports parallel_trials=1 only; use the CLI directly with isolated R adapter workers for parallel trials", call. = FALSE)
+      is.na(parallel_trials) || !is.finite(parallel_trials) ||
+      parallel_trials < 1 || parallel_trials != floor(parallel_trials)) {
+    stop("parallel_trials must be a positive integer", call. = FALSE)
   }
   if (!is.numeric(adapter_timeout_ms) || length(adapter_timeout_ms) != 1L ||
       is.na(adapter_timeout_ms) || !is.finite(adapter_timeout_ms) ||
@@ -61,7 +62,8 @@ dagml_host_hpo_search <- function(
   args <- c(
     "run-host-hpo", "--plan", shQuote(plan), "--envelope", shQuote(envelope),
     "--request", shQuote(request), "--operator-adapter", shQuote(operator_adapter),
-    "--optimizer-adapter", shQuote(optimizer_adapter), "--parallel-trials", "1",
+    "--optimizer-adapter", shQuote(optimizer_adapter), "--parallel-trials",
+    format(parallel_trials, scientific = FALSE, trim = TRUE),
     "--adapter-timeout-ms", format(adapter_timeout_ms, scientific = FALSE, trim = TRUE),
     "--output", shQuote(output)
   )
