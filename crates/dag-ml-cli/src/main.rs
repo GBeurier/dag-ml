@@ -6854,6 +6854,38 @@ mod tests {
         assert_eq!(summary[0]["prediction_width"], 1);
         assert_eq!(summary[1]["producer_port"], "proba");
         assert_eq!(summary[1]["prediction_width"], 2);
+
+        let target_id = PredictionUnitId::Target(dag_ml_core::TargetId::new("target:one").unwrap());
+        let aggregated = [
+            AggregatedPredictionBlock {
+                prediction_id: None,
+                producer_node: NodeId::new("model:base").unwrap(),
+                producer_port: Some("oof".to_string()),
+                partition: PredictionPartition::Validation,
+                fold_id: Some(dag_ml_core::FoldId::new("fold:0").unwrap()),
+                level: PredictionLevel::Target,
+                unit_ids: vec![target_id.clone()],
+                values: vec![vec![1.0]],
+                target_names: vec!["label".to_string()],
+            },
+            AggregatedPredictionBlock {
+                prediction_id: None,
+                producer_node: NodeId::new("model:base").unwrap(),
+                producer_port: Some("proba".to_string()),
+                partition: PredictionPartition::Validation,
+                fold_id: Some(dag_ml_core::FoldId::new("fold:0").unwrap()),
+                level: PredictionLevel::Target,
+                unit_ids: vec![target_id],
+                values: vec![vec![0.2, 0.8]],
+                target_names: vec!["0".to_string(), "1".to_string()],
+            },
+        ];
+        let summary = oof_prediction_summary(&[], &aggregated).unwrap();
+        assert_eq!(summary.len(), 2);
+        assert_eq!(summary[0]["producer_port"], "oof");
+        assert_eq!(summary[0]["prediction_width"], 1);
+        assert_eq!(summary[1]["producer_port"], "proba");
+        assert_eq!(summary[1]["prediction_width"], 2);
     }
 
     use std::cell::Cell;
