@@ -429,6 +429,8 @@ jobs:
         run: DAGML_REQUIRE_HPO_R=1 python scripts/test_hpo_language_adapters.py
       - name: Check R optimizer through native parallel HPO and resume
         run: DAGML_REQUIRE_HPO_R=1 cargo test -p dag-ml-cli host_hpo_cli_runs_parallel_pruning_and_resumes_native_checkpoint
+      - name: Fit R Ridge on native folds through parallel HPO and resume
+        run: DAGML_REQUIRE_HPO_R=1 cargo test -p dag-ml-cli --test r_hpo_ridge
 
   matlab-octave-bindings:
     name: MATLAB/Octave bindings
