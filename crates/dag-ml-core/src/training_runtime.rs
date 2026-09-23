@@ -2224,6 +2224,26 @@ pub fn execute_training(input: TrainingExecutionInput<'_>) -> Result<TrainingOut
         &execution_bundle,
         portable_prediction_caches.as_ref(),
     )?;
+    // Methods HPO persists only the terminal OOF report for each completed
+    // trial. The selected rerun may also compute weighted averages, but those
+    // are not part of that signed terminal score transcript. Expose only OOF
+    // blocks with an exact selected-variant score report in the outcome.
+    let oof_averages = selected_ctx
+        .oof_average_blocks
+        .iter()
+        .filter(|average| {
+            native_hpo_descriptor.is_none()
+                || score_set.reports.iter().any(|report| {
+                    report.variant_id.as_ref() == Some(&selected_variant_id)
+                        && report.producer_node == average.predictions.producer_node
+                        && report.producer_port == average.predictions.producer_port
+                        && report.partition == average.predictions.partition
+                        && report.fold_id == average.predictions.fold_id
+                        && report.level == average.predictions.level
+                })
+        })
+        .cloned()
+        .collect();
     let mut outcome = TrainingOutcome {
         schema_version: TRAINING_OUTCOME_SCHEMA_VERSION,
         outcome_id: input.outcome_id,
@@ -2238,7 +2258,7 @@ pub fn execute_training(input: TrainingExecutionInput<'_>) -> Result<TrainingOut
         parameter_patches,
         refit: refit_outcome,
         score_set,
-        oof_averages: selected_ctx.oof_average_blocks.clone(),
+        oof_averages,
         ensemble_averages: selected_ctx
             .train_ensemble_blocks
             .iter()
