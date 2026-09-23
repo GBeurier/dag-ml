@@ -1920,6 +1920,26 @@ fn native_methods_hpo_runs_inside_training_and_refits_the_selected_pls_once() {
         .selected_variant_id
         .as_str()
         .starts_with("hpo:trial:"));
+    assert!(!outcome.oof_averages.is_empty());
+    for average in &outcome.oof_averages {
+        assert_eq!(
+            outcome
+                .score_set
+                .reports
+                .iter()
+                .filter(|report| {
+                    report.variant_id.as_ref() == Some(&outcome.selected_variant_id)
+                        && report.producer_node == average.predictions.producer_node
+                        && report.producer_port == average.predictions.producer_port
+                        && report.partition == average.predictions.partition
+                        && report.fold_id == average.predictions.fold_id
+                        && report.level == average.predictions.level
+                })
+                .count(),
+            1,
+            "every retained HPO OOF block needs exactly one terminal score",
+        );
+    }
     let native_oof_rmse = outcome
         .score_set
         .reports
