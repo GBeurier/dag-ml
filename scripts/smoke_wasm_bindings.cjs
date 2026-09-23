@@ -23,6 +23,7 @@ const REQUIRED_DTS_EXPORTS = [
   "replay_initial_full_refit_json",
   "validate_initial_full_refit_package_json",
   "initial_full_refit_predict_envelope_json",
+  "select_stacking_producers_json",
   "fold_set_fingerprint_json",
   "host_hpo_search_json",
   "host_hpo_search_parallel_json",
@@ -553,6 +554,18 @@ require("./smoke_wasm_hpo.cjs")(dagMl, repo, pkgDir).catch((error) => {
   process.exitCode = 1;
 });
 require("./smoke_wasm_initial_refit.cjs")(dagMl, repo);
+const stackingSelection = dagMl.select_stacking_producers_json(JSON.stringify({
+  producer_nodes: ["model:a", "model:b"], select: "best", metric: "rmse",
+  reports: [
+    { producer_node: "model:a", partition: "validation", fold_id: "fold:0",
+      level: "sample", row_count: 1, target_width: 1, metrics: { rmse: 4 } },
+    { producer_node: "model:b", partition: "validation", fold_id: "fold:0",
+      level: "sample", row_count: 1, target_width: 1, metrics: { rmse: 2 } },
+  ],
+}));
+if (JSON.stringify(JSON.parse(stackingSelection)) !== JSON.stringify(["model:b"])) {
+  throw new Error("WASM stacking selection did not choose the better producer");
+}
 try {
   dagMl.validate_graph_json('{"id":"","interface":{},"nodes":[],"edges":[]}');
   throw new Error("invalid graph JSON was accepted");

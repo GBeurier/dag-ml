@@ -434,6 +434,7 @@ pub(crate) fn apply_stacking_prediction_aggregations(
                     "stacking branch `{branch}` models differ in OOF fold identities"
                 )));
             }
+            let inputs = select_stacking_inputs(inputs, selector, scores)?;
             if selector.aggregate.is_none() {
                 for (key, spec) in inputs {
                     if reduced.insert(key.clone(), spec.clone()).is_some() {
@@ -506,6 +507,126 @@ pub(crate) fn apply_stacking_prediction_aggregations(
     }
     *prediction_inputs = reduced;
     Ok(())
+}
+
+/// A closed producer selection request shared by native stacking and archive
+/// producers across language bindings. Only validation scores can rank models.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StackingProducerSelectionRequest {
+    pub producer_nodes: Vec<NodeId>,
+    pub select: serde_json::Value,
+    pub metric: String,
+    pub reports: Vec<RegressionMetricReport>,
+}
+
+impl StackingProducerSelectionRequest {
+    pub fn selected_producer_nodes(&self) -> Result<Vec<NodeId>> {
+        if self.producer_nodes.is_empty()
+            || self.producer_nodes.iter().collect::<BTreeSet<_>>().len()
+                != self.producer_nodes.len()
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "stacking selection needs distinct producer nodes".to_string(),
+            ));
+        }
+        let limit = match &self.select {
+            serde_json::Value::String(mode) if mode == "all" => {
+                return Ok(self.producer_nodes.clone())
+            }
+            serde_json::Value::String(mode) if mode == "best" => 1,
+            serde_json::Value::Object(config) if config.len() == 1 => config
+                .get("top_k")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|value| usize::try_from(value).ok())
+                .ok_or_else(|| {
+                    DagMlError::RuntimeValidation(
+                        "stacking top_k must be a positive integer".to_string(),
+                    )
+                })?,
+            _ => {
+                return Err(DagMlError::RuntimeValidation(
+                    "stacking select must be all, best or an object with top_k".to_string(),
+                ))
+            }
+        };
+        if limit == 0 || limit > self.producer_nodes.len() || self.metric.trim().is_empty() {
+            return Err(DagMlError::RuntimeValidation(
+                "stacking selection needs a valid top_k and metric".to_string(),
+            ));
+        }
+        let mut ranked = self
+            .producer_nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, producer)| {
+                self.reports
+                    .iter()
+                    .find(|report| {
+                        report.producer_node == *producer
+                            && report.partition == PredictionPartition::Validation
+                            && report.fold_id.is_some()
+                            && report
+                                .metrics
+                                .get(&self.metric)
+                                .is_some_and(|score| score.is_finite())
+                    })
+                    .and_then(|report| report.metrics.get(&self.metric))
+                    .map(|score| (index, *score))
+            })
+            .collect::<Vec<_>>();
+        if ranked.is_empty() {
+            return Ok(self.producer_nodes.iter().take(limit).cloned().collect());
+        }
+        let higher_better = crate::metrics::RegressionMetricKind::from_name(&self.metric)
+            .is_some_and(|kind| kind.objective() == crate::selection::MetricObjective::Maximize)
+            || matches!(self.metric.as_str(), "f1" | "auc");
+        ranked.sort_by(|left, right| {
+            let order = if higher_better {
+                right.1.total_cmp(&left.1)
+            } else {
+                left.1.total_cmp(&right.1)
+            };
+            order.then_with(|| left.0.cmp(&right.0))
+        });
+        Ok(ranked
+            .into_iter()
+            .take(limit)
+            .map(|(index, _)| self.producer_nodes[index].clone())
+            .collect())
+    }
+}
+
+fn select_stacking_inputs<'a>(
+    inputs: Vec<(&'a String, &'a PredictionInputSpec)>,
+    selector: &crate::dsl::PipelineDslMergeSelector,
+    scores: &[RegressionMetricReport],
+) -> Result<Vec<(&'a String, &'a PredictionInputSpec)>> {
+    let Some(select) = &selector.select else {
+        return Ok(inputs);
+    };
+    let request = StackingProducerSelectionRequest {
+        producer_nodes: inputs
+            .iter()
+            .map(|(_, input)| input.producer_node.clone())
+            .collect(),
+        select: select.clone(),
+        metric: selector
+            .metric
+            .clone()
+            .unwrap_or_else(|| "rmse".to_string()),
+        reports: scores.to_vec(),
+    };
+    let selected = request.selected_producer_nodes()?;
+    Ok(selected
+        .iter()
+        .filter_map(|producer| {
+            inputs
+                .iter()
+                .find(|(_, input)| &input.producer_node == producer)
+                .copied()
+        })
+        .collect())
 }
 
 /// Legacy weighted mean uses inverse validation error and falls back to equal

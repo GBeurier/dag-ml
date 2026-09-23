@@ -2640,6 +2640,100 @@ fn stacking_probability_selector_reduces_inner_and_outer_inputs_by_identity() {
     }
 }
 
+#[test]
+fn stacking_best_selector_uses_validation_score_before_meta_fit() {
+    let mut plan = fixture_plan("plan:stacking.best");
+    let first = NodeId::new("model:base").unwrap();
+    let second = NodeId::new("model:second").unwrap();
+    let meta = NodeId::new("model:meta").unwrap();
+    let base_node = plan
+        .graph_plan
+        .graph
+        .nodes
+        .iter_mut()
+        .find(|node| node.id == first)
+        .unwrap();
+    base_node
+        .metadata
+        .insert("dsl_branch".to_string(), json!("branch_0"));
+    let mut second_node = base_node.clone();
+    second_node.id = second.clone();
+    let mut meta_node = base_node.clone();
+    meta_node.id = meta.clone();
+    meta_node.metadata.remove("dsl_branch");
+    meta_node
+        .metadata
+        .insert("merge_mode".to_string(), json!("predictions"));
+    meta_node.metadata.insert(
+        "selectors".to_string(),
+        json!([{"branch": "branch_0", "select": "best", "metric": "rmse"}]),
+    );
+    plan.graph_plan.graph.nodes.extend([second_node, meta_node]);
+    let mut meta_plan = plan.node_plans[&first].clone();
+    meta_plan.node_id = meta;
+    let input = |producer: NodeId, value: f64| PredictionInputSpec {
+        producer_node: producer,
+        source_port: "oof".to_string(),
+        target_port: "oof".to_string(),
+        partition: PredictionPartition::Validation,
+        prediction_level: PredictionLevel::Sample,
+        fold_id: Some(FoldId::new("fold:0").unwrap()),
+        fold_ids: vec![FoldId::new("fold:0").unwrap()],
+        unit_ids: vec![PredictionUnitId::Sample(SampleId::new("s1").unwrap())],
+        sample_ids: vec![SampleId::new("s1").unwrap()],
+        values: vec![vec![value]],
+        prediction_width: 1,
+        target_names: vec!["y".to_string()],
+    };
+    let mut inputs = BTreeMap::from([
+        (format!("{first}.oof"), input(first.clone(), 1.0)),
+        (format!("{second}.oof"), input(second.clone(), 2.0)),
+    ]);
+    let report = |producer_node, rmse| crate::metrics::RegressionMetricReport {
+        prediction_id: None,
+        producer_node,
+        producer_port: None,
+        variant_id: None,
+        variant_label: None,
+        partition: PredictionPartition::Validation,
+        fold_id: Some(FoldId::new("fold:0").unwrap()),
+        level: PredictionLevel::Sample,
+        row_count: 1,
+        target_width: 1,
+        target_names: vec!["y".to_string()],
+        metrics: BTreeMap::from([("rmse".to_string(), rmse)]),
+    };
+    apply_stacking_prediction_aggregations(
+        &plan,
+        &meta_plan,
+        &mut inputs,
+        &[report(first, 4.0), report(second.clone(), 2.0)],
+    )
+    .unwrap();
+    assert_eq!(inputs.len(), 1);
+    assert_eq!(inputs.values().next().unwrap().producer_node, second);
+}
+
+#[test]
+fn stacking_selection_ignores_test_scores_and_rejects_duplicate_producers() {
+    let mut request: StackingProducerSelectionRequest = serde_json::from_value(json!({
+        "producer_nodes": ["model:a", "model:b"], "select": "best", "metric": "rmse",
+        "reports": [{"producer_node": "model:b", "partition": "test", "fold_id": "fold:0",
+            "level": "sample", "row_count": 1, "target_width": 1, "metrics": {"rmse": 0.01}}]
+    }))
+    .unwrap();
+    assert_eq!(
+        request.selected_producer_nodes().unwrap(),
+        vec![NodeId::new("model:a").unwrap()]
+    );
+    request.producer_nodes.push(NodeId::new("model:a").unwrap());
+    assert!(request
+        .selected_producer_nodes()
+        .unwrap_err()
+        .to_string()
+        .contains("distinct producer"));
+}
+
 fn replay_bundle(plan: &ExecutionPlan) -> crate::bundle::ExecutionBundle {
     let model_plan = plan
         .node_plans
