@@ -91,6 +91,14 @@ candidate and keeps optimizer callbacks on the coordinator thread. The R adapter
 processes and their optimizer state remain host-owned. Run the wrapper smoke with
 `R CMD check`; a working R installation is required.
 
+The strict `r_hpo_ridge` integration test also calls this wrapper with a real
+R Ridge operator. It reads the plan's physical FoldSet IDs, fits on each
+fold-train cohort, and checks native per-fold/OOF RMSE, the two-candidate
+parallel scheduler path, pruning and checkpoint resume. Run it with
+`DAGML_REQUIRE_HPO_R=1 cargo test -p dag-ml-cli --test r_hpo_ridge`.
+It qualifies this HPO path for one R operator; it does not test a fitted R
+model's REFIT artifact or later PREDICT replay.
+
 A no-splitter pipeline can capture an initial full REFIT package and replay
 PREDICT on a separate V2 cohort through the same native CLI:
 
