@@ -32,7 +32,8 @@ use crate::graph::{NodeKind, PortKind};
 use crate::hpo::{methods_optimizer_preflight, MethodsHpoStudyConfig};
 use crate::ids::{ArtifactId, BundleId, FoldId, LineageId, NodeId, RunId, SampleId, VariantId};
 use crate::metrics::{
-    RegressionMetricKind, ScoreSet, LEGACY_SCORE_SET_SCHEMA_VERSION, SCORE_SET_SCHEMA_VERSION,
+    score_regression_aggregated_block, OofAverageBlock, RegressionMetricKind, ScoreSet,
+    LEGACY_SCORE_SET_SCHEMA_VERSION, SCORE_SET_SCHEMA_VERSION,
 };
 use crate::oof::{PredictionBlock, PredictionPartition};
 use crate::phase::Phase;
@@ -45,7 +46,7 @@ use crate::runtime::{
     is_nested_stacking_meta_node, nested_stacking_campaign_plan, plan_oof_partition_mode,
     select_best_variant_outcome_by_cv_for_target, InMemoryArtifactStore, LineageRecord, NodeResult,
     ParallelScheduler, RunContext, RuntimeControllerRegistry, RuntimeDataProvider,
-    SequentialScheduler, VariantExecutionSpec,
+    SequentialScheduler, VariantExecutionSpec, SCORE_METRICS,
 };
 #[cfg(feature = "methods-optimizer")]
 use crate::runtime::{
@@ -124,6 +125,9 @@ pub struct TrainingOutcome {
     pub parameter_patches: Vec<ParameterPatch>,
     pub refit: TrainingRefitOutcome,
     pub score_set: ScoreSet,
+    /// Selected variant's exact per-sample CV averages, retained even when REFIT runs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub oof_averages: Vec<OofAverageBlock>,
     pub outputs: Vec<BoundTrainingOutput>,
     pub lineage: Vec<LineageRecord>,
     pub portable_prediction_caches: Option<BundlePredictionCachePayloadSet>,
@@ -2230,6 +2234,7 @@ pub fn execute_training(input: TrainingExecutionInput<'_>) -> Result<TrainingOut
         parameter_patches,
         refit: refit_outcome,
         score_set,
+        oof_averages: selected_ctx.oof_average_blocks.clone(),
         outputs,
         lineage,
         portable_prediction_caches,
@@ -3399,6 +3404,76 @@ fn oof_cache_namespace_fingerprints(
 }
 
 impl TrainingOutcome {
+    fn validate_oof_averages(&self) -> Result<()> {
+        let mut seen = BTreeSet::new();
+        for average in &self.oof_averages {
+            let predictions = &average.predictions;
+            let targets = &average.y_true;
+            let width = predictions.validate_shape()?;
+            if targets.validate_shape()? != width
+                || predictions.unit_ids != targets.unit_ids
+                || predictions.level != targets.level
+                || predictions.target_names != targets.target_names
+            {
+                return contract_error(
+                    "training outcome OOF average predictions and targets must align exactly",
+                );
+            }
+            if predictions.partition != PredictionPartition::Validation
+                || !matches!(
+                    predictions.fold_id.as_ref().map(FoldId::as_str),
+                    Some("avg" | "w_avg")
+                )
+            {
+                return contract_error(
+                    "training outcome OOF average must identify validation fold avg or w_avg",
+                );
+            }
+            let key = (
+                predictions.producer_node.clone(),
+                predictions.producer_port.clone(),
+                predictions.fold_id.clone(),
+                predictions.level,
+            );
+            if !seen.insert(key) {
+                return contract_error("training outcome has duplicate OOF average blocks");
+            }
+            let matching_reports = self
+                .score_set
+                .reports
+                .iter()
+                .filter(|report| {
+                    report.variant_id.as_ref() == Some(&self.selected_variant_id)
+                        && report.producer_node == predictions.producer_node
+                        && report.producer_port == predictions.producer_port
+                        && report.partition == predictions.partition
+                        && report.fold_id == predictions.fold_id
+                        && report.level == predictions.level
+                })
+                .collect::<Vec<_>>();
+            let [report] = matching_reports.as_slice() else {
+                return contract_error(
+                    "training outcome OOF average has no unique selected-variant score report",
+                );
+            };
+            if report.row_count != predictions.unit_ids.len()
+                || report.target_width != width
+                || report.target_names != predictions.target_names
+            {
+                return contract_error(
+                    "training outcome OOF average shape differs from selected score report",
+                );
+            }
+            let rescored = score_regression_aggregated_block(predictions, targets, SCORE_METRICS)?;
+            if rescored.metrics != report.metrics {
+                return contract_error(
+                    "training outcome OOF average values disagree with selected score report",
+                );
+            }
+        }
+        Ok(())
+    }
+
     /// Strictly parse a self-fingerprinted W0 outcome without losing the JSON
     /// integer-versus-binary64 token distinction before verification.
     pub fn from_json(json: &str) -> Result<Self> {
@@ -3686,6 +3761,7 @@ impl TrainingOutcome {
 
         self.validate_refit()?;
         self.score_set.validate()?;
+        self.validate_oof_averages()?;
         self.validate_version_family()?;
         if self.schema_version == LEGACY_TRAINING_OUTCOME_SCHEMA_VERSION
             && (self.conformal_calibration.is_some() || self.conformal_calibration_replay.is_some())

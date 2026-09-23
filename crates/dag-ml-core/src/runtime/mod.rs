@@ -459,8 +459,34 @@ impl RunContext {
             partition_mode,
         )?;
         let outcome = apply_global_oof_aggregation(outcome, &self.global_oof_aggregation)?;
+        // Every OOF sample is scored by its held-out estimator(s). The legacy
+        // weighted ensemble therefore uses the same validation OOF surface as
+        // the ordinary average, even when no external test cohort exists.
+        // Persist both report identities in Core so every binding sees the
+        // same parity contract without reconstructing scores in a host.
+        let weighted_fold = FoldId::new("w_avg")?;
+        let weighted_reports = outcome
+            .reports
+            .iter()
+            .cloned()
+            .map(|mut report| {
+                report.fold_id = Some(weighted_fold.clone());
+                report
+            })
+            .collect::<Vec<_>>();
+        let weighted_blocks = outcome
+            .oof_averages
+            .iter()
+            .cloned()
+            .map(|mut block| {
+                block.predictions.fold_id = Some(weighted_fold.clone());
+                block
+            })
+            .collect::<Vec<_>>();
         self.score_collector.extend(outcome.reports);
+        self.score_collector.extend(weighted_reports);
         self.oof_average_blocks.extend(outcome.oof_averages);
+        self.oof_average_blocks.extend(weighted_blocks);
         Ok(())
     }
 
