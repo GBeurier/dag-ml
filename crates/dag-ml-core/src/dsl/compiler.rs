@@ -1111,6 +1111,20 @@ impl PipelineCompiler {
                 step.id
             )));
         }
+        validate_merge_selectors(&step.id, &step.selectors, predictions)?;
+        for (index, selector) in step.selectors.iter().enumerate() {
+            if selector.select.as_ref().is_some_and(|mode| mode != "all")
+                || selector.aggregate.as_deref() != Some("proba_mean")
+                || selector.branch.is_none()
+                || selector.input_name.is_some()
+                || selector.model.is_some()
+            {
+                return Err(DagMlError::GraphValidation(format!(
+                    "pipeline DSL merge_model `{}` selector {index} currently requires a branch, select=all and aggregate=proba_mean",
+                    step.id
+                )));
+            }
+        }
         let mut input_ports = Vec::with_capacity(predictions.len() + 1);
         for prediction in predictions {
             input_ports.push(prediction_port(&prediction.input_name, ""));
@@ -1134,6 +1148,17 @@ impl PipelineCompiler {
             "merge_mode".to_string(),
             serde_json::Value::String(step.merge_mode.clone()),
         );
+        if !step.selectors.is_empty() {
+            metadata.insert(
+                "selectors".to_string(),
+                serde_json::to_value(&step.selectors).map_err(|error| {
+                    DagMlError::GraphValidation(format!(
+                        "failed to serialize pipeline DSL merge_model `{}` selectors: {error}",
+                        step.id
+                    ))
+                })?,
+            );
+        }
         let branch_id = branch_id_from_metadata(&extra_metadata);
         metadata.extend(extra_metadata);
         let node = NodeSpec {

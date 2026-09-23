@@ -1,6 +1,152 @@
 // Auto-split from the former monolithic `runtime.rs` (pure refactor).
 use super::*;
 
+/// Reduce per-branch model probabilities before they reach a stacking controller.
+/// The selector contract is compiled by the DSL and interpreted here, on both
+/// the nested OOF and off-fold paths, so every host language sees the same
+/// identity-keyed meta-feature matrix.
+pub(crate) fn apply_stacking_prediction_aggregations(
+    plan: &ExecutionPlan,
+    node_plan: &NodePlan,
+    prediction_inputs: &mut BTreeMap<String, PredictionInputSpec>,
+) -> Result<()> {
+    let node = plan
+        .graph_plan
+        .graph
+        .nodes
+        .iter()
+        .find(|node| node.id == node_plan.node_id)
+        .expect("validated node plan");
+    let Some(value) = node.metadata.get("selectors") else {
+        return Ok(());
+    };
+    let selectors: Vec<crate::dsl::PipelineDslMergeSelector> =
+        serde_json::from_value(value.clone()).map_err(|error| {
+            DagMlError::RuntimeValidation(format!(
+                "stacking node `{}` has invalid selectors: {error}",
+                node_plan.node_id
+            ))
+        })?;
+    if selectors.is_empty() {
+        return Ok(());
+    }
+    let mut reduced = BTreeMap::new();
+    for selector in &selectors {
+        let branch = selector.branch.as_deref().ok_or_else(|| {
+            DagMlError::RuntimeValidation(
+                "stacking aggregation selector needs a branch".to_string(),
+            )
+        })?;
+        if selector.aggregate.as_deref() != Some("proba_mean")
+            || selector.select.as_ref().is_some_and(|mode| mode != "all")
+        {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "stacking node `{}` supports only per-branch select=all, aggregate=proba_mean",
+                node_plan.node_id
+            )));
+        }
+        let mut by_suffix: BTreeMap<String, Vec<(&String, &PredictionInputSpec)>> = BTreeMap::new();
+        for (key, spec) in prediction_inputs.iter() {
+            let source = plan
+                .graph_plan
+                .graph
+                .nodes
+                .iter()
+                .find(|source| source.id == spec.producer_node)
+                .ok_or_else(|| {
+                    DagMlError::RuntimeValidation(format!(
+                        "stacking input `{key}` names missing producer `{}`",
+                        spec.producer_node
+                    ))
+                })?;
+            if source
+                .metadata
+                .get("dsl_branch")
+                .and_then(serde_json::Value::as_str)
+                != Some(branch)
+            {
+                continue;
+            }
+            let prefix = format!("{}.{}", spec.producer_node, spec.source_port);
+            let suffix = key.strip_prefix(&prefix).ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "stacking input `{key}` does not match its producer `{prefix}`"
+                ))
+            })?;
+            if !matches!(suffix, "" | ":outer" | ":refit" | ":predict") {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "stacking input `{key}` has unsupported suffix `{suffix}`"
+                )));
+            }
+            by_suffix
+                .entry(suffix.to_string())
+                .or_default()
+                .push((key, spec));
+        }
+        if by_suffix.is_empty() {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "stacking node `{}` has no predictions from branch `{branch}`",
+                node_plan.node_id
+            )));
+        }
+        let expected_models = by_suffix.values().map(Vec::len).max().unwrap_or(0);
+        let virtual_producer = NodeId::new(format!("{}.branch.{branch}", node_plan.node_id))?;
+        for (suffix, inputs) in by_suffix {
+            if inputs.len() != expected_models {
+                return Err(DagMlError::OofValidation(format!(
+                    "stacking branch `{branch}` has incomplete `{suffix}` prediction coverage across models"
+                )));
+            }
+            let first = inputs[0].1;
+            if inputs
+                .iter()
+                .any(|(_, spec)| spec.fold_ids != first.fold_ids)
+            {
+                return Err(DagMlError::OofValidation(format!(
+                    "stacking branch `{branch}` models differ in OOF fold identities"
+                )));
+            }
+            let blocks = inputs
+                .iter()
+                .map(|(_, spec)| PredictionBlock {
+                    prediction_id: None,
+                    producer_node: spec.producer_node.clone(),
+                    producer_port: Some(spec.source_port.clone()),
+                    partition: spec.partition.clone(),
+                    fold_id: spec.fold_id.clone(),
+                    sample_ids: spec.sample_ids.clone(),
+                    values: spec.values.clone(),
+                    target_names: spec.target_names.clone(),
+                })
+                .collect::<Vec<_>>();
+            let aggregate =
+                crate::aggregation::reduce_proba_mean_within_branch(&blocks, &virtual_producer)?;
+            let mut spec = first.clone();
+            spec.producer_node = virtual_producer.clone();
+            spec.source_port = "oof".to_string();
+            spec.target_port = format!("{branch}_oof");
+            spec.sample_ids = aggregate.sample_ids;
+            spec.values = aggregate.values;
+            spec.prediction_width = spec.values.first().map_or(0, Vec::len);
+            spec.target_names = aggregate.target_names;
+            spec.unit_ids = spec
+                .sample_ids
+                .iter()
+                .cloned()
+                .map(PredictionUnitId::Sample)
+                .collect();
+            let key = format!("{virtual_producer}.oof{suffix}");
+            if reduced.insert(key.clone(), spec).is_some() {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "stacking aggregation produced duplicate input `{key}`"
+                )));
+            }
+        }
+    }
+    *prediction_inputs = reduced;
+    Ok(())
+}
+
 pub(crate) fn effective_node_plan_for_scope(
     node_plan: &NodePlan,
     scope: &PhaseScope,
