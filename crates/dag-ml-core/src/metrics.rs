@@ -1038,7 +1038,8 @@ fn combine_partition_targets(
 /// REPORT-grade output: it carries no variant tag (the block has none; the variant is stamped on the
 /// report downstream) and never feeds a training/feature path, so OOF/leakage invariants are
 /// unaffected — it is purely the same averaged values the scalar was computed from, exposed per sample.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OofAverageBlock {
     pub predictions: AggregatedPredictionBlock,
     pub y_true: RegressionTargetBlock,

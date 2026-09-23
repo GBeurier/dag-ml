@@ -10047,7 +10047,7 @@ fn nested_stacking_resampled_refit_has_separate_exact_partitioned_oof() {
     }
     ctx.collect_cross_fold_validation_scores(FoldPartitionMode::Resampled)
         .unwrap();
-    assert_eq!(ctx.oof_average_blocks.len(), 1);
+    assert_eq!(ctx.oof_average_blocks.len(), 2);
     assert_eq!(ctx.oof_average_blocks[0].predictions.unit_ids.len(), 4);
     assert_eq!(
         ctx.oof_average_blocks[0].predictions.values,
@@ -10056,6 +10056,19 @@ fn nested_stacking_resampled_refit_has_separate_exact_partitioned_oof() {
     assert_eq!(
         ctx.oof_average_blocks[0].y_true.values,
         vec![vec![100.0]; 4]
+    );
+    assert_eq!(
+        ctx.oof_average_blocks[1].predictions.values,
+        ctx.oof_average_blocks[0].predictions.values
+    );
+    assert_eq!(
+        ctx.oof_average_blocks[1]
+            .predictions
+            .fold_id
+            .as_ref()
+            .unwrap()
+            .as_str(),
+        "w_avg"
     );
 }
 
@@ -14355,7 +14368,7 @@ fn concat_merge_producer_is_scored_per_fold_and_cross_fold() {
                 && report
                     .fold_id
                     .as_ref()
-                    .is_some_and(|fold| fold.as_str() != "avg")
+                    .is_some_and(|fold| !matches!(fold.as_str(), "avg" | "w_avg"))
         })
         .collect();
     assert_eq!(

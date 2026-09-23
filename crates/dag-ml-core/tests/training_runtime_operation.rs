@@ -1744,6 +1744,46 @@ fn native_training_refit_and_no_refit_are_deterministic_and_auditable() {
         outcome.execution_bundle_fingerprint().unwrap()
     );
     assert_eq!(outcome.refit.status, TrainingRefitStatus::Completed);
+    assert!(!outcome.oof_averages.is_empty());
+    assert!(outcome.oof_averages.iter().any(|average| average
+        .predictions
+        .fold_id
+        .as_ref()
+        .unwrap()
+        .as_str()
+        == "avg"));
+    assert!(outcome.oof_averages.iter().any(|average| average
+        .predictions
+        .fold_id
+        .as_ref()
+        .unwrap()
+        .as_str()
+        == "w_avg"));
+    for average in &outcome.oof_averages {
+        assert_eq!(
+            average.predictions.partition,
+            PredictionPartition::Validation
+        );
+        assert!(matches!(
+            average.predictions.fold_id.as_ref().unwrap().as_str(),
+            "avg" | "w_avg"
+        ));
+        assert_eq!(average.predictions.unit_ids, average.y_true.unit_ids);
+        assert_eq!(
+            average.predictions.values.len(),
+            average.y_true.values.len()
+        );
+    }
+    let json = serde_json::to_string(&outcome).unwrap();
+    assert_eq!(TrainingOutcome::from_json(&json).unwrap(), outcome);
+    let mut forged_average = outcome.clone();
+    forged_average.oof_averages[0].predictions.values[0][0] += 1.0;
+    resign_outcome(&mut forged_average);
+    assert!(forged_average
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("OOF average values disagree with selected score report"));
     // A completed refit whose closure supports PREDICT (but not EXPLAIN) and whose
     // only state-retaining node (model:base) has its retained artifact advertises
     // exactly [PREDICT] and never re-advertises REFIT.
