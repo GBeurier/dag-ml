@@ -291,6 +291,18 @@ pub struct RunContext {
     /// `None` fold is the full-training refit weight.
     pub(crate) residual_gates:
         BTreeMap<(Option<VariantId>, Option<FoldId>), crate::residual::ResidualGateResult>,
+    /// Opaque data-edge results retained by exact scheduler scope for nested
+    /// learners whose OOF producer runs in a separate invocation.
+    pub(crate) data_output_cache: BTreeMap<DataOutputScopeKey, CachedDataOutput>,
+}
+
+pub(crate) type DataOutputScopeKey = (NodeId, Phase, Option<VariantId>, Option<FoldId>, String);
+
+#[derive(Clone, Debug)]
+pub(crate) struct CachedDataOutput {
+    pub(crate) handles: BTreeMap<String, HandleRef>,
+    pub(crate) views: BTreeMap<String, DataProviderViewSpec>,
+    pub(crate) lineage_id: LineageId,
 }
 
 #[derive(Clone, Debug)]
@@ -371,6 +383,7 @@ impl RunContext {
             global_oof_aggregation: BTreeMap::new(),
             validation_scoring_fold_ids: None,
             residual_gates: BTreeMap::new(),
+            data_output_cache: BTreeMap::new(),
         }
     }
 

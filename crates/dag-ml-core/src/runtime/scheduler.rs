@@ -202,6 +202,9 @@ pub(crate) struct PhaseScopeResources<'a> {
     /// uses this for its base branches before invoking the meta node; ordinary
     /// phases leave it empty and keep the full plan topology.
     pub(crate) node_filter: Option<&'a BTreeSet<NodeId>>,
+    /// Reuse scope-identical data-edge outputs when nested OOF execution
+    /// invokes a residual learner separately from its base producer.
+    pub(crate) cached_data_node_ids: Option<&'a BTreeSet<NodeId>>,
     /// An inner base pass must not recursively apply the plan's ordinary
     /// `inner_cv` policy.  Nested stacking owns that one level explicitly.
     pub(crate) suppress_inner_cv: bool,
@@ -1121,6 +1124,7 @@ impl SequentialScheduler {
                             data_provider: Some(data_provider),
                             fold_set_override: Some(folds),
                             node_filter: Some(&learner_only),
+                            cached_data_node_ids: Some(&nested.meta_data_node_ids),
                             suppress_inner_cv: true,
                             nested_stacking: Some(NestedStackingInput {
                                 meta_node_id: &nested.meta_node_id,
@@ -1307,6 +1311,7 @@ impl SequentialScheduler {
                                 data_provider: Some(data_provider),
                                 fold_set_override: Some(&outer.inner.inner_fold_set),
                                 node_filter: Some(&learner_only),
+                                cached_data_node_ids: Some(&nested.meta_data_node_ids),
                                 suppress_inner_cv: true,
                                 nested_stacking: Some(NestedStackingInput {
                                     meta_node_id: &nested.meta_node_id,
@@ -1417,6 +1422,7 @@ impl SequentialScheduler {
                     PhaseScopeResources {
                         data_provider: Some(data_provider),
                         node_filter: Some(&meta_only),
+                        cached_data_node_ids: Some(&nested.meta_data_node_ids),
                         suppress_inner_cv: true,
                         nested_stacking: Some(NestedStackingInput {
                             meta_node_id: &nested.meta_node_id,
@@ -1569,6 +1575,20 @@ impl SequentialScheduler {
         let mut output_data_views =
             BTreeMap::<NodeId, BTreeMap<String, DataProviderViewSpec>>::new();
         let mut input_lineage = BTreeMap::<NodeId, LineageId>::new();
+        if let Some(node_ids) = resources.cached_data_node_ids {
+            for node_id in node_ids {
+                let key = data_output_scope_key(node_id, &scope, &resources, plan);
+                let cached = ctx.data_output_cache.get(&key).ok_or_else(|| {
+                    DagMlError::RuntimeValidation(format!(
+                        "nested learner is missing cached data output for node `{node_id}` in fold {:?}",
+                        scope.fold_id
+                    ))
+                })?;
+                output_handles.insert(node_id.clone(), cached.handles.clone());
+                output_data_views.insert(node_id.clone(), cached.views.clone());
+                input_lineage.insert(node_id.clone(), cached.lineage_id.clone());
+            }
+        }
 
         for level in plan.node_parallel_levels_for_phase(scope.phase)? {
             for node_id in &level {
@@ -1816,6 +1836,16 @@ impl SequentialScheduler {
                 )?;
                 ctx.lineage.record(result.lineage.clone())?;
                 let data_views = derive_output_data_views(plan, &task, &result)?;
+                if !data_views.is_empty() {
+                    ctx.data_output_cache.insert(
+                        data_output_scope_key(node_id, &scope, &resources, plan),
+                        CachedDataOutput {
+                            handles: result.outputs.clone(),
+                            views: data_views.clone(),
+                            lineage_id: result.lineage.record_id.clone(),
+                        },
+                    );
+                }
                 output_handles.insert(node_id.clone(), result.outputs.clone());
                 output_data_views.insert(node_id.clone(), data_views);
                 input_lineage.insert(node_id.clone(), result.lineage.record_id.clone());
@@ -3852,6 +3882,26 @@ pub(crate) fn inferred_input_lineage_for_node(
         .into_iter()
         .collect()
 }
+fn data_output_scope_key(
+    node_id: &NodeId,
+    scope: &PhaseScope,
+    resources: &PhaseScopeResources<'_>,
+    plan: &ExecutionPlan,
+) -> DataOutputScopeKey {
+    let fold_set_id = resources
+        .fold_set_override
+        .or(plan.fold_set.as_ref())
+        .map(|fold_set| fold_set.id.clone())
+        .unwrap_or_default();
+    (
+        node_id.clone(),
+        scope.phase,
+        scope.variant_id.clone(),
+        scope.fold_id.clone(),
+        fold_set_id,
+    )
+}
+
 pub(crate) fn collect_input_handles(
     plan: &ExecutionPlan,
     node_plan: &NodePlan,
