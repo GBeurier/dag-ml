@@ -1463,6 +1463,11 @@ impl SequentialScheduler {
         direct_sample_prediction_only: bool,
     ) -> Result<Vec<NodeResult>> {
         replay.bundle.validate_against_plan(replay.plan)?;
+        ctx.stacking_weight_scores = replay
+            .bundle
+            .scores
+            .as_ref()
+            .map_or_else(Vec::new, |scores| scores.reports.clone());
         if let Some(value) = replay.bundle.metadata.get("residual_gates") {
             ctx.import_residual_gate_records(value)?;
         }
@@ -1664,7 +1669,11 @@ impl SequentialScheduler {
                     plan,
                     node_plan,
                     &mut prediction_inputs,
-                    &ctx.score_collector,
+                    if ctx.score_collector.is_empty() {
+                        &ctx.stacking_weight_scores
+                    } else {
+                        &ctx.score_collector
+                    },
                 )?;
                 let mut artifact_inputs = BTreeMap::new();
                 if let Some(node_artifact_handles) = resources
@@ -2063,6 +2072,11 @@ impl ParallelScheduler {
         ctx: &mut RunContext,
     ) -> Result<Vec<NodeResult>> {
         replay.bundle.validate_against_plan(replay.plan)?;
+        ctx.stacking_weight_scores = replay
+            .bundle
+            .scores
+            .as_ref()
+            .map_or_else(Vec::new, |scores| scores.reports.clone());
         if let Some(value) = replay.bundle.metadata.get("residual_gates") {
             ctx.import_residual_gate_records(value)?;
         }
@@ -2206,7 +2220,11 @@ impl ParallelScheduler {
                     plan,
                     node_plan,
                     &mut prediction_inputs,
-                    &ctx.score_collector,
+                    if ctx.score_collector.is_empty() {
+                        &ctx.stacking_weight_scores
+                    } else {
+                        &ctx.score_collector
+                    },
                 )?;
                 let mut artifact_inputs = BTreeMap::new();
                 if let Some(node_artifact_handles) = resources

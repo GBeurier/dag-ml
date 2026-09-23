@@ -189,7 +189,9 @@ fn stacking_model_weights(
     scores: &[RegressionMetricReport],
     metric: &str,
 ) -> Option<Vec<f64>> {
-    blocks
+    let higher_better = crate::metrics::RegressionMetricKind::from_name(metric)
+        .is_some_and(|kind| kind.objective() == crate::selection::MetricObjective::Maximize);
+    let weights = blocks
         .iter()
         .map(|block| {
             let score = scores
@@ -198,15 +200,21 @@ fn stacking_model_weights(
                     report.producer_node == block.producer_node
                         && report.partition == PredictionPartition::Validation
                         && report.fold_id.is_some()
-                })?
-                .metrics
-                .get(metric)?;
-            if !score.is_finite() || *score < 0.0 {
-                return None;
+                        && report.metrics.contains_key(metric)
+                })
+                .and_then(|report| report.metrics.get(metric));
+            match score {
+                Some(score) if score.is_finite() && higher_better => score.max(0.0),
+                Some(score) if score.is_finite() && *score >= 0.0 => 1.0 / (score + 1e-10),
+                Some(score) if score.is_finite() => score.abs(),
+                _ => 0.0,
             }
-            Some(1.0 / (score + 1e-10))
         })
-        .collect()
+        .collect::<Vec<_>>();
+    weights
+        .iter()
+        .any(|weight| *weight > 0.0)
+        .then_some(weights)
 }
 
 pub(crate) fn effective_node_plan_for_scope(
