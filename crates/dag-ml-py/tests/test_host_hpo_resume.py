@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import threading
+import time
 import unittest
 from hashlib import sha256
 from typing import Any
@@ -131,6 +133,59 @@ class HostHpoResumeTests(unittest.TestCase):
         self.assertEqual(list(candidates), [0, 1, 2])
         self.assertEqual([operator.offsets for operator in candidates.values()],
                          [[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]])
+
+    def test_parallel_candidates_overlap_with_ordered_optimizer_transitions(self) -> None:
+        lock = threading.Lock()
+        active = 0
+        maximum = 0
+        candidates: dict[int, _Operators] = {}
+
+        class SlowOperator(_Operators):
+            def __call__(self, task: dict[str, Any]) -> dict[str, Any]:
+                nonlocal active, maximum
+                with lock:
+                    active += 1
+                    maximum = max(maximum, active)
+                try:
+                    time.sleep(0.04)
+                    return super().__call__(task)
+                finally:
+                    with lock:
+                        active -= 1
+
+        def factory(index: int) -> _Operators:
+            operator = SlowOperator()
+            candidates[index] = operator
+            return operator
+
+        request = _request(3)
+        request["optimizer_descriptor"]["n_jobs"] = 2
+        proposals = _Proposals()
+        fallback = _Operators()
+        result = dag_ml.run_host_hpo_search_in_process(
+            _terminal_dsl(), _terminal_envelope(), _terminal_manifest(),
+            request, fallback, proposals, candidate_callback_factory=factory,
+        )
+        self.assertEqual(result["selected_trial_index"], 0)
+        self.assertGreaterEqual(maximum, 2)
+        self.assertEqual(fallback.calls, [])
+        self.assertEqual([item["operation"] for item in proposals.calls],
+                         ["ask", "ask", "tell", "tell", "ask", "tell"])
+        self.assertEqual([operator.offsets for operator in candidates.values()],
+                         [[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]])
+
+    def test_parallel_failure_terminalizes_successful_sibling(self) -> None:
+        request = _request(2)
+        request["optimizer_descriptor"]["n_jobs"] = 2
+        proposals = _Proposals()
+        with self.assertRaisesRegex(dag_ml.DagMlRuntimeError, "encoder failure"):
+            dag_ml.run_host_hpo_search_in_process(
+                _terminal_dsl(), _terminal_envelope(), _terminal_manifest(),
+                request, _Operators(), proposals,
+                candidate_callback_factory=lambda index: _Operators(fail_first=index == 0),
+            )
+        self.assertEqual([item["operation"] for item in proposals.calls],
+                         ["ask", "ask", "fail", "tell"])
 
     def test_python_operator_failure_is_checkpointed_before_error_then_skipped(self) -> None:
         operator, proposals = _Operators(fail_first=True), _Proposals()
