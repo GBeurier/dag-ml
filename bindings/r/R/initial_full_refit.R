@@ -154,7 +154,7 @@ dagml_initial_refit_run <- function(command, inputs, extras, cli, output,
     "--process-retries", retries, "--output", shQuote(output)
   )
   if (persistent) args <- c(args, "--persistent")
-  messages <- suppressWarnings(system2(shQuote(cli), args = args,
+  messages <- suppressWarnings(system2(cli, args = args,
                                        stdout = TRUE, stderr = TRUE, wait = TRUE))
   status <- attr(messages, "status")
   if (!is.null(status) && status != 0L) {
