@@ -5,6 +5,19 @@
 sources. Choosing the highest-scoring source for display does not discard the
 other models or authorize an implicit choice during archive replay.
 
+Here, an *output* is a prediction port attached to one source model. It is
+independent of the number of target variables inside that port. For example,
+two spectral sources predicting one concentration each yield two outputs,
+each with one target column. A single source predicting three analytes yields
+one output with three target columns. The two dimensions stay separate in
+training results, archive metadata, and replay.
+
+Training may rank the source models by their own validation scores, but every
+score and prediction row must retain its output binding ID. The ranked winner
+is a presentation/selection decision; it cannot change the stored graph's
+output topology. A score for an explicit fusion node belongs to that fusion
+output, not to either source model.
+
 ## Portable representation
 
 The existing `PortablePredictorPackage.output_bindings` and replay request's
