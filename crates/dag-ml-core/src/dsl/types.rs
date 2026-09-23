@@ -128,6 +128,10 @@ pub enum PipelineDslStep {
 pub struct PipelineDslOperatorStep {
     pub id: NodeId,
     pub operator: serde_json::Value,
+    /// Additional prediction outputs of the same fitted operator. `oof` remains
+    /// the primary scored output; these ports are available to downstream edges.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prediction_output_ports: Vec<String>,
     #[serde(default)]
     pub params: BTreeMap<String, serde_json::Value>,
     #[serde(default)]
@@ -496,6 +500,12 @@ pub struct PipelineDslMergeModelStep {
     /// Explicit ordered prediction producers. Empty uses the pending predictions.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sources: Vec<NodeId>,
+    /// Optional port override for an explicit source. Missing entries use its
+    /// primary prediction output, preserving legacy `sources` semantics.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub source_ports: BTreeMap<NodeId, String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prediction_output_ports: Vec<String>,
     #[serde(default)]
     pub params: BTreeMap<String, serde_json::Value>,
     #[serde(default)]

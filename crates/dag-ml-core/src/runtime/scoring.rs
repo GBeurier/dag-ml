@@ -263,6 +263,7 @@ pub(crate) fn sample_targets_match_block(
 /// the target block covering exactly its samples; unmatched blocks are unscored.
 pub(crate) fn apply_result_scoring(
     result: &NodeResult,
+    auxiliary_ports: &BTreeSet<String>,
     collector: &mut Vec<RegressionMetricReport>,
     target_records: &mut Vec<RegressionTargetRecord>,
 ) -> Result<()> {
@@ -270,6 +271,15 @@ pub(crate) fn apply_result_scoring(
         return Ok(());
     }
     for block in &result.predictions {
+        // Auxiliary Prediction outputs can be consumed by downstream edges,
+        // but cannot contribute an independent score or selection candidate.
+        if block
+            .producer_port
+            .as_ref()
+            .is_some_and(|port| auxiliary_ports.contains(port))
+        {
+            continue;
+        }
         if let Some(targets) = result
             .regression_targets
             .iter()

@@ -68,6 +68,39 @@ fn prediction_output_ports_for_node(plan: &ExecutionPlan, node_id: &NodeId) -> R
     Ok(ports)
 }
 
+fn auxiliary_prediction_ports_for_node(
+    plan: &ExecutionPlan,
+    node_id: &NodeId,
+) -> Result<BTreeSet<String>> {
+    let node = plan
+        .graph_plan
+        .graph
+        .nodes
+        .iter()
+        .find(|node| node.id == *node_id)
+        .ok_or_else(|| DagMlError::RuntimeValidation(format!("node `{node_id}` is absent")))?;
+    let Some(value) = node.metadata.get("auxiliary_prediction_ports") else {
+        return Ok(BTreeSet::new());
+    };
+    let ports: Vec<String> = serde_json::from_value(value.clone()).map_err(|error| {
+        DagMlError::RuntimeValidation(format!(
+            "node `{node_id}` has malformed auxiliary prediction ports: {error}"
+        ))
+    })?;
+    let declared = prediction_output_ports_for_node(plan, node_id)?;
+    if !declared.iter().any(|port| port == "oof")
+        || ports
+            .iter()
+            .any(|port| port == "oof" || !declared.contains(port))
+        || ports.iter().collect::<BTreeSet<_>>().len() != ports.len()
+    {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "node `{node_id}` has auxiliary prediction ports outside its declared non-primary outputs"
+        )));
+    }
+    Ok(ports.into_iter().collect())
+}
+
 fn normalize_prediction_result_port(
     node_id: &NodeId,
     block_kind: &str,
@@ -168,6 +201,32 @@ pub(crate) fn normalize_result_prediction_ports(
             &mut block.producer_port,
             &prediction_ports,
         )?;
+    }
+    let auxiliary = auxiliary_prediction_ports_for_node(plan, &task.node_plan.node_id)?;
+    for block in &result.predictions {
+        if !block
+            .producer_port
+            .as_ref()
+            .is_some_and(|port| auxiliary.contains(port))
+        {
+            continue;
+        }
+        let primary = result
+            .predictions
+            .iter()
+            .filter(|candidate| {
+                candidate.producer_port.as_deref() == Some("oof")
+                    && candidate.partition == block.partition
+                    && candidate.fold_id == block.fold_id
+            })
+            .collect::<Vec<_>>();
+        if primary.len() != 1 || primary[0].sample_ids != block.sample_ids {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "node `{}` auxiliary prediction port `{}` must match exactly one primary `oof` block's partition, fold and ordered sample IDs",
+                task.node_plan.node_id,
+                block.producer_port.as_deref().unwrap_or_default(),
+            )));
+        }
     }
     Ok(())
 }
@@ -2270,6 +2329,7 @@ impl SequentialScheduler {
                             .extend(result.classification_probabilities.iter().cloned());
                         apply_result_scoring(
                             &result,
+                            &auxiliary_prediction_ports_for_node(plan, &result.node_id)?,
                             &mut ctx.score_collector,
                             &mut ctx.regression_target_records,
                         )?;
@@ -2474,6 +2534,7 @@ impl SequentialScheduler {
                     .extend(result.classification_probabilities.iter().cloned());
                 apply_result_scoring(
                     &result,
+                    &auxiliary_prediction_ports_for_node(plan, &result.node_id)?,
                     &mut ctx.score_collector,
                     &mut ctx.regression_target_records,
                 )?;
@@ -3086,6 +3147,7 @@ impl ParallelScheduler {
                         .extend(result.classification_probabilities.iter().cloned());
                     apply_result_scoring(
                         &result,
+                        &auxiliary_prediction_ports_for_node(plan, &result.node_id)?,
                         &mut ctx.score_collector,
                         &mut ctx.regression_target_records,
                     )?;
@@ -3147,6 +3209,7 @@ impl ParallelScheduler {
                         .extend(result.classification_probabilities.iter().cloned());
                     apply_result_scoring(
                         &result,
+                        &auxiliary_prediction_ports_for_node(plan, &result.node_id)?,
                         &mut ctx.score_collector,
                         &mut ctx.regression_target_records,
                     )?;
