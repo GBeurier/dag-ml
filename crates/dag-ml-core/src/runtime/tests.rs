@@ -2756,6 +2756,10 @@ fn stacking_best_fold_uses_validation_score_only_and_stable_ties() {
     }))
     .unwrap();
     assert_eq!(request.selected_fold_id().unwrap().as_str(), "fold:1");
+    let weights = request.normalized_weights().unwrap();
+    assert!(weights[1] > weights[0]);
+    assert_eq!(weights[1], weights[2]);
+    assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
     request.metric = "r2".to_string();
     assert_eq!(request.selected_fold_id().unwrap().as_str(), "fold:0");
     request.fold_ids.push(FoldId::new("fold:0").unwrap());
@@ -17208,6 +17212,34 @@ fn stacking_best_fold_refit_reads_selected_cv_test_block() {
     .unwrap();
     assert_eq!(input.spec.values, vec![vec![0.2]]);
     assert_eq!(input.spec.fold_id, None);
+    plan.graph_plan
+        .graph
+        .nodes
+        .iter_mut()
+        .find(|node| node.id.as_str() == "model:meta")
+        .unwrap()
+        .metadata
+        .insert("stacking_test_aggregation".to_string(), json!("weighted"));
+    let weighted = collect_off_fold_prediction_input(
+        &plan,
+        &plan.graph_plan.graph.edges[0],
+        &ctx,
+        &PhaseScope {
+            phase: Phase::Refit,
+            variant_id: None,
+            variant: None,
+            fold_id: None,
+            seed_root: None,
+        },
+    )
+    .unwrap()
+    .unwrap();
+    assert!(
+        (weighted.spec.values[0][0] - (0.4 / 4.0 + 0.2 / 2.0) / (1.0 / 4.0 + 1.0 / 2.0)).abs()
+            < 1e-9,
+        "weighted feature was {}",
+        weighted.spec.values[0][0]
+    );
 }
 
 fn sample_relations_envelope(rows: &[(&str, &str)]) -> ExternalDataPlanEnvelope {

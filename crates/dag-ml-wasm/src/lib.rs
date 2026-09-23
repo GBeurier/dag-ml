@@ -227,6 +227,19 @@ pub fn select_stacking_fold_json(request_json: &str) -> Result<String, JsValue> 
     serde_json::to_string(&selected).map_err(js_serde_error)
 }
 
+/// Objective-aware normalized CV-fold weights for stacking test predictions.
+#[wasm_bindgen]
+pub fn stacking_fold_weights_json(request_json: &str) -> Result<String, JsValue> {
+    let request: StackingFoldSelectionRequest = deserialize_external_contract(
+        request_json,
+        "stacking fold weights",
+        CoreDagMlError::RuntimeValidation,
+    )
+    .map_err(js_core_error)?;
+    let weights = request.normalized_weights().map_err(js_core_error)?;
+    serde_json::to_string(&weights).map_err(js_serde_error)
+}
+
 /// Validate a signed no-splitter REFIT package before any host operator callback.
 #[wasm_bindgen]
 pub fn validate_initial_full_refit_package_json(package_json: &str) -> Result<(), JsValue> {
@@ -460,6 +473,7 @@ fn contract_manifest() -> serde_json::Value {
             "select_portable_output_json",
             "select_stacking_producers_json",
             "select_stacking_fold_json",
+            "stacking_fold_weights_json",
             "validate_initial_full_refit_package_json",
             "initial_full_refit_predict_envelope_json",
             "execute_initial_full_refit_json",
@@ -952,6 +966,15 @@ mod tests {
             .as_array()
             .unwrap()
             .contains(&serde_json::json!("select_stacking_fold_json")));
+        let weights: Vec<f64> =
+            serde_json::from_str(&stacking_fold_weights_json(&request.to_string()).unwrap())
+                .unwrap();
+        assert_eq!(weights.len(), 2);
+        assert!(weights[1] > weights[0]);
+        assert!(contract_manifest()["wasm_exports"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("stacking_fold_weights_json")));
     }
 
     #[test]

@@ -2022,6 +2022,31 @@ pub unsafe extern "C" fn dagml_select_stacking_fold_json(
     }
 }
 
+/// Objective-aware normalized CV-fold weights for stacking test predictions.
+///
+/// # Safety
+/// `request_ptr` addresses `request_len` bytes; release outputs with
+/// `dagml_owned_bytes_free` and errors with `dagml_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_stacking_fold_weights_json(
+    request_ptr: *const u8,
+    request_len: usize,
+    out_json: *mut DagMlOwnedBytes,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    clear_error(error_out);
+    clear_owned_bytes(out_json);
+    let request: StackingFoldSelectionRequest =
+        match parse_json_ptr(request_ptr, request_len, error_out, "stacking fold weights") {
+            Ok(request) => request,
+            Err(status) => return status,
+        };
+    match request.normalized_weights() {
+        Ok(weights) => write_owned_json(out_json, error_out, &weights),
+        Err(error) => validation_error(error_out, error),
+    }
+}
+
 /// Validate the closed no-splitter REFIT package, including its TCV1 signature.
 ///
 /// # Safety
@@ -9282,6 +9307,23 @@ mod tests {
             serde_json::from_slice(unsafe { slice::from_raw_parts(out.ptr, out.len) }).unwrap();
         assert_eq!(selected, serde_json::json!("fold:1"));
         unsafe { dagml_owned_bytes_free(out) };
+        let mut weights_out = DagMlOwnedBytes::default();
+        let status = unsafe {
+            dagml_stacking_fold_weights_json(
+                request.as_ptr(),
+                request.len(),
+                &mut weights_out,
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        let weights: Vec<f64> = serde_json::from_slice(unsafe {
+            slice::from_raw_parts(weights_out.ptr, weights_out.len)
+        })
+        .unwrap();
+        assert_eq!(weights.len(), 2);
+        assert!(weights[1] > weights[0]);
+        unsafe { dagml_owned_bytes_free(weights_out) };
     }
 
     #[test]
