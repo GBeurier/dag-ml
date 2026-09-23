@@ -18079,13 +18079,16 @@ fn multi_operator_select_pools_oof_rows_with_branch_scoped_ids() {
             },
         }
     };
+    let left_average = average("model:left", vec![0.0]);
+    let right_average = average("model:right", vec![2.0, 2.0, 2.0]);
+    let mut left_weighted = left_average.clone();
+    left_weighted.predictions.fold_id = Some(FoldId::new("w_avg").unwrap());
+    let mut right_weighted = right_average.clone();
+    right_weighted.predictions.fold_id = Some(FoldId::new("w_avg").unwrap());
     let score = pooled_operator_candidate_score(
         &variant,
         &models,
-        &[
-            average("model:left", vec![0.0]),
-            average("model:right", vec![2.0, 2.0, 2.0]),
-        ],
+        &[left_average, right_average, left_weighted, right_weighted],
         RegressionMetricKind::Rmse,
     )
     .unwrap();
