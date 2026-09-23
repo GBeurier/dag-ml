@@ -65,6 +65,7 @@ pub const PORTABLE_ARTIFACT_BRIDGE_SCHEMA_VERSION: u32 = 1;
 pub enum ArtifactBackend {
     Joblib,
     Rds,
+    Mat,
     Torch,
     Tensorflow,
     Onnx,
