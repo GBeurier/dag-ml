@@ -72,7 +72,7 @@ dagml_host_hpo_search <- function(
     checkpoint <- scalar_path(checkpoint, "checkpoint", must_exist = FALSE)
     args <- c(args, "--checkpoint", shQuote(checkpoint))
   }
-  messages <- suppressWarnings(system2(shQuote(cli), args = args, stdout = TRUE, stderr = TRUE, wait = TRUE))
+  messages <- suppressWarnings(system2(cli, args = args, stdout = TRUE, stderr = TRUE, wait = TRUE))
   status <- attr(messages, "status")
   if (!is.null(status) && status != 0L) {
     stop(sprintf("dag-ml host HPO failed (exit %d): %s", status, paste(messages, collapse = "\n")), call. = FALSE)
