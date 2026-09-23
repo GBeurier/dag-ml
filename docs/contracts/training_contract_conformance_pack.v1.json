@@ -46,7 +46,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/bundle.rs",
-      "sha256": "5aa49e6ea665fbc26d4de47741a77e01003264876eefaedee578de276f774de2",
+      "sha256": "2350295efd89ba88a020f3bce1baa2accfee54beb81f125a43462a5e2cf2de2f",
       "kind": "native_bundle_contract"
     },
     {
@@ -156,12 +156,12 @@
     },
     {
       "path": "crates/dag-ml-core/src/runtime/scheduler.rs",
-      "sha256": "f238a681b901badff161b22afec80c689a7f0e17ab742997e0cd1a20b5e860b7",
+      "sha256": "710d0e9c33cdb494399bb050c2066d2e1d722507d706ea822efe930168e2188f",
       "kind": "native_hpo_scheduler"
     },
     {
       "path": "crates/dag-ml-core/src/runtime/scoring.rs",
-      "sha256": "34b5b9a1839827d9b63e2efb398ced5248b01378ec8dedeb5e5b0dccdc11a2fe",
+      "sha256": "99fbd469a9840dcb7d765070ddc4cb0cc51130490a541c7eaef6493d7676c96b",
       "kind": "native_global_oof_scoring"
     },
     {
@@ -599,5 +599,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "8d5047733ea4b49c3312a4825af93b724666f61176640cbc06dc4cd61bb2a9a0"
+  "pack_checksum": "0f38dd5daada7d693d74e18159d30dcb4114bd713befc32bc1e4f491383417cd"
 }
