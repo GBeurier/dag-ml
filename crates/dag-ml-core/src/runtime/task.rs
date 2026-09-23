@@ -1299,13 +1299,30 @@ pub(crate) fn validate_prediction_scope(
                 task.node_plan.node_id, prediction.fold_id, task.fold_id
             )));
         }
-        let test_ids: BTreeSet<_> = task
+        let mut test_ids: BTreeSet<_> = task
             .data_views
             .values()
             .filter(|view| view.partition == DataRequestPartition::Predict)
             .filter_map(|view| view.sample_ids.as_ref())
             .flat_map(|ids| ids.iter().cloned())
             .collect();
+        // A prediction-only stacking learner has no raw data binding. Its
+        // current-fold `:test` inputs were already attested against each
+        // producer's external Test view; intersect their identities so the
+        // downstream learner can emit only rows every source actually supplied.
+        if test_ids.is_empty() {
+            let mut fold_inputs = task.prediction_inputs.iter().filter(|(key, spec)| {
+                key.ends_with(":test")
+                    && spec.partition == PredictionPartition::Test
+                    && spec.fold_id == task.fold_id
+            });
+            if let Some((_, first)) = fold_inputs.next() {
+                test_ids = first.sample_ids.iter().cloned().collect();
+                for (_, input) in fold_inputs {
+                    test_ids.retain(|id| input.sample_ids.contains(id));
+                }
+            }
+        }
         if test_ids.is_empty()
             || prediction
                 .sample_ids

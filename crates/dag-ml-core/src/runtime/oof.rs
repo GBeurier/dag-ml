@@ -400,7 +400,7 @@ pub(crate) fn apply_stacking_prediction_aggregations(
                     "stacking input `{key}` does not match its producer `{prefix}`"
                 ))
             })?;
-            if !matches!(suffix, "" | ":outer" | ":refit" | ":predict") {
+            if !matches!(suffix, "" | ":outer" | ":refit" | ":predict" | ":test") {
                 return Err(DagMlError::RuntimeValidation(format!(
                     "stacking input `{key}` has unsupported suffix `{suffix}`"
                 )));
@@ -1207,6 +1207,111 @@ pub(crate) fn collect_off_fold_prediction_input(
             target_names,
         },
     }))
+}
+
+/// Deliver the producer's held-out Test prediction for the *current* CV fold.
+/// This is a separate, explicitly requested prediction input for evaluation of
+/// a downstream learner; it must never be mixed into its Validation OOF fit
+/// matrix. Exact fold matching also excludes nested and prior-fold evidence.
+pub(crate) fn collect_cv_fold_test_prediction_input(
+    plan: &ExecutionPlan,
+    edge: &EdgeSpec,
+    ctx: &RunContext,
+    scope: &PhaseScope,
+) -> Result<Option<CollectedPredictionInput>> {
+    validate_oof_source_port_provenance(plan, edge)?;
+    if scope.phase != Phase::FitCv {
+        return Err(DagMlError::RuntimeValidation(
+            "CV fold Test prediction input requires FIT_CV".to_string(),
+        ));
+    }
+    let fold_id = scope.fold_id.as_ref().ok_or_else(|| {
+        DagMlError::RuntimeValidation("CV fold Test prediction input requires a fold".to_string())
+    })?;
+    let raw_blocks = ctx
+        .prediction_store
+        .find(
+            Some(&edge.source.node_id),
+            Some(&PredictionPartition::Test),
+            None,
+        )
+        .into_iter()
+        .filter(|block| block.fold_id.as_ref() == Some(fold_id))
+        .collect::<Vec<_>>();
+    let blocks = filter_prediction_blocks_for_edge_source_port(plan, edge, raw_blocks.clone())?;
+    if !raw_blocks.is_empty() && blocks.is_empty() {
+        return Err(DagMlError::OofValidation(format!(
+            "meta node `{}` found CV fold Test blocks for producer `{}` but none for source port `{}`",
+            edge.target.node_id, edge.source.node_id, edge.source.port_name
+        )));
+    }
+    let Some(block) = blocks.first() else {
+        return Ok(None);
+    };
+    if blocks.len() != 1 {
+        return Err(DagMlError::OofValidation(format!(
+            "meta node `{}` requires one Test block for fold `{fold_id}` of `{}`; found {}",
+            edge.target.node_id,
+            edge.source.node_id,
+            blocks.len()
+        )));
+    }
+    let width = block.validate_shape()?;
+    let source_plan = plan
+        .node_plans
+        .get(&edge.source.node_id)
+        .expect("edge source has a node plan");
+    Ok(Some(CollectedPredictionInput {
+        handle: HandleRef {
+            handle: deterministic_cv_fold_test_handle(plan, edge, ctx, scope)?,
+            kind: HandleKind::Prediction,
+            owner_controller: source_plan.controller_id.clone(),
+        },
+        spec: PredictionInputSpec {
+            producer_node: edge.source.node_id.clone(),
+            source_port: edge.source.port_name.clone(),
+            target_port: edge.target.port_name.clone(),
+            partition: PredictionPartition::Test,
+            prediction_level: PredictionLevel::Sample,
+            fold_id: Some(fold_id.clone()),
+            fold_ids: Vec::new(),
+            unit_ids: block
+                .sample_ids
+                .iter()
+                .cloned()
+                .map(PredictionUnitId::Sample)
+                .collect(),
+            sample_ids: block.sample_ids.clone(),
+            values: block.values.clone(),
+            prediction_width: width,
+            target_names: if block.target_names.is_empty() {
+                (0..width).map(|index| format!("p{index}")).collect()
+            } else {
+                block.target_names.clone()
+            },
+        },
+    }))
+}
+
+fn deterministic_cv_fold_test_handle(
+    plan: &ExecutionPlan,
+    edge: &EdgeSpec,
+    ctx: &RunContext,
+    scope: &PhaseScope,
+) -> Result<u64> {
+    let fingerprint = stable_json_fingerprint(&(
+        &plan.id,
+        &ctx.run_id,
+        &edge.source.node_id,
+        &edge.source.port_name,
+        &edge.target.node_id,
+        &edge.target.port_name,
+        scope.phase,
+        &scope.variant_id,
+        &scope.fold_id,
+        "cv-fold-test",
+    ))?;
+    Ok(u64::from_str_radix(&fingerprint[..16], 16).expect("sha256 hex prefix should fit into u64"))
 }
 
 pub(crate) struct CollectedPredictionInput {

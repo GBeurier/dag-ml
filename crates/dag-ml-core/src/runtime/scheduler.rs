@@ -4714,6 +4714,31 @@ pub(crate) fn collect_input_handles(
             )));
         }
     }
+    // An explicitly marked FIT_CV consumer may also evaluate its already-fitted
+    // learner on the current fold's external Test cohort. The `:test` inputs
+    // remain separate from the unsuffixed Validation OOF fit inputs.
+    let cv_test_capture = scope.phase == Phase::FitCv
+        && plan.graph_plan.graph.nodes.iter().any(|node| {
+            node.id == node_plan.node_id
+                && node.metadata.get("stacking_fold_test_capture")
+                    == Some(&serde_json::Value::Bool(true))
+        });
+    if cv_test_capture {
+        for edge in incoming_oof_edges(plan, node_plan)? {
+            let Some(input) = collect_cv_fold_test_prediction_input(plan, edge, ctx, scope)? else {
+                continue;
+            };
+            let key = format!("{}.{}:test", edge.source.node_id, edge.source.port_name);
+            if inputs.insert(key.clone(), input.handle).is_some()
+                || prediction_inputs.insert(key.clone(), input.spec).is_some()
+            {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "node `{}` received duplicate CV fold Test input `{key}`",
+                    node_plan.node_id
+                )));
+            }
+        }
+    }
     // REFIT / PREDICT: deliver each base producer's off-fold (test / predict)
     // predictions to the stacking meta-node as a SEPARATE prediction input (suffixed
     // `:test` / `:predict`) so the host meta-model predicts from them. The FIT_CV
