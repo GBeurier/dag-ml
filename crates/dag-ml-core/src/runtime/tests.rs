@@ -10229,6 +10229,10 @@ fn host_hpo_parallel_window_overlaps_candidates_and_tells_in_trial_order() {
             self.0.push(format!("tell:{index}"));
             Ok(())
         }
+        fn report_intermediate(&mut self, index: u32, step: u32, _score: f64) -> Result<bool> {
+            self.0.push(format!("fold:{index}:{step}"));
+            Ok(index == 1 && step == 0)
+        }
     }
     let (plan, _controllers, _provider, request) = durable_host_fixture(false);
     let active = Arc::new(AtomicUsize::new(0));
@@ -10258,6 +10262,92 @@ fn host_hpo_parallel_window_overlaps_candidates_and_tells_in_trial_order() {
     );
     assert_eq!(result.trials.len(), 3);
     assert_eq!(result.selected_trial_index, 0);
+
+    struct PreparedProgress {
+        prepared: Vec<usize>,
+        published: Vec<usize>,
+        cancel_after_first: bool,
+    }
+    impl HostHpoProgress for PreparedProgress {
+        fn prepare_terminal(
+            &mut self,
+            checkpoint: &HostHpoCheckpoint,
+            _status: HostHpoSearchStatus,
+        ) -> Result<()> {
+            self.prepared.push(checkpoint.trials.len());
+            Ok(())
+        }
+        fn checkpoint(
+            &mut self,
+            checkpoint: &HostHpoCheckpoint,
+            _status: HostHpoSearchStatus,
+        ) -> Result<bool> {
+            self.published.push(checkpoint.trials.len());
+            Ok(!(self.cancel_after_first && checkpoint.trials.len() == 1))
+        }
+    }
+    let mut pruning_request = request.clone();
+    pruning_request.progressive_pruning = true;
+    pruning_request.fold_score_reduction = Some(HostHpoFoldReduction::Mean);
+    let options = HostHpoResumeOptions {
+        data_fingerprint: "parallel-pruning-data".into(),
+        checkpoint: None,
+    };
+    let mut progress = PreparedProgress {
+        prepared: Vec::new(),
+        published: Vec::new(),
+        cancel_after_first: true,
+    };
+    let mut proposals = OrderedProposals(Vec::new());
+    let first = SequentialScheduler
+        .execute_resumable_parallel_host_hpo_search_with_candidate_factories(
+            &plan,
+            &ProviderFactory,
+            &controller_factory,
+            &pruning_request,
+            &mut proposals,
+            2,
+            &options,
+            &mut progress,
+        )
+        .unwrap();
+    assert_eq!(first.status, HostHpoSearchStatus::Cancelled);
+    assert_eq!(first.checkpoint.as_ref().unwrap().trials.len(), 2);
+    assert_eq!(progress.prepared, vec![1, 2]);
+    assert_eq!(progress.published, vec![0, 1, 2, 2]);
+    assert_eq!(first.result.as_ref().unwrap().pruned_trials.len(), 1);
+    assert!(proposals.0.contains(&"fold:0:0".to_string()));
+    assert!(proposals.0.contains(&"fold:1:0".to_string()));
+    assert_eq!(
+        proposals
+            .0
+            .iter()
+            .filter(|event| *event == "fold:1:1")
+            .count(),
+        0
+    );
+    let resumed = SequentialScheduler
+        .execute_resumable_parallel_host_hpo_search_with_candidate_factories(
+            &plan,
+            &ProviderFactory,
+            &controller_factory,
+            &pruning_request,
+            &mut proposals,
+            2,
+            &HostHpoResumeOptions {
+                data_fingerprint: "parallel-pruning-data".into(),
+                checkpoint: first.checkpoint,
+            },
+            &mut PreparedProgress {
+                prepared: Vec::new(),
+                published: Vec::new(),
+                cancel_after_first: false,
+            },
+        )
+        .unwrap();
+    assert_eq!(resumed.status, HostHpoSearchStatus::Completed);
+    assert_eq!(resumed.checkpoint.unwrap().trials.len(), 3);
+    assert!(maximum.load(Ordering::SeqCst) >= 2);
 }
 
 #[test]

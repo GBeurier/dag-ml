@@ -120,6 +120,9 @@ from ._dag_ml import (
     run_host_hpo_search_in_process as _native_run_host_hpo_search_in_process,
 )
 from ._dag_ml import (
+    recover_host_hpo_checkpoint_json as _native_recover_host_hpo_checkpoint_json,
+)
+from ._dag_ml import (
     sign_training_replay_request_json as _native_sign_training_replay_request_json,
 )
 from ._dag_ml import (
@@ -195,6 +198,7 @@ _FACADE_EXPORTS = [
     "execute_data_provider",
     "execute_phase_in_process",
     "run_host_hpo_search_in_process",
+    "recover_host_hpo_checkpoint",
     "replay_loaded_predictor_package",
     "replay_loaded_predictor_package_json",
     "run_cv_refit_predict_in_process",
@@ -554,6 +558,15 @@ def run_host_hpo_search_in_process(
         resume_checkpoint_json=None if resume_checkpoint is None else _coerce_json(resume_checkpoint),
         progress_callback=progress_callback,
         candidate_callback_factory=candidate_callback_factory,
+    ))
+
+
+def recover_host_hpo_checkpoint(
+    checkpoint: Any, prepared: Any = None, interrupted: Any = (),
+) -> dict[str, Any]:
+    """Verify the native checkpoint journal and mark interrupted trials failed."""
+    return json.loads(_native_recover_host_hpo_checkpoint_json(
+        _coerce_json(checkpoint), _coerce_json(prepared), _coerce_json(list(interrupted)),
     ))
 
 
@@ -1827,6 +1840,7 @@ __all__ = [
     "run_cv_refit_in_process_with_training_losses",
     "run_cv_refit_predict_in_process",
     "run_host_hpo_search_in_process",
+    "recover_host_hpo_checkpoint",
     "sample_relation_set_fingerprint_json",
     "sign_training_replay_request",
     "sign_training_replay_request_json",
