@@ -100,11 +100,11 @@ and selection errors. A language binding may offer a convenience accessor only
 when there is exactly one output or the caller names one. The binding must not
 pick a winner or average blocks on its own.
 
-For example, a future public API could expose
-`result.outputs["output:source_0"]` and
-`predict(model=archive, data=multi_source_data, output_id="output:source_0")`.
-The exact Python method names are not fixed by this contract; the named output
-and explicit selection behavior are.
+The Python host archive exposes `BundleLoader.predict_outputs(...)` and accepts
+`nirs4all.predict(archive, named_sources, output="output:source_0")`. A future
+portable result may expose `result.outputs["output:source_0"]`. The core
+contract fixes named outputs and explicit selection, not the convenience method
+names used by each language binding.
 
 ## Acceptance tests before enabling export
 
