@@ -241,16 +241,20 @@ fn merge_model_compiles_per_branch_probability_selector() {
         2
     );
 
-    let mut unsupported = spec;
-    if let PipelineDslStep::MergeModel(step) = &mut unsupported.steps[1] {
+    let mut weighted = spec;
+    if let PipelineDslStep::MergeModel(step) = &mut weighted.steps[1] {
         step.selectors[0].aggregate = Some("weighted_mean".to_string());
     } else {
         panic!("expected merge_model step");
     }
-    assert!(compile_pipeline_dsl(&unsupported)
+    assert!(compile_pipeline_dsl(&weighted).is_ok());
+    if let PipelineDslStep::MergeModel(step) = &mut weighted.steps[1] {
+        step.selectors[0].aggregate = Some("median".to_string());
+    }
+    assert!(compile_pipeline_dsl(&weighted)
         .unwrap_err()
         .to_string()
-        .contains("select=all and aggregate=proba_mean"));
+        .contains("aggregate=mean/weighted_mean/proba_mean"));
 }
 
 #[test]

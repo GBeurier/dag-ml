@@ -1642,6 +1642,35 @@ pub fn reduce_proba_mean_within_branch(
     })
 }
 
+/// Reduce selected numeric model predictions within one stacking branch.
+/// Every model must predict the same sample identities in the same fold; row
+/// order may differ. Weights, when supplied, are aligned with `model_blocks`.
+pub fn reduce_mean_within_branch(
+    model_blocks: &[PredictionBlock],
+    weights: Option<&[f64]>,
+    branch_node: &NodeId,
+) -> Result<PredictionBlock> {
+    let first = model_blocks.first().ok_or_else(|| {
+        DagMlError::OofValidation("per-branch mean needs at least one selected model".to_string())
+    })?;
+    let expected = first.sample_ids.iter().collect::<BTreeSet<_>>();
+    for block in model_blocks {
+        block.validate_content()?;
+        if block.partition != first.partition || block.fold_id != first.fold_id {
+            return Err(DagMlError::OofValidation(
+                "per-branch mean models differ in partition or fold".to_string(),
+            ));
+        }
+        if block.sample_ids.iter().collect::<BTreeSet<_>>() != expected {
+            return Err(DagMlError::OofValidation(format!(
+                "per-branch mean model `{}` does not cover the same samples",
+                block.producer_node
+            )));
+        }
+    }
+    reduce_predictions_across_branches(model_blocks, weights, branch_node)
+}
+
 /// Tolerance on the per-row probability-sum check in [`reduce_proba_mean_across_branches`].
 const PROBA_SUM_TOLERANCE: f64 = 1e-6;
 
@@ -2781,6 +2810,35 @@ mod tests {
             &[("s1", &[0.6, 0.4]), ("s2", &[0.7, 0.3])],
         );
         assert!(reduce_proba_mean_within_branch(&[complete, wrong_names], &branch).is_err());
+    }
+
+    #[test]
+    fn per_branch_weighted_mean_aligns_sample_ids_and_requires_complete_models() {
+        let branch = NodeId::new("branch:regressors").unwrap();
+        let model = |producer: &str, rows: &[(&str, f64)]| PredictionBlock {
+            prediction_id: None,
+            producer_node: NodeId::new(producer).unwrap(),
+            producer_port: None,
+            partition: PredictionPartition::Validation,
+            fold_id: Some(FoldId::new("fold:0").unwrap()),
+            sample_ids: rows.iter().map(|(sample, _)| sid(sample)).collect(),
+            values: rows.iter().map(|(_, value)| vec![*value]).collect(),
+            target_names: vec!["y".to_string()],
+        };
+        let first = model("model:good", &[("s1", 1.0), ("s2", 3.0)]);
+        let second = model("model:bad", &[("s2", 7.0), ("s1", 5.0)]);
+        let merged =
+            reduce_mean_within_branch(&[first.clone(), second.clone()], Some(&[3.0, 1.0]), &branch)
+                .unwrap();
+        assert_eq!(merged.sample_ids, first.sample_ids);
+        assert_eq!(merged.values, vec![vec![2.0], vec![4.0]]);
+        assert!(reduce_mean_within_branch(
+            &[first.clone(), model("model:partial", &[("s1", 2.0)])],
+            None,
+            &branch,
+        )
+        .is_err());
+        assert!(reduce_mean_within_branch(&[first, second], Some(&[1.0]), &branch).is_err());
     }
 
     #[test]

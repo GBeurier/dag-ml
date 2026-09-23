@@ -2624,7 +2624,7 @@ fn stacking_probability_selector_reduces_inner_and_outer_inputs_by_identity() {
             input(second.clone(), &["s2", "s1"], &[[0.5, 0.5], [0.6, 0.4]]),
         );
     }
-    apply_stacking_prediction_aggregations(&plan, &meta_plan, &mut inputs).unwrap();
+    apply_stacking_prediction_aggregations(&plan, &meta_plan, &mut inputs, &[]).unwrap();
     assert_eq!(inputs.len(), 2);
     for suffix in ["", ":outer"] {
         let spec = &inputs[&format!("model:meta.branch.branch_0.oof{suffix}")];
