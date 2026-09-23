@@ -417,6 +417,7 @@ impl SequentialScheduler {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn execute_host_hpo_search_inner(
         &self,
         plan: &ExecutionPlan,
@@ -776,6 +777,7 @@ impl SequentialScheduler {
         .ok_or_else(|| DagMlError::RuntimeValidation("host HPO has no successful candidate".into()))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn execute_host_hpo_search_with_candidate_factories(
         &self,
         plan: &ExecutionPlan,
@@ -798,6 +800,202 @@ impl SequentialScheduler {
         )?
         .result
         .ok_or_else(|| DagMlError::RuntimeValidation("host HPO has no successful candidate".into()))
+    }
+
+    /// Evaluate a bounded window of independent candidates concurrently.
+    /// The proposal source remains on the coordinator thread: asks happen in
+    /// trial order before dispatch and tells happen in that same order after
+    /// all workers in the window finish. Each worker owns its provider,
+    /// controller registry, plan, and run context.
+    #[allow(clippy::too_many_arguments)]
+    pub fn execute_parallel_host_hpo_search_with_candidate_factories(
+        &self,
+        plan: &ExecutionPlan,
+        provider_factory: &dyn HostHpoCandidateProviderFactory,
+        controller_factory: &dyn HostHpoCandidateControllerFactory,
+        request: &HostHpoSearchRequest,
+        proposals: &mut dyn HostHpoProposalSource,
+        max_parallel_trials: usize,
+    ) -> Result<HostHpoSearchResult> {
+        if max_parallel_trials <= 1 || request.progressive_pruning {
+            return Err(DagMlError::RuntimeValidation(
+                "parallel host HPO requires at least two workers and no progressive pruning".into(),
+            ));
+        }
+        plan.validate()?;
+        if request.trial_budget == 0 || request.optimizer_descriptor.is_empty() {
+            return Err(DagMlError::RuntimeValidation(
+                "host HPO requires a positive budget and explicit optimizer descriptor".into(),
+            ));
+        }
+        if !request.phase_trial_budgets.is_empty()
+            && (request.phase_trial_budgets.contains(&0)
+                || request
+                    .phase_trial_budgets
+                    .iter()
+                    .try_fold(0u32, |sum, count| sum.checked_add(*count))
+                    != Some(request.trial_budget))
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "host HPO phase budgets must be positive and sum to trial_budget".into(),
+            ));
+        }
+        let folds = plan.fold_set.as_ref().ok_or_else(|| {
+            DagMlError::RuntimeValidation("host HPO requires explicit evaluation folds".into())
+        })?;
+        if plan.variants.len() != 1
+            || !plan.variants[0].choices.is_empty()
+            || plan
+                .node_plans
+                .get(&request.target_node)
+                .is_none_or(|node| node.kind != NodeKind::Model)
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "host HPO requires one concrete base variant and a model target".into(),
+            ));
+        }
+        request.validate_parameter_bindings(plan)?;
+        let mut trials = Vec::new();
+        let mut candidates = Vec::new();
+        let mut next = 0u32;
+        let mut exhausted = false;
+        while next < request.trial_budget && !exhausted {
+            let phase = request.phase_index(next);
+            let mut pending = Vec::new();
+            while pending.len() < max_parallel_trials
+                && next < request.trial_budget
+                && request.phase_index(next) == phase
+            {
+                let Some(params) = proposals.ask_in_phase(next, phase)? else {
+                    exhausted = true;
+                    break;
+                };
+                let param_overrides = request.parameter_overrides(&params)?;
+                let mut variant = plan.variants[0].clone();
+                variant.variant_id = VariantId::new(format!("host_hpo:trial:{next:010}"))?;
+                variant.choices.insert(
+                    "host_hpo".into(),
+                    GenerationChoice {
+                        label: format!("trial:{next}"),
+                        value: serde_json::json!({"trial_index": next}),
+                        param_overrides,
+                        active_subsequence: None,
+                    },
+                );
+                variant.fingerprint = stable_json_fingerprint(&(
+                    &plan.variants[0].fingerprint,
+                    &variant.choices,
+                    request,
+                ))?;
+                let mut candidate_plan = plan.clone();
+                candidate_plan.variants = vec![variant.clone()];
+                candidate_plan.validate()?;
+                let mut context = RunContext::new(
+                    RunId::new(format!("run:host_hpo:{next}"))?,
+                    variant.seed.or(plan.campaign.root_seed),
+                );
+                context.variant_id = Some(variant.variant_id.clone());
+                pending.push((
+                    next,
+                    params,
+                    variant,
+                    candidate_plan,
+                    context,
+                    provider_factory.create(next)?,
+                    controller_factory.create(next)?,
+                ));
+                next += 1;
+            }
+            let completed = std::thread::scope(|scope| {
+                let handles = pending.into_iter().map(|(trial_index, params, variant, candidate_plan, mut context, provider, controllers)| {
+                    let handle = scope.spawn(move || -> Result<(HostHpoTrialEvidence, crate::selection::CandidateScore)> {
+                        self.execute_campaign_phase_with_data_provider(
+                            &candidate_plan, &controllers, provider.as_ref(), &mut context, Phase::FitCv,
+                        )?;
+                        context.collect_cross_fold_validation_scores(plan_oof_partition_mode(plan))?;
+                        let scores = context.build_score_set(plan.id.clone(), None).ok_or_else(|| {
+                            DagMlError::RuntimeValidation("host HPO lost native score evidence".into())
+                        })?;
+                        let (score, objective_fold_scores, candidate) =
+                            host_hpo_score(plan, request, &variant.variant_id, &scores)?;
+                        Ok((HostHpoTrialEvidence {
+                            trial_index, params, score, variant_id: variant.variant_id,
+                            scores, objective_fold_scores,
+                        }, candidate))
+                    });
+                    (trial_index, handle)
+                }).collect::<Vec<_>>();
+                handles
+                    .into_iter()
+                    .map(|(trial_index, handle)| {
+                        let evaluated = handle
+                            .join()
+                            .map_err(|_| {
+                                DagMlError::RuntimeValidation(
+                                    "host HPO candidate worker panicked".into(),
+                                )
+                            })
+                            .and_then(|result| result);
+                        (trial_index, evaluated)
+                    })
+                    .collect::<Vec<_>>()
+            });
+            let mut first_error = None;
+            for (trial_index, evaluated) in completed {
+                match evaluated {
+                    Ok((evidence, candidate)) => {
+                        proposals.tell(evidence.trial_index, evidence.score)?;
+                        trials.push(evidence);
+                        candidates.push(candidate);
+                    }
+                    Err(error) => {
+                        proposals.fail(trial_index, &error.to_string())?;
+                        if first_error.is_none() {
+                            first_error = Some(error);
+                        }
+                    }
+                }
+            }
+            if let Some(error) = first_error {
+                return Err(error);
+            }
+        }
+        if candidates.is_empty() {
+            return Err(DagMlError::RuntimeValidation(
+                "host HPO has no successful candidate".into(),
+            ));
+        }
+        let policy = SelectionPolicy {
+            id: "select:host_hpo".into(),
+            metric: SelectionMetric {
+                name: request.metric.name().into(),
+                objective: request.direction,
+            },
+            required_metric_level: None,
+            require_finite: true,
+            evaluation_scope: None,
+            refit_slot_plan: None,
+            stacking_fit_contract: None,
+            reduction_id: None,
+        };
+        let selected = select_candidate(&policy, &candidates)?;
+        let winner = trials
+            .iter()
+            .find(|trial| trial.variant_id.as_str() == selected.selected_candidate_id)
+            .expect("selection returns an observed candidate");
+        Ok(HostHpoSearchResult {
+            profile: "host_optimizer_search_v1".into(),
+            portable: false,
+            request_fingerprint: stable_json_fingerprint(request)?,
+            graph_fingerprint: plan.graph_fingerprint.clone(),
+            controller_fingerprint: plan.controller_fingerprint.clone(),
+            campaign_fingerprint: stable_json_fingerprint(&plan.campaign)?,
+            fold_set_fingerprint: stable_json_fingerprint(folds)?,
+            selected_trial_index: winner.trial_index,
+            selected_params: winner.params.clone(),
+            trials,
+            pruned_trials: Vec::new(),
+        })
     }
 }
 

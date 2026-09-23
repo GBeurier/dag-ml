@@ -42,18 +42,19 @@ use pythonize::{depythonize, pythonize};
 
 use dag_ml_core::{
     build_execution_bundle, build_execution_plan, compile_operator_variant_models,
-    compile_pipeline_dsl_with_generation_and_controller_registry,
+    compile_pipeline_dsl_with_generation_and_controller_registry, enumerate_operator_variants,
     execute_terminal_prediction, fan_out_data_aware_branches, parse_pipeline_dsl_json,
-    enumerate_operator_variants, plan_oof_partition_mode, pruned_plan_for_operator_models,
-    select_best_operator_variant_outcome_from_models,
-    select_best_variant_outcome_by_cv, validate_terminal_prediction_preflight, AggregationControllerResult,
-    AggregationControllerTask, ArtifactMaterializationRequest, BundleId, ControllerId,
-    ControllerRegistry, DagMlError as CoreDagMlError, ExecutionPlan, ExplicitPhaseDataProvider,
-    ExternalDataPlanEnvelope, HandleKind, HandleRef, InMemoryArtifactStore, InMemoryDataProvider, NodeResult, NodeTask,
-    OperatorVariantModel, Phase, RegressionMetricKind, RegressionMetricReport, RunContext, RunId,
-    RuntimeController, RuntimeControllerRegistry, ScoreSet, SequentialScheduler,
-    TerminalPredictionReplay, TerminalPredictionSelector, TrainingLossRoleReference,
-    TrainingResourceLimits, VariantId, VariantValidationPredictions, SCORE_SET_SCHEMA_VERSION,
+    plan_oof_partition_mode, pruned_plan_for_operator_models,
+    select_best_operator_variant_outcome_from_models, select_best_variant_outcome_by_cv,
+    validate_terminal_prediction_preflight, AggregationControllerResult, AggregationControllerTask,
+    ArtifactMaterializationRequest, BundleId, ControllerId, ControllerRegistry,
+    DagMlError as CoreDagMlError, ExecutionPlan, ExplicitPhaseDataProvider,
+    ExternalDataPlanEnvelope, HandleKind, HandleRef, InMemoryArtifactStore, InMemoryDataProvider,
+    NodeResult, NodeTask, OperatorVariantModel, Phase, RegressionMetricKind,
+    RegressionMetricReport, RunContext, RunId, RuntimeController, RuntimeControllerRegistry,
+    ScoreSet, SequentialScheduler, TerminalPredictionReplay, TerminalPredictionSelector,
+    TrainingLossRoleReference, TrainingResourceLimits, VariantId, VariantValidationPredictions,
+    SCORE_SET_SCHEMA_VERSION,
 };
 
 use crate::{py_core_error, py_serde_error};
@@ -159,7 +160,8 @@ pub fn execute_phase_in_process(
         ControllerId::new("controller:data.provider").map_err(py_core_error)?,
         envelope,
         training_sample_ids,
-    ).map_err(py_core_error)?;
+    )
+    .map_err(py_core_error)?;
     let controllers = build_runtime_controllers(py, &plan, &op_callback).map_err(py_core_error)?;
     let run_id = RunId::new(format!("run:{}:{}:in-process", dsl.id, phase.as_str()))
         .map_err(py_core_error)?;
@@ -290,7 +292,11 @@ struct PyHostHpoControllerFactory {
 impl dag_ml_core::HostHpoCandidateControllerFactory for PyHostHpoControllerFactory {
     fn create(&self, trial_index: u32) -> dag_ml_core::Result<RuntimeControllerRegistry> {
         Python::attach(|py| {
-            let callback = self.callback_factory.bind(py).call1((trial_index,)).map_err(core_error_from_py)?;
+            let callback = self
+                .callback_factory
+                .bind(py)
+                .call1((trial_index,))
+                .map_err(core_error_from_py)?;
             if !callback.is_callable() {
                 return Err(CoreDagMlError::RuntimeValidation(
                     "host HPO candidate callback factory must return a callable".into(),
@@ -302,7 +308,10 @@ impl dag_ml_core::HostHpoCandidateControllerFactory for PyHostHpoControllerFacto
 }
 
 impl dag_ml_core::HostHpoCandidateProviderFactory for PyHostHpoProviderFactory {
-    fn create(&self, _trial_index: u32) -> dag_ml_core::Result<Box<dyn dag_ml_core::RuntimeDataProvider + Send>> {
+    fn create(
+        &self,
+        _trial_index: u32,
+    ) -> dag_ml_core::Result<Box<dyn dag_ml_core::RuntimeDataProvider + Send>> {
         Ok(Box::new(InMemoryDataProvider::with_envelope(
             self.controller_id.clone(),
             self.envelope.clone(),
@@ -315,7 +324,10 @@ struct PyDataProviderSource {
 }
 
 impl dag_ml_core::RuntimeDataProviderSource for PyDataProviderSource {
-    fn materialize(&self, task: &NodeTask) -> dag_ml_core::Result<dag_ml_core::DataProviderMaterialization> {
+    fn materialize(
+        &self,
+        task: &NodeTask,
+    ) -> dag_ml_core::Result<dag_ml_core::DataProviderMaterialization> {
         call_py_bridge(&self.callback, task, "data provider")
     }
 }
@@ -323,15 +335,25 @@ impl dag_ml_core::RuntimeDataProviderSource for PyDataProviderSource {
 /// Execute one finite source in native PLAN; the host retains all data buffers.
 #[pyfunction]
 pub fn execute_data_provider(
-    py: Python<'_>, recipe_json: &str, callback: Py<PyAny>,
+    py: Python<'_>,
+    recipe_json: &str,
+    callback: Py<PyAny>,
 ) -> PyResult<String> {
     if !callback.bind(py).is_callable() {
-        return Err(py_core_error(CoreDagMlError::RuntimeValidation("data provider callback must be callable".into())));
+        return Err(py_core_error(CoreDagMlError::RuntimeValidation(
+            "data provider callback must be callable".into(),
+        )));
     }
-    let recipe: dag_ml_core::DataProviderRecipe = dag_ml_core::canonical::deserialize_external_contract(
-        recipe_json, "data provider recipe", CoreDagMlError::RuntimeValidation,
-    ).map_err(py_core_error)?;
-    let result = dag_ml_core::execute_data_provider(&recipe, Box::new(PyDataProviderSource { callback })).map_err(py_core_error)?;
+    let recipe: dag_ml_core::DataProviderRecipe =
+        dag_ml_core::canonical::deserialize_external_contract(
+            recipe_json,
+            "data provider recipe",
+            CoreDagMlError::RuntimeValidation,
+        )
+        .map_err(py_core_error)?;
+    let result =
+        dag_ml_core::execute_data_provider(&recipe, Box::new(PyDataProviderSource { callback }))
+            .map_err(py_core_error)?;
     serde_json::to_string(&result).map_err(py_serde_error)
 }
 
@@ -367,7 +389,12 @@ impl dag_ml_core::HostHpoProposalSource for PyHostHpoProposals {
         )
     }
 
-    fn report_intermediate(&mut self, trial_index: u32, step: u32, score: f64) -> dag_ml_core::Result<bool> {
+    fn report_intermediate(
+        &mut self,
+        trial_index: u32,
+        step: u32,
+        score: f64,
+    ) -> dag_ml_core::Result<bool> {
         call_py_bridge(
             &self.callback,
             &serde_json::json!({"operation": "report_intermediate", "trial_index": trial_index, "step": step, "score": score}),
@@ -444,7 +471,10 @@ pub fn run_host_hpo_search_in_process(
             "host HPO progress callback must be callable".into(),
         )));
     }
-    if candidate_callback_factory.as_ref().is_some_and(|callback| !callback.bind(py).is_callable()) {
+    if candidate_callback_factory
+        .as_ref()
+        .is_some_and(|callback| !callback.bind(py).is_callable())
+    {
         return Err(py_core_error(CoreDagMlError::RuntimeValidation(
             "host HPO candidate callback factory must be callable".into(),
         )));
@@ -505,32 +535,92 @@ pub fn run_host_hpo_search_in_process(
     plan.campaign
         .validate_data_envelope_relations(&envelope)
         .map_err(py_core_error)?;
-    let provider_controller_id = ControllerId::new("controller:data.provider").map_err(py_core_error)?;
+    let provider_controller_id =
+        ControllerId::new("controller:data.provider").map_err(py_core_error)?;
     let provider_factory = PyHostHpoProviderFactory {
         envelope: envelope.clone(),
         controller_id: provider_controller_id.clone(),
     };
-    let provider = InMemoryDataProvider::with_envelope(
-        provider_controller_id,
-        envelope,
-    )
-    .map_err(py_core_error)?;
+    let provider = InMemoryDataProvider::with_envelope(provider_controller_id, envelope)
+        .map_err(py_core_error)?;
     let controllers = build_runtime_controllers(py, &plan, &op_callback).map_err(py_core_error)?;
-    let candidate_controllers = candidate_callback_factory.map(|callback_factory| PyHostHpoControllerFactory {
-        callback_factory,
-        plan: plan.clone(),
-    });
+    let candidate_controllers =
+        candidate_callback_factory.map(|callback_factory| PyHostHpoControllerFactory {
+            callback_factory,
+            plan: plan.clone(),
+        });
+    let n_jobs = request
+        .optimizer_descriptor
+        .get("n_jobs")
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or(1);
+    if n_jobs != 1 {
+        let workers = if n_jobs == -1 {
+            std::thread::available_parallelism()
+                .map(|count| count.get())
+                .unwrap_or(1)
+        } else {
+            usize::try_from(n_jobs).map_err(|_| {
+                py_core_error(CoreDagMlError::RuntimeValidation(
+                    "host HPO n_jobs must be positive or -1".into(),
+                ))
+            })?
+        };
+        if workers == 0 {
+            return Err(py_core_error(CoreDagMlError::RuntimeValidation(
+                "host HPO n_jobs must be positive or -1".into(),
+            )));
+        }
+        if workers > 1 && (durable || request.progressive_pruning) {
+            return Err(py_core_error(CoreDagMlError::RuntimeValidation(
+                "parallel host HPO does not yet support durable checkpoints or progressive pruning"
+                    .into(),
+            )));
+        }
+        // n_jobs=-1 on a one-core host remains sequential.
+        if workers > 1 {
+            let factory = candidate_controllers.as_ref().ok_or_else(|| {
+                py_core_error(CoreDagMlError::RuntimeValidation(
+                    "parallel host HPO requires candidate-local operator callbacks".into(),
+                ))
+            })?;
+            let result = py
+                .detach(|| {
+                    SequentialScheduler.execute_parallel_host_hpo_search_with_candidate_factories(
+                        &plan,
+                        &provider_factory,
+                        factory,
+                        &request,
+                        &mut PyHostHpoProposals {
+                            callback: optimizer_callback,
+                        },
+                        workers,
+                    )
+                })
+                .map_err(py_core_error)?;
+            return serde_json::to_string(&result).map_err(py_serde_error);
+        }
+    }
     if durable {
         let scheduler = SequentialScheduler;
         let result = if let Some(factory) = &candidate_controllers {
             scheduler.execute_resumable_host_hpo_search_with_candidate_factories(
-                &plan, &controllers, &provider, &provider_factory, factory, &request,
-                &mut PyHostHpoProposals { callback: optimizer_callback }, &resume_options,
-                &mut PyHostHpoProgress { callback: progress_callback },
+                &plan,
+                &controllers,
+                &provider,
+                &provider_factory,
+                factory,
+                &request,
+                &mut PyHostHpoProposals {
+                    callback: optimizer_callback,
+                },
+                &resume_options,
+                &mut PyHostHpoProgress {
+                    callback: progress_callback,
+                },
             )
         } else {
-            scheduler
-            .execute_resumable_host_hpo_search_with_provider_factory(
+            scheduler.execute_resumable_host_hpo_search_with_provider_factory(
                 &plan,
                 &controllers,
                 &provider,
@@ -544,18 +634,25 @@ pub fn run_host_hpo_search_in_process(
                     callback: progress_callback,
                 },
             )
-        }.map_err(py_core_error)?;
+        }
+        .map_err(py_core_error)?;
         return serde_json::to_string(&result).map_err(py_serde_error);
     }
     let scheduler = SequentialScheduler;
     let result = if let Some(factory) = &candidate_controllers {
         scheduler.execute_host_hpo_search_with_candidate_factories(
-            &plan, &controllers, &provider, &provider_factory, factory, &request,
-            &mut PyHostHpoProposals { callback: optimizer_callback },
+            &plan,
+            &controllers,
+            &provider,
+            &provider_factory,
+            factory,
+            &request,
+            &mut PyHostHpoProposals {
+                callback: optimizer_callback,
+            },
         )
     } else {
-        scheduler
-        .execute_host_hpo_search_with_provider_factory(
+        scheduler.execute_host_hpo_search_with_provider_factory(
             &plan,
             &controllers,
             &provider,
@@ -565,7 +662,8 @@ pub fn run_host_hpo_search_in_process(
                 callback: optimizer_callback,
             },
         )
-    }.map_err(py_core_error)?;
+    }
+    .map_err(py_core_error)?;
     serde_json::to_string(&result).map_err(py_serde_error)
 }
 
@@ -1444,8 +1542,13 @@ fn run_cv_refit_in_process_impl(
     for variant_id in &additional_variant_ids {
         let extra_pruned_plan = if !operator_variant_models.is_empty() {
             Some(
-                pruned_plan_for_operator_variant(&plan, &operator_variant_models, variant_id, root_seed)
-                    .map_err(py_core_error)?,
+                pruned_plan_for_operator_variant(
+                    &plan,
+                    &operator_variant_models,
+                    variant_id,
+                    root_seed,
+                )
+                .map_err(py_core_error)?,
             )
         } else {
             None
@@ -1485,12 +1588,11 @@ fn run_cv_refit_in_process_impl(
                 report.variant_label = additional_variant_labels.get(variant_id).cloned();
             }
             if let Some(primary_scores) = scores.as_mut() {
-                primary_scores.reports.extend(
-                    extra_scores
-                        .reports
-                        .into_iter()
-                        .filter(|report| report.partition != dag_ml_core::PredictionPartition::Validation),
-                );
+                primary_scores
+                    .reports
+                    .extend(extra_scores.reports.into_iter().filter(|report| {
+                        report.partition != dag_ml_core::PredictionPartition::Validation
+                    }));
             }
         }
     }
@@ -2314,16 +2416,15 @@ mod tests {
                     .all(|choice| choice.label == "choice0")
             })
             .unwrap();
-        let pruned = pruned_plan_for_operator_variant(
-            &union_plan,
-            &models,
-            &variant.variant_id,
-            7,
-        )
-        .unwrap();
+        let pruned =
+            pruned_plan_for_operator_variant(&union_plan, &models, &variant.variant_id, 7).unwrap();
         assert_eq!(pruned.variants[0].variant_id, variant.variant_id);
-        assert!(pruned.node_plans.contains_key(&NodeId::new("model:choice0__pls").unwrap()));
-        assert!(!pruned.node_plans.contains_key(&NodeId::new("model:choice1__ridge").unwrap()));
+        assert!(pruned
+            .node_plans
+            .contains_key(&NodeId::new("model:choice0__pls").unwrap()));
+        assert!(!pruned
+            .node_plans
+            .contains_key(&NodeId::new("model:choice1__ridge").unwrap()));
     }
 
     #[derive(Default)]

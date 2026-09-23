@@ -10165,6 +10165,102 @@ fn host_hpo_provider_factory_keeps_candidate_handles_isolated_across_resume() {
 }
 
 #[test]
+fn host_hpo_parallel_window_overlaps_candidates_and_tells_in_trial_order() {
+    struct ProviderFactory;
+    impl HostHpoCandidateProviderFactory for ProviderFactory {
+        fn create(&self, _trial_index: u32) -> Result<Box<dyn RuntimeDataProvider + Send>> {
+            Ok(Box::new(InMemoryDataProvider::new(ControllerId::new(
+                "controller:data",
+            )?)))
+        }
+    }
+    struct SlowModel {
+        inner: VariantScoringController,
+        active: Arc<AtomicUsize>,
+        maximum: Arc<AtomicUsize>,
+    }
+    impl RuntimeController for SlowModel {
+        fn controller_id(&self) -> &ControllerId {
+            self.inner.controller_id()
+        }
+        fn invoke(&self, task: &NodeTask) -> Result<NodeResult> {
+            let current = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+            self.maximum.fetch_max(current, Ordering::SeqCst);
+            std::thread::sleep(std::time::Duration::from_millis(25));
+            let result = self.inner.invoke(task);
+            self.active.fetch_sub(1, Ordering::SeqCst);
+            result
+        }
+    }
+    struct ControllerFactory {
+        active: Arc<AtomicUsize>,
+        maximum: Arc<AtomicUsize>,
+    }
+    impl HostHpoCandidateControllerFactory for ControllerFactory {
+        fn create(&self, _trial_index: u32) -> Result<RuntimeControllerRegistry> {
+            let mut registry = RuntimeControllerRegistry::new();
+            registry.register(Box::new(MockController {
+                id: ControllerId::new("controller:transform")?,
+                handle: 1,
+                emit_prediction: false,
+            }))?;
+            registry.register(Box::new(SlowModel {
+                inner: VariantScoringController {
+                    id: ControllerId::new("controller:model")?,
+                    handle: 2,
+                    emit_targets: true,
+                },
+                active: self.active.clone(),
+                maximum: self.maximum.clone(),
+            }))?;
+            Ok(registry)
+        }
+    }
+    struct OrderedProposals(Vec<String>);
+    impl HostHpoProposalSource for OrderedProposals {
+        fn ask(&mut self, index: u32) -> Result<Option<BTreeMap<String, serde_json::Value>>> {
+            self.0.push(format!("ask:{index}"));
+            Ok(Some(BTreeMap::from([(
+                "n_components".into(),
+                json!((index + 1) as f64),
+            )])))
+        }
+        fn tell(&mut self, index: u32, _score: f64) -> Result<()> {
+            self.0.push(format!("tell:{index}"));
+            Ok(())
+        }
+    }
+    let (plan, _controllers, _provider, request) = durable_host_fixture(false);
+    let active = Arc::new(AtomicUsize::new(0));
+    let maximum = Arc::new(AtomicUsize::new(0));
+    let controller_factory = ControllerFactory {
+        active,
+        maximum: maximum.clone(),
+    };
+    let mut proposals = OrderedProposals(Vec::new());
+    let result = SequentialScheduler
+        .execute_parallel_host_hpo_search_with_candidate_factories(
+            &plan,
+            &ProviderFactory,
+            &controller_factory,
+            &request,
+            &mut proposals,
+            2,
+        )
+        .unwrap();
+    assert!(
+        maximum.load(Ordering::SeqCst) >= 2,
+        "FIT_CV candidates did not overlap"
+    );
+    assert_eq!(
+        proposals.0,
+        vec!["ask:0", "ask:1", "tell:0", "tell:1", "ask:2", "tell:2"]
+    );
+    assert_eq!(result.trials.len(), 3);
+    assert_eq!(result.selected_trial_index, 0);
+}
+
+#[test]
 fn host_hpo_durable_masked_regression_resumes_with_native_scores_and_unchanged_selection() {
     struct MaskedModel {
         inner: VariantScoringController,
