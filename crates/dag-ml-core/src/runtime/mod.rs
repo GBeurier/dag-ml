@@ -46,11 +46,15 @@ pub(crate) use crate::ids::{
     ArtifactId, BranchId, BundleId, ControllerId, FoldId, LineageId, NodeId, RunId, SampleId,
     VariantId,
 };
+#[cfg(test)]
+pub(crate) use crate::metrics::cross_fold_validation_reports;
 pub(crate) use crate::metrics::{
-    cross_fold_test_reports, cross_fold_train_reports, cross_fold_validation_reports,
-    reassemble_merge_targets, score_regression_aggregated_block, score_regression_prediction_block,
-    OofAverageBlock, RegressionMetricKind, RegressionMetricReport, RegressionTargetBlock,
-    RegressionTargetRecord, ScoreSet, SCORE_SET_SCHEMA_VERSION,
+    cross_fold_test_reports, cross_fold_train_reports,
+    cross_fold_validation_reports_with_probabilities, reassemble_merge_targets,
+    score_prediction_with_class_probabilities, score_regression_aggregated_block,
+    score_regression_prediction_block, OofAverageBlock, RegressionMetricKind,
+    RegressionMetricReport, RegressionTargetBlock, RegressionTargetRecord, ScoreSet,
+    SCORE_SET_SCHEMA_VERSION,
 };
 pub(crate) use crate::oof::{
     PredictionBlock, PredictionPartition, StackingOofRefitContract, StackingOofRefitDecision,
@@ -436,8 +440,9 @@ impl RunContext {
             })
             .cloned()
             .collect::<Vec<_>>();
-        let outcome = cross_fold_validation_reports(
+        let outcome = cross_fold_validation_reports_with_probabilities(
             &scoring_blocks,
+            &self.classification_probability_blocks,
             &self
                 .regression_target_records
                 .iter()
