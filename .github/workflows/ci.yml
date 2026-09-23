@@ -421,7 +421,7 @@ jobs:
         env:
           DAGML_NATIVE_LIBRARY: ${{ github.workspace }}/target/release/libdag_ml_capi.so
       - name: Check R HPO JSONL adapter
-        run: python scripts/test_hpo_language_adapters.py
+        run: DAGML_REQUIRE_HPO_R=1 python scripts/test_hpo_language_adapters.py
 
   matlab-octave-bindings:
     name: MATLAB/Octave bindings
@@ -445,7 +445,7 @@ jobs:
       - name: Test Octave HPO CLI wrapper and JSONL adapter
         run: |
           octave --no-gui --quiet --eval "addpath('bindings/matlab/tests'); host_hpo_search"
-          python scripts/test_hpo_language_adapters.py
+          DAGML_REQUIRE_HPO_MATLAB=1 python scripts/test_hpo_language_adapters.py
 
   wasm-bindings:
     name: WASM bindings Node ${{ matrix.node-version }}
