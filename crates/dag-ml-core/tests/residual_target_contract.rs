@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
 
 use dag_ml_core::{
-    derive_residual_targets, FoldAssignment, FoldId, FoldPartitionMode, FoldSet, NodeId,
-    PredictionBlock, PredictionPartition, SampleId,
+    calibrate_residual_gate, derive_residual_targets, fuse_residual_predictions, FoldAssignment,
+    FoldId, FoldPartitionMode, FoldSet, NodeId, PredictionBlock, PredictionPartition, ResidualGate,
+    ResidualGateResult, ResidualTargetSet, SampleId,
 };
 
 fn sample(number: usize) -> SampleId {
@@ -126,4 +127,67 @@ fn residual_targets_average_repeated_validation_before_subtraction() {
     )
     .unwrap();
     assert_eq!(result.values, vec![vec![9.0], vec![17.0], vec![27.0]]);
+}
+
+#[test]
+fn residual_gate_uses_only_sample_keyed_oof_and_matches_legacy_formula() {
+    let targets = ResidualTargetSet {
+        base_producer: NodeId::new("base").unwrap(),
+        sample_ids: vec![sample(2), sample(1)],
+        values: vec![vec![4.0], vec![2.0]],
+        target_names: vec!["y".to_string()],
+    };
+    let learner = BTreeMap::from([(sample(1), vec![1.0]), (sample(2), vec![2.0])]);
+    let result = calibrate_residual_gate(
+        &targets,
+        &learner,
+        ResidualGate::Automatic { rli_threshold: 0.0 },
+    )
+    .unwrap();
+    // The least-squares weight is 2, clipped to [0, 1]; learnability below
+    // the threshold closes the automatic gate.
+    assert_eq!(result.gate, 0.0);
+    assert!((result.rli - (1.0 - 2.5_f64.sqrt())).abs() < 1e-12);
+    assert_eq!(
+        calibrate_residual_gate(&targets, &learner, ResidualGate::Disabled)
+            .unwrap()
+            .gate,
+        1.0
+    );
+    assert_eq!(
+        calibrate_residual_gate(&targets, &learner, ResidualGate::Fixed(0.25))
+            .unwrap()
+            .gate,
+        0.25
+    );
+    let missing = BTreeMap::from([(sample(1), vec![1.0])]);
+    assert!(calibrate_residual_gate(&targets, &missing, ResidualGate::Disabled).is_err());
+}
+
+#[test]
+fn residual_fusion_aligns_rows_by_sample_and_rejects_missing_learner_rows() {
+    let base = BTreeMap::from([(sample(1), vec![10.0]), (sample(2), vec![20.0])]);
+    let learner = BTreeMap::from([(sample(2), vec![4.0]), (sample(1), vec![2.0])]);
+    let fused = fuse_residual_predictions(
+        &base,
+        &learner,
+        0.5,
+        ResidualGateResult {
+            gate: 0.25,
+            rli: 0.2,
+        },
+    )
+    .unwrap();
+    assert_eq!(fused[&sample(1)], vec![10.25]);
+    assert_eq!(fused[&sample(2)], vec![20.5]);
+    assert!(fuse_residual_predictions(
+        &base,
+        &BTreeMap::from([(sample(1), vec![2.0])]),
+        1.0,
+        ResidualGateResult {
+            gate: 1.0,
+            rli: 0.0
+        }
+    )
+    .is_err());
 }

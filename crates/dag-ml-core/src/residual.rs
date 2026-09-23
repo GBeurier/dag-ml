@@ -26,6 +26,158 @@ pub struct ResidualTargetSet {
     pub target_names: Vec<String>,
 }
 
+/// Gate policy for a residual learner. `Automatic` is estimated solely from
+/// the learner's OOF predictions over the residual training universe.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub enum ResidualGate {
+    Disabled,
+    Fixed(f64),
+    Automatic { rli_threshold: f64 },
+}
+
+/// A calibrated scalar and the residual-learnability index used to derive it.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ResidualGateResult {
+    pub gate: f64,
+    pub rli: f64,
+}
+
+/// Calibrate the learner weight from OOF rows, joined by sample identity.
+///
+/// The caller must supply learner predictions over the exact universe of the
+/// base OOF-derived residual targets. No held-out/test prediction is accepted
+/// here; using one to choose the gate would leak the evaluation targets.
+pub fn calibrate_residual_gate(
+    targets: &ResidualTargetSet,
+    learner_oof: &BTreeMap<SampleId, Vec<f64>>,
+    policy: ResidualGate,
+) -> Result<ResidualGateResult> {
+    let samples = targets.sample_ids.iter().cloned().collect::<BTreeSet<_>>();
+    if samples.len() != targets.sample_ids.len()
+        || learner_oof.keys().cloned().collect::<BTreeSet<_>>() != samples
+    {
+        return Err(DagMlError::OofValidation(
+            "residual gate requires learner OOF over exactly the residual target samples"
+                .to_string(),
+        ));
+    }
+    let width = targets.values.first().map_or(0, Vec::len);
+    if width == 0 || targets.values.len() != targets.sample_ids.len() {
+        return Err(DagMlError::OofValidation(
+            "residual gate received malformed residual targets".to_string(),
+        ));
+    }
+    let mut residual = Vec::with_capacity(targets.values.len() * width);
+    let mut learner = Vec::with_capacity(targets.values.len() * width);
+    for (sample, row) in targets.sample_ids.iter().zip(&targets.values) {
+        let prediction = &learner_oof[sample];
+        if row.len() != width
+            || prediction.len() != width
+            || row.iter().chain(prediction).any(|value| !value.is_finite())
+        {
+            return Err(DagMlError::OofValidation(format!(
+                "residual gate requires {width} finite target and learner values for sample `{sample}`"
+            )));
+        }
+        residual.extend(row);
+        learner.extend(prediction);
+    }
+    let threshold = match policy {
+        ResidualGate::Disabled => 0.0,
+        ResidualGate::Fixed(value) => value,
+        ResidualGate::Automatic { rli_threshold } => rli_threshold,
+    };
+    if !threshold.is_finite() {
+        return Err(DagMlError::OofValidation(
+            "residual gate policy must be finite".to_string(),
+        ));
+    }
+    let mean = residual.iter().sum::<f64>() / residual.len() as f64;
+    let variance = residual
+        .iter()
+        .map(|value| (value - mean).powi(2))
+        .sum::<f64>()
+        / residual.len() as f64;
+    let sd = variance.sqrt();
+    let sd = if sd == 0.0 { 1.0 } else { sd };
+    let rmse = (residual
+        .iter()
+        .zip(&learner)
+        .map(|(target, prediction)| (target - prediction).powi(2))
+        .sum::<f64>()
+        / residual.len() as f64)
+        .sqrt();
+    let rli = 1.0 - rmse / sd;
+    let gate = match policy {
+        ResidualGate::Disabled => 1.0,
+        ResidualGate::Fixed(value) => value,
+        ResidualGate::Automatic { rli_threshold } => {
+            let denominator = learner.iter().map(|value| value * value).sum::<f64>();
+            let fitted = if denominator > 1e-12 {
+                residual
+                    .iter()
+                    .zip(&learner)
+                    .map(|(target, prediction)| target * prediction)
+                    .sum::<f64>()
+                    / denominator
+            } else {
+                0.0
+            };
+            if rli <= rli_threshold {
+                0.0
+            } else {
+                fitted.clamp(0.0, 1.0)
+            }
+        }
+    };
+    Ok(ResidualGateResult { gate, rli })
+}
+
+/// Compose base and learner predictions by sample key after the OOF gate has
+/// been calibrated. This is the same operation for CV validation and replay.
+pub fn fuse_residual_predictions(
+    base: &BTreeMap<SampleId, Vec<f64>>,
+    learner: &BTreeMap<SampleId, Vec<f64>>,
+    lambda: f64,
+    gate: ResidualGateResult,
+) -> Result<BTreeMap<SampleId, Vec<f64>>> {
+    if !lambda.is_finite() || !gate.gate.is_finite() {
+        return Err(DagMlError::OofValidation(
+            "residual fusion requires finite lambda and gate".to_string(),
+        ));
+    }
+    if base.is_empty() || base.keys().ne(learner.keys()) {
+        return Err(DagMlError::OofValidation(
+            "residual fusion requires matching non-empty base and learner sample identities"
+                .to_string(),
+        ));
+    }
+    base.iter()
+        .map(|(sample, base_row)| {
+            let learner_row = &learner[sample];
+            if base_row.is_empty()
+                || base_row.len() != learner_row.len()
+                || base_row.iter().chain(learner_row).any(|value| !value.is_finite())
+            {
+                return Err(DagMlError::OofValidation(format!(
+                    "residual fusion received inconsistent finite prediction widths for sample `{sample}`"
+                )));
+            }
+            let fused = base_row
+                .iter()
+                .zip(learner_row)
+                .map(|(base, learned)| base + lambda * gate.gate * learned)
+                .collect::<Vec<_>>();
+            if fused.iter().any(|value| !value.is_finite()) {
+                return Err(DagMlError::OofValidation(format!(
+                    "residual fusion is non-finite for sample `{sample}`"
+                )));
+            }
+            Ok((sample.clone(), fused))
+        })
+        .collect()
+}
+
 /// Derive `observed - base OOF` without joining rows by their array positions.
 ///
 /// Every supplied prediction must be a finite validation block from the same
