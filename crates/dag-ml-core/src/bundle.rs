@@ -3167,12 +3167,30 @@ fn select_aggregated_prediction_cache_blocks(
             requirement.key()
         )));
     }
+    let explicit_ports = blocks
+        .iter()
+        .filter(|block| {
+            block.producer_node == requirement.producer_node
+                && block.partition == requirement.partition
+                && block.level == requirement.prediction_level
+                && block
+                    .fold_id
+                    .as_ref()
+                    .is_some_and(|fold_id| requirement.fold_ids.contains(fold_id))
+        })
+        .filter_map(|block| block.producer_port.as_deref())
+        .collect::<BTreeSet<_>>();
+    let absent_port_is_unambiguous = explicit_ports
+        .iter()
+        .all(|port| *port == requirement.source_port);
     let mut selected = blocks
         .iter()
         .filter(|block| {
             block.producer_node == requirement.producer_node
                 && block.partition == requirement.partition
                 && block.level == requirement.prediction_level
+                && (block.producer_port.as_deref() == Some(requirement.source_port.as_str())
+                    || (block.producer_port.is_none() && absent_port_is_unambiguous))
                 && block
                     .fold_id
                     .as_ref()
@@ -4082,6 +4100,64 @@ mod tests {
                 .collect::<Vec<_>>()
         )
         .is_err());
+    }
+
+    #[test]
+    fn aggregated_prediction_cache_keeps_ports_separate() {
+        let mut labels_requirement =
+            branch_merge_requirement("branch:b0.model:ridge", "branch_b0_oof");
+        labels_requirement.prediction_level = PredictionLevel::Target;
+        labels_requirement.sample_ids.clear();
+        labels_requirement.unit_ids = vec![PredictionUnitId::Target(
+            TargetId::new("target:one").unwrap(),
+        )];
+        let mut probabilities_requirement = labels_requirement.clone();
+        probabilities_requirement.source_port = "proba".to_string();
+        probabilities_requirement.prediction_width = 2;
+        probabilities_requirement.target_names = vec!["0".to_string(), "1".to_string()];
+        let labels = labels_requirement
+            .fold_ids
+            .iter()
+            .map(|fold_id| AggregatedPredictionBlock {
+                prediction_id: None,
+                producer_node: labels_requirement.producer_node.clone(),
+                producer_port: Some("oof".to_string()),
+                partition: PredictionPartition::Validation,
+                fold_id: Some(fold_id.clone()),
+                level: PredictionLevel::Target,
+                unit_ids: labels_requirement.unit_ids.clone(),
+                values: vec![vec![1.0]],
+                target_names: vec!["y".to_string()],
+            })
+            .collect::<Vec<_>>();
+        let probabilities = labels
+            .iter()
+            .map(|block| AggregatedPredictionBlock {
+                producer_port: Some("proba".to_string()),
+                values: vec![vec![0.2, 0.8]],
+                target_names: vec!["0".to_string(), "1".to_string()],
+                ..block.clone()
+            })
+            .collect::<Vec<_>>();
+        let all = labels
+            .iter()
+            .chain(&probabilities)
+            .cloned()
+            .collect::<Vec<_>>();
+        let label_cache =
+            build_aggregated_prediction_cache_record(&labels_requirement, &all).unwrap();
+        let probability_cache =
+            build_aggregated_prediction_cache_record(&probabilities_requirement, &all).unwrap();
+        assert_eq!(label_cache.prediction_width, 1);
+        assert_eq!(probability_cache.prediction_width, 2);
+        assert_eq!(label_cache.block_count, 2);
+        assert_eq!(probability_cache.block_count, 2);
+        let payload =
+            build_aggregated_prediction_cache_payload(&probabilities_requirement, &all).unwrap();
+        assert!(payload
+            .aggregated_blocks
+            .iter()
+            .all(|block| block.producer_port.as_deref() == Some("proba")));
     }
 
     fn decision() -> SelectionDecision {
@@ -5229,7 +5305,7 @@ mod tests {
             AggregatedPredictionBlock {
                 prediction_id: Some("prediction:branch:b0.target.fold0".to_string()),
                 producer_node: producer_node.clone(),
-                producer_port: Some("pred".to_string()),
+                producer_port: Some("oof".to_string()),
                 partition: PredictionPartition::Validation,
                 fold_id: Some(fold0),
                 level: PredictionLevel::Target,
@@ -5240,7 +5316,7 @@ mod tests {
             AggregatedPredictionBlock {
                 prediction_id: Some("prediction:branch:b0.target.fold1".to_string()),
                 producer_node,
-                producer_port: Some("pred".to_string()),
+                producer_port: Some("oof".to_string()),
                 partition: PredictionPartition::Validation,
                 fold_id: Some(fold1),
                 level: PredictionLevel::Target,
