@@ -210,6 +210,65 @@ fn compiles_branch_merge_predictions_plus_original_dsl() {
 }
 
 #[test]
+fn residual_merge_model_compiles_native_base_learner_fusion_graph() {
+    let spec: PipelineDslSpec = serde_json::from_str(
+        r#"{
+      "id": "dsl-residual",
+      "steps": [
+        {"kind": "branch", "mode": "duplication", "branches": [
+          {"id": "base", "steps": [
+            {"kind": "model", "id": "model:base", "operator": {"type": "PLSRegression"}}
+          ]}
+        ]},
+        {"kind": "merge_model", "id": "model:learner",
+         "operator": {"type": "Ridge"}, "include_original_data": true,
+         "metadata": {"residual_target_execution": "nested_oof_v1",
+                      "residual_gate": false, "residual_lambda": 1.0}}
+      ]
+    }"#,
+    )
+    .unwrap();
+    let graph = compile_pipeline_dsl(&spec).unwrap();
+    graph.validate().unwrap();
+    let learner = graph
+        .nodes
+        .iter()
+        .find(|node| node.id.as_str() == "model:learner")
+        .unwrap();
+    assert_eq!(learner.ports.inputs.len(), 2);
+    assert!(learner
+        .ports
+        .inputs
+        .iter()
+        .any(|port| port.name == "x_original"));
+    let fusion = graph
+        .nodes
+        .iter()
+        .find(|node| node.id.as_str() == "model:learner.residual_fusion")
+        .unwrap();
+    assert_eq!(fusion.kind, NodeKind::PredictionJoin);
+    assert_eq!(fusion.metadata["merge_mode"], "residual_fusion");
+    assert_eq!(fusion.metadata["residual_base"], "model:base");
+    assert_eq!(fusion.metadata["residual_learner"], "model:learner");
+    assert_eq!(
+        graph
+            .edges
+            .iter()
+            .filter(|edge| edge.contract.requires_oof)
+            .count(),
+        1
+    );
+    assert_eq!(
+        graph
+            .edges
+            .iter()
+            .filter(|edge| edge.target.node_id == fusion.id)
+            .count(),
+        2
+    );
+}
+
+#[test]
 fn compiles_separation_branch_view_plans() {
     let spec: PipelineDslSpec = serde_json::from_str(
         r#"{

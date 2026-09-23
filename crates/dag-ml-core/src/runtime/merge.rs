@@ -25,6 +25,126 @@ pub(crate) enum MergeReduction {
     /// vector, averaged and renormalized to a valid distribution. DSL
     /// `merge_mode == "fusion_proba_mean"`.
     FusionProbaMean,
+    /// Base prediction plus a calibrated residual learner correction.
+    ResidualFusion,
+}
+
+fn fuse_native_residual_blocks(
+    plan: &ExecutionPlan,
+    node_plan: &NodePlan,
+    blocks: &[PredictionBlock],
+) -> Result<PredictionBlock> {
+    let node = plan
+        .graph_plan
+        .graph
+        .nodes
+        .iter()
+        .find(|node| node.id == node_plan.node_id)
+        .expect("validated merge node");
+    let source = |key: &str| -> Result<NodeId> {
+        node.metadata
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "residual fusion node `{}` has no `{key}` producer",
+                    node_plan.node_id
+                ))
+            })
+            .and_then(NodeId::new)
+    };
+    let base_id = source("residual_base")?;
+    let learner_id = source("residual_learner")?;
+    if base_id == learner_id || blocks.len() != 2 {
+        return Err(DagMlError::OofValidation(format!(
+            "residual fusion node `{}` requires distinct base and learner prediction blocks",
+            node_plan.node_id
+        )));
+    }
+    let base = blocks
+        .iter()
+        .find(|block| block.producer_node == base_id)
+        .ok_or_else(|| {
+            DagMlError::OofValidation(format!(
+                "residual fusion node `{}` has no base predictions",
+                node_plan.node_id
+            ))
+        })?;
+    let learner = blocks
+        .iter()
+        .find(|block| block.producer_node == learner_id)
+        .ok_or_else(|| {
+            DagMlError::OofValidation(format!(
+                "residual fusion node `{}` has no learner predictions",
+                node_plan.node_id
+            ))
+        })?;
+    base.validate_content()?;
+    learner.validate_content()?;
+    if base.partition != learner.partition
+        || base.fold_id != learner.fold_id
+        || base.target_names != learner.target_names
+    {
+        return Err(DagMlError::OofValidation(
+            "residual fusion base and learner blocks differ in partition, fold or target names"
+                .to_string(),
+        ));
+    }
+    let lambda = node
+        .metadata
+        .get("residual_lambda")
+        .map(|value| {
+            value.as_f64().ok_or_else(|| {
+                DagMlError::RuntimeValidation("residual_lambda must be numeric".to_string())
+            })
+        })
+        .transpose()?
+        .unwrap_or(1.0);
+    let gate_value = node.metadata.get("residual_gate").ok_or_else(|| {
+        DagMlError::RuntimeValidation(
+            "residual fusion requires an explicit gate policy".to_string(),
+        )
+    })?;
+    let gate = match gate_value {
+        serde_json::Value::Bool(false) => 1.0,
+        serde_json::Value::Number(number) => number.as_f64().ok_or_else(|| {
+            DagMlError::RuntimeValidation("residual gate must be finite".to_string())
+        })?,
+        serde_json::Value::String(value) if value == "auto" => {
+            return Err(DagMlError::RuntimeValidation(
+                "automatic residual gate needs nested learner OOF evidence".to_string(),
+            ));
+        }
+        _ => {
+            return Err(DagMlError::RuntimeValidation(
+                "residual gate must be false, a finite scalar or auto".to_string(),
+            ))
+        }
+    };
+    let to_rows = |block: &PredictionBlock| -> BTreeMap<SampleId, Vec<f64>> {
+        block
+            .sample_ids
+            .iter()
+            .cloned()
+            .zip(block.values.iter().cloned())
+            .collect()
+    };
+    let fused = crate::residual::fuse_residual_predictions(
+        &to_rows(base),
+        &to_rows(learner),
+        lambda,
+        crate::residual::ResidualGateResult { gate, rli: 0.0 },
+    )?;
+    Ok(PredictionBlock {
+        prediction_id: None,
+        producer_node: node_plan.node_id.clone(),
+        producer_port: None,
+        partition: base.partition.clone(),
+        fold_id: base.fold_id.clone(),
+        sample_ids: fused.keys().cloned().collect(),
+        values: fused.into_values().collect(),
+        target_names: base.target_names.clone(),
+    })
 }
 
 /// Decode the native cross-branch reduction `node_plan` performs, if any. A node
@@ -50,6 +170,7 @@ pub(crate) fn merge_reduction_mode(
         Some("concat") => Some(MergeReduction::Concat),
         Some("fusion") => Some(MergeReduction::Fusion),
         Some("fusion_proba_mean") => Some(MergeReduction::FusionProbaMean),
+        Some("residual_fusion") => Some(MergeReduction::ResidualFusion),
         _ => None,
     }
 }
@@ -108,7 +229,9 @@ pub(crate) fn reassemble_branch_merge(
     }
     match reduction {
         MergeReduction::Concat => reassemble_separation_merge(plan, node_plan, ctx, scope),
-        MergeReduction::Fusion | MergeReduction::FusionProbaMean => {
+        MergeReduction::Fusion
+        | MergeReduction::FusionProbaMean
+        | MergeReduction::ResidualFusion => {
             reassemble_fusion_merge(plan, node_plan, ctx, scope, reduction)
         }
     }
@@ -253,6 +376,9 @@ pub(crate) fn reassemble_branch_merge_off_fold(
         }
         MergeReduction::FusionProbaMean => {
             reduce_proba_mean_across_branches(&branch_blocks, &node_plan.node_id)?
+        }
+        MergeReduction::ResidualFusion => {
+            fuse_native_residual_blocks(plan, node_plan, &branch_blocks)?
         }
     };
 
@@ -867,6 +993,9 @@ pub(crate) fn reassemble_fusion_merge(
         }
         MergeReduction::FusionProbaMean => {
             reduce_proba_mean_across_branches(&branch_blocks, &node_plan.node_id)?
+        }
+        MergeReduction::ResidualFusion => {
+            fuse_native_residual_blocks(plan, node_plan, &branch_blocks)?
         }
         MergeReduction::Concat => unreachable!("concat is handled by reassemble_separation_merge"),
     };

@@ -1129,7 +1129,29 @@ impl SequentialScheduler {
                     },
                 )?);
 
-                let meta_only = BTreeSet::from([nested.meta_node_id.clone()]);
+                let mut meta_only = BTreeSet::from([nested.meta_node_id.clone()]);
+                if nested.kind == NestedMetaKind::Residual {
+                    let fusion = plan
+                        .graph_plan
+                        .graph
+                        .nodes
+                        .iter()
+                        .filter(|node| {
+                            node.metadata
+                                .get("residual_fusion_for")
+                                .and_then(serde_json::Value::as_str)
+                                == Some(nested.meta_node_id.as_str())
+                        })
+                        .collect::<Vec<_>>();
+                    if fusion.len() != 1 {
+                        return Err(DagMlError::RuntimeValidation(format!(
+                            "residual learner `{}` requires one native fusion node, found {}",
+                            nested.meta_node_id,
+                            fusion.len()
+                        )));
+                    }
+                    meta_only.insert(fusion[0].id.clone());
+                }
                 results.extend(self.execute_phase_scope(
                     plan,
                     controllers,
