@@ -469,6 +469,9 @@ pub struct VariantValidationPredictions {
     /// (`None` for a single-fold splitter). The same averaged values the variant's scalar `avg` report
     /// was computed from, exposed per sample.
     pub oof_average: Option<OofAverageBlock>,
+    /// Every per-producer OOF average. A graph with independent terminal models
+    /// can produce several averages for one operator variant.
+    pub oof_averages: Vec<OofAverageBlock>,
 }
 
 /// Pick the best variant of a multi-variant plan by its cross-validation score, natively.
@@ -894,7 +897,7 @@ where
             variant_label.clone(),
             &ctx,
         );
-        if !captured.predictions.is_empty() || captured.oof_average.is_some() {
+        if !captured.predictions.is_empty() || !captured.oof_averages.is_empty() {
             variant_validation_predictions.push(captured);
         }
         // `cross_fold_validation_reports` emits one cross-fold OOF average PER producer. Native SELECT
@@ -1173,6 +1176,7 @@ pub(crate) fn capture_variant_validation_predictions(
             .find(|block| block.predictions.level != PredictionLevel::Sample)
             .cloned()
             .or_else(|| ctx.oof_average_blocks.first().cloned()),
+        oof_averages: ctx.oof_average_blocks.clone(),
     }
 }
 

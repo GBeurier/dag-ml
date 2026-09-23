@@ -948,7 +948,7 @@ fn surface_loser_validation_frames(
             "regression_targets": [target],
         }));
     }
-    if let Some(oof) = &captured.oof_average {
+    for oof in &captured.oof_averages {
         frames.push(serde_json::json!({
             "node_id": oof.predictions.producer_node,
             "variant_id": variant_id,
