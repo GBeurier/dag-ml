@@ -10,6 +10,54 @@ use crate::ids::{FoldId, NodeId, SampleId};
 
 pub const STACKING_OOF_REFIT_CONTRACT_METADATA_KEY: &str = "stacking_oof_refit_contract";
 pub const STACKING_OOF_COVERAGE_CONTRACT_METADATA_KEY: &str = "stacking_oof_coverage_contract";
+pub const STACKING_MISSING_PREDICTION_POLICY_METADATA_KEY: &str =
+    "stacking_missing_prediction_policy";
+
+/// Policy for missing rows in the OOF feature matrix consumed by a stack.
+/// A partial matrix is refused until a real imputation operation (with
+/// per-source column means and lineage) is available.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StackingMissingPredictionPolicy {
+    CompleteInnerOofNoImputation,
+}
+
+impl StackingMissingPredictionPolicy {
+    pub fn from_metadata(metadata: &BTreeMap<String, Value>) -> Result<Option<Self>> {
+        let Some(value) = metadata.get(STACKING_MISSING_PREDICTION_POLICY_METADATA_KEY) else {
+            return Ok(None);
+        };
+        serde_json::from_value(value.clone())
+            .map(Some)
+            .map_err(|error| {
+                DagMlError::OofValidation(format!(
+                    "`{STACKING_MISSING_PREDICTION_POLICY_METADATA_KEY}` is invalid: {error}"
+                ))
+            })
+    }
+
+    pub fn validate_complete_input(
+        self,
+        producer_node: &NodeId,
+        blocks: &[&PredictionBlock],
+        requested: &[SampleId],
+    ) -> Result<()> {
+        let requested = requested.iter().collect::<BTreeSet<_>>();
+        let mut covered = BTreeSet::new();
+        for block in blocks {
+            block.validate_content()?;
+            covered.extend(block.sample_ids.iter());
+        }
+        if covered != requested {
+            return Err(DagMlError::OofValidation(format!(
+                "stacking source `{producer_node}` requires complete finite inner OOF input; missing-row imputation is unavailable ({} missing, {} unexpected)",
+                requested.difference(&covered).count(),
+                covered.difference(&requested).count(),
+            )));
+        }
+        Ok(())
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1028,6 +1076,43 @@ mod tests {
 
     fn load_fixture(source: &str) -> OofCampaign {
         serde_json::from_str(source).unwrap()
+    }
+
+    #[test]
+    fn mean_missing_policy_accepts_only_attested_complete_finite_oof() {
+        let metadata = BTreeMap::from([(
+            STACKING_MISSING_PREDICTION_POLICY_METADATA_KEY.to_string(),
+            serde_json::json!("complete_inner_oof_no_imputation"),
+        )]);
+        let policy = StackingMissingPredictionPolicy::from_metadata(&metadata)
+            .unwrap()
+            .unwrap();
+        let complete = block(PredictionPartition::Validation);
+        policy
+            .validate_complete_input(&producer(), &[&complete], &[sid("s1"), sid("s2")])
+            .unwrap();
+        let error = policy
+            .validate_complete_input(
+                &producer(),
+                &[&complete],
+                &[sid("s1"), sid("s2"), sid("s3")],
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("1 missing"));
+        let mut non_finite = complete.clone();
+        non_finite.values[0][0] = f64::NAN;
+        assert!(policy
+            .validate_complete_input(&producer(), &[&non_finite], &[sid("s1"), sid("s2")])
+            .unwrap_err()
+            .to_string()
+            .contains("non-finite"));
+        assert!(
+            StackingMissingPredictionPolicy::from_metadata(&BTreeMap::from([(
+                STACKING_MISSING_PREDICTION_POLICY_METADATA_KEY.to_string(),
+                serde_json::json!("unknown_policy"),
+            )]))
+            .is_err()
+        );
     }
 
     #[test]
