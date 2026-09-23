@@ -9491,6 +9491,7 @@ fn dependent_stacking_executes_parent_bound_oof_at_both_levels() {
     struct LayeredModel {
         inner: VariantScoringController,
         folds: BTreeMap<FoldId, FoldAssignment>,
+        require_original_data: bool,
     }
     impl RuntimeController for LayeredModel {
         fn controller_id(&self) -> &ControllerId {
@@ -9498,6 +9499,22 @@ fn dependent_stacking_executes_parent_bound_oof_at_both_levels() {
         }
 
         fn invoke(&self, task: &NodeTask) -> Result<NodeResult> {
+            if task.node_plan.node_id.as_str().starts_with("transform:") {
+                let mut result = self.inner.invoke(task)?;
+                result.outputs = BTreeMap::from([(
+                    "x_out".into(),
+                    HandleRef {
+                        handle: 2,
+                        kind: HandleKind::Data,
+                        owner_controller: self.inner.id.clone(),
+                    },
+                )]);
+                return Ok(result);
+            }
+            if self.require_original_data && task.node_plan.node_id.as_str() == "model:meta.second"
+            {
+                assert!(task.input_handles.contains_key("data:x_original"));
+            }
             if task.phase == Phase::Refit {
                 return self.inner.invoke(task);
             }
@@ -9623,6 +9640,7 @@ fn dependent_stacking_executes_parent_bound_oof_at_both_levels() {
             folds.insert(inner_fold.fold_id.clone(), inner_fold.clone());
         }
     }
+    let transform_folds = folds.clone();
     let mut controllers = RuntimeControllerRegistry::new();
     controllers
         .register(Box::new(LayeredModel {
@@ -9632,6 +9650,7 @@ fn dependent_stacking_executes_parent_bound_oof_at_both_levels() {
                 emit_targets: true,
             },
             folds,
+            require_original_data: false,
         }))
         .unwrap();
     let provider = InMemoryDataProvider::new(ControllerId::new("controller:data").unwrap());
@@ -9667,6 +9686,154 @@ fn dependent_stacking_executes_parent_bound_oof_at_both_levels() {
         )
         .unwrap();
     assert!(refit.iter().any(|result| result.node_id == second));
+
+    let mut residual_graph = plan.graph_plan.graph.clone();
+    let residual = residual_graph
+        .nodes
+        .iter_mut()
+        .find(|node| node.id == second)
+        .unwrap();
+    residual
+        .metadata
+        .remove(NESTED_STACKING_EXECUTION_METADATA_KEY);
+    residual.metadata.insert(
+        RESIDUAL_TARGET_EXECUTION_METADATA_KEY.into(),
+        json!(RESIDUAL_TARGET_EXECUTION_V1),
+    );
+    residual
+        .ports
+        .inputs
+        .push(port("x_original", PortKind::Data));
+    let transform_id = NodeId::new("transform:original").unwrap();
+    residual_graph.nodes.push(node(
+        transform_id.as_str(),
+        NodeKind::Transform,
+        Vec::new(),
+        vec![port("x_out", PortKind::Data)],
+    ));
+    residual_graph.edges.push(EdgeSpec {
+        source: PortRef {
+            node_id: transform_id,
+            port_name: "x_out".into(),
+        },
+        target: PortRef {
+            node_id: second.clone(),
+            port_name: "x_original".into(),
+        },
+        contract: EdgeContract::new(PortKind::Data, None),
+    });
+    let fusion_id = NodeId::new("model:meta.second.residual_fusion").unwrap();
+    let mut fusion = node(
+        fusion_id.as_str(),
+        NodeKind::PredictionJoin,
+        vec![
+            port("base", PortKind::Prediction),
+            port("learner", PortKind::Prediction),
+        ],
+        vec![port("prediction", PortKind::Prediction)],
+    );
+    fusion.metadata.extend(BTreeMap::from([
+        ("merge_mode".into(), json!("residual_fusion")),
+        ("residual_fusion_for".into(), json!(second.as_str())),
+        ("residual_base".into(), json!(first.as_str())),
+        ("residual_learner".into(), json!(second.as_str())),
+        ("residual_gate".into(), json!(false)),
+    ]));
+    residual_graph.nodes.push(fusion);
+    for (source, port_name) in [(first.clone(), "base"), (second.clone(), "learner")] {
+        residual_graph.edges.push(EdgeSpec {
+            source: PortRef {
+                node_id: source,
+                port_name: "pred".into(),
+            },
+            target: PortRef {
+                node_id: fusion_id.clone(),
+                port_name: port_name.into(),
+            },
+            contract: EdgeContract {
+                requires_oof: true,
+                requires_fold_alignment: true,
+                ..EdgeContract::new(PortKind::Prediction, None)
+            },
+        });
+    }
+    let mut residual_registry = registry;
+    let mut transform_manifest = controller_manifest("controller:transform", NodeKind::Transform);
+    transform_manifest.supported_phases.insert(Phase::Refit);
+    residual_registry.register(transform_manifest).unwrap();
+    let mut join_manifest =
+        controller_manifest("controller:prediction.join", NodeKind::PredictionJoin);
+    join_manifest
+        .capabilities
+        .insert(ControllerCapability::EmitsPredictions);
+    join_manifest
+        .capabilities
+        .insert(ControllerCapability::ConsumesOofPredictions);
+    join_manifest.supported_phases.insert(Phase::Refit);
+    residual_registry.register(join_manifest).unwrap();
+    let residual_plan = build_execution_plan(
+        "plan:two.meta.residual",
+        residual_graph,
+        plan.campaign.clone(),
+        &residual_registry,
+    )
+    .unwrap();
+    let mut residual_controllers = RuntimeControllerRegistry::new();
+    residual_controllers
+        .register(Box::new(LayeredModel {
+            inner: VariantScoringController {
+                id: ControllerId::new("controller:model").unwrap(),
+                handle: 1,
+                emit_targets: true,
+            },
+            folds: transform_folds.clone(),
+            require_original_data: true,
+        }))
+        .unwrap();
+    residual_controllers
+        .register(Box::new(LayeredModel {
+            inner: VariantScoringController {
+                id: ControllerId::new("controller:transform").unwrap(),
+                handle: 2,
+                emit_targets: false,
+            },
+            folds: transform_folds,
+            require_original_data: false,
+        }))
+        .unwrap();
+    let mut residual_ctx = RunContext::new(RunId::new("run:two.meta.residual").unwrap(), Some(7));
+    SequentialScheduler
+        .execute_campaign_phase_with_data_provider(
+            &residual_plan,
+            &residual_controllers,
+            &provider,
+            &mut residual_ctx,
+            Phase::FitCv,
+        )
+        .unwrap();
+    for fold in &outer.folds {
+        assert_eq!(
+            residual_ctx
+                .prediction_store
+                .find(
+                    Some(&fusion_id),
+                    Some(&PredictionPartition::Validation),
+                    Some(&fold.fold_id)
+                )
+                .len(),
+            1
+        );
+    }
+    let residual_refit = SequentialScheduler
+        .execute_campaign_phase_with_data_provider(
+            &residual_plan,
+            &residual_controllers,
+            &provider,
+            &mut residual_ctx,
+            Phase::Refit,
+        )
+        .unwrap();
+    assert!(residual_refit.iter().any(|result| result.node_id == second));
 }
 
 #[test]

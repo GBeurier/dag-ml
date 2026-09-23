@@ -1265,6 +1265,16 @@ impl SequentialScheduler {
             .difference(&dependent_closure)
             .cloned()
             .collect::<BTreeSet<_>>();
+        let meta_data_to_run = nested
+            .meta_data_node_ids
+            .difference(&nested.base_node_ids)
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let meta_data_cached = nested
+            .meta_data_node_ids
+            .intersection(&nested.base_node_ids)
+            .cloned()
+            .collect::<BTreeSet<_>>();
         let mut active_nested = nested.clone();
         active_nested.base_node_ids = base_node_ids.clone();
         let feature_join = prediction_feature_join_plan(plan, &active_nested)?;
@@ -1344,7 +1354,8 @@ impl SequentialScheduler {
                     plan.campaign.inner_cv.as_ref(),
                 )
                 .expect("validated inner CV");
-                let learner_only = BTreeSet::from([nested.meta_node_id.clone()]);
+                let mut learner_only = BTreeSet::from([nested.meta_node_id.clone()]);
+                learner_only.extend(meta_data_to_run.iter().cloned());
                 let variant_id = Some(variant.variant_id.clone());
                 let variant_spec = Some(VariantExecutionSpec::from_plan(variant));
                 let seed_root = variant.seed.or(ctx.root_seed);
@@ -1420,7 +1431,7 @@ impl SequentialScheduler {
                             data_provider: Some(data_provider),
                             fold_set_override: Some(folds),
                             node_filter: Some(&learner_only),
-                            cached_data_node_ids: Some(&nested.meta_data_node_ids),
+                            cached_data_node_ids: Some(&meta_data_cached),
                             suppress_inner_cv: true,
                             nested_stacking: Some(NestedStackingInput {
                                 meta_node_id: &nested.meta_node_id,
@@ -1748,6 +1759,16 @@ impl SequentialScheduler {
             .difference(&dependent_closure)
             .cloned()
             .collect::<BTreeSet<_>>();
+        let meta_data_to_run = nested
+            .meta_data_node_ids
+            .difference(&nested.base_node_ids)
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let meta_data_cached = nested
+            .meta_data_node_ids
+            .intersection(&nested.base_node_ids)
+            .cloned()
+            .collect::<BTreeSet<_>>();
         let mut active_nested = nested.clone();
         active_nested.base_node_ids = base_node_ids.clone();
         let feature_join = prediction_feature_join_plan(plan, &active_nested)?;
@@ -1833,7 +1854,8 @@ impl SequentialScheduler {
                 if let (Some(threshold), Some(inner_spec)) =
                     (residual_auto_threshold, inner_spec.as_ref())
                 {
-                    let learner_only = BTreeSet::from([nested.meta_node_id.clone()]);
+                    let mut learner_only = BTreeSet::from([nested.meta_node_id.clone()]);
+                    learner_only.extend(meta_data_to_run.iter().cloned());
                     for inner_fold in &outer.inner.inner_fold_set.folds {
                         // Cross-fit the learner on residuals derived entirely
                         // inside this inner fold's training universe.  The
@@ -1909,7 +1931,7 @@ impl SequentialScheduler {
                                 data_provider: Some(data_provider),
                                 fold_set_override: Some(&outer.inner.inner_fold_set),
                                 node_filter: Some(&learner_only),
-                                cached_data_node_ids: Some(&nested.meta_data_node_ids),
+                                cached_data_node_ids: Some(&meta_data_cached),
                                 suppress_inner_cv: true,
                                 nested_stacking: Some(NestedStackingInput {
                                     meta_node_id: &nested.meta_node_id,
@@ -2012,6 +2034,7 @@ impl SequentialScheduler {
                 }
 
                 let mut meta_only = BTreeSet::from([nested.meta_node_id.clone()]);
+                meta_only.extend(meta_data_to_run.iter().cloned());
                 if nested.kind == NestedMetaKind::Residual {
                     let fusion = plan
                         .graph_plan
@@ -2048,7 +2071,7 @@ impl SequentialScheduler {
                     PhaseScopeResources {
                         data_provider: Some(data_provider),
                         node_filter: Some(&meta_only),
-                        cached_data_node_ids: Some(&nested.meta_data_node_ids),
+                        cached_data_node_ids: Some(&meta_data_cached),
                         suppress_inner_cv: true,
                         nested_stacking: Some(NestedStackingInput {
                             meta_node_id: &nested.meta_node_id,
