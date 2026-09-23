@@ -210,6 +210,50 @@ fn compiles_branch_merge_predictions_plus_original_dsl() {
 }
 
 #[test]
+fn merge_model_compiles_per_branch_probability_selector() {
+    let spec: PipelineDslSpec = serde_json::from_value(serde_json::json!({
+        "id": "dsl-branch-proba",
+        "steps": [
+            {"kind": "branch", "mode": "duplication", "branches": [
+                {"id": "branch_0", "steps": [
+                    {"kind": "model", "id": "model:a", "operator": {"type": "Classifier"}},
+                    {"kind": "model", "id": "model:b", "operator": {"type": "Classifier"}}
+                ]}
+            ]},
+            {"kind": "merge_model", "id": "model:meta", "operator": {"type": "Classifier"},
+             "selectors": [{"branch": "branch_0", "select": "all", "aggregate": "proba_mean"}]}
+        ]
+    }))
+    .unwrap();
+    let graph = compile_pipeline_dsl(&spec).unwrap();
+    let meta = graph
+        .nodes
+        .iter()
+        .find(|node| node.id.as_str() == "model:meta")
+        .unwrap();
+    assert_eq!(meta.metadata["selectors"][0]["aggregate"], "proba_mean");
+    assert_eq!(
+        graph
+            .edges
+            .iter()
+            .filter(|edge| edge.target.node_id == meta.id && edge.contract.requires_oof)
+            .count(),
+        2
+    );
+
+    let mut unsupported = spec;
+    if let PipelineDslStep::MergeModel(step) = &mut unsupported.steps[1] {
+        step.selectors[0].aggregate = Some("weighted_mean".to_string());
+    } else {
+        panic!("expected merge_model step");
+    }
+    assert!(compile_pipeline_dsl(&unsupported)
+        .unwrap_err()
+        .to_string()
+        .contains("select=all and aggregate=proba_mean"));
+}
+
+#[test]
 fn residual_merge_model_compiles_native_base_learner_fusion_graph() {
     let spec: PipelineDslSpec = serde_json::from_str(
         r#"{

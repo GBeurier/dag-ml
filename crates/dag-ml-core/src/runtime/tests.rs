@@ -2549,6 +2549,84 @@ fn fixture_plan(plan_id: &str) -> ExecutionPlan {
     build_execution_plan(plan_id, graph, campaign, &registry).unwrap()
 }
 
+#[test]
+fn stacking_probability_selector_reduces_inner_and_outer_inputs_by_identity() {
+    let mut plan = fixture_plan("plan:branch-proba");
+    let first = NodeId::new("model:base").unwrap();
+    let second = NodeId::new("model:second").unwrap();
+    let meta = NodeId::new("model:meta").unwrap();
+    let base_node = plan
+        .graph_plan
+        .graph
+        .nodes
+        .iter_mut()
+        .find(|node| node.id == first)
+        .unwrap();
+    base_node
+        .metadata
+        .insert("dsl_branch".to_string(), json!("branch_0"));
+    let mut second_node = base_node.clone();
+    second_node.id = second.clone();
+    let mut meta_node = base_node.clone();
+    meta_node.id = meta.clone();
+    meta_node.metadata.remove("dsl_branch");
+    meta_node.metadata.insert(
+        "selectors".to_string(),
+        json!([
+            {"branch": "branch_0", "select": "all", "aggregate": "proba_mean"}
+        ]),
+    );
+    plan.graph_plan.graph.nodes.extend([second_node, meta_node]);
+    let mut meta_plan = plan.node_plans[&first].clone();
+    meta_plan.node_id = meta.clone();
+
+    let input = |producer: NodeId, sample_ids: &[&str], values: &[[f64; 2]]| PredictionInputSpec {
+        producer_node: producer,
+        source_port: "oof".to_string(),
+        target_port: "oof".to_string(),
+        partition: PredictionPartition::Validation,
+        prediction_level: PredictionLevel::Sample,
+        fold_id: None,
+        fold_ids: vec![FoldId::new("fold:0").unwrap()],
+        unit_ids: sample_ids
+            .iter()
+            .map(|id| PredictionUnitId::Sample(SampleId::new(*id).unwrap()))
+            .collect(),
+        sample_ids: sample_ids
+            .iter()
+            .map(|id| SampleId::new(*id).unwrap())
+            .collect(),
+        values: values.iter().map(|row| row.to_vec()).collect(),
+        prediction_width: 2,
+        target_names: vec!["0".to_string(), "1".to_string()],
+    };
+    let mut inputs = BTreeMap::new();
+    for suffix in ["", ":outer"] {
+        inputs.insert(
+            format!("{first}.oof{suffix}"),
+            input(first.clone(), &["s1", "s2"], &[[0.2, 0.8], [0.7, 0.3]]),
+        );
+        inputs.insert(
+            format!("{second}.oof{suffix}"),
+            input(second.clone(), &["s2", "s1"], &[[0.5, 0.5], [0.6, 0.4]]),
+        );
+    }
+    apply_stacking_prediction_aggregations(&plan, &meta_plan, &mut inputs).unwrap();
+    assert_eq!(inputs.len(), 2);
+    for suffix in ["", ":outer"] {
+        let spec = &inputs[&format!("model:meta.branch.branch_0.oof{suffix}")];
+        assert_eq!(
+            spec.sample_ids,
+            vec![SampleId::new("s1").unwrap(), SampleId::new("s2").unwrap()]
+        );
+        for (actual, expected) in spec.values.iter().zip([[0.4, 0.6], [0.6, 0.4]]) {
+            for (actual, expected) in actual.iter().zip(expected) {
+                assert!((actual - expected).abs() < 1e-12);
+            }
+        }
+    }
+}
+
 fn replay_bundle(plan: &ExecutionPlan) -> crate::bundle::ExecutionBundle {
     let model_plan = plan
         .node_plans
