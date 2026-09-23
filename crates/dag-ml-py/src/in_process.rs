@@ -1404,6 +1404,7 @@ fn run_cv_refit_in_process_impl(
         "node_results": node_results,
         "scores": scores,
         "refit_enabled": refit,
+        "variant_catalog": plan.variants,
     });
     serde_json::to_string(&payload).map_err(py_serde_error)
 }
