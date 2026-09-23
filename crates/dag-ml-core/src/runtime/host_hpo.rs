@@ -590,6 +590,68 @@ pub fn evaluate_host_hpo_worker_task(
     })
 }
 
+/// One native FIT_CV fold evaluated by a candidate-local browser worker.
+/// This is an intermediate score, not a terminal or aggregate OOF score.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostHpoWorkerFoldResult {
+    pub trial_index: u32,
+    pub fold_index: u32,
+    pub fold_id: FoldId,
+    pub score: f64,
+    pub scores: ScoreSet,
+    pub data_fingerprint: String,
+}
+
+/// Execute one fold and return native report evidence before the next fold can
+/// be scheduled. A worker never makes the pruning decision itself.
+#[allow(clippy::too_many_arguments)]
+pub fn evaluate_host_hpo_worker_fold(
+    task: &HostHpoWorkerTask,
+    request: &HostHpoSearchRequest,
+    fold_index: u32,
+    controllers: &RuntimeControllerRegistry,
+    provider: &dyn RuntimeDataProvider,
+    data_fingerprint: &str,
+) -> Result<HostHpoWorkerFoldResult> {
+    task.candidate_plan.validate()?;
+    let [variant] = task.candidate_plan.variants.as_slice() else {
+        return Err(DagMlError::RuntimeValidation(
+            "browser HPO worker fold requires one candidate variant".into(),
+        ));
+    };
+    if variant.variant_id.as_str() != format!("host_hpo:trial:{:010}", task.trial_index)
+        || task.phase_index != request.phase_index(task.trial_index)
+    {
+        return Err(DagMlError::RuntimeValidation(
+            "browser HPO worker fold trial/phase identity mismatch".into(),
+        ));
+    }
+    let (scores, score) = SequentialScheduler.execute_host_hpo_worker_fold(
+        &task.candidate_plan,
+        controllers,
+        provider,
+        request,
+        fold_index as usize,
+    )?;
+    let fold_id = task
+        .candidate_plan
+        .fold_set
+        .as_ref()
+        .expect("validated FoldSet")
+        .folds[fold_index as usize]
+        .fold_id
+        .clone();
+    Ok(HostHpoWorkerFoldResult {
+        trial_index: task.trial_index,
+        fold_index,
+        fold_id,
+        score,
+        scores,
+        data_fingerprint: data_fingerprint.to_owned(),
+    })
+}
+
 /// A worker may finish in any order; the coordinator processes these keyed
 /// results only after every launched candidate has terminalized.
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -643,6 +643,89 @@ impl SequentialScheduler {
         Ok(HpoCandidateFitCvOutcome::Completed)
     }
 
+    /// Evaluate one native candidate fold in an isolated worker namespace.
+    /// The caller owns the inter-fold pause and optimizer decision; no later
+    /// fold is run by this call.
+    pub(super) fn execute_host_hpo_worker_fold(
+        &self,
+        plan: &ExecutionPlan,
+        controllers: &RuntimeControllerRegistry,
+        data_provider: &dyn RuntimeDataProvider,
+        request: &HostHpoSearchRequest,
+        fold_index: usize,
+    ) -> Result<(ScoreSet, f64)> {
+        plan.validate()?;
+        if nested_stacking_campaign_plan(plan)?.is_some() {
+            return Err(DagMlError::RuntimeValidation(
+                "host HPO progressive pruning cannot attest nested-stacking outer folds".into(),
+            ));
+        }
+        let fold = plan
+            .fold_set
+            .as_ref()
+            .and_then(|folds| folds.folds.get(fold_index))
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation("host HPO worker fold index is out of range".into())
+            })?;
+        let variant = &plan.variants[0];
+        let mut context = RunContext::new(
+            RunId::new(format!("run:host_hpo:worker:{}", variant.variant_id))?,
+            variant.seed.or(plan.campaign.root_seed),
+        );
+        context.variant_id = Some(variant.variant_id.clone());
+        context.configure_global_oof_aggregation(plan, data_provider)?;
+        self.execute_phase_scope(
+            plan,
+            controllers,
+            &mut context,
+            PhaseScope {
+                phase: Phase::FitCv,
+                variant_id: Some(variant.variant_id.clone()),
+                variant: Some(VariantExecutionSpec::from_plan(variant)),
+                fold_id: Some(fold.fold_id.clone()),
+                seed_root: variant.seed.or(plan.campaign.root_seed),
+            },
+            PhaseScopeResources {
+                data_provider: Some(data_provider),
+                ..Default::default()
+            },
+        )?;
+        let scores = context
+            .build_score_set(plan.id.clone(), None)
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(
+                    "host HPO worker fold lost native score evidence".into(),
+                )
+            })?;
+        scores.validate()?;
+        let reports = scores
+            .reports
+            .iter()
+            .filter(|report| {
+                report.producer_node == request.target_node
+                    && report.partition == PredictionPartition::Validation
+                    && report.fold_id.as_ref() == Some(&fold.fold_id)
+            })
+            .collect::<Vec<_>>();
+        let [report] = reports.as_slice() else {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "host HPO worker requires one target validation score in fold {}",
+                fold.fold_id
+            )));
+        };
+        let score = report
+            .metrics
+            .get(request.metric.name())
+            .copied()
+            .filter(|score| score.is_finite())
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(
+                    "host HPO worker requires a finite native fold score".into(),
+                )
+            })?;
+        Ok((scores, score))
+    }
+
     /// Execute a host-optimizer candidate one fold at a time so the host can
     /// decide whether to prune from native, report-grade intermediate scores.
     /// A pruned candidate never receives a fabricated OOF score.
