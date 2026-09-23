@@ -24,25 +24,26 @@ use dag_ml_core::{
     score_regression_aggregated_block, score_regression_prediction_block,
     select_best_operator_variant_outcome_from_models, select_best_variant_outcome_by_cv,
     select_candidate, select_candidate_groups, validate_oof_campaign,
-    validate_research_provenance_package_files, AggregatedPredictionBlock, ArtifactId, BundleId,
-    BundlePredictionCachePayload, BundlePredictionCachePayloadSet, BundlePredictionCacheRecord,
-    BundlePredictionRequirement, BundleReplayExecution, CacheNamespace, CampaignSpec,
-    CandidateScore, ColumnarPredictionCacheStore, ControllerId, ControllerManifest,
-    ControllerRegistry, DagMlError, DataRequestPartition, ExecutionBundle, ExplanationBlock,
-    ExplicitPhaseDataProvider, ExternalDataPlanEnvelope, FileArtifactManifestStore,
-    FileArtifactPayloadStore, FilePredictionCacheStore, GraphSpec, HandleKind, HandleRef,
-    HostHpoCandidateControllerFactory, HostHpoCandidateProviderFactory, HostHpoCheckpoint,
-    HostHpoProgress, HostHpoProposalSource, HostHpoResumeOptions, HostHpoSearchRequest,
-    HostHpoSearchStatus, InMemoryArtifactStore, InMemoryDataProvider, LineageId, LineageRecord,
-    LossSpec, MetricObjective, MetricSpec, NodeId, NodeResult, NodeTask, OofCampaign,
-    OperatorVariantModel, ParallelScheduler, Phase, PipelineDslSpec, PortablePredictorPackage,
-    PredictionBlock, PredictionLevel, PredictionPartition, PredictionUnitId, RefitArtifactRecord,
-    RegressionMetricKind, RegressionMetricReport, RegressionTargetBlock, ReplayPhaseRequest,
-    ResearchProvenancePackage, RunContext, RunId, RuntimeArtifactStore, RuntimeController,
-    RuntimeControllerRegistry, RuntimeDataProvider, RuntimePredictionCacheStore,
-    RuntimeTunerSession, SampleId, ScoreSet, SelectionDecision, SelectionMetric, SelectionPolicy,
-    SequentialScheduler, TrainingRequest, TrainingResourceLimits, VariantId,
-    SCORE_SET_SCHEMA_VERSION,
+    validate_research_provenance_package_files, AggregatedPredictionBlock, ArtifactId,
+    ArtifactMaterializationRequest, BundleId, BundlePredictionCachePayload,
+    BundlePredictionCachePayloadSet, BundlePredictionCacheRecord, BundlePredictionRequirement,
+    BundleReplayExecution, CacheNamespace, CampaignSpec, CandidateScore,
+    ColumnarPredictionCacheStore, ControllerId, ControllerManifest, ControllerRegistry, DagMlError,
+    DataRequestPartition, ExecutionBundle, ExplanationBlock, ExplicitPhaseDataProvider,
+    ExternalDataPlanEnvelope, FileArtifactManifestStore, FileArtifactPayloadStore,
+    FilePredictionCacheStore, GraphSpec, HandleKind, HandleRef, HostHpoCandidateControllerFactory,
+    HostHpoCandidateProviderFactory, HostHpoCheckpoint, HostHpoProgress, HostHpoProposalSource,
+    HostHpoResumeOptions, HostHpoSearchRequest, HostHpoSearchStatus, InMemoryArtifactStore,
+    InMemoryDataProvider, LineageId, LineageRecord, LossSpec, MetricObjective, MetricSpec, NodeId,
+    NodeResult, NodeTask, OofCampaign, OperatorVariantModel, ParallelScheduler, Phase,
+    PipelineDslSpec, PortableArtifactBridgeResult, PortableArtifactBridgeTask,
+    PortablePredictorPackage, PredictionBlock, PredictionLevel, PredictionPartition,
+    PredictionUnitId, RefitArtifactRecord, RegressionMetricKind, RegressionMetricReport,
+    RegressionTargetBlock, ReplayPhaseRequest, ResearchProvenancePackage, RunContext, RunId,
+    RuntimeArtifactStore, RuntimeController, RuntimeControllerRegistry, RuntimeDataProvider,
+    RuntimePredictionCacheStore, RuntimeTunerSession, SampleId, ScoreSet, SelectionDecision,
+    SelectionMetric, SelectionPolicy, SequentialScheduler, TrainingRequest, TrainingResourceLimits,
+    VariantId, SCORE_SET_SCHEMA_VERSION,
 };
 use serde::{Deserialize, Serialize};
 
@@ -57,6 +58,7 @@ const PROCESS_ADAPTER_CAP_CONTROL_FRAMES: &str = "control_frames_v1";
 const PROCESS_ADAPTER_CAP_PARALLEL_INVOCATION: &str = "parallel_invocation_v1";
 const PROCESS_ADAPTER_CAP_PERSISTENT_WORKERS: &str = "persistent_workers";
 const PROCESS_ADAPTER_CAP_WORKER_ENV: &str = "worker_env";
+const PROCESS_ADAPTER_CAP_PORTABLE_ARTIFACT_BRIDGE: &str = "portable_artifact_bridge_v1";
 const PROCESS_ADAPTER_FRAME_SCHEMA_VERSION: u32 = 1;
 /// Bounded retry budget for adapter `spawn`/`output` calls that transiently
 /// fail with `ENOENT`/`EACCES` because the host just wrote+chmod'd the shim
@@ -4387,6 +4389,9 @@ struct PersistentProcessRuntimeController {
     adapter: PathBuf,
     config: ProcessAdapterRuntimeConfig,
     sessions: Vec<Mutex<PersistentProcessSession>>,
+    portable_artifact_bridge: bool,
+    refit_artifact_workers: Mutex<BTreeMap<ArtifactId, usize>>,
+    hydrated_artifact_workers: Mutex<BTreeMap<HandleRef, usize>>,
 }
 
 struct PersistentProcessSession {
@@ -4421,6 +4426,10 @@ enum ProcessAdapterRequestFrame<'a> {
         schema_version: u32,
         task: &'a NodeTask,
     },
+    PortableArtifact {
+        schema_version: u32,
+        task: &'a PortableArtifactBridgeTask,
+    },
     Close {
         schema_version: u32,
     },
@@ -4436,6 +4445,10 @@ enum ProcessAdapterResponseFrame {
     Result {
         schema_version: u32,
         result: Box<NodeResult>,
+    },
+    PortableArtifact {
+        schema_version: u32,
+        result: PortableArtifactBridgeResult,
     },
     Error {
         schema_version: u32,
@@ -4456,6 +4469,7 @@ impl ProcessAdapterResponseFrame {
         match self {
             Self::Ack { .. } => "ack",
             Self::Result { .. } => "result",
+            Self::PortableArtifact { .. } => "portable_artifact",
             Self::Error { .. } => "error",
         }
     }
@@ -4631,6 +4645,46 @@ impl PersistentProcessSession {
             }
             frame => Err(PersistentWorkerFailure::terminal(format!(
                 "adapter task returned unexpected frame `{}`",
+                frame.kind()
+            ))),
+        }
+    }
+
+    fn invoke_portable_artifact(
+        &mut self,
+        controller_id: &ControllerId,
+        adapter: &Path,
+        task: &PortableArtifactBridgeTask,
+        timeout: Duration,
+    ) -> Result<PortableArtifactBridgeResult, PersistentWorkerFailure> {
+        if !self.control_frames {
+            return Err(PersistentWorkerFailure::terminal(
+                "portable artifact bridge requires control frames",
+            ));
+        }
+        self.write_json_line(
+            controller_id,
+            ProcessAdapterRequestFrame::PortableArtifact {
+                schema_version: PROCESS_ADAPTER_FRAME_SCHEMA_VERSION,
+                task,
+            },
+        )?;
+        match self.read_response_frame(controller_id, adapter, timeout)? {
+            ProcessAdapterResponseFrame::PortableArtifact {
+                schema_version,
+                result,
+            } if schema_version == PROCESS_ADAPTER_FRAME_SCHEMA_VERSION => Ok(result),
+            ProcessAdapterResponseFrame::Error {
+                schema_version,
+                error,
+            } if schema_version == PROCESS_ADAPTER_FRAME_SCHEMA_VERSION => {
+                Err(PersistentWorkerFailure::terminal(format!(
+                    "adapter portable artifact operation returned error `{}`: {}",
+                    error.code, error.message
+                )))
+            }
+            frame => Err(PersistentWorkerFailure::terminal(format!(
+                "adapter portable artifact operation returned unexpected frame `{}`",
                 frame.kind()
             ))),
         }
@@ -4970,7 +5024,28 @@ impl RuntimeController for PersistentProcessRuntimeController {
         })?;
         for attempt in 0..=self.config.retries {
             match session.invoke_once(&self.id, &self.adapter, task, self.config.timeout) {
-                Ok(result) => return Ok(result),
+                Ok(result) => {
+                    if task.phase == Phase::Refit && !result.artifact_handles.is_empty() {
+                        let mut owners = self.refit_artifact_workers.lock().map_err(|_| {
+                            DagMlError::RuntimeValidation(format!(
+                                "controller `{}` REFIT artifact worker registry is poisoned",
+                                self.id
+                            ))
+                        })?;
+                        for artifact_id in result.artifact_handles.keys() {
+                            if owners
+                                .insert(artifact_id.clone(), worker_index)
+                                .is_some_and(|old| old != worker_index)
+                            {
+                                return Err(DagMlError::RuntimeValidation(format!(
+                                    "controller `{}` emitted REFIT artifact `{artifact_id}` from multiple workers",
+                                    self.id
+                                )));
+                            }
+                        }
+                    }
+                    return Ok(result);
+                }
                 Err(failure) => {
                     if failure.restartable {
                         session.terminate();
@@ -5006,6 +5081,164 @@ impl RuntimeController for PersistentProcessRuntimeController {
             self.id,
             self.adapter.display()
         )))
+    }
+
+    fn export_artifact_payload(
+        &self,
+        artifact_id: &ArtifactId,
+    ) -> dag_ml_core::Result<Option<Vec<u8>>> {
+        if !self.portable_artifact_bridge {
+            return Ok(None);
+        }
+        let worker_index = self
+            .refit_artifact_workers
+            .lock()
+            .map_err(|_| {
+                DagMlError::RuntimeValidation(format!(
+                    "controller `{}` REFIT artifact worker registry is poisoned",
+                    self.id
+                ))
+            })?
+            .get(artifact_id)
+            .copied()
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "controller `{}` has no live worker for REFIT artifact `{artifact_id}`",
+                    self.id
+                ))
+            })?;
+        let mut session = self.sessions[worker_index].lock().map_err(|_| {
+            DagMlError::RuntimeValidation(format!(
+                "controller `{}` portable artifact worker is poisoned",
+                self.id
+            ))
+        })?;
+        let task = PortableArtifactBridgeTask::ExportArtifactPayload {
+            schema_version: dag_ml_core::PORTABLE_ARTIFACT_BRIDGE_SCHEMA_VERSION,
+            artifact_id: artifact_id.clone(),
+        };
+        match session
+            .invoke_portable_artifact(&self.id, &self.adapter, &task, self.config.timeout)
+            .map_err(|failure| DagMlError::RuntimeValidation(failure.message))?
+        {
+            PortableArtifactBridgeResult::ExportedArtifactPayload {
+                schema_version,
+                payload,
+            } if schema_version == dag_ml_core::PORTABLE_ARTIFACT_BRIDGE_SCHEMA_VERSION => {
+                Ok(Some(payload))
+            }
+            other => Err(DagMlError::RuntimeValidation(format!(
+                "controller `{}` returned unexpected portable artifact export result {other:?}",
+                self.id
+            ))),
+        }
+    }
+
+    fn hydrate_artifact_payload(
+        &self,
+        request: &ArtifactMaterializationRequest,
+        payload: &[u8],
+    ) -> dag_ml_core::Result<HandleRef> {
+        if !self.portable_artifact_bridge {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "controller `{}` adapter lacks `{PROCESS_ADAPTER_CAP_PORTABLE_ARTIFACT_BRIDGE}`",
+                self.id
+            )));
+        }
+        let variant = request
+            .variant_id
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_else(|| "base".to_string());
+        let worker_index = (stable_handle(&format!("{}:{variant}", request.node_id)) as usize)
+            % self.sessions.len();
+        let task = PortableArtifactBridgeTask::HydrateArtifactPayload {
+            schema_version: dag_ml_core::PORTABLE_ARTIFACT_BRIDGE_SCHEMA_VERSION,
+            request: Box::new(request.clone()),
+            payload: payload.to_vec(),
+        };
+        let mut session = self.sessions[worker_index].lock().map_err(|_| {
+            DagMlError::RuntimeValidation(format!(
+                "controller `{}` portable artifact worker is poisoned",
+                self.id
+            ))
+        })?;
+        let handle = match session
+            .invoke_portable_artifact(&self.id, &self.adapter, &task, self.config.timeout)
+            .map_err(|failure| DagMlError::RuntimeValidation(failure.message))?
+        {
+            PortableArtifactBridgeResult::HydratedArtifactPayload {
+                schema_version,
+                handle,
+            } if schema_version == dag_ml_core::PORTABLE_ARTIFACT_BRIDGE_SCHEMA_VERSION => handle,
+            other => {
+                return Err(DagMlError::RuntimeValidation(format!(
+                "controller `{}` returned unexpected portable artifact hydrate result {other:?}",
+                self.id
+            )))
+            }
+        };
+        if handle.owner_controller != self.id
+            || !matches!(handle.kind, HandleKind::Model | HandleKind::Artifact)
+        {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "controller `{}` returned an invalid hydrated artifact handle",
+                self.id
+            )));
+        }
+        self.hydrated_artifact_workers
+            .lock()
+            .map_err(|_| {
+                DagMlError::RuntimeValidation(format!(
+                    "controller `{}` hydrated artifact worker registry is poisoned",
+                    self.id
+                ))
+            })?
+            .insert(handle.clone(), worker_index);
+        Ok(handle)
+    }
+
+    fn release_hydrated_artifact_payload(&self, handle: &HandleRef) -> dag_ml_core::Result<()> {
+        let worker_index = self
+            .hydrated_artifact_workers
+            .lock()
+            .map_err(|_| {
+                DagMlError::RuntimeValidation(format!(
+                    "controller `{}` hydrated artifact worker registry is poisoned",
+                    self.id
+                ))
+            })?
+            .remove(handle)
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "controller `{}` has no live worker for hydrated artifact handle {}",
+                    self.id, handle.handle
+                ))
+            })?;
+        let task = PortableArtifactBridgeTask::ReleaseHydratedArtifactPayload {
+            schema_version: dag_ml_core::PORTABLE_ARTIFACT_BRIDGE_SCHEMA_VERSION,
+            handle: handle.clone(),
+        };
+        let mut session = self.sessions[worker_index].lock().map_err(|_| {
+            DagMlError::RuntimeValidation(format!(
+                "controller `{}` portable artifact worker is poisoned",
+                self.id
+            ))
+        })?;
+        match session
+            .invoke_portable_artifact(&self.id, &self.adapter, &task, self.config.timeout)
+            .map_err(|failure| DagMlError::RuntimeValidation(failure.message))?
+        {
+            PortableArtifactBridgeResult::ReleasedHydratedArtifactPayload { schema_version }
+                if schema_version == dag_ml_core::PORTABLE_ARTIFACT_BRIDGE_SCHEMA_VERSION =>
+            {
+                Ok(())
+            }
+            other => Err(DagMlError::RuntimeValidation(format!(
+                "controller `{}` returned unexpected portable artifact release result {other:?}",
+                self.id
+            ))),
+        }
     }
 
     fn create_tuner_session(
@@ -5349,6 +5582,11 @@ fn persistent_process_runtime_controllers(
             adapter: adapter.clone(),
             config,
             sessions,
+            portable_artifact_bridge: description
+                .capabilities
+                .contains(PROCESS_ADAPTER_CAP_PORTABLE_ARTIFACT_BRIDGE),
+            refit_artifact_workers: Mutex::new(BTreeMap::new()),
+            hydrated_artifact_workers: Mutex::new(BTreeMap::new()),
         }))?;
     }
     Ok(registry)
@@ -7399,5 +7637,98 @@ mod tests {
         assert!(captured.bundle.scores.is_some());
         assert!(!captured.oof_average_results.is_empty());
         captured.bundle.validate_against_plan(&plan).unwrap();
+    }
+
+    #[test]
+    fn persistent_process_controller_roundtrips_portable_raw_artifact_frames() {
+        let directory = std::env::temp_dir().join(format!(
+            "dagml-cli-raw-bridge-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let adapter = directory.join("raw_adapter.py");
+        std::fs::write(
+            &adapter,
+            r#"import json
+import sys
+
+for line in sys.stdin:
+    frame = json.loads(line)
+    if frame['type'] == 'init':
+        reply = {'type': 'ack', 'schema_version': 1, 'status': 'initialized'}
+    elif frame['type'] == 'close':
+        reply = {'type': 'ack', 'schema_version': 1, 'status': 'closed'}
+        print(json.dumps(reply), flush=True)
+        break
+    elif frame['type'] == 'portable_artifact':
+        task = frame['task']
+        if task['operation'] == 'export_artifact_payload':
+            result = {'operation': 'exported_artifact_payload', 'schema_version': 1, 'payload': [1, 2, 3, 4]}
+        elif task['operation'] == 'hydrate_artifact_payload':
+            assert task['payload'] == [1, 2, 3, 4]
+            result = {'operation': 'hydrated_artifact_payload', 'schema_version': 1,
+                      'handle': {'handle': 404, 'kind': 'model',
+                                 'owner_controller': task['request']['controller_id']}}
+        elif task['operation'] == 'release_hydrated_artifact_payload':
+            assert task['handle']['handle'] == 404
+            result = {'operation': 'released_hydrated_artifact_payload', 'schema_version': 1}
+        else:
+            raise RuntimeError(task['operation'])
+        reply = {'type': 'portable_artifact', 'schema_version': 1, 'result': result}
+    else:
+        raise RuntimeError(frame['type'])
+    print(json.dumps(reply), flush=True)
+"#,
+        )
+        .unwrap();
+        let id = ControllerId::new("controller:cli.raw.bridge").unwrap();
+        let session =
+            PersistentProcessSession::spawn(&id, &adapter, 0, 1, true, Duration::from_secs(5))
+                .unwrap();
+        let artifact_id = ArtifactId::new("artifact:cli.raw.bridge").unwrap();
+        let controller = PersistentProcessRuntimeController {
+            id: id.clone(),
+            adapter,
+            config: ProcessAdapterRuntimeConfig {
+                process_workers: 1,
+                timeout: Duration::from_secs(5),
+                retries: 0,
+                control_frames: true,
+            },
+            sessions: vec![Mutex::new(session)],
+            portable_artifact_bridge: true,
+            refit_artifact_workers: Mutex::new(BTreeMap::from([(artifact_id.clone(), 0)])),
+            hydrated_artifact_workers: Mutex::new(BTreeMap::new()),
+        };
+        let payload = controller
+            .export_artifact_payload(&artifact_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(payload, vec![1, 2, 3, 4]);
+        let request: ArtifactMaterializationRequest = serde_json::from_value(serde_json::json!({
+            "run_id": "run:cli.raw.bridge", "bundle_id": "bundle:cli.raw.bridge",
+            "node_id": "model:cli.raw.bridge", "phase": "PREDICT", "variant_id": null,
+            "controller_id": id.as_str(), "artifact": {
+                "id": artifact_id.as_str(), "kind": "model", "controller_id": id.as_str(),
+                "backend": "raw", "size_bytes": 4
+            }, "params_fingerprint": "0".repeat(64)
+        }))
+        .unwrap();
+        let handle = controller
+            .hydrate_artifact_payload(&request, &payload)
+            .unwrap();
+        assert_eq!(handle.handle, 404);
+        controller
+            .release_hydrated_artifact_payload(&handle)
+            .unwrap();
+        assert!(controller
+            .release_hydrated_artifact_payload(&handle)
+            .is_err());
+        drop(controller);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }

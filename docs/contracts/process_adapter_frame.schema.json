@@ -7,9 +7,11 @@
   "oneOf": [
     { "$ref": "#/$defs/init_frame" },
     { "$ref": "#/$defs/task_frame" },
+    { "$ref": "#/$defs/portable_artifact_request_frame" },
     { "$ref": "#/$defs/close_frame" },
     { "$ref": "#/$defs/ack_frame" },
     { "$ref": "#/$defs/result_frame" },
+    { "$ref": "#/$defs/portable_artifact_response_frame" },
     { "$ref": "#/$defs/error_frame" }
   ],
   "$defs": {
@@ -82,6 +84,98 @@
         "task": {
           "$ref": "#/$defs/node_task"
         }
+      }
+    },
+    "portable_artifact_task": {
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["operation", "schema_version", "artifact_id"],
+          "properties": {
+            "operation": {"const": "export_artifact_payload"},
+            "schema_version": {"const": 1},
+            "artifact_id": {"$ref": "#/$defs/identifier"}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["operation", "schema_version", "request", "payload"],
+          "properties": {
+            "operation": {"const": "hydrate_artifact_payload"},
+            "schema_version": {"const": 1},
+            "request": {"type": "object"},
+            "payload": {"$ref": "#/$defs/byte_array"}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["operation", "schema_version", "handle"],
+          "properties": {
+            "operation": {"const": "release_hydrated_artifact_payload"},
+            "schema_version": {"const": 1},
+            "handle": {"$ref": "#/$defs/artifact_handle"}
+          }
+        }
+      ]
+    },
+    "byte_array": {
+      "type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 255}
+    },
+    "artifact_handle": {
+      "type": "object", "additionalProperties": false,
+      "required": ["handle", "kind", "owner_controller"],
+      "properties": {
+        "handle": {"type": "integer", "minimum": 0},
+        "kind": {"enum": ["model", "artifact"]},
+        "owner_controller": {"$ref": "#/$defs/identifier"}
+      }
+    },
+    "portable_artifact_request_frame": {
+      "type": "object", "additionalProperties": false,
+      "required": ["type", "schema_version", "task"],
+      "properties": {
+        "type": {"const": "portable_artifact"},
+        "schema_version": {"$ref": "#/$defs/schema_version"},
+        "task": {"$ref": "#/$defs/portable_artifact_task"}
+      }
+    },
+    "portable_artifact_result": {
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["operation", "schema_version", "payload"],
+          "properties": {
+            "operation": {"const": "exported_artifact_payload"},
+            "schema_version": {"const": 1},
+            "payload": {"$ref": "#/$defs/byte_array"}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["operation", "schema_version", "handle"],
+          "properties": {
+            "operation": {"const": "hydrated_artifact_payload"},
+            "schema_version": {"const": 1},
+            "handle": {"$ref": "#/$defs/artifact_handle"}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["operation", "schema_version"],
+          "properties": {
+            "operation": {"const": "released_hydrated_artifact_payload"},
+            "schema_version": {"const": 1}
+          }
+        }
+      ]
+    },
+    "portable_artifact_response_frame": {
+      "type": "object", "additionalProperties": false,
+      "required": ["type", "schema_version", "result"],
+      "properties": {
+        "type": {"const": "portable_artifact"},
+        "schema_version": {"$ref": "#/$defs/schema_version"},
+        "result": {"$ref": "#/$defs/portable_artifact_result"}
       }
     },
     "close_frame": {
@@ -166,6 +260,7 @@
       "oneOf": [
         { "$ref": "#/$defs/init_frame" },
         { "$ref": "#/$defs/task_frame" },
+        { "$ref": "#/$defs/portable_artifact_request_frame" },
         { "$ref": "#/$defs/close_frame" }
       ]
     },
@@ -173,6 +268,7 @@
       "oneOf": [
         { "$ref": "#/$defs/ack_frame" },
         { "$ref": "#/$defs/result_frame" },
+        { "$ref": "#/$defs/portable_artifact_response_frame" },
         { "$ref": "#/$defs/error_frame" }
       ]
     }
