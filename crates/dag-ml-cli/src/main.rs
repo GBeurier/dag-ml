@@ -654,6 +654,9 @@ enum Command {
         /// Native sample-level OOF average frames for host result projection.
         #[arg(long)]
         oof_average_output: Option<PathBuf>,
+        /// Native per-node FIT_CV and REFIT results, including core-generated nodes.
+        #[arg(long)]
+        node_results_output: Option<PathBuf>,
         #[arg(long, default_value = "bundle:cli.process.dsl.cv.refit")]
         bundle_id: String,
         #[arg(long)]
@@ -1815,6 +1818,7 @@ fn main() -> Result<()> {
             lineage_output,
             prediction_cache_output,
             oof_average_output,
+            node_results_output,
             bundle_id,
             variant_id,
             selection_metric,
@@ -1900,6 +1904,9 @@ fn main() -> Result<()> {
                 &captured.oof_average_results,
                 "OOF average results",
             )?;
+            if let Some(path) = node_results_output.as_ref() {
+                emit_json(Some(path), &captured.node_results, "native node results")?;
+            }
             emit_json(
                 lineage_output.as_ref(),
                 &captured.lineage_records,
@@ -3166,6 +3173,7 @@ struct CapturedRefitBundle {
     lineage_records: Vec<LineageRecord>,
     prediction_cache_payloads: Vec<BundlePredictionCachePayload>,
     oof_average_results: Vec<serde_json::Value>,
+    node_results: Vec<NodeResult>,
     fit_cv_result_count: usize,
     fit_cv_oof_prediction_block_count: usize,
     refit_result_count: usize,
@@ -3244,15 +3252,17 @@ fn build_bundle_from_captured_refit(
         "refit_lineage_count".to_string(),
         serde_json::json!(ctx.lineage.len()),
     );
+    let refit_result_count = results.len();
     Ok(CapturedRefitBundle {
         bundle,
         artifact_store,
         lineage_records: ctx.lineage.records().cloned().collect(),
         prediction_cache_payloads: Vec::new(),
         oof_average_results: Vec::new(),
+        node_results: results,
         fit_cv_result_count: 0,
         fit_cv_oof_prediction_block_count: 0,
-        refit_result_count: results.len(),
+        refit_result_count,
         observed_process_worker_count: observed_process_worker_count(&ctx),
         // The non-CV refit path never prunes (no operator-SELECT) — the bundle matches input.plan.
         effective_plan: None,
@@ -3645,6 +3655,7 @@ fn build_bundle_from_cv_with_refit_count(
     }
     let mut additional_artifacts = Vec::<RefitArtifactRecord>::new();
     let mut additional_refit_result_count = 0usize;
+    let mut additional_node_results = Vec::<NodeResult>::new();
     let mut additional_refit_lineage_count = 0usize;
     let mut additional_refit_prediction_block_count = 0usize;
     let mut additional_lineage_records = Vec::<LineageRecord>::new();
@@ -3689,6 +3700,7 @@ fn build_bundle_from_cv_with_refit_count(
             bail!("additional refit for `{variant_id}` captured no artifacts");
         }
         additional_refit_result_count += extra_results.len();
+        additional_node_results.extend(extra_results);
         additional_refit_lineage_count += extra_ctx.lineage.len() - extra_fit_lineage_count;
         additional_lineage_records.extend(extra_ctx.lineage.records().cloned());
         additional_refit_prediction_block_count += extra_ctx
@@ -3781,6 +3793,13 @@ fn build_bundle_from_cv_with_refit_count(
         serde_json::json!(ctx.lineage.len() + additional_lineage_records.len()),
     );
     bundle.validate_against_plan(plan)?;
+    let fit_cv_result_count = fit_cv_results.len();
+    let refit_result_count = refit_results.len() + additional_refit_result_count;
+    let node_results = fit_cv_results
+        .into_iter()
+        .chain(refit_results)
+        .chain(additional_node_results)
+        .collect();
     Ok(CapturedRefitBundle {
         bundle,
         artifact_store,
@@ -3792,9 +3811,10 @@ fn build_bundle_from_cv_with_refit_count(
             .collect(),
         prediction_cache_payloads,
         oof_average_results,
-        fit_cv_result_count: fit_cv_results.len(),
+        node_results,
+        fit_cv_result_count,
         fit_cv_oof_prediction_block_count,
-        refit_result_count: refit_results.len() + additional_refit_result_count,
+        refit_result_count,
         observed_process_worker_count: observed_process_worker_count(&ctx),
         // Thread the SAME pruned winner plan out (operator-SELECT) — or `None` (union/param/no-variant)
         // — so the replay validates + executes the captured bundle against exactly what capture used.
@@ -7636,6 +7656,10 @@ mod tests {
         );
         assert!(captured.bundle.scores.is_some());
         assert!(!captured.oof_average_results.is_empty());
+        assert_eq!(captured.node_results.len(), captured.fit_cv_result_count);
+        assert!(serde_json::to_value(&captured.node_results)
+            .unwrap()
+            .is_array());
         captured.bundle.validate_against_plan(&plan).unwrap();
     }
 
