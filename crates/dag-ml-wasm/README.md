@@ -113,6 +113,22 @@ injects the authoritative native seed before scheduler validation. The returned
 `resultsJson` still contains native numeric `u64` values; use a lossless JSON
 integer parser, or preserve the raw JSON, when inspecting lineage seeds exactly.
 
+For host hyperparameter search, `host_hpo_search_json(planJson, manifestsJson,
+envelopeJson, requestJson, checkpointJson, controller, optimizer)` runs the same
+sequential native search as Rust and PyO3. The `controller` has the signature
+shown above. The synchronous `optimizer(operation, payloadJson)` must return a
+JSON string: `ask` returns `{"params": {...}}` or `{"params": null}`;
+`report_intermediate` returns `{"prune": true|false}`; `tell`, `pruned`,
+`fail`, and `prepare_terminal` return `{"ok": true}`; `checkpoint` returns
+`{"continue": true|false}`. `prepare_terminal` receives a sealed prospective
+checkpoint before an optimizer transition, so a browser host should persist it
+durably before replying. To resume, pass the last published native checkpoint
+as `checkpointJson` and reconcile any prepared optimizer transition first with
+`recover_host_hpo_checkpoint_json(checkpointJson, preparedJson, interruptedJson)`;
+use `"null"` and `"[]"` when there is no prepared terminal or interrupted trial.
+This export runs one candidate at a time; browser worker parallelism remains
+an adapter gap.
+
 JavaScript-local descriptors use `binding:javascript` and a `host_local` or
 `portable_registered` lifecycle. A Web Worker must populate its own registry;
 functions are not cloned, posted, or embedded in replay artifacts. Resolution
