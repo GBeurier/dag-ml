@@ -457,6 +457,8 @@ jobs:
           DAGML_REQUIRE_HPO_MATLAB=1 python scripts/test_hpo_language_adapters.py
       - name: Check Octave optimizer through native parallel HPO and resume
         run: DAGML_REQUIRE_HPO_MATLAB=1 cargo test -p dag-ml-cli host_hpo_cli_runs_parallel_pruning_and_resumes_native_checkpoint
+      - name: Fit Octave Ridge on native folds and replay its MAT artifact
+        run: DAGML_REQUIRE_HPO_OCTAVE=1 cargo test -p dag-ml-cli --test octave_hpo_ridge
       - name: Test Octave initial REFIT and PREDICT wrappers
         run: octave --no-gui --quiet --eval "addpath('bindings/matlab'); addpath('bindings/matlab/tests'); initial_full_refit"
       - name: Test Octave CV to REFIT to PREDICT wrapper
