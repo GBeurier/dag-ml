@@ -78,8 +78,12 @@ pub fn execute_initial_full_refit_json(
         scheduler: InitialRefitScheduler::Sequential,
     })
     .map_err(js_core_error)?;
+    // JSON.parse rounds u64 values above 2^53. Expose exact package bytes
+    // alongside the decoded object so JavaScript can replay a sealed package.
+    let package_json = serde_json::to_string(&execution.package).map_err(js_serde_error)?;
     serde_json::to_string(&serde_json::json!({
         "initial_full_refit_package": execution.package,
+        "initial_full_refit_package_json": package_json,
         "node_results": execution.results, "scores": execution.scores,
     }))
     .map_err(js_serde_error)

@@ -2,6 +2,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const {pathToFileURL} = require("url");
 const { ridgeNodeResult, assertRidgeHpoScores } = require("./hpo_ridge_operator.cjs");
 
 module.exports = async function smokeHostHpo(dagMl, repo, pkgDir) {
@@ -75,6 +76,11 @@ module.exports = async function smokeHostHpo(dagMl, repo, pkgDir) {
     throw new Error("WASM HPO did not select and journal two native trials");
   }
   assertRidgeHpoScores(first);
+  const {assertSelectedRidgeRefitReplay} = await import(pathToFileURL(
+    path.join(__dirname, "wasm_ridge_refit_oracle.mjs")).href);
+  const refitFixture = JSON.parse(fs.readFileSync(path.join(repo,
+    "crates", "dag-ml-core", "tests", "fixtures", "initial_full_refit", "package.json"), "utf8"));
+  await assertSelectedRidgeRefitReplay(dagMl, first, refitFixture);
   const recovered = JSON.parse(dagMl.recover_host_hpo_checkpoint_json(
     JSON.stringify(first.checkpoint), "null", "[]",
   ));
