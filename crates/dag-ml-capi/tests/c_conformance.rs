@@ -2343,7 +2343,6 @@ fn node_task_result_fixture() -> (NodeTask, NodeResult) {
     let task = NodeTask {
         residual_targets: None,
         inner_fold_set: None,
-        residual_targets: None,
         run_id: RunId::new("run:c.conformance.node-result").unwrap(),
         node_plan: NodePlan {
             inner_cv: None,
