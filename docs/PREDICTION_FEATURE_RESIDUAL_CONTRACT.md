@@ -26,27 +26,35 @@ without materializing a precomputed training matrix outside the graph.
    `NestedStackingCampaignPlan` cannot represent their fold lineage. Scheduling,
    prediction stores, data handles and cache keys must preserve that ancestry.
 
-## Current boundaries
+## Implemented scope and remaining boundaries
 
-- The DSL already emits a `PredictionJoin` with a Data output for
-  `output_as=features`, but `merge_mode=predictions` has no native reduction in
-  `runtime/merge.rs`; it takes the ordinary controller path. The nirs4all
-  residual adapter rejects model-branch prediction merges before compilation.
-- `nested_stacking_campaign_plan` returns a singleton campaign and rejects a
-  second marked meta node. The ignored Rust test
-  `nested_stacking_then_residual_accepts_dependent_meta_models` is the minimal
-  red witness; run it with `cargo test --manifest-path
-  crates/dag-ml-core/Cargo.toml nested_stacking_then_residual_accepts_dependent_meta_models
-  -- --ignored`. It currently fails with `nested stacking V1 supports exactly
-  one declared meta node per execution plan`. That test covers the planner
-  boundary, not the complete feature-join graph.
+The native `PredictionJoin` now reduces sample-keyed OOF prediction blocks to
+a Data feature handle for this graph shape. The scheduler creates a lower-level
+OOF campaign inside each residual-base fold, separate REFIT OOF campaigns,
+and final prediction features from refitted branch models. Bundle capture
+retains only report-grade outer-fold OOF evidence. Public nirs4all PyO3 and
+CLI tests cover fixed and automatic residual gates, CV, REFIT, and `.n4a`
+replay, both with and without an explicit splitter. With no splitter, legacy
+uses held-out test rows for validation while DAG-ML uses training-only CV; the
+two CV scores therefore are not comparable. Native tests reject in-sample,
+missing, and duplicate training feature rows; the join also validates finite
+values before returning a matrix.
 
-## Acceptance
+This join yields **one feature matrix**, consumed by one residual base and one
+residual learner, which yield **one final prediction output**. Multiple branch
+predictions are input columns, not independent public outputs. The separate
+`MULTI_OUTPUT_PREDICTOR_CONTRACT.md` concerns independent named outputs such
+as `by_source -> merge: auto`; this implementation does not add `predict_all`
+or multiple portable output bindings to an exported residual model. The
+current public `.n4a` replay reconstructs branch features with the archived
+Python estimators and their declared column order. Portable cross-language
+archive replay of that composite estimator remains a separate contract.
 
-Add native tests for a two-stage fold ancestry and an OOF prediction-to-data
-join with a deliberately in-sample row. Add a public nirs4all PyO3 and CLI
-oracle for `branch(models) -> merge(predictions) -> ResidualModel`, including
-REFIT/PREDICT/archive replay, and compare selected CV scores with legacy on a
-fixed small dataset. Keep the ignored planner test until it passes unchanged,
-then enable it. Neither Python row reconstruction nor unsafe train-prediction
-features satisfy this contract.
+Nor does this graph enable arbitrary chains of multiple marked nested meta
+models. `nested_stacking_campaign_plan` still accepts one declared meta node;
+the ignored `nested_stacking_then_residual_accepts_dependent_meta_models` test
+records that broader planner boundary. The implemented prediction-feature
+source branches are ordinary model nodes. Current legacy `ResidualModel` also
+fails on categorical targets scored with regression estimators and on two
+continuous target columns (residual rows are flattened); those are documented
+legacy limitations, not functional parity oracles.
