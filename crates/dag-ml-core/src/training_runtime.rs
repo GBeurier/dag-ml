@@ -2981,7 +2981,17 @@ pub fn build_oof_prediction_requirements(
         // report-grade outer rows.  Keeping child rows here would duplicate
         // sample ids across outer scopes and violate the cache's exact OOF
         // identity contract.
-        let report_fold_ids = if is_nested_stacking_meta_node(plan, &edge.target.node_id)? {
+        let residual_fusion_target = plan.graph_plan.graph.nodes.iter().any(|node| {
+            node.id == edge.target.node_id
+                && node
+                    .metadata
+                    .get("residual_fusion_for")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some()
+        });
+        let report_fold_ids = if is_nested_stacking_meta_node(plan, &edge.target.node_id)?
+            || residual_fusion_target
+        {
             Some(
                 plan.fold_set
                     .as_ref()

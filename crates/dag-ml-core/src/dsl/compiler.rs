@@ -1223,7 +1223,11 @@ impl PipelineCompiler {
                         node_id: fusion_id.clone(),
                         port_name: target_port.to_string(),
                     },
-                    contract: EdgeContract::new(PortKind::Prediction, None),
+                    contract: EdgeContract {
+                        requires_oof: true,
+                        requires_fold_alignment: true,
+                        ..EdgeContract::new(PortKind::Prediction, None)
+                    },
                 });
             }
             return Ok(PredictionSource {
