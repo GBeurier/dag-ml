@@ -1234,13 +1234,41 @@ pub(crate) fn derive_output_data_views(
                 task.node_plan.node_id, port.name, handle.kind
             )));
         }
-        if let Some(view) = primary_output_data_view(task) {
+        let joined_primary = if node.kind == NodeKind::FeatureJoin
+            && node
+                .metadata
+                .get("merge_mode")
+                .and_then(|value| value.as_str())
+                == Some("concat")
+        {
+            joined_feature_partition_view(task, false)?
+        } else {
+            None
+        };
+        if let Some(view) = joined_primary
+            .as_ref()
+            .or_else(|| primary_output_data_view(task))
+        {
             views.insert(
                 port.name.clone(),
                 output_data_view_for_port(task, result, &port.name, view)?,
             );
         }
-        if let Some(validation_view) = validation_output_data_view(task) {
+        let joined_validation = if node.kind == NodeKind::FeatureJoin
+            && node
+                .metadata
+                .get("merge_mode")
+                .and_then(|value| value.as_str())
+                == Some("concat")
+        {
+            joined_feature_partition_view(task, true)?
+        } else {
+            None
+        };
+        if let Some(validation_view) = joined_validation
+            .as_ref()
+            .or_else(|| validation_output_data_view(task))
+        {
             views.insert(
                 validation_data_view_key(&port.name),
                 output_data_view_for_port(task, result, &port.name, validation_view)?,
@@ -1248,6 +1276,63 @@ pub(crate) fn derive_output_data_views(
         }
     }
     Ok(views)
+}
+
+/// A row-partition feature join restores the full fold view after its branches.
+/// The host applies each selector to its feature buffer; the core requires every
+/// predecessor to describe the same identity universe and removes the branch
+/// selector before a downstream consumer is scheduled.
+pub(crate) fn joined_feature_partition_view(
+    task: &NodeTask,
+    validation: bool,
+) -> Result<Option<DataProviderViewSpec>> {
+    let branch_inputs = task
+        .data_views
+        .iter()
+        .filter(|(key, view)| {
+            key.starts_with("data:")
+                && key.ends_with(":validation") == validation
+                && !key.ends_with(":test")
+                && view.branch_view.is_some()
+        })
+        .map(|(_, view)| view)
+        .collect::<Vec<_>>();
+    if branch_inputs.is_empty() {
+        return Ok(None);
+    }
+    if branch_inputs.len() < 2 {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "feature join `{}` needs at least two branch views for partition concat",
+            task.node_plan.node_id
+        )));
+    }
+    let first = branch_inputs[0];
+    let mut selectors = BTreeSet::new();
+    for view in &branch_inputs {
+        if view.partition != first.partition
+            || view.fold_id != first.fold_id
+            || view.sample_ids != first.sample_ids
+            || view.include_augmented != first.include_augmented
+            || view.include_excluded != first.include_excluded
+        {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "feature join `{}` branch views disagree on the sample identity universe",
+                task.node_plan.node_id
+            )));
+        }
+        let branch = view.branch_view.as_ref().expect("filtered branch view");
+        let selector = stable_json_fingerprint(&branch.selector)?;
+        if !selectors.insert(selector) {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "feature join `{}` repeats a branch selector",
+                task.node_plan.node_id
+            )));
+        }
+    }
+    let mut output = first.clone();
+    output.branch_view = None;
+    output.validate()?;
+    Ok(Some(output))
 }
 
 pub(crate) fn output_data_view_for_port(

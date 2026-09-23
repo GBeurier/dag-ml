@@ -6735,6 +6735,56 @@ fn fit_influence_validation_task(fit_influence: FitInfluenceTask) -> NodeTask {
 }
 
 #[test]
+fn feature_partition_join_restores_fold_identity_and_rejects_mismatched_inputs() {
+    let mut task = fit_influence_validation_task(FitInfluenceTask::default());
+    let ids = vec![
+        SampleId::new("sample:a").unwrap(),
+        SampleId::new("sample:b").unwrap(),
+    ];
+    for (index, value) in ["A", "B"].into_iter().enumerate() {
+        let branch_view = crate::data::BranchViewPlan {
+            view_id: format!("view:{value}"),
+            branch_id: format!("branch:{value}"),
+            mode: crate::data::BranchViewMode::ByMetadata,
+            selector: crate::data::DataViewSelector {
+                metadata: BTreeMap::from([("group".to_string(), serde_json::json!(value))]),
+                ..Default::default()
+            },
+            allow_overlap: false,
+            metadata: BTreeMap::new(),
+        };
+        task.data_views.insert(
+            format!("data:branch_{index}_x"),
+            DataProviderViewSpec {
+                sample_ids: Some(ids.clone()),
+                partition: DataRequestPartition::FoldTrain,
+                fold_id: task.fold_id.clone(),
+                source_ids: None,
+                columns: None,
+                include_augmented: false,
+                include_excluded: false,
+                branch_view: Some(branch_view),
+                extra: BTreeMap::new(),
+            },
+        );
+    }
+    let joined = super::joined_feature_partition_view(&task, false)
+        .unwrap()
+        .unwrap();
+    assert_eq!(joined.sample_ids, Some(ids));
+    assert!(joined.branch_view.is_none());
+
+    task.data_views
+        .get_mut("data:branch_1_x")
+        .unwrap()
+        .sample_ids = Some(vec![SampleId::new("sample:b").unwrap()]);
+    assert!(super::joined_feature_partition_view(&task, false)
+        .unwrap_err()
+        .to_string()
+        .contains("identity universe"));
+}
+
+#[test]
 fn fit_cv_test_predictions_require_attested_test_view_and_current_fold() {
     let mut task = fit_influence_validation_task(FitInfluenceTask::default());
     let test_id = SampleId::new("test:0").unwrap();
