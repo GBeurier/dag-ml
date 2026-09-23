@@ -1626,6 +1626,7 @@ impl SequentialScheduler {
                             input_handles: BTreeMap::new(),
                             data_views: BTreeMap::new(),
                             prediction_inputs: BTreeMap::new(),
+                            prediction_feature_matrix: None,
                             artifact_inputs: BTreeMap::new(),
                             required_loss_attestations: NodeTask::required_loss_attestations_for(
                                 &task_node_plan,
@@ -1694,6 +1695,13 @@ impl SequentialScheduler {
                         &ctx.score_collector
                     },
                 )?;
+                let prediction_feature_matrix = prediction_feature_matrix_for_task(
+                    plan,
+                    node_plan,
+                    &prediction_inputs,
+                    &scope,
+                    &resources,
+                )?;
                 let mut artifact_inputs = BTreeMap::new();
                 if let Some(node_artifact_handles) = resources
                     .replay_artifact_handles
@@ -1756,6 +1764,7 @@ impl SequentialScheduler {
                     input_handles,
                     data_views: collected_inputs.data_views,
                     prediction_inputs,
+                    prediction_feature_matrix,
                     artifact_inputs,
                     required_loss_attestations: NodeTask::required_loss_attestations_for(
                         &task_node_plan,
@@ -2255,6 +2264,13 @@ impl ParallelScheduler {
                         &ctx.score_collector
                     },
                 )?;
+                let prediction_feature_matrix = prediction_feature_matrix_for_task(
+                    plan,
+                    node_plan,
+                    &prediction_inputs,
+                    &scope,
+                    &resources,
+                )?;
                 let mut artifact_inputs = BTreeMap::new();
                 if let Some(node_artifact_handles) = resources
                     .replay_artifact_handles
@@ -2308,6 +2324,7 @@ impl ParallelScheduler {
                         input_handles,
                         data_views: collected_inputs.data_views,
                         prediction_inputs,
+                        prediction_feature_matrix,
                         artifact_inputs,
                         required_loss_attestations: NodeTask::required_loss_attestations_for(
                             &task_node_plan,
@@ -2467,6 +2484,7 @@ impl ParallelScheduler {
                         input_handles: BTreeMap::new(),
                         data_views: BTreeMap::new(),
                         prediction_inputs: BTreeMap::new(),
+                        prediction_feature_matrix: None,
                         artifact_inputs: BTreeMap::new(),
                         required_loss_attestations: NodeTask::required_loss_attestations_for(
                             &task_node_plan,

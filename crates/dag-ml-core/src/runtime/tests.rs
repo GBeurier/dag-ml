@@ -6727,6 +6727,7 @@ fn fit_influence_validation_task(fit_influence: FitInfluenceTask) -> NodeTask {
         input_handles: BTreeMap::new(),
         data_views: BTreeMap::new(),
         prediction_inputs: BTreeMap::new(),
+        prediction_feature_matrix: None,
         artifact_inputs: BTreeMap::new(),
         required_loss_attestations: Vec::new(),
         fit_influence,
@@ -6996,6 +6997,7 @@ fn node_result_validation_rejects_external_conformance_mismatches() {
         input_handles: BTreeMap::new(),
         data_views: BTreeMap::new(),
         prediction_inputs: BTreeMap::new(),
+        prediction_feature_matrix: None,
         artifact_inputs: BTreeMap::new(),
         required_loss_attestations: Vec::new(),
         fit_influence: FitInfluenceTask::default(),
@@ -7464,6 +7466,7 @@ fn node_result_validation_checks_shape_fingerprints_and_feature_deltas() {
         input_handles: BTreeMap::new(),
         data_views: BTreeMap::new(),
         prediction_inputs: BTreeMap::new(),
+        prediction_feature_matrix: None,
         artifact_inputs: BTreeMap::new(),
         required_loss_attestations: Vec::new(),
         fit_influence: FitInfluenceTask::default(),
@@ -7556,6 +7559,7 @@ fn node_result_validation_rejects_bad_artifact_handles() {
         input_handles: BTreeMap::new(),
         data_views: BTreeMap::new(),
         prediction_inputs: BTreeMap::new(),
+        prediction_feature_matrix: None,
         artifact_inputs: BTreeMap::new(),
         required_loss_attestations: Vec::new(),
         fit_influence: FitInfluenceTask::default(),
@@ -7800,6 +7804,7 @@ fn node_result_validation_rejects_predictions_outside_validation_view() {
             },
         )]),
         prediction_inputs: BTreeMap::new(),
+        prediction_feature_matrix: None,
         artifact_inputs: BTreeMap::new(),
         required_loss_attestations: Vec::new(),
         fit_influence: FitInfluenceTask::default(),
@@ -7920,6 +7925,7 @@ fn node_result_validation_rejects_aggregated_units_outside_validation_view() {
             },
         )]),
         prediction_inputs: BTreeMap::new(),
+        prediction_feature_matrix: None,
         artifact_inputs: BTreeMap::new(),
         required_loss_attestations: Vec::new(),
         fit_influence: FitInfluenceTask::default(),
@@ -8060,6 +8066,7 @@ fn controller_emitted_aggregated_block_must_match_policy_level() {
         input_handles: BTreeMap::new(),
         data_views: BTreeMap::new(),
         prediction_inputs: BTreeMap::new(),
+        prediction_feature_matrix: None,
         artifact_inputs: BTreeMap::new(),
         required_loss_attestations: Vec::new(),
         fit_influence: FitInfluenceTask::default(),
@@ -9308,6 +9315,67 @@ fn nested_stacking_then_residual_accepts_dependent_meta_models() {
 
     nested_stacking_campaign_plan(&plan)
         .expect("dependent OOF stages need separate nested fold scopes");
+}
+
+#[test]
+fn prediction_feature_specs_join_in_graph_order_by_sample_identity() {
+    let sample = |name: &str| SampleId::new(name).unwrap();
+    let source = |name: &str, ids: Vec<SampleId>, values: Vec<Vec<f64>>| PredictionInputSpec {
+        producer_node: NodeId::new(name).unwrap(),
+        source_port: "pred".to_string(),
+        target_port: "oof".to_string(),
+        partition: PredictionPartition::Validation,
+        prediction_level: PredictionLevel::Sample,
+        fold_id: None,
+        fold_ids: Vec::new(),
+        unit_ids: Vec::new(),
+        sample_ids: ids,
+        values,
+        prediction_width: 1,
+        target_names: vec!["y".to_string()],
+    };
+    let a = source(
+        "model:a",
+        vec![sample("s2"), sample("s1")],
+        vec![vec![2.0], vec![1.0]],
+    );
+    let b = source(
+        "model:b",
+        vec![sample("s1"), sample("s2")],
+        vec![vec![10.0], vec![20.0]],
+    );
+    let join_id = NodeId::new("merge:features").unwrap();
+    let matrix =
+        join_prediction_feature_specs(&join_id, &[&b, &a], &[sample("s1"), sample("s2")]).unwrap();
+    assert_eq!(matrix.columns, vec!["model:b.pred__y", "model:a.pred__y"]);
+    assert_eq!(matrix.values, vec![vec![10.0, 1.0], vec![20.0, 2.0]]);
+
+    let mut leaked = a.clone();
+    leaked.partition = PredictionPartition::Train;
+    assert!(
+        join_prediction_feature_specs(&join_id, &[&leaked], &matrix.sample_ids)
+            .unwrap_err()
+            .to_string()
+            .contains("validation OOF")
+    );
+    let mut incomplete = a;
+    incomplete.sample_ids.pop();
+    incomplete.values.pop();
+    assert!(
+        join_prediction_feature_specs(&join_id, &[&incomplete], &matrix.sample_ids)
+            .unwrap_err()
+            .to_string()
+            .contains("exactly cover")
+    );
+    let mut duplicate = b;
+    duplicate.sample_ids.push(sample("s2"));
+    duplicate.values.push(vec![20.0]);
+    assert!(
+        join_prediction_feature_specs(&join_id, &[&duplicate], &matrix.sample_ids)
+            .unwrap_err()
+            .to_string()
+            .contains("exactly cover")
+    );
 }
 
 #[test]

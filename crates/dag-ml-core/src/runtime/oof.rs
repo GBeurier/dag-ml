@@ -1,6 +1,189 @@
 // Auto-split from the former monolithic `runtime.rs` (pure refactor).
 use super::*;
 
+/// Materialize one prediction-to-Data join in graph-edge order. The scheduler
+/// supplies the required training identities from the current fold scope; a
+/// host cannot silently use the outer validation rows as fitting features.
+pub(crate) fn join_prediction_feature_specs(
+    join_node: &NodeId,
+    sources: &[&PredictionInputSpec],
+    required_samples: &[SampleId],
+) -> Result<crate::oof::OofMatrix> {
+    if sources.is_empty() || required_samples.is_empty() {
+        return Err(DagMlError::OofValidation(format!(
+            "prediction feature join `{join_node}` needs sources and training samples"
+        )));
+    }
+    let required = required_samples.iter().collect::<BTreeSet<_>>();
+    if required.len() != required_samples.len() {
+        return Err(DagMlError::OofValidation(format!(
+            "prediction feature join `{join_node}` repeats a training sample"
+        )));
+    }
+    let mut columns = Vec::new();
+    let mut rows = vec![Vec::new(); required_samples.len()];
+    let mut seen_ports = BTreeSet::new();
+    for source in sources {
+        if source.partition != PredictionPartition::Validation
+            || source.prediction_level != PredictionLevel::Sample
+        {
+            return Err(DagMlError::OofValidation(format!(
+                "prediction feature join `{join_node}` requires sample-level validation OOF rows from `{}.{}`",
+                source.producer_node, source.source_port
+            )));
+        }
+        if !seen_ports.insert((&source.producer_node, &source.source_port)) {
+            return Err(DagMlError::OofValidation(format!(
+                "prediction feature join `{join_node}` repeats source `{}.{}`",
+                source.producer_node, source.source_port
+            )));
+        }
+        if source.prediction_width == 0
+            || source.sample_ids.len() != source.values.len()
+            || (!source.target_names.is_empty()
+                && source.target_names.len() != source.prediction_width)
+        {
+            return Err(DagMlError::OofValidation(format!(
+                "prediction feature join `{join_node}` received malformed rows from `{}.{}`",
+                source.producer_node, source.source_port
+            )));
+        }
+        let by_id = source
+            .sample_ids
+            .iter()
+            .zip(&source.values)
+            .collect::<BTreeMap<_, _>>();
+        if source.sample_ids.len() != required.len()
+            || by_id.len() != required.len()
+            || by_id.keys().copied().collect::<BTreeSet<_>>() != required
+        {
+            return Err(DagMlError::OofValidation(format!(
+                "prediction feature join `{join_node}` source `{}.{}` does not exactly cover the training samples",
+                source.producer_node, source.source_port
+            )));
+        }
+        for (index, sample) in required_samples.iter().enumerate() {
+            let values = by_id.get(sample).expect("exact coverage checked");
+            if values.len() != source.prediction_width
+                || values.iter().any(|value| !value.is_finite())
+            {
+                return Err(DagMlError::OofValidation(format!(
+                    "prediction feature join `{join_node}` source `{}.{}` has invalid numeric rows",
+                    source.producer_node, source.source_port
+                )));
+            }
+            rows[index].extend(values.iter().copied());
+        }
+        for column in 0..source.prediction_width {
+            let target = source
+                .target_names
+                .get(column)
+                .cloned()
+                .unwrap_or_else(|| format!("p{column}"));
+            columns.push(format!(
+                "{}.{}__{target}",
+                source.producer_node, source.source_port
+            ));
+        }
+    }
+    if columns.iter().collect::<BTreeSet<_>>().len() != columns.len() {
+        return Err(DagMlError::OofValidation(format!(
+            "prediction feature join `{join_node}` repeats a feature column"
+        )));
+    }
+    Ok(crate::oof::OofMatrix {
+        sample_ids: required_samples.to_vec(),
+        columns,
+        values: rows,
+    })
+}
+
+pub(crate) fn prediction_feature_matrix_for_task(
+    plan: &ExecutionPlan,
+    node_plan: &NodePlan,
+    prediction_inputs: &BTreeMap<String, PredictionInputSpec>,
+    scope: &PhaseScope,
+    resources: &PhaseScopeResources<'_>,
+) -> Result<Option<crate::oof::OofMatrix>> {
+    let node = plan
+        .graph_plan
+        .graph
+        .nodes
+        .iter()
+        .find(|node| node.id == node_plan.node_id)
+        .expect("validated node plan");
+    if node.kind != NodeKind::PredictionJoin
+        || node
+            .metadata
+            .get("prediction_feature_execution")
+            .and_then(serde_json::Value::as_str)
+            != Some("native_oof_v1")
+    {
+        return Ok(None);
+    }
+    if !node
+        .ports
+        .outputs
+        .iter()
+        .any(|port| port.kind == PortKind::Data)
+    {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "prediction feature join `{}` must have a Data output",
+            node.id
+        )));
+    }
+    if !scope.phase.is_training() {
+        return Ok(None);
+    }
+    let fold_set = resources
+        .fold_set_override
+        .or(plan.fold_set.as_ref())
+        .ok_or_else(|| {
+            DagMlError::OofValidation(format!(
+                "prediction feature join `{}` requires a scoped fold set",
+                node.id
+            ))
+        })?;
+    let required_samples = if scope.phase == Phase::FitCv {
+        let fold_id = scope.fold_id.as_ref().ok_or_else(|| {
+            DagMlError::OofValidation(format!(
+                "prediction feature join `{}` requires a current FIT_CV fold",
+                node.id
+            ))
+        })?;
+        &fold_set
+            .folds
+            .iter()
+            .find(|fold| &fold.fold_id == fold_id)
+            .ok_or_else(|| {
+                DagMlError::OofValidation(format!(
+                    "prediction feature join `{}` has unknown scoped fold `{fold_id}`",
+                    node.id
+                ))
+            })?
+            .train_sample_ids
+    } else {
+        &fold_set.sample_ids
+    };
+    let sources = plan
+        .graph_plan
+        .graph
+        .edges
+        .iter()
+        .filter(|edge| edge.target.node_id == node.id && edge.contract.requires_oof)
+        .map(|edge| {
+            let key = format!("{}.{}", edge.source.node_id, edge.source.port_name);
+            prediction_inputs.get(&key).ok_or_else(|| {
+                DagMlError::OofValidation(format!(
+                    "prediction feature join `{}` is missing OOF input `{key}`",
+                    node.id
+                ))
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    join_prediction_feature_specs(&node.id, &sources, required_samples).map(Some)
+}
+
 /// Reduce per-branch model probabilities before they reach a stacking controller.
 /// The selector contract is compiled by the DSL and interpreted here, on both
 /// the nested OOF and off-fold paths, so every host language sees the same
