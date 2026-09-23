@@ -421,6 +421,37 @@ pub struct HostHpoWorkerWindow {
     pub window_id: String,
     pub checkpoint: HostHpoCheckpoint,
     pub tasks: Vec<HostHpoWorkerTask>,
+    pub exhausted: bool,
+}
+
+fn host_hpo_worker_candidate_plan(
+    plan: &ExecutionPlan,
+    request: &HostHpoSearchRequest,
+    checkpoint: &HostHpoCheckpoint,
+    trial_index: u32,
+    params: &BTreeMap<String, serde_json::Value>,
+) -> Result<ExecutionPlan> {
+    let param_overrides = request.parameter_overrides(params)?;
+    let mut variant = plan.variants[0].clone();
+    variant.variant_id = VariantId::new(format!("host_hpo:trial:{trial_index:010}"))?;
+    variant.choices.insert(
+        "host_hpo".into(),
+        GenerationChoice {
+            label: format!("trial:{trial_index}"),
+            value: serde_json::json!({"trial_index": trial_index}),
+            param_overrides,
+            active_subsequence: None,
+        },
+    );
+    variant.fingerprint = stable_json_fingerprint(&(
+        &plan.variants[0].fingerprint,
+        &variant.choices,
+        &checkpoint.binding.objective_fingerprint,
+    ))?;
+    let mut candidate_plan = plan.clone();
+    candidate_plan.variants = vec![variant];
+    candidate_plan.validate()?;
+    Ok(candidate_plan)
 }
 
 /// Prepare one phase-bounded browser worker window. This is intentionally a
@@ -466,37 +497,26 @@ pub fn prepare_host_hpo_worker_window(
         ));
     }
     request.validate_parameter_bindings(plan)?;
+    if request.progressive_pruning {
+        return Err(DagMlError::RuntimeValidation(
+            "browser worker windows do not yet support cross-worker fold pruning feedback".into(),
+        ));
+    }
     let checkpoint = prepare_host_hpo_checkpoint(plan, request, options)?;
     let first = checkpoint.trials.len() as u32;
     let phase_index = request.phase_index(first);
     let mut tasks = Vec::new();
+    let mut exhausted = false;
     for trial_index in first..request.trial_budget {
         if tasks.len() == max_workers || request.phase_index(trial_index) != phase_index {
             break;
         }
         let Some(params) = proposals.ask_in_phase(trial_index, phase_index)? else {
+            exhausted = true;
             break;
         };
-        let param_overrides = request.parameter_overrides(&params)?;
-        let mut variant = plan.variants[0].clone();
-        variant.variant_id = VariantId::new(format!("host_hpo:trial:{trial_index:010}"))?;
-        variant.choices.insert(
-            "host_hpo".into(),
-            GenerationChoice {
-                label: format!("trial:{trial_index}"),
-                value: serde_json::json!({"trial_index": trial_index}),
-                param_overrides,
-                active_subsequence: None,
-            },
-        );
-        variant.fingerprint = stable_json_fingerprint(&(
-            &plan.variants[0].fingerprint,
-            &variant.choices,
-            &checkpoint.binding.objective_fingerprint,
-        ))?;
-        let mut candidate_plan = plan.clone();
-        candidate_plan.variants = vec![variant];
-        candidate_plan.validate()?;
+        let candidate_plan =
+            host_hpo_worker_candidate_plan(plan, request, &checkpoint, trial_index, &params)?;
         tasks.push(HostHpoWorkerTask {
             trial_index,
             phase_index,
@@ -504,12 +524,305 @@ pub fn prepare_host_hpo_worker_window(
             candidate_plan,
         });
     }
-    let window_id =
-        stable_json_fingerprint(&(&checkpoint.fingerprint, &options.data_fingerprint, &tasks))?;
+    let window_id = stable_json_fingerprint(&(
+        &checkpoint.fingerprint,
+        &options.data_fingerprint,
+        &tasks,
+        exhausted,
+    ))?;
     Ok(HostHpoWorkerWindow {
         window_id,
         checkpoint,
         tasks,
+        exhausted,
+    })
+}
+
+/// Execute exactly one candidate within a worker-owned controller/provider
+/// namespace. Core, not the optimizer or main-thread JavaScript, constructs
+/// the fold reports and objective score.
+pub fn evaluate_host_hpo_worker_task(
+    task: &HostHpoWorkerTask,
+    request: &HostHpoSearchRequest,
+    controllers: &RuntimeControllerRegistry,
+    provider: &dyn RuntimeDataProvider,
+) -> Result<HostHpoTrialEvidence> {
+    task.candidate_plan.validate()?;
+    let [variant] = task.candidate_plan.variants.as_slice() else {
+        return Err(DagMlError::RuntimeValidation(
+            "browser HPO worker task requires exactly one candidate variant".into(),
+        ));
+    };
+    if variant.variant_id.as_str() != format!("host_hpo:trial:{:010}", task.trial_index)
+        || task.phase_index != request.phase_index(task.trial_index)
+    {
+        return Err(DagMlError::RuntimeValidation(
+            "browser HPO worker task trial/phase identity mismatch".into(),
+        ));
+    }
+    let mut context = RunContext::new(
+        RunId::new(format!("run:host_hpo:{}", task.trial_index))?,
+        variant.seed.or(task.candidate_plan.campaign.root_seed),
+    );
+    context.variant_id = Some(variant.variant_id.clone());
+    SequentialScheduler.execute_campaign_phase_with_data_provider(
+        &task.candidate_plan,
+        controllers,
+        provider,
+        &mut context,
+        Phase::FitCv,
+    )?;
+    context.collect_cross_fold_validation_scores(plan_oof_partition_mode(&task.candidate_plan))?;
+    let scores = context
+        .build_score_set(task.candidate_plan.id.clone(), None)
+        .ok_or_else(|| {
+            DagMlError::RuntimeValidation("browser HPO worker lost native scores".into())
+        })?;
+    let (score, objective_fold_scores, _) =
+        host_hpo_score(&task.candidate_plan, request, &variant.variant_id, &scores)?;
+    Ok(HostHpoTrialEvidence {
+        trial_index: task.trial_index,
+        params: task.params.clone(),
+        score,
+        variant_id: variant.variant_id.clone(),
+        scores,
+        objective_fold_scores,
+    })
+}
+
+/// A worker may finish in any order; the coordinator processes these keyed
+/// results only after every launched candidate has terminalized.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum HostHpoWorkerResult {
+    Complete { evidence: HostHpoTrialEvidence },
+    Failed { trial_index: u32, error: String },
+}
+
+impl HostHpoWorkerResult {
+    fn trial_index(&self) -> u32 {
+        match self {
+            Self::Complete { evidence } => evidence.trial_index,
+            Self::Failed { trial_index, .. } => *trial_index,
+        }
+    }
+}
+
+/// Validate all worker evidence, then publish terminal transitions in trial
+/// order. A worker's scalar score is recomputed from its native ScoreSet; an
+/// unmatched or altered candidate plan, trial ID, sample fold, or checkpoint
+/// is rejected before any optimizer `tell`.
+#[allow(clippy::too_many_arguments)]
+pub fn complete_host_hpo_worker_window(
+    plan: &ExecutionPlan,
+    request: &HostHpoSearchRequest,
+    options: &HostHpoResumeOptions,
+    window: HostHpoWorkerWindow,
+    results: Vec<HostHpoWorkerResult>,
+    proposals: &mut dyn HostHpoProposalSource,
+    progress: &mut dyn HostHpoProgress,
+) -> Result<HostHpoSearchOutcome> {
+    let expected_checkpoint = prepare_host_hpo_checkpoint(plan, request, options)?;
+    if stable_json_fingerprint(&expected_checkpoint)?
+        != stable_json_fingerprint(&window.checkpoint)?
+        || window.window_id
+            != stable_json_fingerprint(&(
+                &window.checkpoint.fingerprint,
+                &options.data_fingerprint,
+                &window.tasks,
+                window.exhausted,
+            ))?
+        || results.len() != window.tasks.len()
+    {
+        return Err(DagMlError::RuntimeValidation(
+            "browser HPO window checkpoint, identity or result count mismatch".into(),
+        ));
+    }
+    let first = window.checkpoint.trials.len() as u32;
+    let phase = request.phase_index(first);
+    for (offset, task) in window.tasks.iter().enumerate() {
+        let expected = host_hpo_worker_candidate_plan(
+            plan,
+            request,
+            &window.checkpoint,
+            task.trial_index,
+            &task.params,
+        )?;
+        if task.trial_index != first + offset as u32
+            || task.phase_index != phase
+            || task.phase_index != request.phase_index(task.trial_index)
+            || stable_json_fingerprint(&task.candidate_plan)? != stable_json_fingerprint(&expected)?
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "browser HPO window candidate plan or phase mismatch".into(),
+            ));
+        }
+    }
+    let mut keyed = BTreeMap::new();
+    for result in results {
+        if keyed.insert(result.trial_index(), result).is_some() {
+            return Err(DagMlError::RuntimeValidation(
+                "browser HPO window has duplicate worker trial result".into(),
+            ));
+        }
+    }
+    if keyed.len() != window.tasks.len()
+        || window
+            .tasks
+            .iter()
+            .any(|task| !keyed.contains_key(&task.trial_index))
+    {
+        return Err(DagMlError::RuntimeValidation(
+            "browser HPO window is missing a worker trial result".into(),
+        ));
+    }
+    // Validate every worker response before mutating optimizer state.
+    for task in &window.tasks {
+        match keyed
+            .get(&task.trial_index)
+            .expect("checked result coverage")
+        {
+            HostHpoWorkerResult::Complete { evidence } => {
+                if evidence.params != task.params
+                    || evidence.variant_id != task.candidate_plan.variants[0].variant_id
+                {
+                    return Err(DagMlError::RuntimeValidation(
+                        "browser HPO worker evidence proposal/variant mismatch".into(),
+                    ));
+                }
+                host_hpo_candidate(plan, request, evidence)?;
+            }
+            HostHpoWorkerResult::Failed { error, .. } if error.trim().is_empty() => {
+                return Err(DagMlError::RuntimeValidation(
+                    "browser HPO worker failure requires an error".into(),
+                ));
+            }
+            HostHpoWorkerResult::Failed { .. } => {}
+        }
+    }
+    let mut checkpoint = window.checkpoint;
+    let mut cancel_requested = false;
+    let mut failed = false;
+    for task in &window.tasks {
+        let result = keyed
+            .remove(&task.trial_index)
+            .expect("checked result coverage");
+        let terminal = match &result {
+            HostHpoWorkerResult::Complete { evidence } => HostHpoTerminalTrial::Complete {
+                evidence: evidence.clone(),
+            },
+            HostHpoWorkerResult::Failed { error, .. } => {
+                failed = true;
+                HostHpoTerminalTrial::Failed {
+                    trial_index: task.trial_index,
+                    params: task.params.clone(),
+                    variant_id: task.candidate_plan.variants[0].variant_id.clone(),
+                    error: error.clone(),
+                }
+            }
+        };
+        let status = if failed {
+            HostHpoSearchStatus::Failed
+        } else if task.trial_index + 1 == request.trial_budget {
+            HostHpoSearchStatus::Completed
+        } else {
+            HostHpoSearchStatus::Running
+        };
+        let mut prepared = checkpoint.clone();
+        prepared.trials.push(terminal);
+        prepared.seal()?;
+        progress.prepare_terminal(&prepared, status)?;
+        match result {
+            HostHpoWorkerResult::Complete { evidence } => {
+                proposals.tell(task.trial_index, evidence.score)?;
+            }
+            HostHpoWorkerResult::Failed { error, .. } => {
+                proposals.fail(task.trial_index, &error)?;
+            }
+        }
+        checkpoint = prepared;
+        if !progress.checkpoint(&checkpoint, status)? && status == HostHpoSearchStatus::Running {
+            cancel_requested = true;
+        }
+    }
+    let status = if failed {
+        HostHpoSearchStatus::Failed
+    } else if cancel_requested {
+        HostHpoSearchStatus::Cancelled
+    } else if window.exhausted {
+        HostHpoSearchStatus::Exhausted
+    } else if checkpoint.trials.len() == request.trial_budget as usize {
+        HostHpoSearchStatus::Completed
+    } else {
+        HostHpoSearchStatus::Running
+    };
+    if matches!(
+        status,
+        HostHpoSearchStatus::Cancelled | HostHpoSearchStatus::Exhausted
+    ) {
+        progress.checkpoint(&checkpoint, status)?;
+    }
+    let trials = checkpoint
+        .trials
+        .iter()
+        .filter_map(|trial| match trial {
+            HostHpoTerminalTrial::Complete { evidence } => Some(evidence.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let pruned_trials = checkpoint
+        .trials
+        .iter()
+        .filter_map(|trial| match trial {
+            HostHpoTerminalTrial::Pruned { evidence } => Some(evidence.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let result = if trials.is_empty() {
+        None
+    } else {
+        let candidates = trials
+            .iter()
+            .map(|trial| host_hpo_candidate(plan, request, trial))
+            .collect::<Result<Vec<_>>>()?;
+        let policy = SelectionPolicy {
+            id: "select:host_hpo".into(),
+            metric: SelectionMetric {
+                name: request.metric.name().into(),
+                objective: request.direction,
+            },
+            required_metric_level: None,
+            require_finite: true,
+            evaluation_scope: None,
+            refit_slot_plan: None,
+            stacking_fit_contract: None,
+            reduction_id: None,
+        };
+        let selected = select_candidate(&policy, &candidates)?;
+        let winner = trials
+            .iter()
+            .find(|trial| trial.variant_id.as_str() == selected.selected_candidate_id)
+            .expect("selected observed candidate");
+        Some(HostHpoSearchResult {
+            profile: "host_optimizer_search_v1".into(),
+            portable: false,
+            request_fingerprint: stable_json_fingerprint(request)?,
+            graph_fingerprint: plan.graph_fingerprint.clone(),
+            controller_fingerprint: plan.controller_fingerprint.clone(),
+            campaign_fingerprint: stable_json_fingerprint(&plan.campaign)?,
+            fold_set_fingerprint: stable_json_fingerprint(
+                plan.fold_set.as_ref().expect("validated host HPO folds"),
+            )?,
+            selected_trial_index: winner.trial_index,
+            selected_params: winner.params.clone(),
+            trials,
+            pruned_trials,
+        })
+    };
+    Ok(HostHpoSearchOutcome {
+        result,
+        status,
+        checkpoint: Some(checkpoint),
     })
 }
 
