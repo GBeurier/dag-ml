@@ -501,7 +501,7 @@
     },
     {
       "path": "scripts/check_so_freshness.py",
-      "sha256": "a7c11069f0dc79ff92da118747835357ec9a9a07b1c4f4da65448c04c76be301",
+      "sha256": "3f23425aaea2dcfbbc965d9ed8763426021a7ad29b74c3516e02f92ddc340237",
       "kind": "python_extension_freshness_gate"
     },
     {
@@ -599,5 +599,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "ad5b0202ce6a44ae0fe9f5f29bdd143f401f511dc46e6e6b4c0e7ff004aaf0b5"
+  "pack_checksum": "5e981702f5094f5a0a3af9f5c6fdafbab1e61107ef73e85b1a44b9e3c4df1b38"
 }
