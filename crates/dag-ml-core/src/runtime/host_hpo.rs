@@ -161,6 +161,11 @@ pub trait HostHpoCandidateProviderFactory: Send + Sync {
     fn create(&self, trial_index: u32) -> Result<Box<dyn RuntimeDataProvider + Send>>;
 }
 
+/// Build a controller registry with candidate-local host callback state.
+pub trait HostHpoCandidateControllerFactory: Send + Sync {
+    fn create(&self, trial_index: u32) -> Result<RuntimeControllerRegistry>;
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HostHpoTrialEvidence {
     pub trial_index: u32,
@@ -326,6 +331,7 @@ impl SequentialScheduler {
             controllers,
             provider,
             None,
+            None,
             request,
             proposals,
             None,
@@ -351,6 +357,7 @@ impl SequentialScheduler {
             plan,
             controllers,
             provider,
+            None,
             None,
             request,
             proposals,
@@ -378,6 +385,32 @@ impl SequentialScheduler {
             controllers,
             provider,
             Some(provider_factory),
+            None,
+            request,
+            proposals,
+            Some((options, progress)),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn execute_resumable_host_hpo_search_with_candidate_factories(
+        &self,
+        plan: &ExecutionPlan,
+        controllers: &RuntimeControllerRegistry,
+        provider: &dyn RuntimeDataProvider,
+        provider_factory: &dyn HostHpoCandidateProviderFactory,
+        controller_factory: &dyn HostHpoCandidateControllerFactory,
+        request: &HostHpoSearchRequest,
+        proposals: &mut dyn HostHpoProposalSource,
+        options: &HostHpoResumeOptions,
+        progress: &mut dyn HostHpoProgress,
+    ) -> Result<HostHpoSearchOutcome> {
+        self.execute_host_hpo_search_inner(
+            plan,
+            controllers,
+            provider,
+            Some(provider_factory),
+            Some(controller_factory),
             request,
             proposals,
             Some((options, progress)),
@@ -390,6 +423,7 @@ impl SequentialScheduler {
         controllers: &RuntimeControllerRegistry,
         provider: &dyn RuntimeDataProvider,
         provider_factory: Option<&dyn HostHpoCandidateProviderFactory>,
+        controller_factory: Option<&dyn HostHpoCandidateControllerFactory>,
         request: &HostHpoSearchRequest,
         proposals: &mut dyn HostHpoProposalSource,
         mut durable: Option<(&HostHpoResumeOptions, &mut dyn HostHpoProgress)>,
@@ -525,6 +559,10 @@ impl SequentialScheduler {
                 .as_deref()
                 .map(|provider| provider as &dyn RuntimeDataProvider)
                 .unwrap_or(provider);
+            let candidate_controllers = controller_factory
+                .map(|factory| factory.create(trial_index))
+                .transpose()?;
+            let controllers = candidate_controllers.as_ref().unwrap_or(controllers);
             let evaluated: Result<HostHpoEvaluation> = (|| {
                 if request.progressive_pruning {
                     let mut intermediates = Vec::new();
@@ -729,6 +767,31 @@ impl SequentialScheduler {
             controllers,
             provider,
             Some(provider_factory),
+            None,
+            request,
+            proposals,
+            None,
+        )?
+        .result
+        .ok_or_else(|| DagMlError::RuntimeValidation("host HPO has no successful candidate".into()))
+    }
+
+    pub fn execute_host_hpo_search_with_candidate_factories(
+        &self,
+        plan: &ExecutionPlan,
+        controllers: &RuntimeControllerRegistry,
+        provider: &dyn RuntimeDataProvider,
+        provider_factory: &dyn HostHpoCandidateProviderFactory,
+        controller_factory: &dyn HostHpoCandidateControllerFactory,
+        request: &HostHpoSearchRequest,
+        proposals: &mut dyn HostHpoProposalSource,
+    ) -> Result<HostHpoSearchResult> {
+        self.execute_host_hpo_search_inner(
+            plan,
+            controllers,
+            provider,
+            Some(provider_factory),
+            Some(controller_factory),
             request,
             proposals,
             None,
