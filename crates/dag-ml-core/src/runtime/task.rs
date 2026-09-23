@@ -81,6 +81,10 @@ pub struct NodeTask {
     pub data_views: BTreeMap<String, DataProviderViewSpec>,
     #[serde(default)]
     pub prediction_inputs: BTreeMap<String, PredictionInputSpec>,
+    /// Native, sample-keyed prediction features for a PredictionJoin Data
+    /// output. The host only materializes this attested matrix as a handle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prediction_feature_matrix: Option<crate::oof::OofMatrix>,
     /// Scheduler-derived `y - base OOF` target rows for a declared residual
     /// learner. Rows are keyed by sample identity and scoped to inner folds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
