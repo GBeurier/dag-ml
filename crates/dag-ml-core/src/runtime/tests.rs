@@ -13624,6 +13624,53 @@ fn fit_view_spec_drops_excluded_samples_while_validation_keeps_them() {
 }
 
 #[test]
+fn refit_fit_view_attests_augmented_resubstitution_opt_in() {
+    let node_id = NodeId::new("node:model").unwrap();
+    let mut binding = data_binding(&node_id);
+    let fold_set = three_fold_stress_set();
+    let scope = PhaseScope {
+        phase: Phase::Refit,
+        variant_id: None,
+        variant: None,
+        fold_id: None,
+        seed_root: None,
+    };
+    let excluded = BTreeSet::new();
+    let default_view = data_view_for_partition(
+        &binding,
+        Some(&fold_set),
+        &scope,
+        DataRequestPartition::FullTrain,
+        None,
+        DataViewRole::Fit,
+        &excluded,
+    )
+    .unwrap();
+    assert_eq!(
+        default_view.extra["include_augmented_refit_predictions"],
+        false
+    );
+
+    binding.view_policy.include_augmented_refit_predictions = true;
+    let opted_view = data_view_for_partition(
+        &binding,
+        Some(&fold_set),
+        &scope,
+        DataRequestPartition::FullTrain,
+        None,
+        DataViewRole::Fit,
+        &excluded,
+    )
+    .unwrap();
+    assert!(opted_view.include_augmented);
+    assert_eq!(
+        opted_view.extra["include_augmented_refit_predictions"],
+        true
+    );
+    assert_eq!(opted_view.sample_ids, default_view.sample_ids);
+}
+
+#[test]
 fn data_view_extra_carries_source_index_metadata() {
     let node_id = NodeId::new("node:model").unwrap();
     let mut binding = data_binding(&node_id);

@@ -1221,6 +1221,10 @@ pub struct DataViewPolicy {
     pub predict_partition: DataRequestPartition,
     #[serde(default = "default_true")]
     pub include_augmented_train: bool,
+    /// Opt in to REFIT resubstitution predictions over augmented children as
+    /// well as their base origins. The fit view must include those children.
+    #[serde(default)]
+    pub include_augmented_refit_predictions: bool,
     #[serde(default)]
     pub include_augmented_validation: bool,
     #[serde(default)]
@@ -1237,6 +1241,7 @@ impl Default for DataViewPolicy {
             fit_partition: DataRequestPartition::FoldTrain,
             predict_partition: DataRequestPartition::FoldValidation,
             include_augmented_train: true,
+            include_augmented_refit_predictions: false,
             include_augmented_validation: false,
             include_excluded: false,
             require_sample_ids: true,
@@ -1254,6 +1259,12 @@ impl DataViewPolicy {
     pub const ALLOW_EXCLUDED_ROWS: &'static str = "allow_excluded_rows";
 
     pub fn validate(&self) -> Result<()> {
+        if self.include_augmented_refit_predictions && !self.include_augmented_train {
+            return Err(DagMlError::CampaignValidation(
+                "include_augmented_refit_predictions requires include_augmented_train=true"
+                    .to_string(),
+            ));
+        }
         for unsafe_flag in &self.unsafe_flags {
             if unsafe_flag.trim().is_empty() {
                 return Err(DagMlError::CampaignValidation(
@@ -2567,7 +2578,23 @@ mod tests {
         }))
         .unwrap();
         assert!(policy.include_augmented_train);
+        assert!(!policy.include_augmented_refit_predictions);
         policy.validate().unwrap();
+    }
+
+    #[test]
+    fn augmented_refit_prediction_policy_requires_augmented_fit_scope() {
+        let mut policy = DataViewPolicy {
+            include_augmented_refit_predictions: true,
+            ..DataViewPolicy::default()
+        };
+        policy.validate().unwrap();
+        policy.include_augmented_train = false;
+        assert!(policy
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("include_augmented_refit_predictions requires include_augmented_train=true"));
     }
 
     #[test]

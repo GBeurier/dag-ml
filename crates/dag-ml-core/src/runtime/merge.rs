@@ -1235,6 +1235,12 @@ pub(crate) fn data_view_for_partition(
         "feature_set_id".to_string(),
         serde_json::Value::String(binding.feature_set_id().to_string()),
     );
+    if role == DataViewRole::Fit && scope.phase == Phase::Refit {
+        extra.insert(
+            "include_augmented_refit_predictions".to_string(),
+            serde_json::Value::Bool(binding.view_policy.include_augmented_refit_predictions),
+        );
+    }
     if let Some(source_index) = binding
         .metadata
         .get(crate::data::SOURCE_INDEX_METADATA_KEY)
