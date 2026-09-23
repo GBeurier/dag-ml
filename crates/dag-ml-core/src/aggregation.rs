@@ -1561,6 +1561,87 @@ pub fn reduce_proba_mean_across_branches(
     Ok(PredictionBlock { values, ..fused })
 }
 
+/// Average selected classifier models *within one branch* into meta-features.
+///
+/// This is the legacy per-branch `aggregate: "proba_mean"` operation, distinct
+/// from cross-branch late fusion. A classifier trained without every class may
+/// emit fewer columns; like the legacy merge controller, its missing trailing
+/// class columns contribute zeros. Rows are joined by sample identity, and
+/// every selected model must cover the same samples and fold. The result stays
+/// a prediction block so a downstream stacking node can consume it as OOF.
+pub fn reduce_proba_mean_within_branch(
+    model_blocks: &[PredictionBlock],
+    branch_node: &NodeId,
+) -> Result<PredictionBlock> {
+    let first = model_blocks.first().ok_or_else(|| {
+        DagMlError::OofValidation(
+            "per-branch proba-mean needs at least one selected model".to_string(),
+        )
+    })?;
+    let mut width = 0;
+    for block in model_blocks {
+        width = width.max(block.validate_content()?);
+        if block.partition != first.partition || block.fold_id != first.fold_id {
+            return Err(DagMlError::OofValidation(
+                "per-branch proba-mean models differ in partition or fold".to_string(),
+            ));
+        }
+    }
+    let sample_ids = &first.sample_ids;
+    let expected = sample_ids.iter().collect::<BTreeSet<_>>();
+    let mut sums = vec![vec![0.0; width]; sample_ids.len()];
+    let row_positions = sample_ids
+        .iter()
+        .enumerate()
+        .map(|(index, sample)| (sample, index))
+        .collect::<BTreeMap<_, _>>();
+    for block in model_blocks {
+        if block.sample_ids.iter().collect::<BTreeSet<_>>() != expected {
+            return Err(DagMlError::OofValidation(format!(
+                "per-branch proba-mean model `{}` does not cover the same samples",
+                block.producer_node
+            )));
+        }
+        for (sample, row) in block.sample_ids.iter().zip(&block.values) {
+            let output = &mut sums[row_positions[sample]];
+            for (sum, value) in output.iter_mut().zip(row) {
+                *sum += value;
+            }
+        }
+    }
+    let denominator = model_blocks.len() as f64;
+    for row in &mut sums {
+        for value in row {
+            *value /= denominator;
+        }
+    }
+    let target_names = model_blocks
+        .iter()
+        .find(|block| block.target_names.len() == width)
+        .map_or_else(Vec::new, |block| block.target_names.clone());
+    for block in model_blocks {
+        if !block.target_names.is_empty()
+            && !target_names.is_empty()
+            && block.target_names != target_names[..block.target_names.len()]
+        {
+            return Err(DagMlError::OofValidation(format!(
+                "per-branch proba-mean model `{}` has incompatible class names",
+                block.producer_node
+            )));
+        }
+    }
+    Ok(PredictionBlock {
+        prediction_id: None,
+        producer_node: branch_node.clone(),
+        producer_port: None,
+        partition: first.partition.clone(),
+        fold_id: first.fold_id.clone(),
+        sample_ids: sample_ids.clone(),
+        values: sums,
+        target_names,
+    })
+}
+
 /// Tolerance on the per-row probability-sum check in [`reduce_proba_mean_across_branches`].
 const PROBA_SUM_TOLERANCE: f64 = 1e-6;
 
@@ -2653,6 +2734,53 @@ mod tests {
             &merge
         )
         .is_err());
+    }
+
+    #[test]
+    fn per_branch_proba_mean_pads_missing_class_and_joins_by_sample_id() {
+        let branch = NodeId::new("branch:classifiers").unwrap();
+        let model = |producer: &str, names: &[&str], rows: &[(&str, &[f64])]| PredictionBlock {
+            prediction_id: None,
+            producer_node: NodeId::new(producer).unwrap(),
+            producer_port: None,
+            partition: PredictionPartition::Validation,
+            fold_id: Some(FoldId::new("fold:0").unwrap()),
+            sample_ids: rows.iter().map(|(sample, _)| sid(sample)).collect(),
+            values: rows.iter().map(|(_, value)| value.to_vec()).collect(),
+            target_names: names.iter().map(|name| (*name).to_string()).collect(),
+        };
+        let complete = model(
+            "model:full",
+            &["a", "b", "c"],
+            &[("s1", &[0.2, 0.3, 0.5]), ("s2", &[0.4, 0.1, 0.5])],
+        );
+        let missing = model(
+            "model:missing",
+            &["a", "b"],
+            &[("s2", &[0.7, 0.3]), ("s1", &[0.6, 0.4])],
+        );
+        let merged =
+            reduce_proba_mean_within_branch(&[complete.clone(), missing], &branch).unwrap();
+        assert_eq!(merged.sample_ids, complete.sample_ids);
+        assert_eq!(merged.target_names, vec!["a", "b", "c"]);
+        assert_eq!(
+            merged.values,
+            vec![vec![0.4, 0.35, 0.25], vec![0.55, 0.2, 0.25]]
+        );
+
+        let partial = model("model:partial", &["a", "b"], &[("s1", &[0.6, 0.4])]);
+        assert!(reduce_proba_mean_within_branch(&[complete.clone(), partial], &branch).is_err());
+        let wrong_fold = PredictionBlock {
+            fold_id: Some(FoldId::new("fold:1").unwrap()),
+            ..complete.clone()
+        };
+        assert!(reduce_proba_mean_within_branch(&[complete.clone(), wrong_fold], &branch).is_err());
+        let wrong_names = model(
+            "model:wrong-class-order",
+            &["b", "a"],
+            &[("s1", &[0.6, 0.4]), ("s2", &[0.7, 0.3])],
+        );
+        assert!(reduce_proba_mean_within_branch(&[complete, wrong_names], &branch).is_err());
     }
 
     #[test]
