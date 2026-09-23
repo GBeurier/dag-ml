@@ -9228,6 +9228,63 @@ fn nested_stacking_test_plan(outer: FoldSet, partitioned_refit_oof: bool) -> Exe
     build_execution_plan("plan:nested.stacking", graph, campaign, &manifests()).unwrap()
 }
 
+// Contract for a second OOF stage. The first meta-model must be fitted from
+// inner OOF predictions before it can itself produce OOF predictions for a
+// downstream residual learner. A single global inner fold set cannot attest
+// both. This planner-level witness omits the separate Data edge that a full
+// prediction-feature merge would need.
+#[test]
+#[ignore = "two dependent OOF stages need a recursive native campaign planner"]
+fn nested_stacking_then_residual_accepts_dependent_meta_models() {
+    use crate::fold::KFoldSpec;
+
+    let samples = (1..=6)
+        .map(|index| SampleId::new(format!("s{index}")).unwrap())
+        .collect::<Vec<_>>();
+    let outer = KFoldSpec {
+        n_splits: 3,
+        shuffle: false,
+        seed: Some(7),
+    }
+    .split("outer", &samples)
+    .unwrap();
+    let mut plan = nested_stacking_test_plan(outer, false);
+    let upstream_id = NodeId::new("model:meta").unwrap();
+    let downstream_id = NodeId::new("model:meta.downstream").unwrap();
+    let mut downstream = node(
+        downstream_id.as_str(),
+        NodeKind::Model,
+        vec![port("upstream", PortKind::Prediction)],
+        vec![port("pred", PortKind::Prediction)],
+    );
+    downstream.metadata.insert(
+        RESIDUAL_TARGET_EXECUTION_METADATA_KEY.to_string(),
+        json!(RESIDUAL_TARGET_EXECUTION_V1),
+    );
+    plan.graph_plan.graph.nodes.push(downstream);
+    plan.graph_plan.graph.edges.push(EdgeSpec {
+        source: PortRef {
+            node_id: upstream_id,
+            port_name: "pred".to_string(),
+        },
+        target: PortRef {
+            node_id: downstream_id.clone(),
+            port_name: "upstream".to_string(),
+        },
+        contract: EdgeContract {
+            requires_oof: true,
+            requires_fold_alignment: true,
+            ..EdgeContract::new(PortKind::Prediction, None)
+        },
+    });
+    let mut downstream_plan = plan.node_plans[&NodeId::new("model:meta").unwrap()].clone();
+    downstream_plan.node_id = downstream_id.clone();
+    plan.node_plans.insert(downstream_id, downstream_plan);
+
+    nested_stacking_campaign_plan(&plan)
+        .expect("dependent OOF stages need separate nested fold scopes");
+}
+
 #[test]
 fn nested_stacking_accepts_one_oof_base_producer() {
     use crate::fold::KFoldSpec;
