@@ -960,6 +960,10 @@ enum Command {
         controllers: PathBuf,
         #[arg(long)]
         bundle: PathBuf,
+        /// Invocation-local handles supplied by the host after loading sidecars.
+        /// Without this, replay uses mock handles for conformance demos only.
+        #[arg(long)]
+        artifact_handles: Option<PathBuf>,
         #[arg(long)]
         replay_request: PathBuf,
         #[arg(long)]
@@ -991,6 +995,9 @@ enum Command {
         /// Write the native ScoreSet (e.g. the final-test score from a PREDICT replay) to this path.
         #[arg(long)]
         score_output: Option<PathBuf>,
+        /// Write replay node results, prediction blocks, and scores as JSON.
+        #[arg(long)]
+        output: Option<PathBuf>,
     },
 }
 
@@ -2669,6 +2676,7 @@ fn main() -> Result<()> {
             campaign,
             controllers,
             bundle,
+            artifact_handles,
             replay_request,
             prediction_cache_payload,
             prediction_cache_store,
@@ -2684,6 +2692,7 @@ fn main() -> Result<()> {
             scheduler,
             scheduler_workers,
             score_output,
+            output,
         } => {
             let plan = build_plan_from_paths(&graph, &campaign, &controllers, plan_id)?;
             let bundle =
@@ -2707,7 +2716,11 @@ fn main() -> Result<()> {
             for envelope in envelope_map.values() {
                 data_provider.register_envelope(envelope.clone())?;
             }
-            let artifact_store = mock_artifact_store(&plan, &bundle)?;
+            let artifact_store = if let Some(path) = artifact_handles.as_ref() {
+                host_artifact_store(&plan, &bundle, path)?
+            } else {
+                mock_artifact_store(&plan, &bundle)?
+            };
             let process_config = process_adapter_runtime_config(
                 process_workers,
                 process_timeout_ms,
@@ -2758,13 +2771,26 @@ fn main() -> Result<()> {
             );
             // Persist the native scores collected during replay (e.g. the final-test score from a
             // PREDICT replay) when the host requested it.
+            let scores = ctx.build_score_set(plan.id.clone(), None);
             if let Some(score_path) = score_output {
-                if let Some(scores) = ctx.build_score_set(plan.id.clone(), None) {
+                if let Some(scores) = scores.as_ref() {
                     std::fs::write(&score_path, serde_json::to_string_pretty(&scores)?)
                         .with_context(|| {
                             format!("failed to write score output to {}", score_path.display())
                         })?;
                 }
+            }
+            if let Some(path) = output.as_ref() {
+                emit_json(
+                    Some(path),
+                    &serde_json::json!({
+                        "bundle_id": bundle.bundle_id,
+                        "node_results": results,
+                        "prediction_blocks": ctx.prediction_store.blocks(),
+                        "scores": scores,
+                    }),
+                    "process bundle replay outcome",
+                )?;
             }
         }
     }
@@ -5593,6 +5619,34 @@ fn spawn_adapter_with_retry<T>(
             }
         }
     }
+}
+
+fn host_artifact_store(
+    plan: &dag_ml_core::ExecutionPlan,
+    bundle: &ExecutionBundle,
+    path: &Path,
+) -> Result<InMemoryArtifactStore> {
+    bundle.validate_against_plan(plan)?;
+    let handles: BTreeMap<ArtifactId, HandleRef> =
+        read_json(&path.to_path_buf(), "host sidecar artifact handles")?;
+    let expected = bundle
+        .refit_artifacts
+        .iter()
+        .map(|artifact| artifact.artifact.id.clone())
+        .collect::<BTreeSet<_>>();
+    let supplied = handles.keys().cloned().collect::<BTreeSet<_>>();
+    if supplied != expected {
+        bail!(
+            "host sidecar artifact handles must exactly cover bundle refit artifacts (expected {:?}, supplied {:?})",
+            expected,
+            supplied
+        );
+    }
+    let mut store = InMemoryArtifactStore::new();
+    for artifact in &bundle.refit_artifacts {
+        store.register(artifact, handles[&artifact.artifact.id].clone())?;
+    }
+    Ok(store)
 }
 
 fn mock_artifact_store(
