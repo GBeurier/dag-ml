@@ -159,14 +159,14 @@ pub(crate) fn nested_stacking_campaign_plan(
         .filter(|edge| edge.target.node_id == meta_node_id && edge.contract.requires_oof)
         .map(|edge| edge.source.node_id.clone())
         .collect::<BTreeSet<_>>();
-    if (kind == NestedMetaKind::Stacking && oof_sources.len() < 2)
+    if (kind == NestedMetaKind::Stacking && oof_sources.is_empty())
         || (kind == NestedMetaKind::Residual && oof_sources.len() != 1)
     {
         return Err(DagMlError::RuntimeValidation(format!(
             "nested {:?} meta node `{meta_node_id}` requires {} OOF base producer(s)",
             kind,
             if kind == NestedMetaKind::Stacking {
-                "at least two"
+                "at least one"
             } else {
                 "exactly one"
             },
