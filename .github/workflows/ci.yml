@@ -444,8 +444,10 @@ jobs:
           DAGML_NATIVE_LIBRARY: ${{ github.workspace }}/target/release/libdag_ml_capi.so
       - name: Test Octave HPO CLI wrapper and JSONL adapter
         run: |
-          octave --no-gui --quiet --eval "addpath('bindings/matlab/tests'); host_hpo_search"
+          octave --no-gui --quiet --eval "addpath('bindings/matlab'); addpath('bindings/matlab/tests'); host_hpo_search"
           DAGML_REQUIRE_HPO_MATLAB=1 python scripts/test_hpo_language_adapters.py
+      - name: Test Octave initial REFIT and PREDICT wrappers
+        run: octave --no-gui --quiet --eval "addpath('bindings/matlab'); addpath('bindings/matlab/tests'); initial_full_refit"
 
   wasm-bindings:
     name: WASM bindings Node ${{ matrix.node-version }}

@@ -90,3 +90,21 @@ protocol as the [CLI examples](../../examples/adapters/). The wrapper accepts
 candidate and keeps optimizer callbacks on the coordinator thread. The R adapter
 processes and their optimizer state remain host-owned. Run the wrapper smoke with
 `R CMD check`; a working R installation is required.
+
+A no-splitter pipeline can capture an initial full REFIT package and replay
+PREDICT on a separate V2 cohort through the same native CLI:
+
+```r
+refit <- dagml_initial_full_refit(
+  "pipeline.json", "controllers.json", "train-envelope.json",
+  "training-ids.json", "./r-operator-adapter", "full-refit.package.json"
+)
+prediction <- dagml_initial_full_refit_predict(
+  "full-refit.package.json", "predict-envelope.json",
+  "./r-operator-adapter", "artifact-handles.json", "output-ids.json"
+)
+```
+
+The package contains native lineage and artifact identities, while R retains
+model sidecars. The replay adapter must resolve the exact host artifact handles
+listed in the package; DAG-ML rejects missing or extra handles.
