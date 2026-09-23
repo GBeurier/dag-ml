@@ -1450,14 +1450,26 @@ pub(crate) fn validate_refit_oof_edge<'a>(
                 .and_then(serde_json::Value::as_str)
                 == Some("native_oof_v1")
     });
-    let nested = if is_nested_stacking_meta_node(plan, &edge.target.node_id)?
-        || target_is_prediction_feature_join
-    {
-        nested_stacking_campaign_plan(plan)?.filter(|campaign| {
-            campaign.meta_node_id == edge.target.node_id
-                || (target_is_prediction_feature_join
-                    && campaign.base_node_ids.contains(&edge.target.node_id))
-        })
+    let nested = if is_nested_stacking_meta_node(plan, &edge.target.node_id)? {
+        nested_stacking_campaign_plan_for_node(plan, edge.target.node_id.clone())?
+    } else if target_is_prediction_feature_join {
+        let mut owner = None;
+        for level in plan.node_parallel_levels_for_phase(Phase::FitCv)? {
+            for node_id in level {
+                if is_nested_stacking_meta_node(plan, &node_id)? {
+                    let campaign = nested_stacking_campaign_plan_for_node(plan, node_id)?
+                        .expect("validated nested meta node");
+                    if campaign.base_node_ids.contains(&edge.target.node_id) {
+                        owner = Some(campaign);
+                        break;
+                    }
+                }
+            }
+            if owner.is_some() {
+                break;
+            }
+        }
+        owner
     } else {
         None
     };
