@@ -3029,8 +3029,21 @@ pub fn build_oof_prediction_requirements(
                     .and_then(serde_json::Value::as_str)
                     .is_some()
         });
+        // A native prediction-feature join consumes nested OOF rows while
+        // fitting each outer-fold residual base model.  Only its outer-fold
+        // source predictions are portable report/refit evidence.
+        let prediction_feature_target = plan.graph_plan.graph.nodes.iter().any(|node| {
+            node.id == edge.target.node_id
+                && node.kind == NodeKind::PredictionJoin
+                && node
+                    .metadata
+                    .get("prediction_feature_execution")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("native_oof_v1")
+        });
         let report_fold_ids = if is_nested_stacking_meta_node(plan, &edge.target.node_id)?
             || residual_fusion_target
+            || prediction_feature_target
         {
             Some(
                 plan.fold_set

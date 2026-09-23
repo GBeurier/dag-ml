@@ -124,6 +124,47 @@ pub(crate) fn prediction_feature_join_plan(
     }))
 }
 
+/// Re-entering a parent scope must reuse, not rerun, its already-attested
+/// branch OOF blocks: duplicate producer/fold lineage is ambiguous evidence.
+pub(crate) fn prediction_feature_sources_ready(
+    plan: &ExecutionPlan,
+    join: &PredictionFeatureJoinPlan,
+    ctx: &RunContext,
+    fold_id: &FoldId,
+) -> Result<bool> {
+    let mut present = 0usize;
+    let mut total = 0usize;
+    for edge in plan
+        .graph_plan
+        .graph
+        .edges
+        .iter()
+        .filter(|edge| edge.target.node_id == join.join_node_id && edge.contract.requires_oof)
+    {
+        total += 1;
+        let raw = ctx.prediction_store.find(
+            Some(&edge.source.node_id),
+            Some(&PredictionPartition::Validation),
+            Some(fold_id),
+        );
+        let blocks = filter_prediction_blocks_for_edge_source_port(plan, edge, raw)?;
+        if blocks.len() > 1 {
+            return Err(DagMlError::OofValidation(format!(
+                "prediction feature join `{}` found duplicate source `{}.{}` evidence for fold `{fold_id}`",
+                join.join_node_id, edge.source.node_id, edge.source.port_name
+            )));
+        }
+        present += blocks.len();
+    }
+    if present != 0 && present != total {
+        return Err(DagMlError::OofValidation(format!(
+            "prediction feature join `{}` has partial source evidence for fold `{fold_id}`",
+            join.join_node_id
+        )));
+    }
+    Ok(present == total)
+}
+
 /// Per-outer-fold evidence made available only while the scheduler invokes the
 /// declared stacking meta node.  The generic OOF collector first obtains the
 /// outer-validation blocks, then this scope atomically replaces the ordinary

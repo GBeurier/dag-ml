@@ -1042,6 +1042,22 @@ impl SequentialScheduler {
         } else {
             None
         };
+        let feature_join = prediction_feature_join_plan(plan, &nested)?;
+        let feature_inner_spec = if feature_join.is_some() {
+            let meta_plan = plan
+                .node_plans
+                .get(&nested.meta_node_id)
+                .expect("validated nested meta node");
+            Some(
+                crate::fold::resolve_inner_cv(
+                    meta_plan.inner_cv.as_ref(),
+                    plan.campaign.inner_cv.as_ref(),
+                )
+                .expect("validated nested inner CV"),
+            )
+        } else {
+            None
+        };
         let mut results = Vec::new();
         for variant in &plan.variants {
             if ctx
@@ -1052,25 +1068,45 @@ impl SequentialScheduler {
                 continue;
             }
             for fold in &folds.folds {
-                results.extend(self.execute_phase_scope(
-                    plan,
-                    controllers,
-                    ctx,
-                    PhaseScope {
-                        phase: Phase::FitCv,
-                        variant_id: Some(variant.variant_id.clone()),
-                        variant: Some(VariantExecutionSpec::from_plan(variant)),
-                        fold_id: Some(fold.fold_id.clone()),
-                        seed_root: variant.seed.or(ctx.root_seed),
-                    },
-                    PhaseScopeResources {
-                        data_provider: Some(data_provider),
-                        fold_set_override: Some(folds),
-                        node_filter: Some(&nested.base_node_ids),
-                        suppress_inner_cv: true,
-                        ..Default::default()
-                    },
-                )?);
+                if let Some(join) = feature_join.as_ref() {
+                    results.extend(
+                        self.execute_prediction_feature_base_scope(
+                            plan,
+                            controllers,
+                            data_provider,
+                            ctx,
+                            join,
+                            feature_inner_spec
+                                .as_ref()
+                                .expect("feature join needs inner CV"),
+                            folds,
+                            fold,
+                            Some(variant.variant_id.clone()),
+                            Some(VariantExecutionSpec::from_plan(variant)),
+                            variant.seed.or(ctx.root_seed),
+                        )?,
+                    );
+                } else {
+                    results.extend(self.execute_phase_scope(
+                        plan,
+                        controllers,
+                        ctx,
+                        PhaseScope {
+                            phase: Phase::FitCv,
+                            variant_id: Some(variant.variant_id.clone()),
+                            variant: Some(VariantExecutionSpec::from_plan(variant)),
+                            fold_id: Some(fold.fold_id.clone()),
+                            seed_root: variant.seed.or(ctx.root_seed),
+                        },
+                        PhaseScopeResources {
+                            data_provider: Some(data_provider),
+                            fold_set_override: Some(folds),
+                            node_filter: Some(&nested.base_node_ids),
+                            suppress_inner_cv: true,
+                            ..Default::default()
+                        },
+                    )?);
+                }
             }
             if let Some(threshold) = auto_threshold {
                 let meta_plan = plan
@@ -1089,25 +1125,45 @@ impl SequentialScheduler {
                 for fold in &folds.folds {
                     let subinner = inner_spec.build_nested_fold_set(fold, &folds.sample_groups)?;
                     for base_fold in &subinner.inner_fold_set.folds {
-                        results.extend(self.execute_phase_scope(
-                            plan,
-                            controllers,
-                            ctx,
-                            PhaseScope {
-                                phase: Phase::FitCv,
-                                variant_id: variant_id.clone(),
-                                variant: variant_spec.clone(),
-                                fold_id: Some(base_fold.fold_id.clone()),
-                                seed_root,
-                            },
-                            PhaseScopeResources {
-                                data_provider: Some(data_provider),
-                                fold_set_override: Some(&subinner.inner_fold_set),
-                                node_filter: Some(&nested.base_node_ids),
-                                suppress_inner_cv: true,
-                                ..Default::default()
-                            },
-                        )?);
+                        if let Some(join) = feature_join.as_ref() {
+                            results.extend(
+                                self.execute_prediction_feature_base_scope(
+                                    plan,
+                                    controllers,
+                                    data_provider,
+                                    ctx,
+                                    join,
+                                    feature_inner_spec
+                                        .as_ref()
+                                        .expect("feature join needs inner CV"),
+                                    &subinner.inner_fold_set,
+                                    base_fold,
+                                    variant_id.clone(),
+                                    variant_spec.clone(),
+                                    seed_root,
+                                )?,
+                            );
+                        } else {
+                            results.extend(self.execute_phase_scope(
+                                plan,
+                                controllers,
+                                ctx,
+                                PhaseScope {
+                                    phase: Phase::FitCv,
+                                    variant_id: variant_id.clone(),
+                                    variant: variant_spec.clone(),
+                                    fold_id: Some(base_fold.fold_id.clone()),
+                                    seed_root,
+                                },
+                                PhaseScopeResources {
+                                    data_provider: Some(data_provider),
+                                    fold_set_override: Some(&subinner.inner_fold_set),
+                                    node_filter: Some(&nested.base_node_ids),
+                                    suppress_inner_cv: true,
+                                    ..Default::default()
+                                },
+                            )?);
+                        }
                     }
                     results.extend(self.execute_phase_scope(
                         plan,
@@ -1182,6 +1238,9 @@ impl SequentialScheduler {
         let nested = inner_spec.build_nested_fold_set(parent_fold, &parent_set.sample_groups)?;
         let mut results = Vec::new();
         for fold in &nested.inner_fold_set.folds {
+            if prediction_feature_sources_ready(plan, join, ctx, &fold.fold_id)? {
+                continue;
+            }
             results.extend(self.execute_phase_scope(
                 plan,
                 controllers,
@@ -1209,19 +1268,21 @@ impl SequentialScheduler {
             fold_id: Some(parent_fold.fold_id.clone()),
             seed_root,
         };
-        results.extend(self.execute_phase_scope(
-            plan,
-            controllers,
-            ctx,
-            scope.clone(),
-            PhaseScopeResources {
-                data_provider: Some(data_provider),
-                fold_set_override: Some(parent_set),
-                node_filter: Some(&join.source_node_ids),
-                suppress_inner_cv: true,
-                ..Default::default()
-            },
-        )?);
+        if !prediction_feature_sources_ready(plan, join, ctx, &parent_fold.fold_id)? {
+            results.extend(self.execute_phase_scope(
+                plan,
+                controllers,
+                ctx,
+                scope.clone(),
+                PhaseScopeResources {
+                    data_provider: Some(data_provider),
+                    fold_set_override: Some(parent_set),
+                    node_filter: Some(&join.source_node_ids),
+                    suppress_inner_cv: true,
+                    ..Default::default()
+                },
+            )?);
+        }
         let join_only = BTreeSet::from([join.join_node_id.clone()]);
         results.extend(self.execute_phase_scope(
             plan,
@@ -1782,6 +1843,7 @@ impl SequentialScheduler {
                             data_views: BTreeMap::new(),
                             prediction_inputs: BTreeMap::new(),
                             prediction_feature_matrix: None,
+                            prediction_feature_off_fold_matrix: None,
                             artifact_inputs: BTreeMap::new(),
                             required_loss_attestations: NodeTask::required_loss_attestations_for(
                                 &task_node_plan,
@@ -1857,6 +1919,14 @@ impl SequentialScheduler {
                     &scope,
                     &resources,
                 )?;
+                let prediction_feature_off_fold_matrix =
+                    prediction_feature_off_fold_matrix_for_task(
+                        plan,
+                        node_plan,
+                        &prediction_inputs,
+                        &scope,
+                        &resources,
+                    )?;
                 let mut artifact_inputs = BTreeMap::new();
                 if let Some(node_artifact_handles) = resources
                     .replay_artifact_handles
@@ -1920,6 +1990,7 @@ impl SequentialScheduler {
                     data_views: collected_inputs.data_views,
                     prediction_inputs,
                     prediction_feature_matrix,
+                    prediction_feature_off_fold_matrix,
                     artifact_inputs,
                     required_loss_attestations: NodeTask::required_loss_attestations_for(
                         &task_node_plan,
@@ -2426,6 +2497,14 @@ impl ParallelScheduler {
                     &scope,
                     &resources,
                 )?;
+                let prediction_feature_off_fold_matrix =
+                    prediction_feature_off_fold_matrix_for_task(
+                        plan,
+                        node_plan,
+                        &prediction_inputs,
+                        &scope,
+                        &resources,
+                    )?;
                 let mut artifact_inputs = BTreeMap::new();
                 if let Some(node_artifact_handles) = resources
                     .replay_artifact_handles
@@ -2480,6 +2559,7 @@ impl ParallelScheduler {
                         data_views: collected_inputs.data_views,
                         prediction_inputs,
                         prediction_feature_matrix,
+                        prediction_feature_off_fold_matrix,
                         artifact_inputs,
                         required_loss_attestations: NodeTask::required_loss_attestations_for(
                             &task_node_plan,
@@ -2640,6 +2720,7 @@ impl ParallelScheduler {
                         data_views: BTreeMap::new(),
                         prediction_inputs: BTreeMap::new(),
                         prediction_feature_matrix: None,
+                        prediction_feature_off_fold_matrix: None,
                         artifact_inputs: BTreeMap::new(),
                         required_loss_attestations: NodeTask::required_loss_attestations_for(
                             &task_node_plan,

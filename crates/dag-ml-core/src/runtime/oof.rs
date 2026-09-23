@@ -9,6 +9,20 @@ pub(crate) fn join_prediction_feature_specs(
     sources: &[&PredictionInputSpec],
     required_samples: &[SampleId],
 ) -> Result<crate::oof::OofMatrix> {
+    join_prediction_feature_specs_for_partition(
+        join_node,
+        sources,
+        required_samples,
+        PredictionPartition::Validation,
+    )
+}
+
+fn join_prediction_feature_specs_for_partition(
+    join_node: &NodeId,
+    sources: &[&PredictionInputSpec],
+    required_samples: &[SampleId],
+    expected_partition: PredictionPartition,
+) -> Result<crate::oof::OofMatrix> {
     if sources.is_empty() || required_samples.is_empty() {
         return Err(DagMlError::OofValidation(format!(
             "prediction feature join `{join_node}` needs sources and training samples"
@@ -24,12 +38,17 @@ pub(crate) fn join_prediction_feature_specs(
     let mut rows = vec![Vec::new(); required_samples.len()];
     let mut seen_ports = BTreeSet::new();
     for source in sources {
-        if source.partition != PredictionPartition::Validation
+        if source.partition != expected_partition
             || source.prediction_level != PredictionLevel::Sample
         {
+            let label = if expected_partition == PredictionPartition::Validation {
+                "validation OOF"
+            } else {
+                "final prediction"
+            };
             return Err(DagMlError::OofValidation(format!(
-                "prediction feature join `{join_node}` requires sample-level validation OOF rows from `{}.{}`",
-                source.producer_node, source.source_port
+                "prediction feature join `{join_node}` requires sample-level {label} rows from `{}.{}`",
+                source.producer_node, source.source_port,
             )));
         }
         if !seen_ports.insert((&source.producer_node, &source.source_port)) {
@@ -132,38 +151,57 @@ pub(crate) fn prediction_feature_matrix_for_task(
             node.id
         )));
     }
-    if !scope.phase.is_training() {
+    if !scope.phase.is_training() && scope.phase != Phase::Predict {
         return Ok(None);
     }
-    let fold_set = resources
-        .fold_set_override
-        .or(plan.fold_set.as_ref())
-        .ok_or_else(|| {
-            DagMlError::OofValidation(format!(
-                "prediction feature join `{}` requires a scoped fold set",
-                node.id
-            ))
-        })?;
-    let required_samples = if scope.phase == Phase::FitCv {
-        let fold_id = scope.fold_id.as_ref().ok_or_else(|| {
-            DagMlError::OofValidation(format!(
-                "prediction feature join `{}` requires a current FIT_CV fold",
-                node.id
-            ))
-        })?;
-        &fold_set
-            .folds
+    let (required_samples, suffix, expected_partition) = if scope.phase == Phase::Predict {
+        let first = prediction_inputs
             .iter()
-            .find(|fold| &fold.fold_id == fold_id)
+            .find(|(key, _)| key.ends_with(":predict"))
             .ok_or_else(|| {
                 DagMlError::OofValidation(format!(
-                    "prediction feature join `{}` has unknown scoped fold `{fold_id}`",
+                    "prediction feature join `{}` has no final prediction inputs",
                     node.id
                 ))
-            })?
-            .train_sample_ids
+            })?;
+        (
+            first.1.sample_ids.clone(),
+            ":predict",
+            PredictionPartition::Final,
+        )
     } else {
-        &fold_set.sample_ids
+        let fold_set = resources
+            .fold_set_override
+            .or(plan.fold_set.as_ref())
+            .ok_or_else(|| {
+                DagMlError::OofValidation(format!(
+                    "prediction feature join `{}` requires a scoped fold set",
+                    node.id
+                ))
+            })?;
+        let required = if scope.phase == Phase::FitCv {
+            let fold_id = scope.fold_id.as_ref().ok_or_else(|| {
+                DagMlError::OofValidation(format!(
+                    "prediction feature join `{}` requires a current FIT_CV fold",
+                    node.id
+                ))
+            })?;
+            fold_set
+                .folds
+                .iter()
+                .find(|fold| &fold.fold_id == fold_id)
+                .ok_or_else(|| {
+                    DagMlError::OofValidation(format!(
+                        "prediction feature join `{}` has unknown scoped fold `{fold_id}`",
+                        node.id
+                    ))
+                })?
+                .train_sample_ids
+                .clone()
+        } else {
+            fold_set.sample_ids.clone()
+        };
+        (required, "", PredictionPartition::Validation)
     };
     let sources = plan
         .graph_plan
@@ -172,7 +210,7 @@ pub(crate) fn prediction_feature_matrix_for_task(
         .iter()
         .filter(|edge| edge.target.node_id == node.id && edge.contract.requires_oof)
         .map(|edge| {
-            let key = format!("{}.{}", edge.source.node_id, edge.source.port_name);
+            let key = format!("{}.{}{suffix}", edge.source.node_id, edge.source.port_name);
             prediction_inputs.get(&key).ok_or_else(|| {
                 DagMlError::OofValidation(format!(
                     "prediction feature join `{}` is missing OOF input `{key}`",
@@ -181,7 +219,113 @@ pub(crate) fn prediction_feature_matrix_for_task(
             })
         })
         .collect::<Result<Vec<_>>>()?;
-    join_prediction_feature_specs(&node.id, &sources, required_samples).map(Some)
+    if expected_partition == PredictionPartition::Validation {
+        join_prediction_feature_specs(&node.id, &sources, &required_samples).map(Some)
+    } else {
+        join_prediction_feature_specs_for_partition(
+            &node.id,
+            &sources,
+            &required_samples,
+            expected_partition,
+        )
+        .map(Some)
+    }
+}
+
+pub(crate) fn prediction_feature_off_fold_matrix_for_task(
+    plan: &ExecutionPlan,
+    node_plan: &NodePlan,
+    prediction_inputs: &BTreeMap<String, PredictionInputSpec>,
+    scope: &PhaseScope,
+    resources: &PhaseScopeResources<'_>,
+) -> Result<Option<crate::oof::OofMatrix>> {
+    let node = plan
+        .graph_plan
+        .graph
+        .nodes
+        .iter()
+        .find(|node| node.id == node_plan.node_id)
+        .expect("validated node plan");
+    if node.kind != NodeKind::PredictionJoin
+        || node
+            .metadata
+            .get("prediction_feature_execution")
+            .and_then(serde_json::Value::as_str)
+            != Some("native_oof_v1")
+    {
+        return Ok(None);
+    }
+    let (suffix, expected_partition, required_samples) = match scope.phase {
+        Phase::FitCv => {
+            let fold_set = resources
+                .fold_set_override
+                .or(plan.fold_set.as_ref())
+                .ok_or_else(|| {
+                    DagMlError::OofValidation(format!(
+                        "prediction feature join `{}` requires a scoped fold set",
+                        node.id
+                    ))
+                })?;
+            let fold_id = scope.fold_id.as_ref().ok_or_else(|| {
+                DagMlError::OofValidation(format!(
+                    "prediction feature join `{}` requires a current FIT_CV fold",
+                    node.id
+                ))
+            })?;
+            let fold = fold_set
+                .folds
+                .iter()
+                .find(|fold| &fold.fold_id == fold_id)
+                .ok_or_else(|| {
+                    DagMlError::OofValidation(format!(
+                        "prediction feature join `{}` has unknown scoped fold `{fold_id}`",
+                        node.id
+                    ))
+                })?;
+            (
+                ":outer",
+                PredictionPartition::Validation,
+                fold.validation_sample_ids.clone(),
+            )
+        }
+        Phase::Refit => {
+            let Some(first) = prediction_inputs
+                .iter()
+                .find(|(key, _)| key.ends_with(":refit"))
+            else {
+                return Ok(None);
+            };
+            (
+                ":refit",
+                PredictionPartition::Test,
+                first.1.sample_ids.clone(),
+            )
+        }
+        _ => return Ok(None),
+    };
+    let sources = plan
+        .graph_plan
+        .graph
+        .edges
+        .iter()
+        .filter(|edge| edge.target.node_id == node.id && edge.contract.requires_oof)
+        .map(|edge| {
+            let key = format!("{}.{}{suffix}", edge.source.node_id, edge.source.port_name);
+            prediction_inputs.get(&key).ok_or_else(|| {
+                DagMlError::OofValidation(format!(
+                    "prediction feature join `{}` is missing off-fold input `{key}`",
+                    node.id
+                ))
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    join_prediction_feature_specs_for_partition(
+        &node.id,
+        &sources,
+        &required_samples,
+        expected_partition,
+    )
+    .map(Some)
 }
 
 /// Reduce per-branch model probabilities before they reach a stacking controller.
@@ -933,8 +1077,23 @@ pub(crate) fn validate_refit_oof_edge<'a>(
     // and optionally separately declared REFIT OOF. Select exactly the
     // declared REFIT pool (outer OOF by default), never combine evidence
     // classes or average duplicate/foreign folds to manufacture coverage.
-    let nested = if is_nested_stacking_meta_node(plan, &edge.target.node_id)? {
-        nested_stacking_campaign_plan(plan)?
+    let target_is_prediction_feature_join = plan.graph_plan.graph.nodes.iter().any(|node| {
+        node.id == edge.target.node_id
+            && node.kind == NodeKind::PredictionJoin
+            && node
+                .metadata
+                .get("prediction_feature_execution")
+                .and_then(serde_json::Value::as_str)
+                == Some("native_oof_v1")
+    });
+    let nested = if is_nested_stacking_meta_node(plan, &edge.target.node_id)?
+        || target_is_prediction_feature_join
+    {
+        nested_stacking_campaign_plan(plan)?.filter(|campaign| {
+            campaign.meta_node_id == edge.target.node_id
+                || (target_is_prediction_feature_join
+                    && campaign.base_node_ids.contains(&edge.target.node_id))
+        })
     } else {
         None
     };
