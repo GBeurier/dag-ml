@@ -44,8 +44,10 @@ use dag_ml_core::{
 };
 use serde::{de::DeserializeOwned, Serialize};
 
+mod host_hpo;
 mod local_implementation;
 
+pub use host_hpo::*;
 pub use local_implementation::*;
 
 pub type DagMlHandle = u64;
@@ -8343,6 +8345,188 @@ mod tests {
             ]
         );
         unsafe { dagml_owned_bytes_free(out) };
+    }
+
+    #[test]
+    fn host_hpo_parallel_c_abi_uses_isolated_candidate_callbacks_and_ordered_tells() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+
+        #[derive(Default)]
+        struct Stats {
+            active: AtomicUsize,
+            maximum: AtomicUsize,
+            destroyed: AtomicUsize,
+            events: Mutex<Vec<String>>,
+        }
+        struct Host(Arc<Stats>);
+        struct Candidate {
+            stub: ControllerStub,
+            stats: Arc<Stats>,
+        }
+        unsafe extern "C" fn ask(
+            host: *mut c_void,
+            index: u32,
+            _phase: i32,
+            out: *mut DagMlOwnedBytes,
+        ) -> DagMlStatusCode {
+            let host = &*(host.cast::<Host>());
+            host.0.events.lock().unwrap().push(format!("ask:{index}"));
+            let mut bytes =
+                serde_json::to_vec(&serde_json::json!({"n_components": (index + 1) as f64}))
+                    .unwrap();
+            *out = DagMlOwnedBytes {
+                ptr: bytes.as_mut_ptr(),
+                len: bytes.len(),
+                capacity: bytes.capacity(),
+            };
+            std::mem::forget(bytes);
+            DagMlStatusCode::OK
+        }
+        unsafe extern "C" fn tell(host: *mut c_void, index: u32, _score: f64) -> DagMlStatusCode {
+            let host = &*(host.cast::<Host>());
+            host.0.events.lock().unwrap().push(format!("tell:{index}"));
+            DagMlStatusCode::OK
+        }
+        unsafe extern "C" fn fail(
+            host: *mut c_void,
+            index: u32,
+            _error: DagMlBytesView,
+        ) -> DagMlStatusCode {
+            let host = &*(host.cast::<Host>());
+            host.0.events.lock().unwrap().push(format!("fail:{index}"));
+            DagMlStatusCode::OK
+        }
+        unsafe extern "C" fn create(
+            host: *mut c_void,
+            _index: u32,
+            out: *mut *mut c_void,
+        ) -> DagMlStatusCode {
+            let host = &*(host.cast::<Host>());
+            *out = Box::into_raw(Box::new(Candidate {
+                stub: ControllerStub::default(),
+                stats: host.0.clone(),
+            }))
+            .cast();
+            DagMlStatusCode::OK
+        }
+        unsafe extern "C" fn invoke(
+            candidate: *mut c_void,
+            task: DagMlBytesView,
+            out: *mut DagMlOwnedBytes,
+        ) -> DagMlStatusCode {
+            let candidate = &mut *(candidate.cast::<Candidate>());
+            let current = candidate.stats.active.fetch_add(1, Ordering::SeqCst) + 1;
+            candidate.stats.maximum.fetch_max(current, Ordering::SeqCst);
+            std::thread::sleep(std::time::Duration::from_millis(25));
+            let mut encoded = DagMlOwnedBytes::default();
+            let status = phase_controller_invoke_stub(
+                (&mut candidate.stub as *mut ControllerStub).cast(),
+                task,
+                &mut encoded,
+            );
+            candidate.stats.active.fetch_sub(1, Ordering::SeqCst);
+            if status != DagMlStatusCode::OK {
+                return status;
+            }
+            let mut result: NodeResult =
+                serde_json::from_slice(slice::from_raw_parts(encoded.ptr, encoded.len)).unwrap();
+            dagml_owned_bytes_free(encoded);
+            if let Some(prediction) = result.predictions.first() {
+                result.regression_targets.push(RegressionTargetBlock {
+                    validity_masks: None,
+                    level: PredictionLevel::Sample,
+                    unit_ids: prediction
+                        .sample_ids
+                        .iter()
+                        .cloned()
+                        .map(PredictionUnitId::Sample)
+                        .collect(),
+                    values: prediction.sample_ids.iter().map(|_| vec![0.0]).collect(),
+                    target_names: vec!["y".into()],
+                });
+            }
+            let mut bytes = serde_json::to_vec(&result).unwrap();
+            *out = DagMlOwnedBytes {
+                ptr: bytes.as_mut_ptr(),
+                len: bytes.len(),
+                capacity: bytes.capacity(),
+            };
+            std::mem::forget(bytes);
+            DagMlStatusCode::OK
+        }
+        unsafe extern "C" fn release(_owner: *mut c_void, bytes: DagMlOwnedBytes) {
+            dagml_owned_bytes_free(bytes);
+        }
+        unsafe extern "C" fn destroy(candidate: *mut c_void) {
+            let candidate = Box::from_raw(candidate.cast::<Candidate>());
+            candidate.stats.destroyed.fetch_add(1, Ordering::SeqCst);
+        }
+
+        let graph: GraphSpec =
+            serde_json::from_str(include_str!("../../../examples/minimal_graph.json")).unwrap();
+        let mut campaign: CampaignSpec = serde_json::from_str(include_str!(
+            "../../../examples/campaign_oof_generation.json"
+        ))
+        .unwrap();
+        campaign.generation = Default::default();
+        campaign.data_bindings.clear();
+        let manifests = fixture_phase_controller_manifests();
+        let registry = controller_registry_from_manifests(manifests.clone()).unwrap();
+        let plan = build_execution_plan("plan:cabi.host_hpo", graph, campaign, &registry).unwrap();
+        let plan = serde_json::to_vec(&plan).unwrap();
+        let manifests = serde_json::to_vec(&manifests).unwrap();
+        let envelope = include_bytes!("../../dag-ml-core/tests/fixtures/package/data/coordinator_data_plan_envelope_sample12.json");
+        let request = serde_json::to_vec(&serde_json::json!({
+            "target_node": "model:base", "trial_budget": 2, "metric": "rmse",
+            "direction": "minimize", "optimizer_descriptor": {"owner": "c-test"}
+        }))
+        .unwrap();
+        let stats = Arc::new(Stats::default());
+        let mut host = Host(stats.clone());
+        let callbacks = DagMlHostHpoCallbacks {
+            abi_version: DAG_ML_HOST_HPO_CALLBACKS_ABI_VERSION,
+            user_data: (&mut host as *mut Host).cast(),
+            ask: Some(ask),
+            tell: Some(tell),
+            fail: Some(fail),
+            release_proposal_bytes: Some(release),
+            create_candidate: Some(create),
+            invoke_candidate: Some(invoke),
+            release_candidate_bytes: Some(release),
+            destroy_candidate: Some(destroy),
+        };
+        let mut out = DagMlOwnedBytes::default();
+        let mut error = DagMlString::default();
+        let status = unsafe {
+            dagml_host_hpo_search_json(
+                plan.as_ptr(),
+                plan.len(),
+                manifests.as_ptr(),
+                manifests.len(),
+                envelope.as_ptr(),
+                envelope.len(),
+                request.as_ptr(),
+                request.len(),
+                callbacks,
+                2,
+                &mut out,
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        let result: dag_ml_core::HostHpoSearchResult =
+            serde_json::from_slice(unsafe { slice::from_raw_parts(out.ptr, out.len) }).unwrap();
+        unsafe { dagml_owned_bytes_free(out) };
+        assert_eq!(result.trials.len(), 2);
+        assert_eq!(
+            stats.events.lock().unwrap().as_slice(),
+            ["ask:0", "ask:1", "tell:0", "tell:1"]
+        );
+        assert!(stats.maximum.load(Ordering::SeqCst) >= 2);
+        assert_eq!(stats.destroyed.load(Ordering::SeqCst), 2);
     }
 
     #[test]

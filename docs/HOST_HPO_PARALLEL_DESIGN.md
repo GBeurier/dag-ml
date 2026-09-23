@@ -9,15 +9,18 @@ store for each candidate. The native test and PyO3 test assert actual overlap.
 Durable storage/resume and progressive pruning remain unsupported for parallel
 trials until the checkpoint and intermediate-feedback parts below are added.
 
-Binding availability is narrower than the Rust core contract. Rust hosts can
-call `SequentialScheduler::execute_parallel_host_hpo_search_with_candidate_factories`
+Rust hosts can call
+`SequentialScheduler::execute_parallel_host_hpo_search_with_candidate_factories`
 with their own proposal source and candidate-local controller/provider factories;
 the core test exercises this public method. The PyO3 binding implements those
-factories and has a direct overlap test. The `dag-ml-cli` has no host HPO command,
-and the C ABI does not expose host HPO proposal or factory callbacks, so R,
-MATLAB and WASM bindings cannot yet invoke this search. A Python nirs4all outer
-run may use the CLI for its ordinary pipeline while still invoking PyO3 for
-the nested host HPO. That is not CLI HPO support.
+factories and has a direct overlap test. The C ABI exposes
+`dagml_host_hpo_search_json` with proposal and candidate-state callbacks; a
+C/Rust test proves concurrent FIT_CV, ordered optimizer transitions and one
+destroy per candidate. R, MATLAB and WASM can call the C ABI, but their
+language-specific HPO adapters have not been implemented or tested. The
+`dag-ml-cli` has no host HPO command. A Python nirs4all outer run may use the
+CLI for its ordinary pipeline while still invoking PyO3 for the nested host
+HPO. That is not CLI HPO support.
 
 The current core loop is `ask -> FIT_CV -> tell -> checkpoint`. The Python
 binding supplies one `InMemoryDataProvider`, whose handle maps use `RefCell`,

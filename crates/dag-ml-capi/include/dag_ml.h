@@ -234,6 +234,30 @@ typedef struct DagMlControllerVTable {
     void (*destroy)(void *user_data);
 } DagMlControllerVTable;
 
+/* Native non-durable host HPO. Proposal callbacks run on the caller thread;
+ * each FIT_CV candidate receives independent candidate state. The host owns
+ * user_data until dagml_host_hpo_search_json returns. create_candidate must
+ * allocate one state per trial; destroy_candidate is called exactly once for
+ * each successful creation after that trial's controller tasks finish.
+ * A null ask output pointer with length zero means proposal exhaustion.
+ * phase_index=-1 denotes an unphased search. Callback implementations must
+ * not unwind across this C boundary. */
+#ifndef DAG_ML_HOST_HPO_CALLBACKS_ABI_VERSION
+#define DAG_ML_HOST_HPO_CALLBACKS_ABI_VERSION 1u
+#endif
+typedef struct DagMlHostHpoCallbacks {
+    uint32_t abi_version;
+    void *user_data;
+    DagMlStatusCode (*ask)(void *user_data, uint32_t trial_index, int32_t phase_index, DagMlOwnedBytes *out_params_json);
+    DagMlStatusCode (*tell)(void *user_data, uint32_t trial_index, double score);
+    DagMlStatusCode (*fail)(void *user_data, uint32_t trial_index, DagMlBytesView error);
+    void (*release_proposal_bytes)(void *user_data, DagMlOwnedBytes bytes);
+    DagMlStatusCode (*create_candidate)(void *user_data, uint32_t trial_index, void **out_candidate_state);
+    DagMlStatusCode (*invoke_candidate)(void *candidate_state, DagMlBytesView task_json, DagMlOwnedBytes *out_result_json);
+    void (*release_candidate_bytes)(void *candidate_state, DagMlOwnedBytes bytes);
+    void (*destroy_candidate)(void *candidate_state);
+} DagMlHostHpoCallbacks;
+
 #ifndef DAG_ML_DATA_PROVIDER_VTABLE_ABI_VERSION
 #define DAG_ML_DATA_PROVIDER_VTABLE_ABI_VERSION 2u
 #endif
@@ -524,6 +548,16 @@ DagMlStatusCode dagml_execution_plan_validate_json(
     const uint8_t *plan_ptr,
     size_t plan_len,
     DagMlString *error_out);
+/* Same canonical plan/manifests/envelope/request JSON as the Rust scheduler.
+ * max_parallel_trials=1 runs sequentially; values >1 evaluate real concurrent
+ * windows. Pruning and durable checkpoints are not supported in ABI v1. */
+DagMlStatusCode dagml_host_hpo_search_json(
+    const uint8_t *plan_ptr, size_t plan_len,
+    const uint8_t *trusted_controllers_ptr, size_t trusted_controllers_len,
+    const uint8_t *envelope_ptr, size_t envelope_len,
+    const uint8_t *request_ptr, size_t request_len,
+    DagMlHostHpoCallbacks callbacks, uint32_t max_parallel_trials,
+    DagMlOwnedBytes *out_json, DagMlString *error_out);
 DagMlStatusCode dagml_selection_policy_contract_json(DagMlOwnedBytes *out_json, DagMlString *error_out);
 DagMlStatusCode dagml_selection_policy_validate_json(const uint8_t *json_ptr, size_t json_len, DagMlString *error_out);
 DagMlStatusCode dagml_selection_decision_contract_json(DagMlOwnedBytes *out_json, DagMlString *error_out);
