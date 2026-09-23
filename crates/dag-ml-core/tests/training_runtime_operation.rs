@@ -413,6 +413,12 @@ impl RuntimeController for TrainingController {
                 .first()
                 .expect("FIT_CV prediction controller emits Validation")
                 .clone();
+            let train_sample_ids = task
+                .data_views
+                .get("data:x")
+                .and_then(|view| view.sample_ids.clone())
+                .expect("FIT_CV train block uses its attested fold-train view");
+            let train_values = vec![vec![value]; train_sample_ids.len()];
             predictions.extend([
                 PredictionBlock {
                     prediction_id: Some(format!(
@@ -421,6 +427,8 @@ impl RuntimeController for TrainingController {
                         task.fold_id.as_ref().map(FoldId::as_str).unwrap_or("full")
                     )),
                     partition: PredictionPartition::Train,
+                    sample_ids: train_sample_ids,
+                    values: train_values,
                     ..validation.clone()
                 },
                 PredictionBlock {
