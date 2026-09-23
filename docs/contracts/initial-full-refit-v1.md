@@ -44,11 +44,15 @@ materializes the REFIT artifacts, and emits a fingerprinted replay outcome.
 The host must resolve its own sidecar bytes into those invocation-local handles;
 the package cannot claim to contain them. A missing artifact or a different
 cohort fails before operator execution.
-The CLI process-controller path currently captures host sidecars: a one-shot
-operator process exits before the core can request Raw bytes, and the
-persistent JSONL frame protocol does not yet define Raw export/hydrate/release.
-The package's native Raw capability therefore requires a controller binding
-that implements those hooks (Rust, C, WASM, or PyO3), not only the CLI adapter.
+The CLI process-controller path can capture host sidecars. A one-shot operator
+process exits before the core can request Raw bytes, so it cannot publish a
+portable Raw artifact. A persistent JSONL adapter that declares
+`control_frames_v1` and `portable_artifact_bridge_v1` can instead receive
+`portable_artifact` frames for Raw export, hydration, and release. The CLI
+routes export to the worker that produced the REFIT artifact and hydration to
+the worker executing PREDICT. As with Rust, C, WASM, and PyO3 bindings, the
+controller must implement these operations for its own artifact format; the
+transport alone does not serialize arbitrary fitted models.
 
 ## Raw-artifact callback protocol for C and WASM hosts
 
