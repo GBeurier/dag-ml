@@ -20,7 +20,7 @@ use dag_ml_core::{
     oof_campaign_fingerprint, parse_pipeline_dsl_json, plan_oof_partition_mode,
     pruned_plan_for_operator_models, regression_report_to_candidate_score,
     score_regression_aggregated_block, score_regression_prediction_block,
-    select_best_operator_variant_from_models, select_best_variant_by_cv, select_candidate,
+    select_best_operator_variant_from_models, select_best_variant_outcome_by_cv, select_candidate,
     select_candidate_groups, validate_oof_campaign, validate_research_provenance_package_files,
     AggregatedPredictionBlock, ArtifactId, BundleId, BundlePredictionCachePayload,
     BundlePredictionCachePayloadSet, BundlePredictionCacheRecord, BundlePredictionRequirement,
@@ -602,6 +602,9 @@ enum Command {
         /// Score CV folds without executing REFIT or capturing fitted artifacts.
         #[arg(long)]
         no_refit: bool,
+        /// Refit the first N candidates in native CV ranking order.
+        #[arg(long, default_value_t = 1)]
+        refit_top_k: usize,
         #[arg(long, default_value_t = 1)]
         process_workers: usize,
         #[arg(long, default_value_t = DEFAULT_PROCESS_TIMEOUT_MS)]
@@ -1694,6 +1697,7 @@ fn main() -> Result<()> {
             adapter,
             persistent,
             no_refit,
+            refit_top_k,
             process_workers,
             process_timeout_ms,
             process_retries,
@@ -1740,7 +1744,7 @@ fn main() -> Result<()> {
                 scheduler,
             )?;
             let selections = read_selection_decisions(selections.as_ref())?;
-            let captured = build_bundle_from_cv_with_optional_refit(
+            let captured = build_bundle_from_cv_with_refit_count(
                 CapturedRefitBundleInput {
                     plan: &plan,
                     data_provider: &data_provider,
@@ -1761,6 +1765,7 @@ fn main() -> Result<()> {
                     }),
                 },
                 !no_refit,
+                refit_top_k,
             )
             .with_context(|| "process DSL CV+refit bundle capture failed")?;
             println!(
@@ -2942,7 +2947,7 @@ fn build_bundle_from_captured_refit(
     let selected_variant_id = selected_refit_variant(input.plan, input.variant_id)?;
 
     let mut artifact_store = InMemoryArtifactStore::new();
-    let mut ctx = RunContext::new(RunId::new(input.run_id)?, Some(input.root_seed));
+    let mut ctx = RunContext::new(RunId::new(input.run_id.clone())?, Some(input.root_seed));
     ctx.variant_id = Some(selected_variant_id.clone());
     ctx.resource_limits = input.resource_limits.clone();
 
@@ -2963,7 +2968,7 @@ fn build_bundle_from_captured_refit(
     let mut bundle = build_execution_bundle(
         BundleId::new(input.bundle_id)?,
         input.plan,
-        Some(selected_variant_id),
+        Some(selected_variant_id.clone()),
         input.selections,
         artifact_store.refit_artifacts(),
     )
@@ -3002,6 +3007,7 @@ fn build_bundle_from_captured_refit(
 /// (Mechanism A) and pinned/single-variant runs it is `None` (the union plan is the refit plan).
 struct ResolvedRefitVariant {
     variant_id: VariantId,
+    ranked_variant_ids: Vec<VariantId>,
     loser_validation_reports: Vec<RegressionMetricReport>,
     pruned_plan: Option<dag_ml_core::ExecutionPlan>,
     /// The WINNER's operator-variant content fingerprint (Phase 5): `Some(<sha256>)` for an
@@ -3069,6 +3075,7 @@ fn resolve_operator_select(
         input.root_seed,
     )?;
     Ok(Some(ResolvedRefitVariant {
+        ranked_variant_ids: vec![variant_id.clone()],
         variant_id,
         loser_validation_reports,
         pruned_plan: Some(pruned_plan),
@@ -3113,7 +3120,7 @@ fn resolve_refit_variant(input: &CapturedRefitBundleInput<'_>) -> Result<Resolve
         // exactly today's behavior for unscored runs.
     }
     if input.variant_id.is_none() && input.plan.variants.len() > 1 {
-        let selected = select_best_variant_by_cv(
+        let selected = select_best_variant_outcome_by_cv(
             input.plan,
             &RunId::new(input.run_id.clone())?,
             Some(input.root_seed),
@@ -3139,8 +3146,15 @@ fn resolve_refit_variant(input: &CapturedRefitBundleInput<'_>) -> Result<Resolve
         .with_context(|| "native variant selection failed")?;
         // `None` means scoring was off (no host targets) — fall back to the default variant, which is
         // exactly today's behavior for unscored multi-variant runs.
-        if let Some(selection) = selected {
+        if let Some(outcome) = selected {
+            let selection = outcome.selection;
             let variant_id = selection.selected_variant_id.clone();
+            let ranked_variant_ids = outcome
+                .decision
+                .ranked_candidates
+                .iter()
+                .map(|candidate| VariantId::new(candidate.candidate_id.clone()))
+                .collect::<dag_ml_core::Result<Vec<_>>>()?;
             // Keep only the LOSER variants' reports — the winner's come from the real FIT_CV run.
             let loser_validation_reports = selection
                 .validation_reports
@@ -3148,6 +3162,7 @@ fn resolve_refit_variant(input: &CapturedRefitBundleInput<'_>) -> Result<Resolve
                 .filter(|report| report.variant_id.as_ref() != Some(&variant_id))
                 .collect();
             return Ok(ResolvedRefitVariant {
+                ranked_variant_ids,
                 variant_id,
                 loser_validation_reports,
                 pruned_plan: None,
@@ -3157,6 +3172,7 @@ fn resolve_refit_variant(input: &CapturedRefitBundleInput<'_>) -> Result<Resolve
     }
     Ok(ResolvedRefitVariant {
         variant_id: selected_refit_variant(input.plan, input.variant_id.clone())?,
+        ranked_variant_ids: Vec::new(),
         loser_validation_reports: Vec::new(),
         pruned_plan: None,
         winner_variant_label: None,
@@ -3216,8 +3232,28 @@ fn build_bundle_from_cv_with_optional_refit(
     input: CapturedRefitBundleInput<'_>,
     refit: bool,
 ) -> Result<CapturedRefitBundle> {
+    build_bundle_from_cv_with_refit_count(input, refit, 1)
+}
+
+fn build_bundle_from_cv_with_refit_count(
+    input: CapturedRefitBundleInput<'_>,
+    refit: bool,
+    top_k: usize,
+) -> Result<CapturedRefitBundle> {
+    if top_k == 0 || (!refit && top_k != 1) {
+        bail!("refit_top_k must be positive and requires refit enabled");
+    }
     let resolved = resolve_refit_variant(&input)?;
+    if top_k > 1 && !input.operator_variant_models.is_empty() {
+        bail!("refit_top_k > 1 for operator variants requires per-candidate plan pruning");
+    }
     let selected_variant_id = resolved.variant_id;
+    let additional_variant_ids = resolved
+        .ranked_variant_ids
+        .into_iter()
+        .filter(|variant_id| *variant_id != selected_variant_id)
+        .take(top_k.saturating_sub(1))
+        .collect::<Vec<_>>();
     let loser_validation_reports = resolved.loser_validation_reports;
     let winner_variant_label = resolved.winner_variant_label;
     // For operator-SELECT the winner FIT_CV + REFIT + bundle capture run on the WINNER's PRUNED plan
@@ -3229,7 +3265,7 @@ fn build_bundle_from_cv_with_optional_refit(
     let plan: &dag_ml_core::ExecutionPlan = pruned_plan.as_ref().unwrap_or(input.plan);
 
     let mut artifact_store = InMemoryArtifactStore::new();
-    let mut ctx = RunContext::new(RunId::new(input.run_id)?, Some(input.root_seed));
+    let mut ctx = RunContext::new(RunId::new(input.run_id.clone())?, Some(input.root_seed));
     ctx.variant_id = Some(selected_variant_id.clone());
     ctx.resource_limits = input.resource_limits.clone();
 
@@ -3306,7 +3342,7 @@ fn build_bundle_from_cv_with_optional_refit(
     let mut bundle = build_execution_bundle_with_prediction_contracts(
         BundleId::new(input.bundle_id)?,
         plan,
-        Some(selected_variant_id),
+        Some(selected_variant_id.clone()),
         input.selections,
         artifact_store.refit_artifacts(),
         prediction_requirements,
@@ -3328,6 +3364,75 @@ fn build_bundle_from_cv_with_optional_refit(
     stamp_winner_variant_label(&mut scores, winner_variant_label);
     merge_loser_validation_reports(&mut scores, &plan.id, loser_validation_reports);
     bundle.scores = scores;
+    let mut additional_artifacts = Vec::<RefitArtifactRecord>::new();
+    let mut additional_refit_result_count = 0usize;
+    let mut additional_refit_lineage_count = 0usize;
+    let mut additional_refit_prediction_block_count = 0usize;
+    let mut additional_lineage_records = Vec::<LineageRecord>::new();
+    for variant_id in &additional_variant_ids {
+        let mut extra_ctx =
+            RunContext::new(RunId::new(input.run_id.clone())?, Some(input.root_seed));
+        extra_ctx.variant_id = Some(variant_id.clone());
+        extra_ctx.resource_limits = input.resource_limits.clone();
+        execute_campaign_phase_with_scheduler(
+            input.scheduler,
+            plan,
+            input.runtime_controllers,
+            input.data_provider,
+            &mut extra_ctx,
+            Phase::FitCv,
+        )
+        .with_context(|| format!("FIT_CV before additional refit for `{variant_id}` failed"))?;
+        let extra_fit_lineage_count = extra_ctx.lineage.len();
+        let mut extra_store = InMemoryArtifactStore::new();
+        let extra_results = execute_campaign_phase_with_artifact_store_and_scheduler(
+            input.scheduler,
+            plan,
+            input.runtime_controllers,
+            input.data_provider,
+            &mut extra_store,
+            &mut extra_ctx,
+            Phase::Refit,
+        )
+        .with_context(|| format!("additional refit for `{variant_id}` failed"))?;
+        if extra_store.is_empty() {
+            bail!("additional refit for `{variant_id}` captured no artifacts");
+        }
+        additional_refit_result_count += extra_results.len();
+        additional_refit_lineage_count += extra_ctx.lineage.len() - extra_fit_lineage_count;
+        additional_lineage_records.extend(extra_ctx.lineage.records().cloned());
+        additional_refit_prediction_block_count += extra_ctx
+            .prediction_store
+            .blocks()
+            .iter()
+            .filter(|block| block.partition == PredictionPartition::Final)
+            .count();
+        additional_artifacts.extend(extra_store.refit_artifacts());
+        if let Some(extra_scores) = extra_ctx.build_score_set(plan.id.clone(), None) {
+            if let Some(primary_scores) = bundle.scores.as_mut() {
+                primary_scores.reports.extend(
+                    extra_scores
+                        .reports
+                        .into_iter()
+                        .filter(|report| report.partition != PredictionPartition::Validation),
+                );
+            }
+        }
+    }
+    if top_k > 1 {
+        bundle.metadata.insert(
+            "selected_refit_variant_ids".to_string(),
+            serde_json::to_value(
+                std::iter::once(&selected_variant_id)
+                    .chain(additional_variant_ids.iter())
+                    .collect::<Vec<_>>(),
+            )?,
+        );
+        bundle.metadata.insert(
+            "additional_refit_artifacts".to_string(),
+            serde_json::to_value(&additional_artifacts)?,
+        );
+    }
     bundle.metadata.insert(
         "variant_catalog".to_string(),
         serde_json::to_value(&plan.variants)?,
@@ -3366,30 +3471,35 @@ fn build_bundle_from_cv_with_optional_refit(
     );
     bundle.metadata.insert(
         "refit_result_count".to_string(),
-        serde_json::json!(refit_results.len()),
+        serde_json::json!(refit_results.len() + additional_refit_result_count),
     );
     bundle.metadata.insert(
         "refit_lineage_count".to_string(),
-        serde_json::json!(refit_lineage_count),
+        serde_json::json!(refit_lineage_count + additional_refit_lineage_count),
     );
     bundle.metadata.insert(
         "refit_prediction_block_count".to_string(),
-        serde_json::json!(refit_prediction_block_count),
+        serde_json::json!(refit_prediction_block_count + additional_refit_prediction_block_count),
     );
     bundle.metadata.insert(
         "total_lineage_count".to_string(),
-        serde_json::json!(ctx.lineage.len()),
+        serde_json::json!(ctx.lineage.len() + additional_lineage_records.len()),
     );
     bundle.validate_against_plan(plan)?;
     Ok(CapturedRefitBundle {
         bundle,
         artifact_store,
-        lineage_records: ctx.lineage.records().cloned().collect(),
+        lineage_records: ctx
+            .lineage
+            .records()
+            .cloned()
+            .chain(additional_lineage_records)
+            .collect(),
         prediction_cache_payloads,
         oof_average_results,
         fit_cv_result_count: fit_cv_results.len(),
         fit_cv_oof_prediction_block_count,
-        refit_result_count: refit_results.len(),
+        refit_result_count: refit_results.len() + additional_refit_result_count,
         observed_process_worker_count: observed_process_worker_count(&ctx),
         // Thread the SAME pruned winner plan out (operator-SELECT) — or `None` (union/param/no-variant)
         // — so the replay validates + executes the captured bundle against exactly what capture used.

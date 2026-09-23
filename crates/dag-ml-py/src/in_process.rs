@@ -45,7 +45,7 @@ use dag_ml_core::{
     execute_terminal_prediction, fan_out_data_aware_branches, parse_pipeline_dsl_json,
     enumerate_operator_variants, plan_oof_partition_mode, pruned_plan_for_operator_models,
     select_best_operator_variant_from_models,
-    select_best_variant_by_cv, validate_terminal_prediction_preflight, AggregationControllerResult,
+    select_best_variant_outcome_by_cv, validate_terminal_prediction_preflight, AggregationControllerResult,
     AggregationControllerTask, ArtifactMaterializationRequest, BundleId, ControllerId,
     ControllerRegistry, DagMlError as CoreDagMlError, ExecutionPlan, ExplicitPhaseDataProvider,
     ExternalDataPlanEnvelope, HandleKind, HandleRef, InMemoryArtifactStore, InMemoryDataProvider, NodeResult, NodeTask,
@@ -622,6 +622,7 @@ pub(crate) fn build_runtime_controllers_with_artifact_callback(
 #[derive(Debug)]
 struct ResolvedRefitVariant {
     variant_id: VariantId,
+    ranked_variant_ids: Vec<VariantId>,
     loser_validation_reports: Vec<RegressionMetricReport>,
     /// The non-selected variants' VALIDATION (OOF) PREDICTIONS, each re-tagged with its own variant
     /// id + content fingerprint, so the host can fill a LOSER variant's per-sample prediction rows
@@ -701,6 +702,7 @@ fn resolve_operator_select(
     let pruned_plan =
         pruned_plan_for_operator_variant(plan, operator_variant_models, &variant_id, root_seed)?;
     Ok(Some(ResolvedRefitVariant {
+        ranked_variant_ids: vec![variant_id.clone()],
         variant_id,
         loser_validation_reports,
         loser_validation_predictions,
@@ -765,7 +767,7 @@ fn resolve_refit_variant(
         // exactly today's behavior for unscored runs.
     }
     if plan.variants.len() > 1 {
-        let selected = select_best_variant_by_cv(
+        let selected = select_best_variant_outcome_by_cv(
             plan,
             run_id,
             Some(root_seed),
@@ -783,8 +785,15 @@ fn resolve_refit_variant(
                     .map(|_results| ())
             },
         )?;
-        if let Some(selection) = selected {
+        if let Some(outcome) = selected {
+            let selection = outcome.selection;
             let variant_id = selection.selected_variant_id.clone();
+            let ranked_variant_ids = outcome
+                .decision
+                .ranked_candidates
+                .iter()
+                .map(|candidate| VariantId::new(candidate.candidate_id.clone()))
+                .collect::<dag_ml_core::Result<Vec<_>>>()?;
             // Keep only the LOSER variants' reports — the winner's come from the real FIT_CV run.
             let loser_validation_reports = selection
                 .validation_reports
@@ -797,6 +806,7 @@ fn resolve_refit_variant(
                 .filter(|captured| captured.variant_id != variant_id)
                 .collect();
             return Ok(ResolvedRefitVariant {
+                ranked_variant_ids,
                 variant_id,
                 loser_validation_reports,
                 loser_validation_predictions,
@@ -813,6 +823,7 @@ fn resolve_refit_variant(
             CoreDagMlError::RuntimeValidation("execution plan has no variants to refit".to_string())
         })?;
     Ok(ResolvedRefitVariant {
+        ranked_variant_ids: Vec::new(),
         variant_id,
         loser_validation_reports: Vec::new(),
         loser_validation_predictions: Vec::new(),
@@ -927,6 +938,7 @@ fn surface_loser_validation_frames(
     selection_metric,
     resource_limits_json = None,
     refit = true,
+    refit_top_k = 1,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub fn run_cv_refit_in_process(
@@ -938,6 +950,7 @@ pub fn run_cv_refit_in_process(
     selection_metric: &str,
     resource_limits_json: Option<&str>,
     refit: bool,
+    refit_top_k: usize,
 ) -> PyResult<String> {
     run_cv_refit_in_process_impl(
         py,
@@ -949,6 +962,7 @@ pub fn run_cv_refit_in_process(
         selection_metric,
         resource_limits_json,
         refit,
+        refit_top_k,
     )
 }
 
@@ -981,6 +995,7 @@ pub fn run_cv_refit_in_process_with_training_losses(
         selection_metric,
         None,
         true,
+        1,
     )
 }
 
@@ -1160,7 +1175,13 @@ fn run_cv_refit_in_process_impl(
     selection_metric: &str,
     resource_limits_json: Option<&str>,
     refit: bool,
+    refit_top_k: usize,
 ) -> PyResult<String> {
+    if refit_top_k == 0 || (!refit && refit_top_k != 1) {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "refit_top_k must be positive and requires refit enabled",
+        ));
+    }
     let metric = parse_selection_metric(selection_metric).map_err(py_core_error)?;
     let resource_limits = resource_limits_json
         .map(serde_json::from_str::<TrainingResourceLimits>)
@@ -1253,6 +1274,17 @@ fn run_cv_refit_in_process_impl(
     )
     .map_err(py_core_error)?;
     let selected_variant_id = resolved.variant_id;
+    if refit_top_k > 1 && !operator_variant_models.is_empty() {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "refit_top_k > 1 for operator variants requires per-candidate plan pruning",
+        ));
+    }
+    let additional_variant_ids = resolved
+        .ranked_variant_ids
+        .into_iter()
+        .filter(|variant_id| *variant_id != selected_variant_id)
+        .take(refit_top_k.saturating_sub(1))
+        .collect::<Vec<_>>();
     let loser_validation_reports = resolved.loser_validation_reports;
     let loser_validation_predictions = resolved.loser_validation_predictions;
     let winner_variant_label = resolved.winner_variant_label;
@@ -1260,9 +1292,9 @@ fn run_cv_refit_in_process_impl(
     // paths the union plan IS the refit plan.
     let refit_plan = resolved.pruned_plan.as_ref().unwrap_or(&plan);
 
-    let mut ctx = RunContext::new(run_id, Some(root_seed));
-    ctx.variant_id = Some(selected_variant_id);
-    ctx.resource_limits = resource_limits;
+    let mut ctx = RunContext::new(run_id.clone(), Some(root_seed));
+    ctx.variant_id = Some(selected_variant_id.clone());
+    ctx.resource_limits = resource_limits.clone();
 
     let fit_cv_results = SequentialScheduler
         .execute_campaign_phase_with_data_provider(
@@ -1309,6 +1341,47 @@ fn run_cv_refit_in_process_impl(
 
     let mut node_results = fit_cv_results;
     node_results.extend(refit_results);
+    for variant_id in &additional_variant_ids {
+        let mut extra_ctx = RunContext::new(run_id.clone(), Some(root_seed));
+        extra_ctx.variant_id = Some(variant_id.clone());
+        extra_ctx.resource_limits = resource_limits.clone();
+        SequentialScheduler
+            .execute_campaign_phase_with_data_provider(
+                refit_plan,
+                &runtime_controllers,
+                &data_provider,
+                &mut extra_ctx,
+                Phase::FitCv,
+            )
+            .map_err(py_core_error)?;
+        let mut extra_store = InMemoryArtifactStore::new();
+        let extra_results = SequentialScheduler
+            .execute_campaign_phase_with_data_provider_and_artifact_store(
+                refit_plan,
+                &runtime_controllers,
+                &data_provider,
+                &mut extra_store,
+                &mut extra_ctx,
+                Phase::Refit,
+            )
+            .map_err(py_core_error)?;
+        if extra_store.is_empty() {
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
+                "additional refit for `{variant_id}` captured no artifacts"
+            )));
+        }
+        node_results.extend(extra_results);
+        if let Some(extra_scores) = extra_ctx.build_score_set(refit_plan.id.clone(), None) {
+            if let Some(primary_scores) = scores.as_mut() {
+                primary_scores.reports.extend(
+                    extra_scores
+                        .reports
+                        .into_iter()
+                        .filter(|report| report.partition != dag_ml_core::PredictionPartition::Validation),
+                );
+            }
+        }
+    }
 
     // 6. ADDITIVELY surface the per-sample cross-fold OOF AVERAGE so the host fills the
     //    `(validation, avg)` row's y_pred (it had only the scalar OOF report before). Each
@@ -1346,6 +1419,7 @@ fn run_cv_refit_in_process_impl(
         "node_results": node_results,
         "scores": scores,
         "refit_enabled": refit,
+        "selected_refit_variant_ids": std::iter::once(&selected_variant_id).chain(additional_variant_ids.iter()).collect::<Vec<_>>(),
         "variant_catalog": plan.variants,
     });
     serde_json::to_string(&payload).map_err(py_serde_error)
