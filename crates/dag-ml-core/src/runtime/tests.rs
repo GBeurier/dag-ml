@@ -9399,7 +9399,6 @@ fn nested_stacking_test_plan(outer: FoldSet, partitioned_refit_oof: bool) -> Exe
 // both. The independent Data edge here keeps the residual learner valid; the
 // full prediction-feature merge topology is covered by the DSL test.
 #[test]
-#[ignore = "two dependent OOF stages need a recursive native campaign planner"]
 fn nested_stacking_then_residual_accepts_dependent_meta_models() {
     use crate::fold::KFoldSpec;
 
@@ -9471,8 +9470,203 @@ fn nested_stacking_then_residual_accepts_dependent_meta_models() {
     let plan = build_execution_plan("plan:dependent.meta", graph, plan.campaign, &manifests())
         .expect("valid two-stage prediction and residual topology");
 
-    nested_stacking_campaign_plan(&plan)
-        .expect("dependent OOF stages need separate nested fold scopes");
+    let terminal = nested_stacking_campaign_plan(&plan)
+        .expect("dependent OOF stages need separate nested fold scopes")
+        .expect("terminal meta node");
+    assert_eq!(
+        terminal.meta_node_id,
+        NodeId::new("model:meta.downstream").unwrap()
+    );
+    let upstream =
+        nested_stacking_campaign_plan_for_node(&plan, NodeId::new("model:meta").unwrap())
+            .unwrap()
+            .unwrap();
+    assert!(!upstream.base_node_ids.contains(&terminal.meta_node_id));
+}
+
+#[test]
+fn dependent_stacking_executes_parent_bound_oof_at_both_levels() {
+    use crate::fold::{KFoldSpec, NestedCvSpec};
+
+    struct LayeredModel {
+        inner: VariantScoringController,
+        folds: BTreeMap<FoldId, FoldAssignment>,
+    }
+    impl RuntimeController for LayeredModel {
+        fn controller_id(&self) -> &ControllerId {
+            self.inner.controller_id()
+        }
+
+        fn invoke(&self, task: &NodeTask) -> Result<NodeResult> {
+            if task.phase == Phase::Refit {
+                return self.inner.invoke(task);
+            }
+            let fold = &self.folds[task.fold_id.as_ref().expect("fold scope")];
+            if task.node_plan.node_id.as_str().starts_with("model:meta") {
+                for (key, input) in &task.prediction_inputs {
+                    let expected = if key.ends_with(":outer") {
+                        &fold.validation_sample_ids
+                    } else {
+                        &fold.train_sample_ids
+                    };
+                    assert_eq!(
+                        input.sample_ids.iter().cloned().collect::<BTreeSet<_>>(),
+                        expected.iter().cloned().collect::<BTreeSet<_>>()
+                    );
+                }
+            }
+            let mut result = self.inner.invoke(task)?;
+            result.predictions = vec![PredictionBlock {
+                prediction_id: Some(format!("pred:{}:{}", task.node_plan.node_id, fold.fold_id)),
+                producer_node: task.node_plan.node_id.clone(),
+                producer_port: Some("pred".into()),
+                partition: PredictionPartition::Validation,
+                fold_id: Some(fold.fold_id.clone()),
+                sample_ids: fold.validation_sample_ids.clone(),
+                values: vec![vec![1.0]; fold.validation_sample_ids.len()],
+                target_names: vec!["y".into()],
+            }];
+            result.regression_targets = vec![RegressionTargetBlock {
+                level: PredictionLevel::Sample,
+                unit_ids: fold
+                    .validation_sample_ids
+                    .iter()
+                    .cloned()
+                    .map(crate::aggregation::PredictionUnitId::Sample)
+                    .collect(),
+                values: vec![vec![0.0]; fold.validation_sample_ids.len()],
+                validity_masks: None,
+                target_names: vec!["y".into()],
+            }];
+            Ok(result)
+        }
+    }
+
+    let samples = (1..=24)
+        .map(|i| SampleId::new(format!("s{i}")).unwrap())
+        .collect::<Vec<_>>();
+    let outer = KFoldSpec {
+        n_splits: 3,
+        shuffle: false,
+        seed: Some(7),
+    }
+    .split("outer", &samples)
+    .unwrap();
+    let original = nested_stacking_test_plan(outer.clone(), true);
+    let mut graph = original.graph_plan.graph;
+    let first = NodeId::new("model:meta").unwrap();
+    let second = NodeId::new("model:meta.second").unwrap();
+    let mut node_second = node(
+        second.as_str(),
+        NodeKind::Model,
+        vec![port("first", PortKind::Prediction)],
+        vec![port("pred", PortKind::Prediction)],
+    );
+    node_second.metadata.insert(
+        NESTED_STACKING_EXECUTION_METADATA_KEY.into(),
+        json!(NESTED_STACKING_EXECUTION_V1),
+    );
+    node_second.metadata.insert(
+        STACKING_REFIT_OOF_METADATA_KEY.into(),
+        json!(STACKING_REFIT_PARTITIONED_INNER_V1),
+    );
+    graph.nodes.push(node_second);
+    graph.edges.push(EdgeSpec {
+        source: PortRef {
+            node_id: first.clone(),
+            port_name: "pred".into(),
+        },
+        target: PortRef {
+            node_id: second.clone(),
+            port_name: "first".into(),
+        },
+        contract: EdgeContract {
+            requires_oof: true,
+            requires_fold_alignment: true,
+            ..EdgeContract::new(PortKind::Prediction, None)
+        },
+    });
+    let registry = oof_edge_manifests(BTreeSet::from([Phase::FitCv, Phase::Refit]));
+    let plan = build_execution_plan("plan:two.meta", graph, original.campaign, &registry).unwrap();
+    let spec = NestedCvSpec::KFold(KFoldSpec {
+        n_splits: 2,
+        shuffle: false,
+        seed: Some(13),
+    });
+    let mut folds = BTreeMap::new();
+    for outer_fold in &outer.folds {
+        folds.insert(outer_fold.fold_id.clone(), outer_fold.clone());
+        let inner = spec
+            .build_nested_fold_set(outer_fold, &outer.sample_groups)
+            .unwrap();
+        for inner_fold in &inner.inner_fold_set.folds {
+            folds.insert(inner_fold.fold_id.clone(), inner_fold.clone());
+            let deeper = spec
+                .build_nested_fold_set(inner_fold, &inner.inner_fold_set.sample_groups)
+                .unwrap();
+            for deep_fold in deeper.inner_fold_set.folds {
+                folds.insert(deep_fold.fold_id.clone(), deep_fold.clone());
+            }
+        }
+    }
+    let refit_folds = nested_stacking_campaign_plan(&plan)
+        .unwrap()
+        .unwrap()
+        .refit_fold_set
+        .unwrap();
+    for refit_fold in &refit_folds.folds {
+        folds.insert(refit_fold.fold_id.clone(), refit_fold.clone());
+        let inner = spec
+            .build_nested_fold_set(refit_fold, &refit_folds.sample_groups)
+            .unwrap();
+        for inner_fold in &inner.inner_fold_set.folds {
+            folds.insert(inner_fold.fold_id.clone(), inner_fold.clone());
+        }
+    }
+    let mut controllers = RuntimeControllerRegistry::new();
+    controllers
+        .register(Box::new(LayeredModel {
+            inner: VariantScoringController {
+                id: ControllerId::new("controller:model").unwrap(),
+                handle: 1,
+                emit_targets: true,
+            },
+            folds,
+        }))
+        .unwrap();
+    let provider = InMemoryDataProvider::new(ControllerId::new("controller:data").unwrap());
+    let mut ctx = RunContext::new(RunId::new("run:two.meta").unwrap(), Some(7));
+    SequentialScheduler
+        .execute_campaign_phase_with_data_provider(
+            &plan,
+            &controllers,
+            &provider,
+            &mut ctx,
+            Phase::FitCv,
+        )
+        .unwrap();
+    for fold in &outer.folds {
+        assert_eq!(
+            ctx.prediction_store
+                .find(
+                    Some(&second),
+                    Some(&PredictionPartition::Validation),
+                    Some(&fold.fold_id)
+                )
+                .len(),
+            1
+        );
+    }
+    let refit = SequentialScheduler
+        .execute_campaign_phase_with_data_provider(
+            &plan,
+            &controllers,
+            &provider,
+            &mut ctx,
+            Phase::Refit,
+        )
+        .unwrap();
+    assert!(refit.iter().any(|result| result.node_id == second));
 }
 
 #[test]

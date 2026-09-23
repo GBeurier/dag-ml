@@ -247,13 +247,33 @@ pub(crate) fn nested_stacking_campaign_plan(
     if requested.is_empty() {
         return Ok(None);
     }
-    if requested.len() != 1 {
+    let terminal = requested
+        .iter()
+        .filter(|candidate| {
+            !requested.iter().any(|other| {
+                other != *candidate
+                    && dependency_closure(plan, &BTreeSet::from([other.clone()]))
+                        .contains(*candidate)
+            })
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    if terminal.len() != 1 {
         return Err(DagMlError::RuntimeValidation(
-            "nested stacking V1 supports exactly one declared meta node per execution plan"
+            "nested stacking requires one terminal meta node; independent meta branches need an explicit terminal join"
                 .to_string(),
         ));
     }
-    let meta_node_id = requested.pop().expect("checked non-empty singleton");
+    nested_stacking_campaign_plan_for_node(plan, terminal.into_iter().next().expect("one terminal"))
+}
+
+pub(crate) fn nested_stacking_campaign_plan_for_node(
+    plan: &ExecutionPlan,
+    meta_node_id: NodeId,
+) -> Result<Option<NestedStackingCampaignPlan>> {
+    if !is_nested_stacking_meta_node(plan, &meta_node_id)? {
+        return Ok(None);
+    }
     let kind = if plan
         .graph_plan
         .graph
@@ -376,8 +396,25 @@ pub(crate) fn nested_stacking_campaign_plan(
     let refit_fold_set = match meta_node.metadata.get(STACKING_REFIT_OOF_METADATA_KEY) {
         None => None,
         Some(value) if value.as_str() == Some(STACKING_REFIT_PARTITIONED_INNER_V1) => {
+            let root_fold_id = if plan
+                .campaign
+                .split_invocation
+                .as_ref()
+                .and_then(|split| split.fold_set.as_ref())
+                .is_some_and(|root| root.id == fold_set.id)
+            {
+                "stacking.refit".to_string()
+            } else {
+                // Recursive FIT_CV can enter a parent-bound inner or REFIT
+                // fold set. Its optional REFIT namespace must never collide
+                // with folds already serving as this invocation's outer CV.
+                format!(
+                    "stacking.refit:{}",
+                    &stable_json_fingerprint(&fold_set.id)?[..12]
+                )
+            };
             let full_train = crate::fold::FoldAssignment {
-                fold_id: FoldId::new("stacking.refit")?,
+                fold_id: FoldId::new(root_fold_id)?,
                 train_sample_ids: fold_set.sample_ids.clone(),
                 validation_sample_ids: Vec::new(),
                 metadata: BTreeMap::new(),
@@ -588,7 +625,7 @@ pub(crate) fn nested_residual_targets(
     scope: &PhaseScope,
     nested: Option<&NestedStackingInput<'_>>,
 ) -> Result<Option<crate::residual::ResidualTargetSet>> {
-    let campaign = match nested_stacking_campaign_plan(plan)? {
+    let campaign = match nested_stacking_campaign_plan_for_node(plan, node_plan.node_id.clone())? {
         Some(campaign)
             if campaign.kind == NestedMetaKind::Residual
                 && campaign.meta_node_id == node_plan.node_id =>
@@ -728,7 +765,10 @@ pub(crate) fn residual_learner_oof(
     Ok(oof)
 }
 
-fn dependency_closure(plan: &ExecutionPlan, seeds: &BTreeSet<NodeId>) -> BTreeSet<NodeId> {
+pub(crate) fn dependency_closure(
+    plan: &ExecutionPlan,
+    seeds: &BTreeSet<NodeId>,
+) -> BTreeSet<NodeId> {
     let mut closure = seeds.clone();
     let mut pending = seeds.iter().cloned().collect::<Vec<_>>();
     while let Some(node_id) = pending.pop() {
