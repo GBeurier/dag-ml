@@ -1216,7 +1216,7 @@ pub struct DataViewPolicy {
     pub fit_partition: DataRequestPartition,
     #[serde(default = "default_predict_partition")]
     pub predict_partition: DataRequestPartition,
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub include_augmented_train: bool,
     #[serde(default)]
     pub include_augmented_validation: bool,
@@ -2399,6 +2399,17 @@ mod tests {
             excluded_error.contains("include_excluded=true"),
             "unexpected excluded-row error: {excluded_error}"
         );
+    }
+
+    #[test]
+    fn partial_data_view_policy_preserves_default_augmented_train_scope() {
+        let policy: DataViewPolicy = serde_json::from_value(serde_json::json!({
+            "fit_partition": "all_observations",
+            "unsafe_flags": ["allow_fit_cv_all_observations_view"]
+        }))
+        .unwrap();
+        assert!(policy.include_augmented_train);
+        policy.validate().unwrap();
     }
 
     #[test]
