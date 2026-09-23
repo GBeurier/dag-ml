@@ -9,6 +9,7 @@ pub(crate) fn apply_stacking_prediction_aggregations(
     plan: &ExecutionPlan,
     node_plan: &NodePlan,
     prediction_inputs: &mut BTreeMap<String, PredictionInputSpec>,
+    scores: &[RegressionMetricReport],
 ) -> Result<()> {
     let node = plan
         .graph_plan
@@ -38,19 +39,7 @@ pub(crate) fn apply_stacking_prediction_aggregations(
     }
     let mut reduced = BTreeMap::new();
     for selector in &selectors {
-        let branch = selector.branch.as_deref().ok_or_else(|| {
-            DagMlError::RuntimeValidation(
-                "stacking aggregation selector needs a branch".to_string(),
-            )
-        })?;
-        if selector.aggregate.as_deref() != Some("proba_mean")
-            || selector.select.as_ref().is_some_and(|mode| mode != "all")
-        {
-            return Err(DagMlError::RuntimeValidation(format!(
-                "stacking node `{}` supports only per-branch select=all, aggregate=proba_mean",
-                node_plan.node_id
-            )));
-        }
+        let branch = selector.branch.as_deref();
         let mut by_suffix: BTreeMap<String, Vec<(&String, &PredictionInputSpec)>> = BTreeMap::new();
         for (key, spec) in prediction_inputs.iter() {
             let source = plan
@@ -65,11 +54,16 @@ pub(crate) fn apply_stacking_prediction_aggregations(
                         spec.producer_node
                     ))
                 })?;
-            if source
-                .metadata
-                .get("dsl_branch")
-                .and_then(serde_json::Value::as_str)
-                != Some(branch)
+            if branch.is_some_and(|branch| {
+                source
+                    .metadata
+                    .get("dsl_branch")
+                    .and_then(serde_json::Value::as_str)
+                    != Some(branch)
+            }) || selector
+                .model
+                .as_ref()
+                .is_some_and(|model| model != &spec.producer_node)
             {
                 continue;
             }
@@ -91,12 +85,13 @@ pub(crate) fn apply_stacking_prediction_aggregations(
         }
         if by_suffix.is_empty() {
             return Err(DagMlError::RuntimeValidation(format!(
-                "stacking node `{}` has no predictions from branch `{branch}`",
-                node_plan.node_id
+                "stacking node `{}` has no predictions for selector {:?}",
+                node_plan.node_id, selector
             )));
         }
+        let branch = branch.unwrap_or("selected");
         let expected_models = by_suffix.values().map(Vec::len).max().unwrap_or(0);
-        let virtual_producer = NodeId::new(format!("{}.branch.{branch}", node_plan.node_id))?;
+        let virtual_producer = NodeId::new(format!("{}.branch.{}", node_plan.node_id, branch))?;
         for (suffix, inputs) in by_suffix {
             if inputs.len() != expected_models {
                 return Err(DagMlError::OofValidation(format!(
@@ -112,6 +107,16 @@ pub(crate) fn apply_stacking_prediction_aggregations(
                     "stacking branch `{branch}` models differ in OOF fold identities"
                 )));
             }
+            if selector.aggregate.is_none() {
+                for (key, spec) in inputs {
+                    if reduced.insert(key.clone(), spec.clone()).is_some() {
+                        return Err(DagMlError::RuntimeValidation(format!(
+                            "stacking selector duplicates input `{key}`"
+                        )));
+                    }
+                }
+                continue;
+            }
             let blocks = inputs
                 .iter()
                 .map(|(_, spec)| PredictionBlock {
@@ -125,8 +130,31 @@ pub(crate) fn apply_stacking_prediction_aggregations(
                     target_names: spec.target_names.clone(),
                 })
                 .collect::<Vec<_>>();
-            let aggregate =
-                crate::aggregation::reduce_proba_mean_within_branch(&blocks, &virtual_producer)?;
+            let aggregate = match selector.aggregate.as_deref() {
+                Some("proba_mean") => {
+                    crate::aggregation::reduce_proba_mean_within_branch(&blocks, &virtual_producer)?
+                }
+                Some("mean") => {
+                    crate::aggregation::reduce_mean_within_branch(&blocks, None, &virtual_producer)?
+                }
+                Some("weighted_mean") => {
+                    let weights = stacking_model_weights(
+                        &blocks,
+                        scores,
+                        selector.metric.as_deref().unwrap_or("rmse"),
+                    );
+                    crate::aggregation::reduce_mean_within_branch(
+                        &blocks,
+                        weights.as_deref(),
+                        &virtual_producer,
+                    )?
+                }
+                _ => {
+                    return Err(DagMlError::RuntimeValidation(
+                        "unsupported stacking aggregation".to_string(),
+                    ))
+                }
+            };
             let mut spec = first.clone();
             spec.producer_node = virtual_producer.clone();
             spec.source_port = "oof".to_string();
@@ -151,6 +179,34 @@ pub(crate) fn apply_stacking_prediction_aggregations(
     }
     *prediction_inputs = reduced;
     Ok(())
+}
+
+/// Legacy weighted mean uses inverse validation error and falls back to equal
+/// weights when any model lacks a score. The first report for each producer is
+/// chosen consistently so refit and replay do not depend on later score rows.
+fn stacking_model_weights(
+    blocks: &[PredictionBlock],
+    scores: &[RegressionMetricReport],
+    metric: &str,
+) -> Option<Vec<f64>> {
+    blocks
+        .iter()
+        .map(|block| {
+            let score = scores
+                .iter()
+                .find(|report| {
+                    report.producer_node == block.producer_node
+                        && report.partition == PredictionPartition::Validation
+                        && report.fold_id.is_some()
+                })?
+                .metrics
+                .get(metric)?;
+            if !score.is_finite() || *score < 0.0 {
+                return None;
+            }
+            Some(1.0 / (score + 1e-10))
+        })
+        .collect()
 }
 
 pub(crate) fn effective_node_plan_for_scope(
