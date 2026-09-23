@@ -2167,8 +2167,11 @@ pub(crate) fn validate_merge_selector_select(
             .and_then(|value| value.as_array());
         if diverse
             .keys()
-            .any(|key| key != "max_per_class" && key != "preferred_classes")
+            .any(|key| key != "max_per_class" && key != "preferred_classes" && key != "ascending")
             || max_per_class.is_none_or(|value| value == 0)
+            || diverse
+                .get("ascending")
+                .is_some_and(|value| !value.is_boolean())
             || preferred.is_none_or(|values| {
                 values
                     .iter()
