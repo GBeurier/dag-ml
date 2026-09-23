@@ -3210,6 +3210,10 @@ fn build_bundle_from_cv_with_optional_refit(
     stamp_winner_variant_label(&mut scores, winner_variant_label);
     merge_loser_validation_reports(&mut scores, &plan.id, loser_validation_reports);
     bundle.scores = scores;
+    bundle.metadata.insert(
+        "variant_catalog".to_string(),
+        serde_json::to_value(&plan.variants)?,
+    );
     let oof_average_results = ctx
         .oof_average_blocks
         .iter()
@@ -6354,6 +6358,10 @@ mod tests {
         assert_eq!(
             captured.bundle.metadata.get("refit_enabled"),
             Some(&serde_json::json!(false))
+        );
+        assert_eq!(
+            captured.bundle.metadata.get("variant_catalog"),
+            Some(&serde_json::json!(plan.variants))
         );
         assert!(captured.bundle.scores.is_some());
         assert!(!captured.oof_average_results.is_empty());
