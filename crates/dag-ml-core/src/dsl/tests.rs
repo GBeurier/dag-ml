@@ -4398,3 +4398,34 @@ fn fan_out_rewrites_generation_override_on_fanned_node() {
         2
     );
 }
+
+#[test]
+fn fan_out_rejects_generation_override_collision_with_explicit_clone() {
+    let mut spec = auto_separation_by_metadata_spec();
+    spec.generation_dimensions = vec![PipelineDslGenerationDimension {
+        name: "dim".to_string(),
+        choices: vec![PipelineDslGenerationChoice {
+            label: "choice".to_string(),
+            value: None,
+            param_overrides: vec![
+                PipelineDslGenerationParamOverride {
+                    node_id: NodeId::new("model:site").unwrap(),
+                    params: BTreeMap::from([("alpha".to_string(), serde_json::json!(0.1))]),
+                },
+                PipelineDslGenerationParamOverride {
+                    node_id: NodeId::new("model:site__A").unwrap(),
+                    params: BTreeMap::from([("alpha".to_string(), serde_json::json!(0.2))]),
+                },
+            ],
+            active_subsequence: None,
+        }],
+    }];
+    let envelope = fanout_envelope(&[("s1", "A", &[]), ("s2", "B", &[])]);
+    let error = fan_out_data_aware_branches(&spec, &envelope)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("targets node `model:site__A` more than once"),
+        "{error}"
+    );
+}

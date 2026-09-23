@@ -34,6 +34,7 @@ from ._dag_ml import (
     fold_set_fingerprint_json,
     project_training_request_json,
     sample_relation_set_fingerprint_json,
+    select_candidate_json,
     validate_cache_namespace_json,
     validate_campaign_json,
     validate_controller_manifest_json,
@@ -1079,6 +1080,11 @@ def fan_out_data_aware_branches(dsl: Any, envelope: Any) -> PipelineDslSpec:
     )
 
 
+def select_candidate(policy: Any, candidates: Any) -> dict[str, Any]:
+    """Rank candidate scores with dag-ml-core's deterministic SELECT policy."""
+    return json.loads(select_candidate_json(_coerce_json(policy), _coerce_json(candidates)))
+
+
 def build_execution_plan(
     plan_id: str,
     graph: Any,
@@ -1805,7 +1811,9 @@ __all__ = [
     "execute_training",
     "execute_training_json",
     "fan_out_data_aware_branches",
+    "select_candidate",
     "fan_out_data_aware_branches_json",
+    "select_candidate_json",
     "fold_set_fingerprint_json",
     "loss_execution_attestation",
     "project_training_request",

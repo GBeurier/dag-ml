@@ -20,12 +20,13 @@ use dag_ml_core::{
     compile_pipeline_dsl_with_generation,
     compile_pipeline_dsl_with_generation_and_controller_registry, fan_out_data_aware_branches,
     fold_set_fingerprint, operator_variant_canonical_value, operator_variant_label_from_steps_json,
-    parse_pipeline_dsl_json, CacheNamespace, CampaignSpec, ControllerManifest, ControllerRegistry,
-    DagMlError as CoreDagMlError, ExecutionBundle, ExecutionPlan, ExternalDataPlanEnvelope,
+    parse_pipeline_dsl_json, select_candidate, CacheNamespace, CampaignSpec, CandidateScore,
+    ControllerManifest, ControllerRegistry, DagMlError as CoreDagMlError, ExecutionBundle,
+    ExecutionPlan, ExternalDataPlanEnvelope,
     FoldSet, GraphSpec, HostControllerSpec, ParameterProjection, PortablePredictorPackage,
     PortableRefitPackageV3, PredictCohort, PredictCohortRole, SampleRelationSet,
     TrainingContractProjection, TrainingOutcome, TrainingReplayOutcome, TrainingReplayRequest,
-    TrainingRequest, EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION_V2,
+    TrainingRequest, SelectionPolicy, EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION_V2,
 };
 
 create_exception!(_dag_ml, DagMlError, PyException);
@@ -440,6 +441,14 @@ fn fan_out_data_aware_branches_json(dsl_json: &str, envelope_json: &str) -> PyRe
 }
 
 #[pyfunction]
+fn select_candidate_json(policy_json: &str, candidates_json: &str) -> PyResult<String> {
+    let policy: SelectionPolicy = serde_json::from_str(policy_json).map_err(py_serde_error)?;
+    let candidates: Vec<CandidateScore> = serde_json::from_str(candidates_json).map_err(py_serde_error)?;
+    let decision = select_candidate(&policy, &candidates).map_err(py_core_error)?;
+    serde_json::to_string(&decision).map_err(py_serde_error)
+}
+
+#[pyfunction]
 fn build_execution_plan_json(
     plan_id: &str,
     graph_json: &str,
@@ -583,6 +592,7 @@ fn _dag_ml(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
         module
     )?)?;
     module.add_function(wrap_pyfunction!(fan_out_data_aware_branches_json, module)?)?;
+    module.add_function(wrap_pyfunction!(select_candidate_json, module)?)?;
     module.add_function(wrap_pyfunction!(build_execution_plan_json, module)?)?;
     module.add_function(wrap_pyfunction!(canonical_operator_variant_label, module)?)?;
     module.add_function(wrap_pyfunction!(
