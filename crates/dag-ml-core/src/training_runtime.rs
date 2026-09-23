@@ -128,6 +128,9 @@ pub struct TrainingOutcome {
     /// Selected variant's exact per-sample CV averages, retained even when REFIT runs.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub oof_averages: Vec<OofAverageBlock>,
+    /// Selected variant's native train/test CV ensembles; never selection evidence.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ensemble_averages: Vec<OofAverageBlock>,
     pub outputs: Vec<BoundTrainingOutput>,
     pub lineage: Vec<LineageRecord>,
     pub portable_prediction_caches: Option<BundlePredictionCachePayloadSet>,
@@ -2108,6 +2111,7 @@ pub fn execute_training(input: TrainingExecutionInput<'_>) -> Result<TrainingOut
     // score contract and keeps its existing validation-only ScoreSet.
     let mut reports = selection.selection.validation_reports;
     if native_hpo_descriptor.is_none() {
+        selected_ctx.collect_cross_fold_train_scores(selection_metric)?;
         selected_ctx.collect_cross_fold_test_scores(selection_metric)?;
         reports.extend(
             selected_ctx
@@ -2235,6 +2239,12 @@ pub fn execute_training(input: TrainingExecutionInput<'_>) -> Result<TrainingOut
         refit: refit_outcome,
         score_set,
         oof_averages: selected_ctx.oof_average_blocks.clone(),
+        ensemble_averages: selected_ctx
+            .train_ensemble_blocks
+            .iter()
+            .chain(selected_ctx.test_ensemble_blocks.iter())
+            .cloned()
+            .collect(),
         outputs,
         lineage,
         portable_prediction_caches,
@@ -3404,6 +3414,79 @@ fn oof_cache_namespace_fingerprints(
 }
 
 impl TrainingOutcome {
+    fn validate_ensemble_averages(&self) -> Result<()> {
+        let mut seen = BTreeSet::new();
+        for average in &self.ensemble_averages {
+            let predictions = &average.predictions;
+            let targets = &average.y_true;
+            let width = predictions.validate_shape()?;
+            if targets.validate_shape()? != width
+                || predictions.unit_ids != targets.unit_ids
+                || predictions.level != targets.level
+                || predictions.target_names != targets.target_names
+            {
+                return contract_error(
+                    "training outcome CV ensemble predictions and targets must align exactly",
+                );
+            }
+            if !matches!(
+                predictions.partition,
+                PredictionPartition::Train | PredictionPartition::Test
+            ) || !matches!(
+                predictions.fold_id.as_ref().map(FoldId::as_str),
+                Some("avg" | "w_avg")
+            ) {
+                return contract_error(
+                    "training outcome CV ensemble must identify train/test fold avg or w_avg",
+                );
+            }
+            let key = (
+                predictions.producer_node.clone(),
+                predictions.producer_port.clone(),
+                predictions.partition.clone(),
+                predictions.fold_id.clone(),
+                predictions.level,
+            );
+            if !seen.insert(key) {
+                return contract_error("training outcome has duplicate CV ensemble blocks");
+            }
+            let matching_reports = self
+                .score_set
+                .reports
+                .iter()
+                .filter(|report| {
+                    (report.variant_id.is_none()
+                        || report.variant_id.as_ref() == Some(&self.selected_variant_id))
+                        && report.producer_node == predictions.producer_node
+                        && report.producer_port == predictions.producer_port
+                        && report.partition == predictions.partition
+                        && report.fold_id == predictions.fold_id
+                        && report.level == predictions.level
+                })
+                .collect::<Vec<_>>();
+            let [report] = matching_reports.as_slice() else {
+                return contract_error(
+                    "training outcome CV ensemble has no unique selected score report",
+                );
+            };
+            if report.row_count != predictions.unit_ids.len()
+                || report.target_width != width
+                || report.target_names != predictions.target_names
+            {
+                return contract_error(
+                    "training outcome CV ensemble shape differs from score report",
+                );
+            }
+            let rescored = score_regression_aggregated_block(predictions, targets, SCORE_METRICS)?;
+            if rescored.metrics != report.metrics {
+                return contract_error(
+                    "training outcome CV ensemble values disagree with score report",
+                );
+            }
+        }
+        Ok(())
+    }
+
     fn validate_oof_averages(&self) -> Result<()> {
         let mut seen = BTreeSet::new();
         for average in &self.oof_averages {
@@ -3762,6 +3845,7 @@ impl TrainingOutcome {
         self.validate_refit()?;
         self.score_set.validate()?;
         self.validate_oof_averages()?;
+        self.validate_ensemble_averages()?;
         self.validate_version_family()?;
         if self.schema_version == LEGACY_TRAINING_OUTCOME_SCHEMA_VERSION
             && (self.conformal_calibration.is_some() || self.conformal_calibration_replay.is_some())
