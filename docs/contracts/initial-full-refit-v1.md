@@ -38,3 +38,29 @@ materializes the REFIT artifacts, and emits a fingerprinted replay outcome.
 The host must resolve its own sidecar bytes into those invocation-local handles;
 the package cannot claim to contain them. A missing artifact or a different
 cohort fails before operator execution.
+
+## Raw-artifact callback protocol for C and WASM hosts
+
+The existing C `DagMlControllerVTable.invoke` and WASM `js_invoke` callbacks
+also carry `PortableArtifactBridgeTask` JSON when a controller emits an artifact
+with `backend: "raw"`. This adds no fields to the C vtable or request structs.
+Each request has `operation` and `schema_version: 1`; its response must be a
+`PortableArtifactBridgeResult` JSON string with the matching operation and
+version:
+
+| Request operation | Request fields | Response operation | Response fields |
+| --- | --- | --- | --- |
+| `export_artifact_payload` | `artifact_id` | `exported_artifact_payload` | `payload`: nonempty byte array |
+| `hydrate_artifact_payload` | `request`: artifact materialization request, `payload`: byte array | `hydrated_artifact_payload` | `handle`: nonzero handle owned by the controller |
+| `release_hydrated_artifact_payload` | `handle` | `released_hydrated_artifact_payload` | none |
+
+The core exports every raw REFIT artifact into the signed package. On PREDICT,
+it hydrates payloads with the owning controller, uses the returned handles for
+that invocation, and releases them even when execution fails. The host callback
+must serialize raw bytes as JSON integers in `0..255`. A fresh host can replay
+the package with an empty sidecar-handle map when all artifacts are raw. The
+package validates each raw payload against its artifact `size_bytes` and
+SHA-256 `content_fingerprint`, even if a caller recomputes the outer package
+fingerprint. The ordinary `NodeTask`/`NodeResult` callback protocol remains unchanged for
+non-raw artifacts. Controllers that do not support raw payload operations
+should return a validation error; the package capture or replay then fails.

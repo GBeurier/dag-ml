@@ -156,4 +156,60 @@ module.exports = function smokeInitialFullRefit(dagMl, repo) {
       multiOutputs[1].prediction.values[0][0] !== 8) {
     throw new Error("WASM initial refit failed to replay two named predictions");
   }
+
+  const portableInvoke = (stats) => (_controllerId, taskJson, exactSeed) => {
+    const task = JSON.parse(taskJson);
+    if (task.operation) {
+      if (task.schema_version !== 1) throw new Error("wrong portable artifact task version");
+      if (task.operation === "export_artifact_payload") {
+        stats.exports++;
+        return JSON.stringify({operation:"exported_artifact_payload", schema_version:1, payload:[1,2,3]});
+      }
+      if (task.operation === "hydrate_artifact_payload") {
+        if (JSON.stringify(task.payload) !== "[1,2,3]") throw new Error("wrong portable artifact bytes");
+        stats.hydrates++;
+        return JSON.stringify({operation:"hydrated_artifact_payload", schema_version:1,
+          handle:{handle:442, kind:"model", owner_controller:"controller:model.mock"}});
+      }
+      if (task.operation === "release_hydrated_artifact_payload") {
+        stats.releases++;
+        return JSON.stringify({operation:"released_hydrated_artifact_payload", schema_version:1});
+      }
+      throw new Error(`unexpected portable operation ${task.operation}`);
+    }
+    stats.nodes++;
+    const result = JSON.parse(multiInvoke(_controllerId, taskJson, exactSeed));
+    if (task.phase === "REFIT") {
+      result.artifacts[0].backend = "raw";
+      result.artifacts[0].size_bytes = 3;
+      result.artifacts[0].content_fingerprint = "039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81";
+      result.lineage.artifact_refs[0] = structuredClone(result.artifacts[0]);
+    }
+    return JSON.stringify(result);
+  };
+  const captureStats = {nodes:0, exports:0, hydrates:0, releases:0};
+  const rawCapture = JSON.parse(dagMl.execute_initial_full_refit_json(
+    JSON.stringify(multiPlan), JSON.stringify(manifests),
+    JSON.stringify(fixture.training_envelope), JSON.stringify(fixture.training_sample_ids),
+    "package:wasm.multi-raw", "run:wasm.multi-raw.refit", "12345",
+    portableInvoke(captureStats),
+  ));
+  const rawPackage = rawCapture.initial_full_refit_package;
+  if (captureStats.nodes !== 2 || captureStats.exports !== 2 ||
+      Object.keys(rawPackage.raw_artifact_payloads).length !== 2) {
+    throw new Error("WASM failed to embed both raw model payloads");
+  }
+  const rawEnvelope = dagMl.initial_full_refit_predict_envelope_json(
+    JSON.stringify(rawPackage), JSON.stringify(cohortRequest),
+  );
+  const replayStats = {nodes:0, exports:0, hydrates:0, releases:0};
+  const rawReplay = JSON.parse(dagMl.replay_initial_full_refit_json(
+    JSON.stringify(rawPackage), rawEnvelope,
+    JSON.stringify(rawPackage.outputs.map(output => output.output_id)),
+    "{}", "run:wasm.multi-raw.predict", portableInvoke(replayStats),
+  ));
+  if (rawReplay.replay_outcome.outputs.length !== 2 || replayStats.nodes !== 2 ||
+      replayStats.hydrates !== 2 || replayStats.releases !== 2) {
+    throw new Error("WASM failed to hydrate/release both raw models in a fresh host callback");
+  }
 };

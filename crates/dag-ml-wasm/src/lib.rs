@@ -24,8 +24,10 @@ use dag_ml_core::{
     StratifiedKFoldSpec, TrainingLossRoleReference,
 };
 use dag_ml_core::{
-    ControllerId, NodeResult, NodeTask, Phase, Result as CoreResult, RunContext, RunId,
-    RuntimeController, RuntimeControllerRegistry, SequentialScheduler,
+    ArtifactId, ArtifactMaterializationRequest, ControllerId, HandleRef, NodeResult, NodeTask,
+    Phase, PortableArtifactBridgeResult, PortableArtifactBridgeTask, Result as CoreResult,
+    RunContext, RunId, RuntimeController, RuntimeControllerRegistry, SequentialScheduler,
+    PORTABLE_ARTIFACT_BRIDGE_SCHEMA_VERSION,
 };
 
 mod host_hpo;
@@ -541,6 +543,91 @@ impl RuntimeController for JsRuntimeController {
             result.lineage.seed = task.seed;
         }
         Ok(result)
+    }
+
+    fn export_artifact_payload(&self, artifact_id: &ArtifactId) -> CoreResult<Option<Vec<u8>>> {
+        let task = PortableArtifactBridgeTask::ExportArtifactPayload {
+            schema_version: PORTABLE_ARTIFACT_BRIDGE_SCHEMA_VERSION,
+            artifact_id: artifact_id.clone(),
+        };
+        match self.invoke_portable(&task)? {
+            PortableArtifactBridgeResult::ExportedArtifactPayload {
+                schema_version: 1,
+                payload,
+            } if !payload.is_empty() => Ok(Some(payload)),
+            _ => Err(CoreDagMlError::RuntimeValidation(
+                "JS controller returned invalid portable artifact export response".into(),
+            )),
+        }
+    }
+
+    fn hydrate_artifact_payload(
+        &self,
+        request: &ArtifactMaterializationRequest,
+        payload: &[u8],
+    ) -> CoreResult<HandleRef> {
+        let task = PortableArtifactBridgeTask::HydrateArtifactPayload {
+            schema_version: PORTABLE_ARTIFACT_BRIDGE_SCHEMA_VERSION,
+            request: Box::new(request.clone()),
+            payload: payload.to_vec(),
+        };
+        match self.invoke_portable(&task)? {
+            PortableArtifactBridgeResult::HydratedArtifactPayload {
+                schema_version: 1,
+                handle,
+            } if handle.owner_controller == self.id && handle.handle != 0 => Ok(handle),
+            _ => Err(CoreDagMlError::RuntimeValidation(
+                "JS controller returned invalid portable artifact hydration response".into(),
+            )),
+        }
+    }
+
+    fn release_hydrated_artifact_payload(&self, handle: &HandleRef) -> CoreResult<()> {
+        let task = PortableArtifactBridgeTask::ReleaseHydratedArtifactPayload {
+            schema_version: PORTABLE_ARTIFACT_BRIDGE_SCHEMA_VERSION,
+            handle: handle.clone(),
+        };
+        match self.invoke_portable(&task)? {
+            PortableArtifactBridgeResult::ReleasedHydratedArtifactPayload { schema_version: 1 } => {
+                Ok(())
+            }
+            _ => Err(CoreDagMlError::RuntimeValidation(
+                "JS controller returned invalid portable artifact release response".into(),
+            )),
+        }
+    }
+}
+
+impl JsRuntimeController {
+    fn invoke_portable(
+        &self,
+        task: &PortableArtifactBridgeTask,
+    ) -> CoreResult<PortableArtifactBridgeResult> {
+        let task_json = serde_json::to_string(task).map_err(CoreDagMlError::Serialization)?;
+        let returned = self
+            .js_invoke
+            .call3(
+                &JsValue::NULL,
+                &JsValue::from_str(self.id.as_str()),
+                &JsValue::from_str(&task_json),
+                &JsValue::NULL,
+            )
+            .map_err(|error| {
+                CoreDagMlError::RuntimeValidation(format!(
+                    "JS controller `{}` rejected portable artifact operation: {error:?}",
+                    self.id
+                ))
+            })?;
+        let result_json = returned.as_string().ok_or_else(|| {
+            CoreDagMlError::RuntimeValidation(
+                "JS controller must return a portable artifact result JSON string".into(),
+            )
+        })?;
+        deserialize_external_contract(
+            &result_json,
+            "portable artifact result",
+            CoreDagMlError::RuntimeValidation,
+        )
     }
 }
 
