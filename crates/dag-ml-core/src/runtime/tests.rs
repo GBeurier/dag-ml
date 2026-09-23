@@ -2734,6 +2734,38 @@ fn stacking_selection_ignores_test_scores_and_rejects_duplicate_producers() {
         .contains("distinct producer"));
 }
 
+#[test]
+fn stacking_best_fold_uses_validation_score_only_and_stable_ties() {
+    let mut request: StackingFoldSelectionRequest = serde_json::from_value(json!({
+        "producer_node": "model:base", "fold_ids": ["fold:0", "fold:1", "fold:2"],
+        "metric": "rmse",
+        "reports": [
+            {"producer_node": "model:base", "partition": "test", "fold_id": "fold:0",
+             "level": "sample", "row_count": 1, "target_width": 1,
+             "metrics": {"rmse": 0.001}},
+            {"producer_node": "model:base", "partition": "validation", "fold_id": "fold:0",
+             "level": "sample", "row_count": 1, "target_width": 1,
+             "metrics": {"rmse": 4.0}},
+            {"producer_node": "model:base", "partition": "validation", "fold_id": "fold:1",
+             "level": "sample", "row_count": 1, "target_width": 1,
+             "metrics": {"rmse": 2.0}},
+            {"producer_node": "model:base", "partition": "validation", "fold_id": "fold:2",
+             "level": "sample", "row_count": 1, "target_width": 1,
+             "metrics": {"rmse": 2.0}}
+        ]
+    }))
+    .unwrap();
+    assert_eq!(request.selected_fold_id().unwrap().as_str(), "fold:1");
+    request.metric = "r2".to_string();
+    assert_eq!(request.selected_fold_id().unwrap().as_str(), "fold:0");
+    request.fold_ids.push(FoldId::new("fold:0").unwrap());
+    assert!(request
+        .selected_fold_id()
+        .unwrap_err()
+        .to_string()
+        .contains("distinct fold ids"));
+}
+
 fn replay_bundle(plan: &ExecutionPlan) -> crate::bundle::ExecutionBundle {
     let model_plan = plan
         .node_plans
@@ -17102,6 +17134,80 @@ fn stacking_meta_node_receives_base_test_predictions_in_refit() {
         1,
         "the meta-node ran in REFIT and accepted the off-fold test input"
     );
+}
+
+#[test]
+fn stacking_best_fold_refit_reads_selected_cv_test_block() {
+    let mut plan = build_execution_plan(
+        "plan:stack.best.fold",
+        oof_edge_graph(),
+        oof_edge_campaign(),
+        &oof_edge_manifests(BTreeSet::from([Phase::FitCv, Phase::Refit])),
+    )
+    .unwrap();
+    let meta = plan
+        .graph_plan
+        .graph
+        .nodes
+        .iter_mut()
+        .find(|node| node.id.as_str() == "model:meta")
+        .unwrap();
+    meta.metadata
+        .insert("stacking_test_aggregation".to_string(), json!("best"));
+    meta.metadata
+        .insert("stacking_test_metric".to_string(), json!("rmse"));
+    let mut ctx = RunContext::new(RunId::new("run:stack.best.fold").unwrap(), Some(11));
+    for (fold, value, rmse) in [("fold:0", 0.4, 4.0), ("fold:1", 0.2, 2.0)] {
+        ctx.prediction_store
+            .append(PredictionBlock {
+                prediction_id: None,
+                producer_node: NodeId::new("model:base").unwrap(),
+                producer_port: None,
+                partition: PredictionPartition::Test,
+                fold_id: Some(FoldId::new(fold).unwrap()),
+                sample_ids: vec![SampleId::new("test:0").unwrap()],
+                values: vec![vec![value]],
+                target_names: vec!["y".to_string()],
+            })
+            .unwrap();
+        ctx.score_collector.push(
+            serde_json::from_value(json!({
+                "producer_node": "model:base", "partition": "validation", "fold_id": fold,
+                "level": "sample", "row_count": 1, "target_width": 1,
+                "metrics": {"rmse": rmse}
+            }))
+            .unwrap(),
+        );
+    }
+    ctx.prediction_store
+        .append(PredictionBlock {
+            prediction_id: None,
+            producer_node: NodeId::new("model:base").unwrap(),
+            producer_port: None,
+            partition: PredictionPartition::Test,
+            fold_id: None,
+            sample_ids: vec![SampleId::new("test:0").unwrap()],
+            values: vec![vec![0.9]],
+            target_names: vec!["y".to_string()],
+        })
+        .unwrap();
+    let edge = &plan.graph_plan.graph.edges[0];
+    let input = collect_off_fold_prediction_input(
+        &plan,
+        edge,
+        &ctx,
+        &PhaseScope {
+            phase: Phase::Refit,
+            variant_id: None,
+            variant: None,
+            fold_id: None,
+            seed_root: None,
+        },
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(input.spec.values, vec![vec![0.2]]);
+    assert_eq!(input.spec.fold_id, None);
 }
 
 fn sample_relations_envelope(rows: &[(&str, &str)]) -> ExternalDataPlanEnvelope {
