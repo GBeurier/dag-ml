@@ -6550,6 +6550,8 @@ mod tests {
             input_handles: BTreeMap::new(),
             data_views: BTreeMap::new(),
             prediction_inputs: BTreeMap::new(),
+            prediction_feature_matrix: None,
+            prediction_feature_off_fold_matrix: None,
             artifact_inputs: BTreeMap::new(),
             required_loss_attestations: Vec::new(),
             fit_influence: dag_ml_core::FitInfluenceTask::default(),
