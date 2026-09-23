@@ -732,32 +732,44 @@ impl SequentialScheduler {
                 Err(error) => {
                     if let (Some(checkpoint), Some((_, progress))) = (&mut checkpoint, &mut durable)
                     {
-                        proposals.fail(trial_index, &error.to_string())?;
-                        checkpoint.trials.push(HostHpoTerminalTrial::Failed {
+                        let mut prepared = checkpoint.clone();
+                        prepared.trials.push(HostHpoTerminalTrial::Failed {
                             trial_index,
-                            params,
-                            variant_id: variant.variant_id,
+                            params: params.clone(),
+                            variant_id: variant.variant_id.clone(),
                             error: error.to_string(),
                         });
-                        checkpoint.seal()?;
+                        prepared.seal()?;
+                        progress.prepare_terminal(&prepared, HostHpoSearchStatus::Failed)?;
+                        proposals.fail(trial_index, &error.to_string())?;
+                        *checkpoint = prepared;
                         progress.checkpoint(checkpoint, HostHpoSearchStatus::Failed)?;
                     }
                     return Err(error);
                 }
             };
             if let HostHpoEvaluation::Pruned(evidence) = evaluated {
-                proposals.pruned(trial_index)?;
-                pruned_trials.push(evidence.clone());
                 status = if trial_index + 1 == request.trial_budget {
                     HostHpoSearchStatus::Completed
                 } else {
                     HostHpoSearchStatus::Running
                 };
+                let prospective =
+                    if let (Some(checkpoint), Some((_, progress))) = (&checkpoint, &mut durable) {
+                        let mut prepared = checkpoint.clone();
+                        prepared.trials.push(HostHpoTerminalTrial::Pruned {
+                            evidence: evidence.clone(),
+                        });
+                        prepared.seal()?;
+                        progress.prepare_terminal(&prepared, status)?;
+                        Some(prepared)
+                    } else {
+                        None
+                    };
+                proposals.pruned(trial_index)?;
+                pruned_trials.push(evidence.clone());
                 if let (Some(checkpoint), Some((_, progress))) = (&mut checkpoint, &mut durable) {
-                    checkpoint
-                        .trials
-                        .push(HostHpoTerminalTrial::Pruned { evidence });
-                    checkpoint.seal()?;
+                    *checkpoint = prospective.expect("durable search prepared terminal trial");
                     if !progress.checkpoint(checkpoint, status)?
                         && status == HostHpoSearchStatus::Running
                     {
@@ -769,19 +781,28 @@ impl SequentialScheduler {
             let HostHpoEvaluation::Complete(evidence, candidate) = evaluated else {
                 unreachable!("pruned host HPO candidate was handled above")
             };
-            proposals.tell(trial_index, evidence.score)?;
-            candidates.push(candidate);
-            trials.push(evidence.clone());
             status = if trial_index + 1 == request.trial_budget {
                 HostHpoSearchStatus::Completed
             } else {
                 HostHpoSearchStatus::Running
             };
+            let prospective =
+                if let (Some(checkpoint), Some((_, progress))) = (&checkpoint, &mut durable) {
+                    let mut prepared = checkpoint.clone();
+                    prepared.trials.push(HostHpoTerminalTrial::Complete {
+                        evidence: evidence.clone(),
+                    });
+                    prepared.seal()?;
+                    progress.prepare_terminal(&prepared, status)?;
+                    Some(prepared)
+                } else {
+                    None
+                };
+            proposals.tell(trial_index, evidence.score)?;
+            candidates.push(candidate);
+            trials.push(evidence.clone());
             if let (Some(checkpoint), Some((_, progress))) = (&mut checkpoint, &mut durable) {
-                checkpoint
-                    .trials
-                    .push(HostHpoTerminalTrial::Complete { evidence });
-                checkpoint.seal()?;
+                *checkpoint = prospective.expect("durable search prepared terminal trial");
                 if !progress.checkpoint(checkpoint, status)?
                     && status == HostHpoSearchStatus::Running
                 {
