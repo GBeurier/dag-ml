@@ -327,6 +327,61 @@ fn residual_merge_model_compiles_native_base_learner_fusion_graph() {
 }
 
 #[test]
+fn prediction_feature_merge_before_residual_keeps_the_data_edge() {
+    let spec: PipelineDslSpec = serde_json::from_str(
+        r#"{
+      "id": "dsl-prediction-features-residual",
+      "steps": [
+        {"kind": "branch", "mode": "duplication", "branches": [
+          {"id": "a", "steps": [
+            {"kind": "model", "id": "model:a", "operator": {"type": "Ridge"}}
+          ]},
+          {"id": "b", "steps": [
+            {"kind": "model", "id": "model:b", "operator": {"type": "Ridge"}}
+          ]}
+        ]},
+        {"kind": "merge", "id": "merge:prediction.features",
+         "merge_mode": "predictions", "output_as": "features",
+         "include_original_data": false},
+        {"kind": "branch", "mode": "duplication", "branches": [
+          {"id": "base", "steps": [
+            {"kind": "model", "id": "model:base", "operator": {"type": "PLSRegression"}}
+          ]}
+        ]},
+        {"kind": "merge_model", "id": "model:learner",
+         "operator": {"type": "Ridge"}, "include_original_data": true,
+         "metadata": {"residual_target_execution": "nested_oof_v1"}}
+      ]
+    }"#,
+    )
+    .unwrap();
+    let graph = compile_pipeline_dsl(&spec).unwrap();
+    graph.validate().unwrap();
+    let merge = graph
+        .nodes
+        .iter()
+        .find(|node| node.id.as_str() == "merge:prediction.features")
+        .unwrap();
+    assert_eq!(merge.kind, NodeKind::PredictionJoin);
+    assert_eq!(merge.ports.outputs[0].kind, PortKind::Data);
+    for consumer in ["model:base", "model:learner"] {
+        assert!(graph.edges.iter().any(|edge| {
+            edge.source.node_id == merge.id
+                && edge.target.node_id.as_str() == consumer
+                && edge.contract.kind == PortKind::Data
+        }));
+    }
+    assert_eq!(
+        graph
+            .edges
+            .iter()
+            .filter(|edge| edge.target.node_id == merge.id && edge.contract.requires_oof)
+            .count(),
+        2
+    );
+}
+
+#[test]
 fn compiles_separation_branch_view_plans() {
     let spec: PipelineDslSpec = serde_json::from_str(
         r#"{
