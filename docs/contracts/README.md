@@ -877,6 +877,15 @@ This contract is enabled only when the adapter description declares
 surface: `init` carries controller and worker identity, `task` wraps a
 published `NodeTask`, `result` wraps a published `NodeResult`, `error` carries
 typed retryability, and `close` gives the coordinator a bounded shutdown path.
+Persistent adapters may additionally declare `portable_artifact_bridge_v1`.
+The CLI then sends `portable_artifact` frames with the native V1
+`export_artifact_payload`, `hydrate_artifact_payload`, and
+`release_hydrated_artifact_payload` operations. Payloads are JSON byte arrays;
+the adapter returns the matching native result in a `portable_artifact` frame.
+REFIT export is routed to the worker that emitted the artifact, while PREDICT
+hydration is routed to the worker that will execute that node. A one-shot
+adapter cannot publish a portable Raw artifact because its state has already
+exited when the package captures payloads.
 
 ## Aggregation Controller Task/Result v1
 
