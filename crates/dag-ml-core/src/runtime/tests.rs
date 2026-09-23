@@ -9023,6 +9023,38 @@ fn nested_stacking_test_plan(outer: FoldSet, partitioned_refit_oof: bool) -> Exe
 }
 
 #[test]
+fn nested_stacking_accepts_one_oof_base_producer() {
+    use crate::fold::KFoldSpec;
+
+    let samples = (1..=6)
+        .map(|index| SampleId::new(format!("s{index}")).unwrap())
+        .collect::<Vec<_>>();
+    let outer = KFoldSpec {
+        n_splits: 3,
+        shuffle: false,
+        seed: Some(7),
+    }
+    .split("outer", &samples)
+    .unwrap();
+    let mut plan = nested_stacking_test_plan(outer, false);
+    let base_b = NodeId::new("model:base.b").unwrap();
+    plan.graph_plan.graph.nodes.retain(|node| node.id != base_b);
+    plan.graph_plan
+        .graph
+        .edges
+        .retain(|edge| edge.source.node_id != base_b);
+    plan.node_plans.remove(&base_b);
+
+    let nested = nested_stacking_campaign_plan(&plan)
+        .unwrap()
+        .expect("one base producer is a valid nested OOF meta input");
+    assert_eq!(
+        nested.base_node_ids,
+        BTreeSet::from([NodeId::new("model:base.a").unwrap()])
+    );
+}
+
+#[test]
 fn nested_stacking_campaign_requires_explicit_marker_and_parent_bound_inner_oof() {
     use crate::fold::KFoldSpec;
     let samples = (1..=6)
