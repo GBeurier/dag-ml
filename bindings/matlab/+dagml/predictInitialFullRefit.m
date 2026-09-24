@@ -44,14 +44,14 @@ if temporaryOutput
 else
     output = scalarText(options.output, 'output');
 end
-arguments = [{cli, command}, inputs, ...
+cliArgs = [{cli, command}, inputs, ...
     {'--run-id', scalarText(options.runId, 'run ID')}, ...
     {'--process-workers', workers, '--process-timeout-ms', timeout, ...
     '--process-retries', retries, '--output', output}];
 if options.persistent
-    arguments{end + 1} = '--persistent';
+    cliArgs{end + 1} = '--persistent';
 end
-quoted = cellfun(@shellQuote, arguments, 'UniformOutput', false);
+quoted = cellfun(@shellQuote, cliArgs, 'UniformOutput', false);
 [status, message] = system(strjoin(quoted, ' '));
 if status ~= 0
     error('dagml:InitialRefit:CLI', 'dag-ml %s failed (exit %d): %s', ...
