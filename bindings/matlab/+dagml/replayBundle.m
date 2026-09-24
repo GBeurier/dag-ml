@@ -15,7 +15,7 @@ end
 parser = inputParser;
 addParameter(parser, 'cli', 'dag-ml-cli');
 addParameter(parser, 'output', '');
-addParameter(parser, 'persistent', false);
+addParameter(parser, 'persistentMode', false);
 addParameter(parser, 'processWorkers', 1);
 addParameter(parser, 'processTimeoutMs', 30000);
 addParameter(parser, 'processRetries', 0);
@@ -27,6 +27,11 @@ addParameter(parser, 'runId', 'run:cli.process.replay');
 addParameter(parser, 'rootSeed', 12345);
 addParameter(parser, 'scheduler', 'sequential');
 addParameter(parser, 'schedulerWorkers', 1);
+for index = 1:2:numel(varargin)
+    if strcmpi(varargin{index}, 'persistent')
+        varargin{index} = 'persistentMode';
+    end
+end
 parse(parser, varargin{:});
 options = parser.Results;
 if ~isa(envelopes, 'containers.Map') || envelopes.Count == 0
@@ -37,7 +42,7 @@ scheduler = scalarText(options.scheduler, 'scheduler');
 if ~any(strcmp(scheduler, {'sequential', 'parallel'}))
     error('dagml:ReplayBundle:Option', 'scheduler must be sequential or parallel.');
 end
-if ~islogical(options.persistent) || ~isscalar(options.persistent)
+if ~islogical(options.persistentMode) || ~isscalar(options.persistentMode)
     error('dagml:ReplayBundle:Option', 'persistent must be a logical scalar.');
 end
 cliArgs = {scalarText(options.cli, 'CLI'), 'run-process-replay', ...
@@ -79,7 +84,7 @@ if ~isempty(options.scoreOutput)
     cliArgs(end + 1:end + 2) = ...
         {'--score-output', scalarText(options.scoreOutput, 'score output')};
 end
-if options.persistent
+if options.persistentMode
     cliArgs{end + 1} = '--persistent';
 end
 temporaryOutput = isempty(options.output);
