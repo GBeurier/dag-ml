@@ -10,7 +10,9 @@ that compile into it.
 mtime is unreliable across clones, so the authoritative signal is the git-commit-touch
 time (``git log -1 --format=%ct -- <path>``): the binary's last-touch commit time vs the
 max last-touch commit time over the Rust tree (core + py crate sources and their Cargo
-manifests / lockfile). The mtime is reported only as informational context.
+manifests / lockfile). A lockfile change confined to the CLI package record does not
+alter the Python extension's resolved inputs. The mtime is reported only as
+informational context.
 
 Exit codes:
   0  fresh, paired dirty Rust + dirty .so, OR skipped gracefully
@@ -21,6 +23,7 @@ Run ``python3 scripts/check_so_freshness.py --self-test`` to exercise both branc
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -30,8 +33,8 @@ SO_RELATIVE = "crates/dag-ml-py/python/dag_ml/_dag_ml.abi3.so"
 
 # Rust sources that compile into the release .so: the py crate, its only path
 # dependency (dag-ml-core), their Cargo manifests, and the workspace manifest +
-# lockfile. Unit-test modules under src are deliberately excluded: they compile
-# only for test harnesses and cannot change the release extension bits.
+# lockfile (except CLI-only package-record changes). Unit-test modules under
+# src compile only for test harnesses and cannot change release extension bits.
 RUST_DIRS = (
     "crates/dag-ml-core/src",
     "crates/dag-ml-results/src",
@@ -113,6 +116,39 @@ def commits_after_ts(repo: Path, relative: str, ts: int) -> list[str]:
 
 def rust_commit_requires_rebuild(repo: Path, commit: str, relative: str) -> bool:
     """Return True when a committed Rust diff is not comment/doc-only."""
+    if relative == "Cargo.lock":
+        # A CLI-only development dependency changes the workspace lockfile but
+        # cannot alter the Python extension. Compare package records rather
+        # than forcing a different .so byte sequence from the same PyO3 inputs.
+        before = subprocess.run(
+            ["git", "show", f"{commit}^:Cargo.lock"], cwd=repo,
+            capture_output=True, text=True, check=False,
+        )
+        after = subprocess.run(
+            ["git", "show", f"{commit}:Cargo.lock"], cwd=repo,
+            capture_output=True, text=True, check=False,
+        )
+        if before.returncode == 0 and after.returncode == 0:
+            def records(source: str) -> tuple[str, dict[tuple[str, str], str]]:
+                sections = re.split(r"(?m)^\[\[package\]\]\s*\n", source)
+                parsed: dict[tuple[str, str], str] = {}
+                for section in sections[1:]:
+                    name = re.search(r'(?m)^name = "([^"]+)"$', section)
+                    version = re.search(r'(?m)^version = "([^"]+)"$', section)
+                    if name is None or version is None:
+                        return source, {}
+                    parsed[(name.group(1), version.group(1))] = section
+                return sections[0], parsed
+
+            before_header, before_records = records(before.stdout)
+            after_header, after_records = records(after.stdout)
+            if before_records and after_records and before_header == after_header:
+                changed = {
+                    key for key in before_records.keys() | after_records.keys()
+                    if before_records.get(key) != after_records.get(key)
+                }
+                if changed and all(name == "dag-ml-cli" for name, _version in changed):
+                    return False
     if not relative.endswith(RUST_SUFFIX):
         return True
     result = subprocess.run(
@@ -259,7 +295,7 @@ def check(repo: Path) -> int:
         newer = rust_paths_requiring_rebuild_after(repo, paths, so_ts)
         if not newer:
             print(
-                f"{NOTICE} fresh — Rust commits newer than {SO_RELATIVE} are comment/doc-only; "
+                f"{NOTICE} fresh — commits newer than {SO_RELATIVE} do not change its compiled inputs; "
                 f"tracked .so ct={so_ts}, newest Rust ct={rust_ts}; checked {len(paths)} Rust path(s)."
             )
             return 0
@@ -355,6 +391,35 @@ def self_test() -> int:
         code = check(repo)
         if code != 0:
             failures.append(f"DIRTY paired case expected exit 0, got {code}")
+
+    # Case 4: a CLI-only lockfile dependency does not change PyO3 inputs.
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp)
+        scaffold(repo)
+        lock = repo / "Cargo.lock"
+        lock.write_text(
+            'version = 4\n\n[[package]]\nname = "dag-ml-cli"\nversion = "1.0.0"\n'
+            'dependencies = ["dag-ml-core"]\n\n[[package]]\nname = "dag-ml-core"\n'
+            'version = "1.0.0"\n', encoding="utf-8",
+        )
+        git(repo, "add", "-A")
+        git(repo, "commit", "-q", "-m", "initial with so", ts=1_000_000)
+        lock.write_text(lock.read_text().replace(
+            'dependencies = ["dag-ml-core"]',
+            'dependencies = ["dag-ml-core", "n4m"]',
+        ))
+        git(repo, "add", "Cargo.lock")
+        git(repo, "commit", "-q", "-m", "CLI dev dependency", ts=2_000_000)
+        if check(repo) != 0:
+            failures.append("CLI-only Cargo.lock change expected exit 0")
+        lock.write_text(lock.read_text().replace(
+            'name = "dag-ml-core"\nversion = "1.0.0"',
+            'name = "dag-ml-core"\nversion = "1.0.1"',
+        ))
+        git(repo, "add", "Cargo.lock")
+        git(repo, "commit", "-q", "-m", "core dependency change", ts=3_000_000)
+        if check(repo) != 1:
+            failures.append("core Cargo.lock change expected exit 1")
 
     if failures:
         for line in failures:

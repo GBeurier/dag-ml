@@ -19,6 +19,7 @@ use dag_ml_core::{
     ExternalDataPlanEnvelope, FileArtifactManifest, FilePredictionCacheManifest, GraphSpec,
     HandleKind, HandleRef, InMemoryArtifactStore, InMemoryDataProvider, LineageId, LineageRecord,
     ModelInputSpec, NodeResult, NodeTask, OpenLineageRunEventOptions, Phase, PipelineDslSpec,
+    PortableArtifactBridgeResult, PortableArtifactBridgeTask, PortablePredictorPackage,
     PredictionBlock, PredictionCacheMaterializationRequest, PredictionLevel, PredictionPartition,
     PredictionUnitId, RegressionMetricKind, RegressionMetricReport, RegressionTargetBlock,
     ReplayPhaseRequest, RunContext, RunId, RuntimeArtifactStore, RuntimeController,
@@ -33,19 +34,25 @@ use dag_ml_core::{
     GRAPH_SPEC_SCHEMA_ID, GRAPH_SPEC_SCHEMA_VERSION, MODEL_INPUT_SPEC_SCHEMA_ID,
     MODEL_INPUT_SPEC_SCHEMA_VERSION, NODE_RESULT_SCHEMA_ID, NODE_RESULT_SCHEMA_VERSION,
     NODE_TASK_SCHEMA_ID, NODE_TASK_SCHEMA_VERSION, PIPELINE_DSL_SCHEMA_ID,
-    PIPELINE_DSL_SCHEMA_VERSION, SELECTION_DECISION_SCHEMA_ID, SELECTION_DECISION_SCHEMA_VERSION,
-    SELECTION_POLICY_SCHEMA_ID, SELECTION_POLICY_SCHEMA_VERSION,
+    PIPELINE_DSL_SCHEMA_VERSION, PORTABLE_ARTIFACT_BRIDGE_SCHEMA_VERSION,
+    SELECTION_DECISION_SCHEMA_ID, SELECTION_DECISION_SCHEMA_VERSION, SELECTION_POLICY_SCHEMA_ID,
+    SELECTION_POLICY_SCHEMA_VERSION,
 };
 use dag_ml_core::{
     execute_attached_training_replay, execute_training, parse_typed_json,
     AttachedTrainingReplayInput, BundleId, DataBinding, EnvelopeAttestedRuntimeDataProvider,
-    SampleRelationSet, TrainingExecutionInput, TrainingInfluenceManifest, TrainingOutcome,
-    TrainingReplayRequest, TrainingRequest,
+    InitialFullRefitPackage, PredictCohortConstructionRequest, SampleRelationSet,
+    StackingFoldSelectionRequest, StackingProducerSelectionRequest, TrainingExecutionInput,
+    TrainingInfluenceManifest, TrainingOutcome, TrainingReplayRequest, TrainingRequest,
 };
 use serde::{de::DeserializeOwned, Serialize};
 
+mod host_hpo;
+mod initial_refit;
 mod local_implementation;
 
+pub use host_hpo::*;
+pub use initial_refit::*;
 pub use local_implementation::*;
 
 pub type DagMlHandle = u64;
@@ -1917,6 +1924,218 @@ pub unsafe extern "C" fn dagml_select_candidate_json(
     };
     match select_candidate(&policy, &candidates) {
         Ok(decision) => write_owned_json(out_json, error_out, &decision),
+        Err(error) => validation_error(error_out, error),
+    }
+}
+
+/// Resolve one explicitly named output of a signed portable package.
+///
+/// # Safety
+///
+/// All input pointers must address their declared byte lengths. The caller
+/// releases `out_json` with `dagml_owned_bytes_free`.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_select_portable_output_json(
+    package_ptr: *const u8,
+    package_len: usize,
+    binding_id: DagMlBytesView,
+    out_json: *mut DagMlOwnedBytes,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    clear_error(error_out);
+    clear_owned_bytes(out_json);
+    let package = match parse_external_contract_ptr(
+        package_ptr,
+        package_len,
+        error_out,
+        "portable predictor package",
+        PortablePredictorPackage::from_json,
+    ) {
+        Ok(package) => package,
+        Err(status) => return status,
+    };
+    let binding_id = match parse_utf8_view(binding_id, error_out, "output binding id") {
+        Ok(binding_id) => binding_id,
+        Err(status) => return status,
+    };
+    match package.select_output(&binding_id) {
+        Ok(selected) => write_owned_json(out_json, error_out, &selected),
+        Err(error) => validation_error(error_out, error),
+    }
+}
+
+/// Select stacking producers from validation score evidence in the native core.
+///
+/// # Safety
+/// `request_ptr` addresses `request_len` bytes; release outputs with
+/// `dagml_owned_bytes_free` and errors with `dagml_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_select_stacking_producers_json(
+    request_ptr: *const u8,
+    request_len: usize,
+    out_json: *mut DagMlOwnedBytes,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    clear_error(error_out);
+    clear_owned_bytes(out_json);
+    let request: StackingProducerSelectionRequest = match parse_json_ptr(
+        request_ptr,
+        request_len,
+        error_out,
+        "stacking producer selection",
+    ) {
+        Ok(request) => request,
+        Err(status) => return status,
+    };
+    match request.selected_producer_nodes() {
+        Ok(selected) => write_owned_json(out_json, error_out, &selected),
+        Err(error) => validation_error(error_out, error),
+    }
+}
+
+/// Select one CV fold from validation evidence for a stacking test feature.
+///
+/// # Safety
+/// `request_ptr` addresses `request_len` bytes; release outputs with
+/// `dagml_owned_bytes_free` and errors with `dagml_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_select_stacking_fold_json(
+    request_ptr: *const u8,
+    request_len: usize,
+    out_json: *mut DagMlOwnedBytes,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    clear_error(error_out);
+    clear_owned_bytes(out_json);
+    let request: StackingFoldSelectionRequest = match parse_json_ptr(
+        request_ptr,
+        request_len,
+        error_out,
+        "stacking fold selection",
+    ) {
+        Ok(request) => request,
+        Err(status) => return status,
+    };
+    match request.selected_fold_id() {
+        Ok(selected) => write_owned_json(out_json, error_out, &selected),
+        Err(error) => validation_error(error_out, error),
+    }
+}
+
+/// Objective-aware normalized CV-fold weights for stacking test predictions.
+///
+/// # Safety
+/// `request_ptr` addresses `request_len` bytes; release outputs with
+/// `dagml_owned_bytes_free` and errors with `dagml_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_stacking_fold_weights_json(
+    request_ptr: *const u8,
+    request_len: usize,
+    out_json: *mut DagMlOwnedBytes,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    clear_error(error_out);
+    clear_owned_bytes(out_json);
+    let request: StackingFoldSelectionRequest =
+        match parse_json_ptr(request_ptr, request_len, error_out, "stacking fold weights") {
+            Ok(request) => request,
+            Err(status) => return status,
+        };
+    match request.normalized_weights() {
+        Ok(weights) => write_owned_json(out_json, error_out, &weights),
+        Err(error) => validation_error(error_out, error),
+    }
+}
+
+/// Validate the closed no-splitter REFIT package, including its TCV1 signature.
+///
+/// # Safety
+/// `package_ptr` addresses `package_len` bytes; errors use `dagml_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_initial_full_refit_package_validate_json(
+    package_ptr: *const u8,
+    package_len: usize,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    clear_error(error_out);
+    match parse_external_contract_ptr(
+        package_ptr,
+        package_len,
+        error_out,
+        "initial full-refit package",
+        InitialFullRefitPackage::from_json,
+    ) {
+        Ok(_) => DagMlStatusCode::OK,
+        Err(status) => status,
+    }
+}
+
+/// Attach a separately attested PREDICT cohort to the package's signed training envelope.
+///
+/// # Safety
+/// JSON pointers address their declared byte lengths. Release returned bytes with
+/// `dagml_owned_bytes_free` and errors with `dagml_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_initial_full_refit_predict_envelope_json(
+    package_ptr: *const u8,
+    package_len: usize,
+    cohort_ptr: *const u8,
+    cohort_len: usize,
+    out_json: *mut DagMlOwnedBytes,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    clear_error(error_out);
+    clear_owned_bytes(out_json);
+    let package = match parse_external_contract_ptr(
+        package_ptr,
+        package_len,
+        error_out,
+        "initial full-refit package",
+        InitialFullRefitPackage::from_json,
+    ) {
+        Ok(package) => package,
+        Err(status) => return status,
+    };
+    let request: PredictCohortConstructionRequest =
+        match parse_json_ptr(cohort_ptr, cohort_len, error_out, "predict cohort") {
+            Ok(request) => request,
+            Err(status) => return status,
+        };
+    match request
+        .derive()
+        .and_then(|cohort| package.predict_envelope(cohort))
+    {
+        Ok(envelope) => write_owned_json(out_json, error_out, &envelope),
+        Err(error) => validation_error(error_out, error),
+    }
+}
+
+/// Validate named source/sample coverage and return identity-only row indices.
+///
+/// # Safety
+///
+/// `request_ptr` addresses `request_len` bytes; release `out_json` with
+/// `dagml_owned_bytes_free`.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_align_named_source_rows_json(
+    request_ptr: *const u8,
+    request_len: usize,
+    out_json: *mut DagMlOwnedBytes,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    clear_error(error_out);
+    clear_owned_bytes(out_json);
+    let request: dag_ml_core::NamedSourceAlignmentRequest = match parse_json_ptr(
+        request_ptr,
+        request_len,
+        error_out,
+        "named source alignment",
+    ) {
+        Ok(request) => request,
+        Err(status) => return status,
+    };
+    match dag_ml_core::align_named_source_rows(&request) {
+        Ok(alignment) => write_owned_json(out_json, error_out, &alignment),
         Err(error) => validation_error(error_out, error),
     }
 }
@@ -5097,6 +5316,76 @@ impl RuntimeController for CAbiRuntimeController {
         Ok(result)
     }
 
+    fn export_artifact_payload(
+        &self,
+        artifact_id: &dag_ml_core::ArtifactId,
+    ) -> dag_ml_core::Result<Option<Vec<u8>>> {
+        let task = PortableArtifactBridgeTask::ExportArtifactPayload {
+            schema_version: PORTABLE_ARTIFACT_BRIDGE_SCHEMA_VERSION,
+            artifact_id: artifact_id.clone(),
+        };
+        let response = self.invoke_json_task::<PortableArtifactBridgeResult>(
+            serde_json::to_vec(&task)?,
+            "portable artifact export",
+            "portable artifact result",
+        )?;
+        match response {
+            PortableArtifactBridgeResult::ExportedArtifactPayload {
+                schema_version: 1,
+                payload,
+            } if !payload.is_empty() => Ok(Some(payload)),
+            _ => Err(DagMlError::RuntimeValidation(
+                "controller returned invalid portable artifact export response".into(),
+            )),
+        }
+    }
+
+    fn hydrate_artifact_payload(
+        &self,
+        request: &ArtifactMaterializationRequest,
+        payload: &[u8],
+    ) -> dag_ml_core::Result<HandleRef> {
+        let task = PortableArtifactBridgeTask::HydrateArtifactPayload {
+            schema_version: PORTABLE_ARTIFACT_BRIDGE_SCHEMA_VERSION,
+            request: Box::new(request.clone()),
+            payload: payload.to_vec(),
+        };
+        let response = self.invoke_json_task::<PortableArtifactBridgeResult>(
+            serde_json::to_vec(&task)?,
+            "portable artifact hydration",
+            "portable artifact result",
+        )?;
+        match response {
+            PortableArtifactBridgeResult::HydratedArtifactPayload {
+                schema_version: 1,
+                handle,
+            } if handle.owner_controller == self.id && handle.handle != 0 => Ok(handle),
+            _ => Err(DagMlError::RuntimeValidation(
+                "controller returned invalid portable artifact hydration response".into(),
+            )),
+        }
+    }
+
+    fn release_hydrated_artifact_payload(&self, handle: &HandleRef) -> dag_ml_core::Result<()> {
+        let task = PortableArtifactBridgeTask::ReleaseHydratedArtifactPayload {
+            schema_version: PORTABLE_ARTIFACT_BRIDGE_SCHEMA_VERSION,
+            handle: handle.clone(),
+        };
+        let response = self.invoke_json_task::<PortableArtifactBridgeResult>(
+            serde_json::to_vec(&task)?,
+            "portable artifact release",
+            "portable artifact result",
+        )?;
+        match response {
+            PortableArtifactBridgeResult::ReleasedHydratedArtifactPayload { schema_version: 1 } => {
+                Ok(())
+            }
+            _ => Err(DagMlError::RuntimeValidation(
+                "controller returned invalid portable artifact release response".into(),
+            )),
+        }
+    }
+
     fn invoke_aggregation(
         &self,
         task: &AggregationControllerTask,
@@ -5809,6 +6098,7 @@ impl RuntimeController for CapiMockController {
                 },
             )]),
             predictions,
+            classification_probabilities: Vec::new(),
             observation_predictions: Vec::new(),
             aggregated_predictions: Vec::new(),
             explanations: Vec::new(),
@@ -6072,6 +6362,7 @@ mod tests {
                 },
             )]),
             predictions,
+            classification_probabilities: Vec::new(),
             observation_predictions: Vec::new(),
             aggregated_predictions: Vec::new(),
             explanations: Vec::new(),
@@ -6189,6 +6480,7 @@ mod tests {
                 },
             )]),
             predictions,
+            classification_probabilities: Vec::new(),
             observation_predictions: Vec::new(),
             aggregated_predictions: Vec::new(),
             explanations: Vec::new(),
@@ -6446,6 +6738,7 @@ mod tests {
         let node_id = NodeId::new("transform:scale").unwrap();
         let task = NodeTask {
             inner_fold_set: None,
+            residual_targets: None,
             run_id: RunId::new("run:cabi.controller").unwrap(),
             node_plan: NodePlan {
                 inner_cv: None,
@@ -6478,6 +6771,8 @@ mod tests {
             input_handles: BTreeMap::new(),
             data_views: BTreeMap::new(),
             prediction_inputs: BTreeMap::new(),
+            prediction_feature_matrix: None,
+            prediction_feature_off_fold_matrix: None,
             artifact_inputs: BTreeMap::new(),
             required_loss_attestations: Vec::new(),
             fit_influence: dag_ml_core::FitInfluenceTask::default(),
@@ -6495,6 +6790,7 @@ mod tests {
                 },
             )]),
             predictions: Vec::new(),
+            classification_probabilities: Vec::new(),
             observation_predictions: Vec::new(),
             aggregated_predictions: Vec::new(),
             explanations: Vec::new(),
@@ -8346,6 +8642,342 @@ mod tests {
     }
 
     #[test]
+    fn host_hpo_parallel_c_abi_uses_isolated_candidate_callbacks_and_ordered_tells() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+
+        #[derive(Default)]
+        struct Stats {
+            active: AtomicUsize,
+            maximum: AtomicUsize,
+            destroyed: AtomicUsize,
+            events: Mutex<Vec<String>>,
+        }
+        struct Host(Arc<Stats>);
+        struct Candidate {
+            stub: ControllerStub,
+            stats: Arc<Stats>,
+        }
+        unsafe extern "C" fn ask(
+            host: *mut c_void,
+            index: u32,
+            _phase: i32,
+            out: *mut DagMlOwnedBytes,
+        ) -> DagMlStatusCode {
+            let host = &*(host.cast::<Host>());
+            host.0.events.lock().unwrap().push(format!("ask:{index}"));
+            let mut bytes =
+                serde_json::to_vec(&serde_json::json!({"n_components": (index + 1) as f64}))
+                    .unwrap();
+            *out = DagMlOwnedBytes {
+                ptr: bytes.as_mut_ptr(),
+                len: bytes.len(),
+                capacity: bytes.capacity(),
+            };
+            std::mem::forget(bytes);
+            DagMlStatusCode::OK
+        }
+        unsafe extern "C" fn tell(host: *mut c_void, index: u32, _score: f64) -> DagMlStatusCode {
+            let host = &*(host.cast::<Host>());
+            host.0.events.lock().unwrap().push(format!("tell:{index}"));
+            DagMlStatusCode::OK
+        }
+        unsafe extern "C" fn fail(
+            host: *mut c_void,
+            index: u32,
+            _error: DagMlBytesView,
+        ) -> DagMlStatusCode {
+            let host = &*(host.cast::<Host>());
+            host.0.events.lock().unwrap().push(format!("fail:{index}"));
+            DagMlStatusCode::OK
+        }
+        unsafe extern "C" fn create(
+            host: *mut c_void,
+            _index: u32,
+            out: *mut *mut c_void,
+        ) -> DagMlStatusCode {
+            let host = &*(host.cast::<Host>());
+            *out = Box::into_raw(Box::new(Candidate {
+                stub: ControllerStub::default(),
+                stats: host.0.clone(),
+            }))
+            .cast();
+            DagMlStatusCode::OK
+        }
+        unsafe extern "C" fn invoke(
+            candidate: *mut c_void,
+            task: DagMlBytesView,
+            out: *mut DagMlOwnedBytes,
+        ) -> DagMlStatusCode {
+            let candidate = &mut *(candidate.cast::<Candidate>());
+            let current = candidate.stats.active.fetch_add(1, Ordering::SeqCst) + 1;
+            candidate.stats.maximum.fetch_max(current, Ordering::SeqCst);
+            std::thread::sleep(std::time::Duration::from_millis(25));
+            let mut encoded = DagMlOwnedBytes::default();
+            let status = phase_controller_invoke_stub(
+                (&mut candidate.stub as *mut ControllerStub).cast(),
+                task,
+                &mut encoded,
+            );
+            candidate.stats.active.fetch_sub(1, Ordering::SeqCst);
+            if status != DagMlStatusCode::OK {
+                return status;
+            }
+            let mut result: NodeResult =
+                serde_json::from_slice(slice::from_raw_parts(encoded.ptr, encoded.len)).unwrap();
+            dagml_owned_bytes_free(encoded);
+            if let Some(prediction) = result.predictions.first() {
+                result.regression_targets.push(RegressionTargetBlock {
+                    validity_masks: None,
+                    level: PredictionLevel::Sample,
+                    unit_ids: prediction
+                        .sample_ids
+                        .iter()
+                        .cloned()
+                        .map(PredictionUnitId::Sample)
+                        .collect(),
+                    values: prediction.sample_ids.iter().map(|_| vec![0.0]).collect(),
+                    target_names: vec!["y".into()],
+                });
+            }
+            let mut bytes = serde_json::to_vec(&result).unwrap();
+            *out = DagMlOwnedBytes {
+                ptr: bytes.as_mut_ptr(),
+                len: bytes.len(),
+                capacity: bytes.capacity(),
+            };
+            std::mem::forget(bytes);
+            DagMlStatusCode::OK
+        }
+        unsafe extern "C" fn release(_owner: *mut c_void, bytes: DagMlOwnedBytes) {
+            dagml_owned_bytes_free(bytes);
+        }
+        unsafe extern "C" fn destroy(candidate: *mut c_void) {
+            let candidate = Box::from_raw(candidate.cast::<Candidate>());
+            candidate.stats.destroyed.fetch_add(1, Ordering::SeqCst);
+        }
+        unsafe extern "C" fn feedback(
+            host: *mut c_void,
+            event: DagMlBytesView,
+            out: *mut DagMlOwnedBytes,
+        ) -> DagMlStatusCode {
+            let host = &*(host.cast::<Host>());
+            let event: serde_json::Value =
+                serde_json::from_slice(slice::from_raw_parts(event.ptr, event.len)).unwrap();
+            let operation = event["operation"].as_str().unwrap();
+            host.0.events.lock().unwrap().push(format!(
+                "{operation}:{}",
+                event
+                    .get("trial_index")
+                    .and_then(serde_json::Value::as_u64)
+                    .map_or_else(|| "checkpoint".to_string(), |index| index.to_string())
+            ));
+            let reply = if operation == "report_intermediate" {
+                serde_json::json!({"prune": event["trial_index"] == 1 && event["step"] == 0})
+            } else {
+                serde_json::json!({"ok": true})
+            };
+            let mut bytes = serde_json::to_vec(&reply).unwrap();
+            *out = DagMlOwnedBytes {
+                ptr: bytes.as_mut_ptr(),
+                len: bytes.len(),
+                capacity: bytes.capacity(),
+            };
+            std::mem::forget(bytes);
+            DagMlStatusCode::OK
+        }
+
+        let graph: GraphSpec =
+            serde_json::from_str(include_str!("../../../examples/minimal_graph.json")).unwrap();
+        let mut campaign: CampaignSpec = serde_json::from_str(include_str!(
+            "../../../examples/campaign_oof_generation.json"
+        ))
+        .unwrap();
+        campaign.generation = Default::default();
+        campaign.data_bindings.clear();
+        let manifests = fixture_phase_controller_manifests();
+        let registry = controller_registry_from_manifests(manifests.clone()).unwrap();
+        let plan = build_execution_plan("plan:cabi.host_hpo", graph, campaign, &registry).unwrap();
+        let plan = serde_json::to_vec(&plan).unwrap();
+        let manifests = serde_json::to_vec(&manifests).unwrap();
+        let envelope = include_bytes!("../../dag-ml-core/tests/fixtures/package/data/coordinator_data_plan_envelope_sample12.json");
+        let request = serde_json::to_vec(&serde_json::json!({
+            "target_node": "model:base", "trial_budget": 2, "metric": "rmse",
+            "direction": "minimize", "optimizer_descriptor": {"owner": "c-test"}
+        }))
+        .unwrap();
+        let stats = Arc::new(Stats::default());
+        let mut host = Host(stats.clone());
+        let callbacks = DagMlHostHpoCallbacks {
+            abi_version: DAG_ML_HOST_HPO_CALLBACKS_ABI_VERSION,
+            user_data: (&mut host as *mut Host).cast(),
+            ask: Some(ask),
+            tell: Some(tell),
+            fail: Some(fail),
+            release_proposal_bytes: Some(release),
+            create_candidate: Some(create),
+            invoke_candidate: Some(invoke),
+            release_candidate_bytes: Some(release),
+            destroy_candidate: Some(destroy),
+        };
+        let mut out = DagMlOwnedBytes::default();
+        let mut error = DagMlString::default();
+        let status = unsafe {
+            dagml_host_hpo_search_json(
+                plan.as_ptr(),
+                plan.len(),
+                manifests.as_ptr(),
+                manifests.len(),
+                envelope.as_ptr(),
+                envelope.len(),
+                request.as_ptr(),
+                request.len(),
+                callbacks,
+                2,
+                &mut out,
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        let result: dag_ml_core::HostHpoSearchResult =
+            serde_json::from_slice(unsafe { slice::from_raw_parts(out.ptr, out.len) }).unwrap();
+        unsafe { dagml_owned_bytes_free(out) };
+        assert_eq!(result.trials.len(), 2);
+        assert_eq!(
+            stats.events.lock().unwrap().as_slice(),
+            ["ask:0", "ask:1", "tell:0", "tell:1"]
+        );
+        assert!(stats.maximum.load(Ordering::SeqCst) >= 2);
+        assert_eq!(stats.destroyed.load(Ordering::SeqCst), 2);
+        stats.maximum.store(0, Ordering::SeqCst);
+        stats.destroyed.store(0, Ordering::SeqCst);
+        stats.events.lock().unwrap().clear();
+
+        let request = serde_json::to_vec(&serde_json::json!({
+            "target_node": "model:base", "trial_budget": 2, "metric": "rmse",
+            "direction": "minimize", "optimizer_descriptor": {"owner": "c-test"},
+            "progressive_pruning": true,
+        }))
+        .unwrap();
+        let feedback_callbacks = DagMlHostHpoFeedbackCallbacks {
+            abi_version: DAG_ML_HOST_HPO_FEEDBACK_ABI_VERSION,
+            user_data: (&mut host as *mut Host).cast(),
+            invoke: Some(feedback),
+            release_bytes: Some(release),
+        };
+        let mut out = DagMlOwnedBytes::default();
+        let status = unsafe {
+            dagml_host_hpo_search_json_v2(
+                plan.as_ptr(),
+                plan.len(),
+                manifests.as_ptr(),
+                manifests.len(),
+                envelope.as_ptr(),
+                envelope.len(),
+                request.as_ptr(),
+                request.len(),
+                std::ptr::null(),
+                0,
+                callbacks,
+                feedback_callbacks,
+                2,
+                &mut out,
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        let first: serde_json::Value =
+            serde_json::from_slice(unsafe { slice::from_raw_parts(out.ptr, out.len) }).unwrap();
+        unsafe { dagml_owned_bytes_free(out) };
+        assert_eq!(first["status"], "completed");
+        assert_eq!(first["trials"].as_array().unwrap().len(), 1);
+        assert_eq!(first["pruned_trials"].as_array().unwrap().len(), 1);
+        assert!(stats.maximum.load(Ordering::SeqCst) >= 2);
+        assert_eq!(stats.destroyed.load(Ordering::SeqCst), 2);
+        let events = stats.events.lock().unwrap().clone();
+        assert!(events.iter().any(|event| event == "report_intermediate:1"));
+        assert!(events
+            .iter()
+            .any(|event| event == "prepare_terminal:checkpoint"));
+        assert!(events.iter().any(|event| event == "checkpoint:checkpoint"));
+        assert!(events.iter().any(|event| event == "pruned:1"));
+
+        let resume = serde_json::to_vec(&first["checkpoint"]).unwrap();
+        let interrupted = serde_json::to_vec(&serde_json::json!([{
+            "trial_index": 2, "params": {"n_components": 3},
+        }]))
+        .unwrap();
+        let mut recovered_out = DagMlOwnedBytes::default();
+        let recovery_status = unsafe {
+            dagml_host_hpo_checkpoint_recover_json(
+                resume.as_ptr(),
+                resume.len(),
+                std::ptr::null(),
+                0,
+                interrupted.as_ptr(),
+                interrupted.len(),
+                &mut recovered_out,
+                &mut error,
+            )
+        };
+        assert_eq!(
+            recovery_status,
+            DagMlStatusCode::OK,
+            "{}",
+            error_message(&error)
+        );
+        let recovered: dag_ml_core::HostHpoCheckpoint = serde_json::from_slice(unsafe {
+            slice::from_raw_parts(recovered_out.ptr, recovered_out.len)
+        })
+        .unwrap();
+        unsafe { dagml_owned_bytes_free(recovered_out) };
+        recovered.verify_seal().unwrap();
+        assert_eq!(recovered.trials.len(), 3);
+        assert!(matches!(
+            recovered.trials[2],
+            dag_ml_core::HostHpoTerminalTrial::Failed { .. }
+        ));
+        let request = serde_json::to_vec(&serde_json::json!({
+            "target_node": "model:base", "trial_budget": 3, "metric": "rmse",
+            "direction": "minimize", "optimizer_descriptor": {"owner": "c-test"},
+            "progressive_pruning": true,
+        }))
+        .unwrap();
+        let mut out = DagMlOwnedBytes::default();
+        let status = unsafe {
+            dagml_host_hpo_search_json_v2(
+                plan.as_ptr(),
+                plan.len(),
+                manifests.as_ptr(),
+                manifests.len(),
+                envelope.as_ptr(),
+                envelope.len(),
+                request.as_ptr(),
+                request.len(),
+                resume.as_ptr(),
+                resume.len(),
+                callbacks,
+                feedback_callbacks,
+                2,
+                &mut out,
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        let resumed: serde_json::Value =
+            serde_json::from_slice(unsafe { slice::from_raw_parts(out.ptr, out.len) }).unwrap();
+        unsafe { dagml_owned_bytes_free(out) };
+        assert_eq!(resumed["status"], "completed");
+        assert_eq!(resumed["checkpoint"]["trials"].as_array().unwrap().len(), 3);
+        assert_eq!(resumed["trials"].as_array().unwrap().len(), 2);
+        assert_eq!(resumed["pruned_trials"].as_array().unwrap().len(), 1);
+        assert!(stats.events.lock().unwrap().contains(&"ask:2".to_string()));
+        assert_eq!(stats.destroyed.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
     fn executes_execution_plan_phase_over_abi() {
         let plan = fixture_phase_plan_json();
         let manifests = fixture_phase_controller_manifests_json();
@@ -8520,6 +9152,201 @@ mod tests {
         assert!(error_message(&error).contains("borrowed controller vtables"));
         assert_eq!(transform_state.invocation_count, 0);
         unsafe { dagml_string_free(error) };
+    }
+
+    #[test]
+    fn initial_full_refit_package_validates_and_builds_predict_envelope_over_abi() {
+        let package =
+            include_bytes!("../../dag-ml-core/tests/fixtures/initial_full_refit/package.json");
+        let mut error = DagMlString::default();
+        let status = unsafe {
+            dagml_initial_full_refit_package_validate_json(
+                package.as_ptr(),
+                package.len(),
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        let parsed =
+            InitialFullRefitPackage::from_json(std::str::from_utf8(package).unwrap()).unwrap();
+        let heldout: SampleRelationSet = serde_json::from_value(serde_json::json!({"records": [{
+            "observation_id": "obs.H001", "sample_id": "sample:heldout:1",
+            "target_id": "target:heldout:1", "group_id": "group:heldout",
+            "origin_sample_id": null, "source_id": "nir", "is_augmented": false
+        }]}))
+        .unwrap();
+        let cohort = dag_ml_core::PredictCohort::from_relations(
+            dag_ml_core::PredictCohortRole::ExternalTest,
+            heldout.clone(),
+            vec!["y".into()],
+            "a".repeat(64),
+            Some("b".repeat(64)),
+        )
+        .unwrap();
+        let cohort_json = serde_json::to_vec(&dag_ml_core::PredictCohortConstructionRequest {
+            role: dag_ml_core::PredictCohortRole::ExternalTest,
+            relations: heldout,
+            target_names: vec!["y".into()],
+            data_content_fingerprint: "a".repeat(64),
+            target_content_fingerprint: Some("b".repeat(64)),
+        })
+        .unwrap();
+        let mut out = DagMlOwnedBytes::default();
+        let status = unsafe {
+            dagml_initial_full_refit_predict_envelope_json(
+                package.as_ptr(),
+                package.len(),
+                cohort_json.as_ptr(),
+                cohort_json.len(),
+                &mut out,
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        let envelope: ExternalDataPlanEnvelope =
+            serde_json::from_slice(unsafe { slice::from_raw_parts(out.ptr, out.len) }).unwrap();
+        assert_eq!(envelope.schema_version, 2);
+        assert_eq!(envelope.predict_cohort, Some(cohort));
+        assert_eq!(
+            envelope.coordinator_relations,
+            Some(parsed.training_relations)
+        );
+        unsafe { dagml_owned_bytes_free(out) };
+
+        let mut forged: serde_json::Value = serde_json::from_slice(package).unwrap();
+        forged["outputs"][0]["output_id"] = serde_json::json!("output:forged");
+        let forged = serde_json::to_vec(&forged).unwrap();
+        let status = unsafe {
+            dagml_initial_full_refit_package_validate_json(
+                forged.as_ptr(),
+                forged.len(),
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlStatusCode::VALIDATION_ERROR);
+        assert!(error_message(&error).contains("fingerprint"));
+        unsafe { dagml_string_free(error) };
+    }
+
+    #[test]
+    fn selects_portable_output_by_explicit_id_over_abi() {
+        let package = include_bytes!(
+            "../../../examples/fixtures/training/portable_predictor_package.v1.json"
+        );
+        let mut out = DagMlOwnedBytes::default();
+        let mut error = DagMlString::default();
+        let status = unsafe {
+            dagml_select_portable_output_json(
+                package.as_ptr(),
+                package.len(),
+                bytes_view(b"output:meta.final"),
+                &mut out,
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        let selected: serde_json::Value =
+            serde_json::from_slice(unsafe { slice::from_raw_parts(out.ptr, out.len) }).unwrap();
+        assert_eq!(
+            selected["output_binding"]["binding_id"],
+            "output:meta.final"
+        );
+        assert_eq!(selected["package_id"], "predictor:package.fixture");
+        unsafe { dagml_owned_bytes_free(out) };
+
+        let mut out = DagMlOwnedBytes::default();
+        let status = unsafe {
+            dagml_select_portable_output_json(
+                package.as_ptr(),
+                package.len(),
+                bytes_view(b"output:missing"),
+                &mut out,
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlStatusCode::VALIDATION_ERROR);
+        assert!(out.ptr.is_null());
+        assert!(error_message(&error).contains("no output binding"));
+        unsafe { dagml_string_free(error) };
+    }
+
+    #[test]
+    fn selects_stacking_producer_from_validation_scores_over_abi() {
+        let request = serde_json::json!({
+            "producer_nodes": ["model:a", "model:b"], "select": "best", "metric": "rmse",
+            "reports": [
+                {"producer_node": "model:a", "partition": "validation", "fold_id": "fold:0",
+                 "level": "sample", "row_count": 1, "target_width": 1, "metrics": {"rmse": 4.0}},
+                {"producer_node": "model:b", "partition": "validation", "fold_id": "fold:0",
+                 "level": "sample", "row_count": 1, "target_width": 1, "metrics": {"rmse": 2.0}}
+            ]
+        });
+        let bytes = serde_json::to_vec(&request).unwrap();
+        let mut out = DagMlOwnedBytes::default();
+        let mut error = DagMlString::default();
+        let status = unsafe {
+            dagml_select_stacking_producers_json(bytes.as_ptr(), bytes.len(), &mut out, &mut error)
+        };
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        let selected: serde_json::Value =
+            serde_json::from_slice(unsafe { slice::from_raw_parts(out.ptr, out.len) }).unwrap();
+        assert_eq!(selected, serde_json::json!(["model:b"]));
+        unsafe { dagml_owned_bytes_free(out) };
+    }
+
+    #[test]
+    fn selects_stacking_fold_from_validation_scores_over_abi() {
+        let request = br#"{"producer_node":"model:a","fold_ids":["fold:0","fold:1"],"metric":"rmse","reports":[{"producer_node":"model:a","partition":"validation","fold_id":"fold:0","level":"sample","row_count":1,"target_width":1,"metrics":{"rmse":4.0}},{"producer_node":"model:a","partition":"validation","fold_id":"fold:1","level":"sample","row_count":1,"target_width":1,"metrics":{"rmse":2.0}}]}"#;
+        let mut out = DagMlOwnedBytes::default();
+        let mut error = DagMlString::default();
+        let status = unsafe {
+            dagml_select_stacking_fold_json(request.as_ptr(), request.len(), &mut out, &mut error)
+        };
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        let selected: serde_json::Value =
+            serde_json::from_slice(unsafe { slice::from_raw_parts(out.ptr, out.len) }).unwrap();
+        assert_eq!(selected, serde_json::json!("fold:1"));
+        unsafe { dagml_owned_bytes_free(out) };
+        let mut weights_out = DagMlOwnedBytes::default();
+        let status = unsafe {
+            dagml_stacking_fold_weights_json(
+                request.as_ptr(),
+                request.len(),
+                &mut weights_out,
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        let weights: Vec<f64> = serde_json::from_slice(unsafe {
+            slice::from_raw_parts(weights_out.ptr, weights_out.len)
+        })
+        .unwrap();
+        assert_eq!(weights.len(), 2);
+        assert!(weights[1] > weights[0]);
+        unsafe { dagml_owned_bytes_free(weights_out) };
+    }
+
+    #[test]
+    fn aligns_named_source_rows_over_abi() {
+        let request = br#"{"sample_ids":["s1","s2"],"required_source_ids":["source_0","source_1"],"sources":[{"source_id":"source_0","sample_ids":["s2","s1"]},{"source_id":"source_1","sample_ids":["s1","s2"]}]}"#;
+        let mut out = DagMlOwnedBytes::default();
+        let mut error = DagMlString::default();
+        let status = unsafe {
+            dagml_align_named_source_rows_json(
+                request.as_ptr(),
+                request.len(),
+                &mut out,
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlStatusCode::OK, "{}", error_message(&error));
+        let aligned: serde_json::Value =
+            serde_json::from_slice(unsafe { slice::from_raw_parts(out.ptr, out.len) }).unwrap();
+        assert_eq!(
+            aligned["sources"][0]["row_indices"],
+            serde_json::json!([1, 0])
+        );
+        unsafe { dagml_owned_bytes_free(out) };
     }
 
     #[test]

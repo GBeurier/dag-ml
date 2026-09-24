@@ -104,7 +104,7 @@
       "enum": ["row", "feature", "target", "prediction"]
     },
     "artifact_backend": {
-      "enum": ["joblib", "torch", "tensorflow", "onnx", "safetensors", "json", "raw"]
+      "enum": ["joblib", "rds", "mat", "torch", "tensorflow", "onnx", "safetensors", "json", "raw"]
     },
     "fit_influence_policy": {
       "enum": [

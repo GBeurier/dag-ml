@@ -307,6 +307,8 @@
     "artifact_backend": {
       "enum": [
         "joblib",
+        "rds",
+        "mat",
         "torch",
         "tensorflow",
         "onnx",

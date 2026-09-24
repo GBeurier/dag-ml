@@ -73,6 +73,18 @@
         {
           "type": "object",
           "additionalProperties": false,
+          "required": ["kind", "min_splits", "max_splits"],
+          "properties": {
+            "kind": { "const": "capacity_kfold" },
+            "min_splits": { "type": "integer", "minimum": 2 },
+            "max_splits": { "type": "integer", "minimum": 2 },
+            "shuffle": { "type": "boolean" },
+            "seed": { "type": ["integer", "null"], "minimum": 0 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
           "required": ["kind", "n_splits"],
           "properties": {
             "kind": { "const": "group_kfold" },
@@ -416,7 +428,7 @@
       "enum": ["observation", "sample", "target", "group"]
     },
     "fit_boundary": {
-      "enum": ["fold_train", "fold_validation", "full_train", "predict"]
+      "enum": ["fold_train", "fold_validation", "full_train", "all_observations", "predict"]
     },
     "augmentation_scope": {
       "enum": ["none", "train_only", "all_partitions"]
@@ -512,7 +524,7 @@
       }
     },
     "data_request_partition": {
-      "enum": ["fold_train", "fold_validation", "full_train", "predict"]
+      "enum": ["fold_train", "fold_validation", "full_train", "all_observations", "predict"]
     },
     "data_view_policy": {
       "type": "object",

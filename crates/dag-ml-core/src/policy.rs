@@ -443,6 +443,7 @@ pub enum FitBoundary {
     FoldTrain,
     FoldValidation,
     FullTrain,
+    AllObservations,
     Predict,
 }
 

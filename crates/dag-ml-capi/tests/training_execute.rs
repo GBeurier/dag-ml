@@ -209,6 +209,7 @@ impl RuntimeController for TrainingController {
             node_id: task.node_plan.node_id.clone(),
             outputs,
             predictions,
+            classification_probabilities: Vec::new(),
             observation_predictions: Vec::new(),
             aggregated_predictions: Vec::new(),
             explanations: Vec::new(),

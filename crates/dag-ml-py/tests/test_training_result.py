@@ -436,6 +436,16 @@ class TrainingResultTests(unittest.TestCase):
             len(package["artifact_bindings"]),
             len(outcome["execution_bundle"]["refit_artifacts"]),
         )
+        output_id = package["output_bindings"][0]["binding_id"]
+        selected_output = dag_ml.select_portable_output(package, output_id)
+        self.assertEqual(selected_output["package_id"], package["package_id"])
+        self.assertEqual(selected_output["package_fingerprint"], package["package_fingerprint"])
+        self.assertEqual(selected_output["output_binding"], package["output_bindings"][0])
+        self.assertEqual(
+            dag_ml.PortablePredictorPackage(package).select_output(output_id), selected_output,
+        )
+        with self.assertRaises(dag_ml.DagMlError):
+            dag_ml.select_portable_output(package, "output:missing")
         self.assertTrue(
             all(
                 binding["load_mode"] == "host_sidecar"

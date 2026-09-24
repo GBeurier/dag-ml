@@ -59,9 +59,9 @@ pub fn fan_out_data_aware_branches(
     // Top-level data bindings (the executable DSL keys these by node id) must be
     // cloned + rewritten per discovered branch, or they dangle/collide at compile.
     expanded.data_bindings = rewrite_top_level_data_bindings(&spec.data_bindings, &id_map)?;
-    // Generation param_overrides referencing a fanned template node are NOT
-    // supported in a fanned template this slice — reject rather than dangle.
-    reject_generation_overrides_for_fanned_nodes(&spec.generation_dimensions, &id_map)?;
+    // A choice on the template operator applies to every discovered partition.
+    // Expand its override to the same suffixed node ids as the data bindings.
+    rewrite_generation_overrides_for_fanned_nodes(&mut expanded.generation_dimensions, &id_map)?;
     // Deterministic provenance: record the discovered partition sets so identical
     // data expands identically and the change is traceable in the spec metadata.
     // The relation_fingerprint is folded into the canonical fingerprint string so
@@ -108,25 +108,43 @@ pub(crate) fn rewrite_top_level_data_bindings(
     }
     Ok(out)
 }
-/// A generation `param_override` targeting a node that fan-out multiplied has no
-/// single destination after expansion (it would silently dangle), so reject it
-/// with a clear error. Generation × data-aware fan-out is out of scope this slice.
-pub(crate) fn reject_generation_overrides_for_fanned_nodes(
-    dimensions: &[PipelineDslGenerationDimension],
+/// Apply each template-node generation choice to every partition-local clone.
+/// An explicit override that collides with an expanded target is ambiguous and
+/// is rejected before graph compilation instead of depending on override order.
+pub(crate) fn rewrite_generation_overrides_for_fanned_nodes(
+    dimensions: &mut [PipelineDslGenerationDimension],
     id_map: &NodeIdRewriteMap,
 ) -> Result<()> {
     for dimension in dimensions {
-        for choice in &dimension.choices {
+        for choice in &mut dimension.choices {
+            let mut rewritten = Vec::new();
+            let mut targets = BTreeSet::new();
             for override_spec in &choice.param_overrides {
-                if id_map.contains_key(&override_spec.node_id) {
-                    return Err(DagMlError::GraphValidation(format!(
-                        "data-aware fan-out cannot rewrite generation param_override targeting \
-                         node `{}` (generation overrides on a fanned-out template node are not \
-                         supported in this slice)",
-                        override_spec.node_id
-                    )));
+                if let Some(clone_ids) = id_map.get(&override_spec.node_id) {
+                    for node_id in clone_ids {
+                        if !targets.insert(node_id.clone()) {
+                            return Err(DagMlError::GraphValidation(format!(
+                                "data-aware fan-out generation choice `{}` in dimension `{}` \
+                                 targets cloned node `{node_id}` more than once",
+                                choice.label, dimension.name
+                            )));
+                        }
+                        let mut clone = override_spec.clone();
+                        clone.node_id = node_id.clone();
+                        rewritten.push(clone);
+                    }
+                } else {
+                    if !targets.insert(override_spec.node_id.clone()) {
+                        return Err(DagMlError::GraphValidation(format!(
+                            "data-aware fan-out generation choice `{}` in dimension `{}` \
+                             targets node `{}` more than once",
+                            choice.label, dimension.name, override_spec.node_id
+                        )));
+                    }
+                    rewritten.push(override_spec.clone());
                 }
             }
+            choice.param_overrides = rewritten;
         }
     }
     Ok(())

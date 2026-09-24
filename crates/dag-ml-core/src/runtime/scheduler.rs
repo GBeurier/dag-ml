@@ -1,5 +1,6 @@
 // Auto-split from the former monolithic `runtime.rs` (pure refactor).
 use super::*;
+use crate::initial_refit::InitialFullRefitPackage;
 
 #[derive(Clone, Debug, Default)]
 pub struct SequentialScheduler;
@@ -67,6 +68,39 @@ fn prediction_output_ports_for_node(plan: &ExecutionPlan, node_id: &NodeId) -> R
     Ok(ports)
 }
 
+fn auxiliary_prediction_ports_for_node(
+    plan: &ExecutionPlan,
+    node_id: &NodeId,
+) -> Result<BTreeSet<String>> {
+    let node = plan
+        .graph_plan
+        .graph
+        .nodes
+        .iter()
+        .find(|node| node.id == *node_id)
+        .ok_or_else(|| DagMlError::RuntimeValidation(format!("node `{node_id}` is absent")))?;
+    let Some(value) = node.metadata.get("auxiliary_prediction_ports") else {
+        return Ok(BTreeSet::new());
+    };
+    let ports: Vec<String> = serde_json::from_value(value.clone()).map_err(|error| {
+        DagMlError::RuntimeValidation(format!(
+            "node `{node_id}` has malformed auxiliary prediction ports: {error}"
+        ))
+    })?;
+    let declared = prediction_output_ports_for_node(plan, node_id)?;
+    if !declared.iter().any(|port| port == "oof")
+        || ports
+            .iter()
+            .any(|port| port == "oof" || !declared.contains(port))
+        || ports.iter().collect::<BTreeSet<_>>().len() != ports.len()
+    {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "node `{node_id}` has auxiliary prediction ports outside its declared non-primary outputs"
+        )));
+    }
+    Ok(ports.into_iter().collect())
+}
+
 fn normalize_prediction_result_port(
     node_id: &NodeId,
     block_kind: &str,
@@ -120,6 +154,7 @@ pub(crate) fn normalize_result_prediction_ports(
         }
     }
     if result.predictions.is_empty()
+        && result.classification_probabilities.is_empty()
         && result.observation_predictions.is_empty()
         && result.aggregated_predictions.is_empty()
         && result.explanations.is_empty()
@@ -131,6 +166,14 @@ pub(crate) fn normalize_result_prediction_ports(
         normalize_prediction_result_port(
             &task.node_plan.node_id,
             "prediction block",
+            &mut block.producer_port,
+            &prediction_ports,
+        )?;
+    }
+    for block in &mut result.classification_probabilities {
+        normalize_prediction_result_port(
+            &task.node_plan.node_id,
+            "classification probability block",
             &mut block.producer_port,
             &prediction_ports,
         )?;
@@ -158,6 +201,32 @@ pub(crate) fn normalize_result_prediction_ports(
             &mut block.producer_port,
             &prediction_ports,
         )?;
+    }
+    let auxiliary = auxiliary_prediction_ports_for_node(plan, &task.node_plan.node_id)?;
+    for block in &result.predictions {
+        if !block
+            .producer_port
+            .as_ref()
+            .is_some_and(|port| auxiliary.contains(port))
+        {
+            continue;
+        }
+        let primary = result
+            .predictions
+            .iter()
+            .filter(|candidate| {
+                candidate.producer_port.as_deref() == Some("oof")
+                    && candidate.partition == block.partition
+                    && candidate.fold_id == block.fold_id
+            })
+            .collect::<Vec<_>>();
+        if primary.len() != 1 || primary[0].sample_ids != block.sample_ids {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "node `{}` auxiliary prediction port `{}` must match exactly one primary `oof` block's partition, fold and ordered sample IDs",
+                task.node_plan.node_id,
+                block.producer_port.as_deref().unwrap_or_default(),
+            )));
+        }
     }
     Ok(())
 }
@@ -193,6 +262,9 @@ pub(crate) struct PhaseScopeResources<'a> {
     /// uses this for its base branches before invoking the meta node; ordinary
     /// phases leave it empty and keep the full plan topology.
     pub(crate) node_filter: Option<&'a BTreeSet<NodeId>>,
+    /// Reuse scope-identical data-edge outputs when nested OOF execution
+    /// invokes a residual learner separately from its base producer.
+    pub(crate) cached_data_node_ids: Option<&'a BTreeSet<NodeId>>,
     /// An inner base pass must not recursively apply the plan's ordinary
     /// `inner_cv` policy.  Nested stacking owns that one level explicitly.
     pub(crate) suppress_inner_cv: bool,
@@ -229,7 +301,7 @@ struct HpoFoldFeedback<'a> {
 }
 
 fn validate_hpo_progressive_fold_topology(plan: &ExecutionPlan) -> Result<()> {
-    if nested_stacking_campaign_plan(plan)?.is_some() {
+    if !nested_stacking_campaign_plans(plan)?.is_empty() {
         return Err(DagMlError::RuntimeValidation(
             "runtime HPO progressive pruning does not support nested-stacking FIT_CV; the scheduler cannot attest one report-grade intermediate per outer fold"
                 .to_string(),
@@ -630,6 +702,167 @@ impl SequentialScheduler {
         Ok(HpoCandidateFitCvOutcome::Completed)
     }
 
+    /// Evaluate one native candidate fold in an isolated worker namespace.
+    /// The caller owns the inter-fold pause and optimizer decision; no later
+    /// fold is run by this call.
+    pub(super) fn execute_host_hpo_worker_fold(
+        &self,
+        plan: &ExecutionPlan,
+        controllers: &RuntimeControllerRegistry,
+        data_provider: &dyn RuntimeDataProvider,
+        request: &HostHpoSearchRequest,
+        fold_index: usize,
+    ) -> Result<(ScoreSet, f64)> {
+        plan.validate()?;
+        if !nested_stacking_campaign_plans(plan)?.is_empty() {
+            return Err(DagMlError::RuntimeValidation(
+                "host HPO progressive pruning cannot attest nested-stacking outer folds".into(),
+            ));
+        }
+        let fold = plan
+            .fold_set
+            .as_ref()
+            .and_then(|folds| folds.folds.get(fold_index))
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation("host HPO worker fold index is out of range".into())
+            })?;
+        let variant = &plan.variants[0];
+        let mut context = RunContext::new(
+            RunId::new(format!("run:host_hpo:worker:{}", variant.variant_id))?,
+            variant.seed.or(plan.campaign.root_seed),
+        );
+        context.variant_id = Some(variant.variant_id.clone());
+        context.configure_global_oof_aggregation(plan, data_provider)?;
+        self.execute_phase_scope(
+            plan,
+            controllers,
+            &mut context,
+            PhaseScope {
+                phase: Phase::FitCv,
+                variant_id: Some(variant.variant_id.clone()),
+                variant: Some(VariantExecutionSpec::from_plan(variant)),
+                fold_id: Some(fold.fold_id.clone()),
+                seed_root: variant.seed.or(plan.campaign.root_seed),
+            },
+            PhaseScopeResources {
+                data_provider: Some(data_provider),
+                ..Default::default()
+            },
+        )?;
+        let scores = context
+            .build_score_set(plan.id.clone(), None)
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(
+                    "host HPO worker fold lost native score evidence".into(),
+                )
+            })?;
+        scores.validate()?;
+        let reports = scores
+            .reports
+            .iter()
+            .filter(|report| {
+                report.producer_node == request.target_node
+                    && report.partition == PredictionPartition::Validation
+                    && report.fold_id.as_ref() == Some(&fold.fold_id)
+            })
+            .collect::<Vec<_>>();
+        let [report] = reports.as_slice() else {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "host HPO worker requires one target validation score in fold {}",
+                fold.fold_id
+            )));
+        };
+        let score = report
+            .metrics
+            .get(request.metric.name())
+            .copied()
+            .filter(|score| score.is_finite())
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(
+                    "host HPO worker requires a finite native fold score".into(),
+                )
+            })?;
+        Ok((scores, score))
+    }
+
+    /// Execute a host-optimizer candidate one fold at a time so the host can
+    /// decide whether to prune from native, report-grade intermediate scores.
+    /// A pruned candidate never receives a fabricated OOF score.
+    pub(super) fn execute_host_hpo_candidate_fit_cv(
+        &self,
+        plan: &ExecutionPlan,
+        controllers: &RuntimeControllerRegistry,
+        data_provider: &dyn RuntimeDataProvider,
+        ctx: &mut RunContext,
+        request: &HostHpoSearchRequest,
+        on_fold: &mut dyn FnMut(u32, f64) -> Result<bool>,
+    ) -> Result<bool> {
+        if !nested_stacking_campaign_plans(plan)?.is_empty() {
+            return Err(DagMlError::RuntimeValidation(
+                "host HPO progressive pruning cannot attest nested-stacking outer folds".into(),
+            ));
+        }
+        let folds = &plan
+            .fold_set
+            .as_ref()
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation("host HPO pruning requires evaluation folds".into())
+            })?
+            .folds;
+        ctx.configure_global_oof_aggregation(plan, data_provider)?;
+        let variant = &plan.variants[0];
+        for (step, fold) in folds.iter().enumerate() {
+            let score_start = ctx.score_collector.len();
+            self.execute_phase_scope(
+                plan,
+                controllers,
+                ctx,
+                PhaseScope {
+                    phase: Phase::FitCv,
+                    variant_id: Some(variant.variant_id.clone()),
+                    variant: Some(VariantExecutionSpec::from_plan(variant)),
+                    fold_id: Some(fold.fold_id.clone()),
+                    seed_root: variant.seed.or(ctx.root_seed),
+                },
+                PhaseScopeResources {
+                    data_provider: Some(data_provider),
+                    ..Default::default()
+                },
+            )?;
+            let reports = ctx.score_collector[score_start..]
+                .iter()
+                .filter(|report| {
+                    report.producer_node == request.target_node
+                        && report.partition == PredictionPartition::Validation
+                        && report.fold_id.as_ref() == Some(&fold.fold_id)
+                })
+                .collect::<Vec<_>>();
+            let [report] = reports.as_slice() else {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "host HPO pruning requires one target validation score in fold {}",
+                    fold.fold_id
+                )));
+            };
+            let score = report
+                .metrics
+                .get(request.metric.name())
+                .copied()
+                .filter(|score| score.is_finite())
+                .ok_or_else(|| {
+                    DagMlError::RuntimeValidation(
+                        "host HPO pruning requires a finite native fold score".into(),
+                    )
+                })?;
+            let step = u32::try_from(step).map_err(|_| {
+                DagMlError::RuntimeValidation("host HPO pruning fold count exceeds u32".into())
+            })?;
+            if on_fold(step, score)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     pub fn execute_phase(
         &self,
         plan: &ExecutionPlan,
@@ -684,6 +917,96 @@ impl SequentialScheduler {
         )
     }
 
+    /// Replay PREDICT from a no-CV full-refit package without fabricating an
+    /// ExecutionBundle or a selected CV variant.
+    pub fn execute_initial_full_refit_predict(
+        &self,
+        package: &InitialFullRefitPackage,
+        envelope: &ExternalDataPlanEnvelope,
+        controllers: &RuntimeControllerRegistry,
+        data_provider: &dyn RuntimeDataProvider,
+        artifact_store: &dyn RuntimeArtifactStore,
+        ctx: &mut RunContext,
+    ) -> Result<Vec<NodeResult>> {
+        package.validate()?;
+        let plan = &package.effective_plan;
+        let package_context_id = BundleId::new(package.package_id.clone())?;
+        let mut handles = BTreeMap::<NodeId, BTreeMap<String, HandleRef>>::new();
+        let mut inputs = BTreeMap::<NodeId, BTreeMap<String, ArtifactInputSpec>>::new();
+        for artifact in &package.artifacts {
+            let record = &artifact.record;
+            let handle = artifact_store.materialize(&ArtifactMaterializationRequest {
+                run_id: ctx.run_id.clone(),
+                bundle_id: package_context_id.clone(),
+                node_id: record.node_id.clone(),
+                phase: Phase::Predict,
+                variant_id: Some(package.variant_id.clone()),
+                controller_id: record.controller_id.clone(),
+                artifact: record.artifact.clone(),
+                params_fingerprint: record.params_fingerprint.clone(),
+                training_loss_fingerprint: record.training_loss_fingerprint.clone(),
+            })?;
+            if !matches!(handle.kind, HandleKind::Model | HandleKind::Artifact)
+                || handle.owner_controller != record.controller_id
+            {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "initial full-refit artifact `{}` materialized with invalid handle",
+                    record.artifact.id
+                )));
+            }
+            let key = refit_artifact_input_key(&record.artifact.id);
+            if handles
+                .entry(record.node_id.clone())
+                .or_default()
+                .insert(key.clone(), handle)
+                .is_some()
+                || inputs
+                    .entry(record.node_id.clone())
+                    .or_default()
+                    .insert(key, ArtifactInputSpec::from_refit_record(record)?)
+                    .is_some()
+            {
+                return Err(DagMlError::RuntimeValidation(
+                    "duplicate initial full-refit replay artifact".into(),
+                ));
+            }
+        }
+        let data_envelopes = plan
+            .node_plans
+            .values()
+            .flat_map(|node| node.data_bindings.iter())
+            .map(|binding| {
+                (
+                    data_binding_requirement_key(&binding.node_id, &binding.input_name),
+                    envelope.clone(),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let variant = VariantExecutionSpec::from_plan(&plan.variants[0]);
+        let seed_root = variant.seed.or(ctx.root_seed);
+        self.execute_phase_scope(
+            plan,
+            controllers,
+            ctx,
+            PhaseScope {
+                phase: Phase::Predict,
+                variant_id: Some(package.variant_id.clone()),
+                variant: Some(variant),
+                fold_id: None,
+                seed_root,
+            },
+            PhaseScopeResources {
+                data_provider: Some(data_provider),
+                replay_artifact_handles: Some(&handles),
+                replay_artifact_inputs: Some(&inputs),
+                replay_bundle_id: Some(&package_context_id),
+                data_envelopes: Some(&data_envelopes),
+                direct_sample_prediction_only: true,
+                ..Default::default()
+            },
+        )
+    }
+
     pub fn execute_campaign_phase(
         &self,
         plan: &ExecutionPlan,
@@ -692,7 +1015,7 @@ impl SequentialScheduler {
         phase: Phase,
     ) -> Result<Vec<NodeResult>> {
         plan.validate()?;
-        if phase == Phase::FitCv && nested_stacking_campaign_plan(plan)?.is_some() {
+        if phase == Phase::FitCv && !nested_stacking_campaign_plans(plan)?.is_empty() {
             return Err(DagMlError::RuntimeValidation(
                 "nested stacking FIT_CV requires execute_campaign_phase_with_data_provider so the scheduler can materialize parent-bound inner folds"
                     .to_string(),
@@ -752,14 +1075,19 @@ impl SequentialScheduler {
         plan.validate()?;
         if phase == Phase::FitCv {
             ctx.configure_global_oof_aggregation(plan, data_provider)?;
-            if let Some(nested) = nested_stacking_campaign_plan(plan)? {
-                return self.execute_nested_stacking_fit_cv(
-                    plan,
-                    controllers,
-                    data_provider,
-                    ctx,
-                    &nested,
-                );
+            let campaigns = nested_stacking_campaign_plans(plan)?;
+            if !campaigns.is_empty() {
+                let mut results = Vec::new();
+                for nested in &campaigns {
+                    results.extend(self.execute_nested_stacking_fit_cv(
+                        plan,
+                        controllers,
+                        data_provider,
+                        ctx,
+                        nested,
+                    )?);
+                }
+                return Ok(results);
             }
         }
         let mut results = Vec::new();
@@ -828,17 +1156,22 @@ impl SequentialScheduler {
         plan.validate()?;
         if phase == Phase::FitCv {
             ctx.configure_global_oof_aggregation(plan, data_provider)?;
-            if let Some(nested) = nested_stacking_campaign_plan(plan)? {
+            let campaigns = nested_stacking_campaign_plans(plan)?;
+            if !campaigns.is_empty() {
                 // FIT_CV produces no refit artifacts. Keep the data-provider
                 // route canonical rather than silently using an artifact store
                 // that cannot participate in the inner-OOF proof.
-                return self.execute_nested_stacking_fit_cv(
-                    plan,
-                    controllers,
-                    data_provider,
-                    ctx,
-                    &nested,
-                );
+                let mut results = Vec::new();
+                for nested in &campaigns {
+                    results.extend(self.execute_nested_stacking_fit_cv(
+                        plan,
+                        controllers,
+                        data_provider,
+                        ctx,
+                        nested,
+                    )?);
+                }
+                return Ok(results);
             }
         }
         let mut results = Vec::new();
@@ -909,11 +1242,47 @@ impl SequentialScheduler {
         data_provider: &dyn RuntimeDataProvider,
         ctx: &mut RunContext,
     ) -> Result<Vec<NodeResult>> {
-        let Some(nested) = nested_stacking_campaign_plan(plan)? else {
-            return Ok(Vec::new());
-        };
+        let mut results = Vec::new();
+        for nested in nested_stacking_campaign_plans(plan)? {
+            results.extend(self.execute_stacking_refit_oof_for_node(
+                plan,
+                controllers,
+                data_provider,
+                ctx,
+                &nested,
+            )?);
+        }
+        Ok(results)
+    }
+
+    fn execute_stacking_refit_oof_for_node(
+        &self,
+        plan: &ExecutionPlan,
+        controllers: &RuntimeControllerRegistry,
+        data_provider: &dyn RuntimeDataProvider,
+        ctx: &mut RunContext,
+        nested: &NestedStackingCampaignPlan,
+    ) -> Result<Vec<NodeResult>> {
+        let mut results = Vec::new();
+        for level in plan.node_parallel_levels_for_phase(Phase::FitCv)? {
+            for node_id in level {
+                if nested.base_node_ids.contains(&node_id)
+                    && is_nested_stacking_meta_node(plan, &node_id)?
+                {
+                    let dependent = nested_stacking_campaign_plan_for_node(plan, node_id)?
+                        .expect("validated dependent meta node");
+                    results.extend(self.execute_stacking_refit_oof_for_node(
+                        plan,
+                        controllers,
+                        data_provider,
+                        ctx,
+                        &dependent,
+                    )?);
+                }
+            }
+        }
         let Some(folds) = &nested.refit_fold_set else {
-            return Ok(Vec::new());
+            return Ok(results);
         };
         let outer_fold_ids = nested
             .outer_scopes
@@ -930,7 +1299,66 @@ impl SequentialScheduler {
         } else {
             ctx.validation_scoring_fold_ids = Some(outer_fold_ids);
         }
-        let mut results = Vec::new();
+        let auto_threshold = if nested.kind == NestedMetaKind::Residual {
+            plan.graph_plan
+                .graph
+                .nodes
+                .iter()
+                .find(|node| node.id == nested.meta_node_id)
+                .and_then(|node| {
+                    (node
+                        .metadata
+                        .get("residual_gate")
+                        .and_then(serde_json::Value::as_str)
+                        == Some("auto"))
+                    .then(|| {
+                        node.metadata
+                            .get("residual_rli_threshold")
+                            .and_then(serde_json::Value::as_f64)
+                            .unwrap_or(0.0)
+                    })
+                })
+        } else {
+            None
+        };
+        results.extend(self.execute_dependent_meta_campaigns(
+            plan,
+            controllers,
+            data_provider,
+            ctx,
+            nested,
+            folds,
+        )?);
+        let mut dependent_metas = BTreeSet::new();
+        for node_id in &nested.base_node_ids {
+            if is_nested_stacking_meta_node(plan, node_id)? {
+                dependent_metas.insert(node_id.clone());
+            }
+        }
+        let dependent_closure = dependency_closure(plan, &dependent_metas);
+        let base_node_ids = nested
+            .base_node_ids
+            .difference(&dependent_closure)
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let meta_data_to_run = nested
+            .meta_data_node_ids
+            .difference(&nested.base_node_ids)
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let meta_data_cached = nested
+            .meta_data_node_ids
+            .intersection(&nested.base_node_ids)
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let mut active_nested = nested.clone();
+        active_nested.base_node_ids = base_node_ids.clone();
+        let feature_join = prediction_feature_join_plan(plan, &active_nested)?;
+        let feature_inner_spec = if feature_join.is_some() {
+            Some(&nested.inner_cv)
+        } else {
+            None
+        };
         for variant in &plan.variants {
             if ctx
                 .variant_id
@@ -940,27 +1368,268 @@ impl SequentialScheduler {
                 continue;
             }
             for fold in &folds.folds {
-                results.extend(self.execute_phase_scope(
-                    plan,
-                    controllers,
-                    ctx,
-                    PhaseScope {
-                        phase: Phase::FitCv,
-                        variant_id: Some(variant.variant_id.clone()),
-                        variant: Some(VariantExecutionSpec::from_plan(variant)),
-                        fold_id: Some(fold.fold_id.clone()),
-                        seed_root: variant.seed.or(ctx.root_seed),
+                if let Some(join) = feature_join.as_ref() {
+                    results.extend(
+                        self.execute_prediction_feature_base_scope(
+                            plan,
+                            controllers,
+                            data_provider,
+                            ctx,
+                            join,
+                            feature_inner_spec
+                                .as_ref()
+                                .expect("feature join needs inner CV"),
+                            folds,
+                            fold,
+                            Some(variant.variant_id.clone()),
+                            Some(VariantExecutionSpec::from_plan(variant)),
+                            variant.seed.or(ctx.root_seed),
+                        )?,
+                    );
+                } else if !self.nested_base_predictions_ready(plan, ctx, nested, &fold.fold_id)?
+                    && !base_node_ids.is_empty()
+                {
+                    results.extend(self.execute_phase_scope(
+                        plan,
+                        controllers,
+                        ctx,
+                        PhaseScope {
+                            phase: Phase::FitCv,
+                            variant_id: Some(variant.variant_id.clone()),
+                            variant: Some(VariantExecutionSpec::from_plan(variant)),
+                            fold_id: Some(fold.fold_id.clone()),
+                            seed_root: variant.seed.or(ctx.root_seed),
+                        },
+                        PhaseScopeResources {
+                            data_provider: Some(data_provider),
+                            fold_set_override: Some(folds),
+                            node_filter: Some(&base_node_ids),
+                            suppress_inner_cv: true,
+                            ..Default::default()
+                        },
+                    )?);
+                }
+            }
+            if let Some(threshold) = auto_threshold {
+                let inner_spec = &nested.inner_cv;
+                let meta_plan = plan
+                    .node_plans
+                    .get(&nested.meta_node_id)
+                    .expect("validated residual learner");
+                let mut learner_only = BTreeSet::from([nested.meta_node_id.clone()]);
+                learner_only.extend(meta_data_to_run.iter().cloned());
+                let variant_id = Some(variant.variant_id.clone());
+                let variant_spec = Some(VariantExecutionSpec::from_plan(variant));
+                let seed_root = variant.seed.or(ctx.root_seed);
+                for fold in &folds.folds {
+                    let subinner = inner_spec.build_nested_fold_set(fold, &folds.sample_groups)?;
+                    results.extend(self.execute_dependent_meta_campaigns(
+                        plan,
+                        controllers,
+                        data_provider,
+                        ctx,
+                        nested,
+                        &subinner.inner_fold_set,
+                    )?);
+                    for base_fold in &subinner.inner_fold_set.folds {
+                        if let Some(join) = feature_join.as_ref() {
+                            results.extend(
+                                self.execute_prediction_feature_base_scope(
+                                    plan,
+                                    controllers,
+                                    data_provider,
+                                    ctx,
+                                    join,
+                                    feature_inner_spec
+                                        .as_ref()
+                                        .expect("feature join needs inner CV"),
+                                    &subinner.inner_fold_set,
+                                    base_fold,
+                                    variant_id.clone(),
+                                    variant_spec.clone(),
+                                    seed_root,
+                                )?,
+                            );
+                        } else if !self.nested_base_predictions_ready(
+                            plan,
+                            ctx,
+                            nested,
+                            &base_fold.fold_id,
+                        )? && !base_node_ids.is_empty()
+                        {
+                            results.extend(self.execute_phase_scope(
+                                plan,
+                                controllers,
+                                ctx,
+                                PhaseScope {
+                                    phase: Phase::FitCv,
+                                    variant_id: variant_id.clone(),
+                                    variant: variant_spec.clone(),
+                                    fold_id: Some(base_fold.fold_id.clone()),
+                                    seed_root,
+                                },
+                                PhaseScopeResources {
+                                    data_provider: Some(data_provider),
+                                    fold_set_override: Some(&subinner.inner_fold_set),
+                                    node_filter: Some(&base_node_ids),
+                                    suppress_inner_cv: true,
+                                    ..Default::default()
+                                },
+                            )?);
+                        }
+                    }
+                    results.extend(self.execute_phase_scope(
+                        plan,
+                        controllers,
+                        ctx,
+                        PhaseScope {
+                            phase: Phase::FitCv,
+                            variant_id: variant_id.clone(),
+                            variant: variant_spec.clone(),
+                            fold_id: Some(fold.fold_id.clone()),
+                            seed_root,
+                        },
+                        PhaseScopeResources {
+                            data_provider: Some(data_provider),
+                            fold_set_override: Some(folds),
+                            node_filter: Some(&learner_only),
+                            cached_data_node_ids: Some(&meta_data_cached),
+                            suppress_inner_cv: true,
+                            nested_stacking: Some(NestedStackingInput {
+                                meta_node_id: &nested.meta_node_id,
+                                inner: &subinner,
+                                parent_fold_set: folds,
+                                kind: NestedMetaKind::Residual,
+                            }),
+                            ..Default::default()
+                        },
+                    )?);
+                }
+                let refit_scope = PhaseScope {
+                    phase: Phase::Refit,
+                    variant_id: variant_id.clone(),
+                    variant: variant_spec,
+                    fold_id: None,
+                    seed_root,
+                };
+                let targets = nested_residual_targets(plan, meta_plan, ctx, &refit_scope, None)?
+                    .expect("residual REFIT targets");
+                let learner_oof = residual_learner_oof(ctx, &nested.meta_node_id, folds)?;
+                let calibrated = crate::residual::calibrate_residual_gate(
+                    &targets,
+                    &learner_oof,
+                    crate::residual::ResidualGate::Automatic {
+                        rli_threshold: threshold,
                     },
-                    PhaseScopeResources {
-                        data_provider: Some(data_provider),
-                        fold_set_override: Some(folds),
-                        node_filter: Some(&nested.base_node_ids),
-                        suppress_inner_cv: true,
-                        ..Default::default()
-                    },
-                )?);
+                )?;
+                ctx.residual_gates.insert((variant_id, None), calibrated);
             }
         }
+        Ok(results)
+    }
+
+    /// Prepare prediction features one level below the base model's current
+    /// fold. Source models produce strict inner OOF for its fit rows and a
+    /// separate parent-validation block for its prediction rows. The join
+    /// receives both classes under disjoint keys and the base consumes its
+    /// cached Data output in the same parent scope.
+    #[allow(clippy::too_many_arguments)]
+    fn execute_prediction_feature_base_scope(
+        &self,
+        plan: &ExecutionPlan,
+        controllers: &RuntimeControllerRegistry,
+        data_provider: &dyn RuntimeDataProvider,
+        ctx: &mut RunContext,
+        join: &PredictionFeatureJoinPlan,
+        inner_spec: &crate::fold::NestedCvSpec,
+        parent_set: &FoldSet,
+        parent_fold: &crate::fold::FoldAssignment,
+        variant_id: Option<VariantId>,
+        variant: Option<VariantExecutionSpec>,
+        seed_root: Option<u64>,
+    ) -> Result<Vec<NodeResult>> {
+        let nested = inner_spec.build_nested_fold_set(parent_fold, &parent_set.sample_groups)?;
+        let mut results = Vec::new();
+        for fold in &nested.inner_fold_set.folds {
+            if prediction_feature_sources_ready(plan, join, ctx, &fold.fold_id)? {
+                continue;
+            }
+            results.extend(self.execute_phase_scope(
+                plan,
+                controllers,
+                ctx,
+                PhaseScope {
+                    phase: Phase::FitCv,
+                    variant_id: variant_id.clone(),
+                    variant: variant.clone(),
+                    fold_id: Some(fold.fold_id.clone()),
+                    seed_root,
+                },
+                PhaseScopeResources {
+                    data_provider: Some(data_provider),
+                    fold_set_override: Some(&nested.inner_fold_set),
+                    node_filter: Some(&join.source_node_ids),
+                    suppress_inner_cv: true,
+                    ..Default::default()
+                },
+            )?);
+        }
+        let scope = PhaseScope {
+            phase: Phase::FitCv,
+            variant_id,
+            variant,
+            fold_id: Some(parent_fold.fold_id.clone()),
+            seed_root,
+        };
+        if !prediction_feature_sources_ready(plan, join, ctx, &parent_fold.fold_id)? {
+            results.extend(self.execute_phase_scope(
+                plan,
+                controllers,
+                ctx,
+                scope.clone(),
+                PhaseScopeResources {
+                    data_provider: Some(data_provider),
+                    fold_set_override: Some(parent_set),
+                    node_filter: Some(&join.source_node_ids),
+                    suppress_inner_cv: true,
+                    ..Default::default()
+                },
+            )?);
+        }
+        let join_only = BTreeSet::from([join.join_node_id.clone()]);
+        results.extend(self.execute_phase_scope(
+            plan,
+            controllers,
+            ctx,
+            scope.clone(),
+            PhaseScopeResources {
+                data_provider: Some(data_provider),
+                fold_set_override: Some(parent_set),
+                node_filter: Some(&join_only),
+                suppress_inner_cv: true,
+                nested_stacking: Some(NestedStackingInput {
+                    meta_node_id: &join.join_node_id,
+                    inner: &nested,
+                    parent_fold_set: parent_set,
+                    kind: NestedMetaKind::Stacking,
+                }),
+                ..Default::default()
+            },
+        )?);
+        results.extend(self.execute_phase_scope(
+            plan,
+            controllers,
+            ctx,
+            scope,
+            PhaseScopeResources {
+                data_provider: Some(data_provider),
+                fold_set_override: Some(parent_set),
+                node_filter: Some(&join.downstream_node_ids),
+                cached_data_node_ids: Some(&join_only),
+                suppress_inner_cv: true,
+                ..Default::default()
+            },
+        )?);
         Ok(results)
     }
 
@@ -980,22 +1649,208 @@ impl SequentialScheduler {
         ctx: &mut RunContext,
         nested: &NestedStackingCampaignPlan,
     ) -> Result<Vec<NodeResult>> {
+        self.execute_nested_stacking_fit_cv_scoped(
+            plan,
+            controllers,
+            data_provider,
+            ctx,
+            nested,
+            true,
+        )
+    }
+
+    fn execute_dependent_meta_campaigns(
+        &self,
+        plan: &ExecutionPlan,
+        controllers: &RuntimeControllerRegistry,
+        data_provider: &dyn RuntimeDataProvider,
+        ctx: &mut RunContext,
+        nested: &NestedStackingCampaignPlan,
+        fold_set: &FoldSet,
+    ) -> Result<Vec<NodeResult>> {
+        let mut scoped_plan = plan.clone();
+        scoped_plan.fold_set = Some(fold_set.clone());
+        let mut results = Vec::new();
+        for level in plan.node_parallel_levels_for_phase(Phase::FitCv)? {
+            for node_id in level {
+                if !nested.base_node_ids.contains(&node_id)
+                    || !is_nested_stacking_meta_node(plan, &node_id)?
+                {
+                    continue;
+                }
+                let present = fold_set
+                    .folds
+                    .iter()
+                    .filter(|fold| {
+                        !ctx.prediction_store
+                            .find(
+                                Some(&node_id),
+                                Some(&PredictionPartition::Validation),
+                                Some(&fold.fold_id),
+                            )
+                            .is_empty()
+                    })
+                    .count();
+                if present == fold_set.folds.len() {
+                    continue;
+                }
+                if present != 0 {
+                    return Err(DagMlError::OofValidation(format!(
+                        "dependent meta node `{node_id}` has partial OOF evidence in fold set `{}`",
+                        fold_set.id
+                    )));
+                }
+                let campaign = nested_stacking_campaign_plan_for_node(&scoped_plan, node_id)?
+                    .expect("validated dependent meta node");
+                results.extend(self.execute_nested_stacking_fit_cv_scoped(
+                    &scoped_plan,
+                    controllers,
+                    data_provider,
+                    ctx,
+                    &campaign,
+                    false,
+                )?);
+            }
+        }
+        Ok(results)
+    }
+
+    fn nested_base_predictions_ready(
+        &self,
+        plan: &ExecutionPlan,
+        ctx: &RunContext,
+        nested: &NestedStackingCampaignPlan,
+        fold_id: &FoldId,
+    ) -> Result<bool> {
+        let mut sources = 0usize;
+        for edge in
+            plan.graph_plan.graph.edges.iter().filter(|edge| {
+                edge.target.node_id == nested.meta_node_id && edge.contract.requires_oof
+            })
+        {
+            sources += 1;
+            let raw = ctx.prediction_store.find(
+                Some(&edge.source.node_id),
+                Some(&PredictionPartition::Validation),
+                Some(fold_id),
+            );
+            let blocks = filter_prediction_blocks_for_edge_source_port(plan, edge, raw)?;
+            if blocks.len() > 1 {
+                return Err(DagMlError::OofValidation(format!(
+                    "nested base `{}.{}` has duplicate evidence for fold `{fold_id}`",
+                    edge.source.node_id, edge.source.port_name
+                )));
+            }
+            if blocks.is_empty() {
+                return Ok(false);
+            }
+        }
+        Ok(sources > 0)
+    }
+
+    fn execute_nested_stacking_fit_cv_scoped(
+        &self,
+        plan: &ExecutionPlan,
+        controllers: &RuntimeControllerRegistry,
+        data_provider: &dyn RuntimeDataProvider,
+        ctx: &mut RunContext,
+        nested: &NestedStackingCampaignPlan,
+        report_grade: bool,
+    ) -> Result<Vec<NodeResult>> {
         let parent_fold_ids = nested
             .outer_scopes
             .iter()
             .map(|outer| outer.outer_fold_id.clone())
             .collect::<BTreeSet<_>>();
-        if let Some(existing) = &ctx.validation_scoring_fold_ids {
-            if existing != &parent_fold_ids {
-                return Err(DagMlError::RuntimeValidation(
-                    "nested stacking cannot reuse a run context with a different report-grade outer fold set"
-                        .to_string(),
-                ));
+        // A dependent stage contributes training evidence, never a new
+        // report-grade validation universe.
+        if report_grade {
+            if let Some(existing) = &ctx.validation_scoring_fold_ids {
+                if existing != &parent_fold_ids {
+                    return Err(DagMlError::RuntimeValidation(
+                        "nested stacking cannot reuse a run context with a different report-grade outer fold set"
+                            .to_string(),
+                    ));
+                }
+            } else {
+                ctx.validation_scoring_fold_ids = Some(parent_fold_ids);
             }
-        } else {
-            ctx.validation_scoring_fold_ids = Some(parent_fold_ids);
         }
+        let residual_auto_threshold = if nested.kind == NestedMetaKind::Residual {
+            plan.graph_plan
+                .graph
+                .nodes
+                .iter()
+                .find(|node| node.id == nested.meta_node_id)
+                .and_then(|node| {
+                    (node
+                        .metadata
+                        .get("residual_gate")
+                        .and_then(serde_json::Value::as_str)
+                        == Some("auto"))
+                    .then(|| {
+                        node.metadata
+                            .get("residual_rli_threshold")
+                            .and_then(serde_json::Value::as_f64)
+                            .unwrap_or(0.0)
+                    })
+                })
+        } else {
+            None
+        };
+        let coverage_contract = if report_grade && nested.kind == NestedMetaKind::Stacking {
+            let meta_node = plan
+                .graph_plan
+                .graph
+                .nodes
+                .iter()
+                .find(|node| node.id == nested.meta_node_id)
+                .expect("validated nested stacking meta node");
+            crate::oof::StackingOofCoverageContract::from_metadata(&meta_node.metadata)?
+        } else {
+            None
+        };
         let mut results = Vec::new();
+        if let Some(folds) = &plan.fold_set {
+            results.extend(self.execute_dependent_meta_campaigns(
+                plan,
+                controllers,
+                data_provider,
+                ctx,
+                nested,
+                folds,
+            )?);
+        }
+        let mut dependent_metas = BTreeSet::new();
+        for node_id in &nested.base_node_ids {
+            if is_nested_stacking_meta_node(plan, node_id)? {
+                dependent_metas.insert(node_id.clone());
+            }
+        }
+        let dependent_closure = dependency_closure(plan, &dependent_metas);
+        let base_node_ids = nested
+            .base_node_ids
+            .difference(&dependent_closure)
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let meta_data_to_run = nested
+            .meta_data_node_ids
+            .difference(&nested.base_node_ids)
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let meta_data_cached = nested
+            .meta_data_node_ids
+            .intersection(&nested.base_node_ids)
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let mut active_nested = nested.clone();
+        active_nested.base_node_ids = base_node_ids.clone();
+        let feature_join = prediction_feature_join_plan(plan, &active_nested)?;
+        let inner_spec = if residual_auto_threshold.is_some() || feature_join.is_some() {
+            Some(&nested.inner_cv)
+        } else {
+            None
+        };
         for variant in &plan.variants {
             if ctx
                 .variant_id
@@ -1008,7 +1863,220 @@ impl SequentialScheduler {
             let variant_id = Some(variant.variant_id.clone());
             let variant_spec = Some(VariantExecutionSpec::from_plan(variant));
             for outer in &nested.outer_scopes {
+                results.extend(self.execute_dependent_meta_campaigns(
+                    plan,
+                    controllers,
+                    data_provider,
+                    ctx,
+                    nested,
+                    &outer.inner.inner_fold_set,
+                )?);
                 for inner_fold in &outer.inner.inner_fold_set.folds {
+                    if let Some(join) = feature_join.as_ref() {
+                        results.extend(self.execute_prediction_feature_base_scope(
+                            plan,
+                            controllers,
+                            data_provider,
+                            ctx,
+                            join,
+                            inner_spec.as_ref().expect("feature join needs inner CV"),
+                            &outer.inner.inner_fold_set,
+                            inner_fold,
+                            variant_id.clone(),
+                            variant_spec.clone(),
+                            seed_root,
+                        )?);
+                    } else if !self.nested_base_predictions_ready(
+                        plan,
+                        ctx,
+                        nested,
+                        &inner_fold.fold_id,
+                    )? && !base_node_ids.is_empty()
+                    {
+                        results.extend(self.execute_phase_scope(
+                            plan,
+                            controllers,
+                            ctx,
+                            PhaseScope {
+                                phase: Phase::FitCv,
+                                variant_id: variant_id.clone(),
+                                variant: variant_spec.clone(),
+                                fold_id: Some(inner_fold.fold_id.clone()),
+                                seed_root,
+                            },
+                            PhaseScopeResources {
+                                data_provider: Some(data_provider),
+                                fold_set_override: Some(&outer.inner.inner_fold_set),
+                                node_filter: Some(&base_node_ids),
+                                suppress_inner_cv: true,
+                                ..Default::default()
+                            },
+                        )?);
+                    }
+                }
+
+                if let (Some(threshold), Some(inner_spec)) =
+                    (residual_auto_threshold, inner_spec.as_ref())
+                {
+                    let mut learner_only = BTreeSet::from([nested.meta_node_id.clone()]);
+                    learner_only.extend(meta_data_to_run.iter().cloned());
+                    for inner_fold in &outer.inner.inner_fold_set.folds {
+                        // Cross-fit the learner on residuals derived entirely
+                        // inside this inner fold's training universe.  The
+                        // third CV level prevents its held-out target from
+                        // influencing any base prediction used for fitting.
+                        let subinner = inner_spec.build_nested_fold_set(
+                            inner_fold,
+                            &outer.inner.inner_fold_set.sample_groups,
+                        )?;
+                        results.extend(self.execute_dependent_meta_campaigns(
+                            plan,
+                            controllers,
+                            data_provider,
+                            ctx,
+                            nested,
+                            &subinner.inner_fold_set,
+                        )?);
+                        for base_fold in &subinner.inner_fold_set.folds {
+                            if let Some(join) = feature_join.as_ref() {
+                                results.extend(self.execute_prediction_feature_base_scope(
+                                    plan,
+                                    controllers,
+                                    data_provider,
+                                    ctx,
+                                    join,
+                                    inner_spec,
+                                    &subinner.inner_fold_set,
+                                    base_fold,
+                                    variant_id.clone(),
+                                    variant_spec.clone(),
+                                    seed_root,
+                                )?);
+                            } else if !self.nested_base_predictions_ready(
+                                plan,
+                                ctx,
+                                nested,
+                                &base_fold.fold_id,
+                            )? && !base_node_ids.is_empty()
+                            {
+                                results.extend(self.execute_phase_scope(
+                                    plan,
+                                    controllers,
+                                    ctx,
+                                    PhaseScope {
+                                        phase: Phase::FitCv,
+                                        variant_id: variant_id.clone(),
+                                        variant: variant_spec.clone(),
+                                        fold_id: Some(base_fold.fold_id.clone()),
+                                        seed_root,
+                                    },
+                                    PhaseScopeResources {
+                                        data_provider: Some(data_provider),
+                                        fold_set_override: Some(&subinner.inner_fold_set),
+                                        node_filter: Some(&base_node_ids),
+                                        suppress_inner_cv: true,
+                                        ..Default::default()
+                                    },
+                                )?);
+                            }
+                        }
+                        results.extend(self.execute_phase_scope(
+                            plan,
+                            controllers,
+                            ctx,
+                            PhaseScope {
+                                phase: Phase::FitCv,
+                                variant_id: variant_id.clone(),
+                                variant: variant_spec.clone(),
+                                fold_id: Some(inner_fold.fold_id.clone()),
+                                seed_root,
+                            },
+                            PhaseScopeResources {
+                                data_provider: Some(data_provider),
+                                fold_set_override: Some(&outer.inner.inner_fold_set),
+                                node_filter: Some(&learner_only),
+                                cached_data_node_ids: Some(&meta_data_cached),
+                                suppress_inner_cv: true,
+                                nested_stacking: Some(NestedStackingInput {
+                                    meta_node_id: &nested.meta_node_id,
+                                    inner: &subinner,
+                                    parent_fold_set: &outer.inner.inner_fold_set,
+                                    kind: NestedMetaKind::Residual,
+                                }),
+                                ..Default::default()
+                            },
+                        )?);
+                    }
+                    let outer_scope = PhaseScope {
+                        phase: Phase::FitCv,
+                        variant_id: variant_id.clone(),
+                        variant: variant_spec.clone(),
+                        fold_id: Some(outer.outer_fold_id.clone()),
+                        seed_root,
+                    };
+                    let nested_input = NestedStackingInput {
+                        meta_node_id: &nested.meta_node_id,
+                        inner: &outer.inner,
+                        parent_fold_set: plan.fold_set.as_ref().expect("validated outer folds"),
+                        kind: NestedMetaKind::Residual,
+                    };
+                    let target_set = nested_residual_targets(
+                        plan,
+                        plan.node_plans
+                            .get(&nested.meta_node_id)
+                            .expect("validated learner"),
+                        ctx,
+                        &outer_scope,
+                        Some(&nested_input),
+                    )?
+                    .expect("residual target campaign");
+                    let learner_oof = residual_learner_oof(
+                        ctx,
+                        &nested.meta_node_id,
+                        &outer.inner.inner_fold_set,
+                    )?;
+                    let calibrated = crate::residual::calibrate_residual_gate(
+                        &target_set,
+                        &learner_oof,
+                        crate::residual::ResidualGate::Automatic {
+                            rli_threshold: threshold,
+                        },
+                    )?;
+                    ctx.residual_gates.insert(
+                        (variant_id.clone(), Some(outer.outer_fold_id.clone())),
+                        calibrated,
+                    );
+                }
+
+                // Materialize outer-validation base features in a distinct
+                // scope.  They stay out of the unsuffixed meta inputs.
+                if let Some(join) = feature_join.as_ref() {
+                    let parent_set = plan.fold_set.as_ref().expect("validated outer folds");
+                    let parent_fold = parent_set
+                        .folds
+                        .iter()
+                        .find(|fold| fold.fold_id == outer.outer_fold_id)
+                        .expect("validated outer fold");
+                    results.extend(self.execute_prediction_feature_base_scope(
+                        plan,
+                        controllers,
+                        data_provider,
+                        ctx,
+                        join,
+                        inner_spec.as_ref().expect("feature join needs inner CV"),
+                        parent_set,
+                        parent_fold,
+                        variant_id.clone(),
+                        variant_spec.clone(),
+                        seed_root,
+                    )?);
+                } else if !self.nested_base_predictions_ready(
+                    plan,
+                    ctx,
+                    nested,
+                    &outer.outer_fold_id,
+                )? && !base_node_ids.is_empty()
+                {
                     results.extend(self.execute_phase_scope(
                         plan,
                         controllers,
@@ -1017,41 +2085,42 @@ impl SequentialScheduler {
                             phase: Phase::FitCv,
                             variant_id: variant_id.clone(),
                             variant: variant_spec.clone(),
-                            fold_id: Some(inner_fold.fold_id.clone()),
+                            fold_id: Some(outer.outer_fold_id.clone()),
                             seed_root,
                         },
                         PhaseScopeResources {
                             data_provider: Some(data_provider),
-                            fold_set_override: Some(&outer.inner.inner_fold_set),
-                            node_filter: Some(&nested.base_node_ids),
+                            node_filter: Some(&base_node_ids),
                             suppress_inner_cv: true,
                             ..Default::default()
                         },
                     )?);
                 }
 
-                // Materialize outer-validation base features in a distinct
-                // scope.  They stay out of the unsuffixed meta inputs.
-                results.extend(self.execute_phase_scope(
-                    plan,
-                    controllers,
-                    ctx,
-                    PhaseScope {
-                        phase: Phase::FitCv,
-                        variant_id: variant_id.clone(),
-                        variant: variant_spec.clone(),
-                        fold_id: Some(outer.outer_fold_id.clone()),
-                        seed_root,
-                    },
-                    PhaseScopeResources {
-                        data_provider: Some(data_provider),
-                        node_filter: Some(&nested.base_node_ids),
-                        suppress_inner_cv: true,
-                        ..Default::default()
-                    },
-                )?);
-
-                let meta_only = BTreeSet::from([nested.meta_node_id.clone()]);
+                let mut meta_only = BTreeSet::from([nested.meta_node_id.clone()]);
+                meta_only.extend(meta_data_to_run.iter().cloned());
+                if nested.kind == NestedMetaKind::Residual {
+                    let fusion = plan
+                        .graph_plan
+                        .graph
+                        .nodes
+                        .iter()
+                        .filter(|node| {
+                            node.metadata
+                                .get("residual_fusion_for")
+                                .and_then(serde_json::Value::as_str)
+                                == Some(nested.meta_node_id.as_str())
+                        })
+                        .collect::<Vec<_>>();
+                    if fusion.len() != 1 {
+                        return Err(DagMlError::RuntimeValidation(format!(
+                            "residual learner `{}` requires one native fusion node, found {}",
+                            nested.meta_node_id,
+                            fusion.len()
+                        )));
+                    }
+                    meta_only.insert(fusion[0].id.clone());
+                }
                 results.extend(self.execute_phase_scope(
                     plan,
                     controllers,
@@ -1066,14 +2135,43 @@ impl SequentialScheduler {
                     PhaseScopeResources {
                         data_provider: Some(data_provider),
                         node_filter: Some(&meta_only),
+                        cached_data_node_ids: Some(&meta_data_cached),
                         suppress_inner_cv: true,
                         nested_stacking: Some(NestedStackingInput {
                             meta_node_id: &nested.meta_node_id,
                             inner: &outer.inner,
+                            parent_fold_set: plan.fold_set.as_ref().expect("validated outer folds"),
+                            kind: nested.kind,
                         }),
                         ..Default::default()
                     },
                 )?);
+            }
+            if let Some(contract) = &coverage_contract {
+                let fold_set = plan.fold_set.as_ref().expect("validated outer folds");
+                let blocks = nested
+                    .outer_scopes
+                    .iter()
+                    .flat_map(|outer| {
+                        ctx.prediction_store.find(
+                            Some(&nested.meta_node_id),
+                            Some(&PredictionPartition::Validation),
+                            Some(&outer.outer_fold_id),
+                        )
+                    })
+                    .filter(|block| {
+                        block
+                            .producer_port
+                            .as_deref()
+                            .is_none_or(|port| port == "oof")
+                    })
+                    .collect::<Vec<_>>();
+                crate::oof::validate_stacking_oof_coverage_ratio(
+                    &nested.meta_node_id,
+                    &blocks,
+                    fold_set,
+                    contract,
+                )?;
             }
         }
         Ok(results)
@@ -1110,6 +2208,14 @@ impl SequentialScheduler {
         direct_sample_prediction_only: bool,
     ) -> Result<Vec<NodeResult>> {
         replay.bundle.validate_against_plan(replay.plan)?;
+        ctx.stacking_weight_scores = replay
+            .bundle
+            .scores
+            .as_ref()
+            .map_or_else(Vec::new, |scores| scores.reports.clone());
+        if let Some(value) = replay.bundle.metadata.get("residual_gates") {
+            ctx.import_residual_gate_records(value)?;
+        }
         replay
             .replay_request
             .validate_for_bundle_with_prediction_cache_store(
@@ -1208,6 +2314,19 @@ impl SequentialScheduler {
         let mut output_data_views =
             BTreeMap::<NodeId, BTreeMap<String, DataProviderViewSpec>>::new();
         let mut input_lineage = BTreeMap::<NodeId, LineageId>::new();
+        if let Some(node_ids) = resources.cached_data_node_ids {
+            for node_id in node_ids {
+                let key = data_output_scope_key(node_id, &scope, &resources, plan);
+                // A graph transform without a provider view is reconstructed
+                // by the host model and has no materialized data-edge payload.
+                let Some(cached) = ctx.data_output_cache.get(&key) else {
+                    continue;
+                };
+                output_handles.insert(node_id.clone(), cached.handles.clone());
+                output_data_views.insert(node_id.clone(), cached.views.clone());
+                input_lineage.insert(node_id.clone(), cached.lineage_id.clone());
+            }
+        }
 
         for level in plan.node_parallel_levels_for_phase(scope.phase)? {
             for node_id in &level {
@@ -1234,6 +2353,7 @@ impl SequentialScheduler {
                         let task_node_plan = effective_node_plan_for_scope(node_plan, &scope)?;
                         let task = NodeTask {
                             inner_fold_set: None,
+                            residual_targets: None,
                             run_id: ctx.run_id.clone(),
                             node_plan: task_node_plan.clone(),
                             phase: scope.phase,
@@ -1245,6 +2365,8 @@ impl SequentialScheduler {
                             input_handles: BTreeMap::new(),
                             data_views: BTreeMap::new(),
                             prediction_inputs: BTreeMap::new(),
+                            prediction_feature_matrix: None,
+                            prediction_feature_off_fold_matrix: None,
                             artifact_inputs: BTreeMap::new(),
                             required_loss_attestations: NodeTask::required_loss_attestations_for(
                                 &task_node_plan,
@@ -1258,8 +2380,11 @@ impl SequentialScheduler {
                         for prediction in &result.predictions {
                             ctx.prediction_store.append(prediction.clone())?;
                         }
+                        ctx.classification_probability_blocks
+                            .extend(result.classification_probabilities.iter().cloned());
                         apply_result_scoring(
                             &result,
+                            &auxiliary_prediction_ports_for_node(plan, &result.node_id)?,
                             &mut ctx.score_collector,
                             &mut ctx.regression_target_records,
                         )?;
@@ -1301,6 +2426,45 @@ impl SequentialScheduler {
                         &mut prediction_inputs,
                     )?;
                 }
+                let candidate_score_folds = resources
+                    .nested_stacking
+                    .as_ref()
+                    .map(|nested| &nested.inner.inner_fold_set)
+                    .or(plan.fold_set.as_ref())
+                    .map(|fold_set| {
+                        fold_set
+                            .folds
+                            .iter()
+                            .map(|fold| fold.fold_id.clone())
+                            .collect::<BTreeSet<_>>()
+                    });
+                apply_stacking_prediction_aggregations(
+                    plan,
+                    node_plan,
+                    &mut prediction_inputs,
+                    if ctx.score_collector.is_empty() {
+                        &ctx.stacking_weight_scores
+                    } else {
+                        &ctx.score_collector
+                    },
+                    candidate_score_folds.as_ref(),
+                    scope.variant_id.as_ref(),
+                )?;
+                let prediction_feature_matrix = prediction_feature_matrix_for_task(
+                    plan,
+                    node_plan,
+                    &prediction_inputs,
+                    &scope,
+                    &resources,
+                )?;
+                let prediction_feature_off_fold_matrix =
+                    prediction_feature_off_fold_matrix_for_task(
+                        plan,
+                        node_plan,
+                        &prediction_inputs,
+                        &scope,
+                        &resources,
+                    )?;
                 let mut artifact_inputs = BTreeMap::new();
                 if let Some(node_artifact_handles) = resources
                     .replay_artifact_handles
@@ -1345,6 +2509,13 @@ impl SequentialScheduler {
                 )?;
                 let task = NodeTask {
                     inner_fold_set,
+                    residual_targets: nested_residual_targets(
+                        plan,
+                        &task_node_plan,
+                        ctx,
+                        &scope,
+                        resources.nested_stacking.as_ref(),
+                    )?,
                     run_id: ctx.run_id.clone(),
                     node_plan: task_node_plan.clone(),
                     phase: scope.phase,
@@ -1356,6 +2527,8 @@ impl SequentialScheduler {
                     input_handles,
                     data_views: collected_inputs.data_views,
                     prediction_inputs,
+                    prediction_feature_matrix,
+                    prediction_feature_off_fold_matrix,
                     artifact_inputs,
                     required_loss_attestations: NodeTask::required_loss_attestations_for(
                         &task_node_plan,
@@ -1417,7 +2590,7 @@ impl SequentialScheduler {
                 }
                 if let Some(store) = resources.artifact_store.as_deref_mut() {
                     if scope.phase == Phase::Refit {
-                        store.capture_refit_artifacts(&task, &result)?;
+                        store.capture_refit_artifacts(plan, &task, &result)?;
                     }
                 }
                 for prediction in &result.predictions {
@@ -1426,13 +2599,26 @@ impl SequentialScheduler {
                 for prediction in &result.aggregated_predictions {
                     ctx.aggregated_prediction_store.append(prediction.clone())?;
                 }
+                ctx.classification_probability_blocks
+                    .extend(result.classification_probabilities.iter().cloned());
                 apply_result_scoring(
                     &result,
+                    &auxiliary_prediction_ports_for_node(plan, &result.node_id)?,
                     &mut ctx.score_collector,
                     &mut ctx.regression_target_records,
                 )?;
                 ctx.lineage.record(result.lineage.clone())?;
                 let data_views = derive_output_data_views(plan, &task, &result)?;
+                if !data_views.is_empty() {
+                    ctx.data_output_cache.insert(
+                        data_output_scope_key(node_id, &scope, &resources, plan),
+                        CachedDataOutput {
+                            handles: result.outputs.clone(),
+                            views: data_views.clone(),
+                            lineage_id: result.lineage.record_id.clone(),
+                        },
+                    );
+                }
                 output_handles.insert(node_id.clone(), result.outputs.clone());
                 output_data_views.insert(node_id.clone(), data_views);
                 input_lineage.insert(node_id.clone(), result.lineage.record_id.clone());
@@ -1507,7 +2693,7 @@ impl ParallelScheduler {
         phase: Phase,
     ) -> Result<Vec<NodeResult>> {
         plan.validate()?;
-        if phase == Phase::FitCv && nested_stacking_campaign_plan(plan)?.is_some() {
+        if phase == Phase::FitCv && !nested_stacking_campaign_plans(plan)?.is_empty() {
             return Err(DagMlError::RuntimeValidation(
                 "nested stacking FIT_CV is scheduler-serial by construction; use SequentialScheduler so inner OOF evidence is retained before outer evaluation"
                     .to_string(),
@@ -1568,7 +2754,7 @@ impl ParallelScheduler {
         if phase == Phase::FitCv {
             ctx.configure_global_oof_aggregation(plan, data_provider)?;
         }
-        if phase == Phase::FitCv && nested_stacking_campaign_plan(plan)?.is_some() {
+        if phase == Phase::FitCv && !nested_stacking_campaign_plans(plan)?.is_empty() {
             return Err(DagMlError::RuntimeValidation(
                 "nested stacking FIT_CV is scheduler-serial by construction; use SequentialScheduler so inner OOF evidence is retained before outer evaluation"
                     .to_string(),
@@ -1630,7 +2816,7 @@ impl ParallelScheduler {
         phase: Phase,
     ) -> Result<Vec<NodeResult>> {
         plan.validate()?;
-        if phase == Phase::FitCv && nested_stacking_campaign_plan(plan)?.is_some() {
+        if phase == Phase::FitCv && !nested_stacking_campaign_plans(plan)?.is_empty() {
             return Err(DagMlError::RuntimeValidation(
                 "nested stacking FIT_CV is scheduler-serial by construction; use SequentialScheduler so inner OOF evidence is retained before outer evaluation"
                     .to_string(),
@@ -1689,6 +2875,14 @@ impl ParallelScheduler {
         ctx: &mut RunContext,
     ) -> Result<Vec<NodeResult>> {
         replay.bundle.validate_against_plan(replay.plan)?;
+        ctx.stacking_weight_scores = replay
+            .bundle
+            .scores
+            .as_ref()
+            .map_or_else(Vec::new, |scores| scores.reports.clone());
+        if let Some(value) = replay.bundle.metadata.get("residual_gates") {
+            ctx.import_residual_gate_records(value)?;
+        }
         replay
             .replay_request
             .validate_for_bundle_with_prediction_cache_store(
@@ -1824,6 +3018,41 @@ impl ParallelScheduler {
                     continue;
                 }
                 let mut input_handles = collected_inputs.handles;
+                let mut prediction_inputs = collected_inputs.prediction_inputs;
+                let candidate_score_folds = plan.fold_set.as_ref().map(|fold_set| {
+                    fold_set
+                        .folds
+                        .iter()
+                        .map(|fold| fold.fold_id.clone())
+                        .collect::<BTreeSet<_>>()
+                });
+                apply_stacking_prediction_aggregations(
+                    plan,
+                    node_plan,
+                    &mut prediction_inputs,
+                    if ctx.score_collector.is_empty() {
+                        &ctx.stacking_weight_scores
+                    } else {
+                        &ctx.score_collector
+                    },
+                    candidate_score_folds.as_ref(),
+                    scope.variant_id.as_ref(),
+                )?;
+                let prediction_feature_matrix = prediction_feature_matrix_for_task(
+                    plan,
+                    node_plan,
+                    &prediction_inputs,
+                    &scope,
+                    &resources,
+                )?;
+                let prediction_feature_off_fold_matrix =
+                    prediction_feature_off_fold_matrix_for_task(
+                        plan,
+                        node_plan,
+                        &prediction_inputs,
+                        &scope,
+                        &resources,
+                    )?;
                 let mut artifact_inputs = BTreeMap::new();
                 if let Some(node_artifact_handles) = resources
                     .replay_artifact_handles
@@ -1865,6 +3094,7 @@ impl ParallelScheduler {
                     node_id: node_id.clone(),
                     task: NodeTask {
                         inner_fold_set,
+                        residual_targets: None,
                         run_id: ctx.run_id.clone(),
                         node_plan: task_node_plan.clone(),
                         phase: scope.phase,
@@ -1875,7 +3105,9 @@ impl ParallelScheduler {
                         branch_path: Vec::new(),
                         input_handles,
                         data_views: collected_inputs.data_views,
-                        prediction_inputs: collected_inputs.prediction_inputs,
+                        prediction_inputs,
+                        prediction_feature_matrix,
+                        prediction_feature_off_fold_matrix,
                         artifact_inputs,
                         required_loss_attestations: NodeTask::required_loss_attestations_for(
                             &task_node_plan,
@@ -1980,7 +3212,7 @@ impl ParallelScheduler {
                     }
                     if let Some(store) = resources.artifact_store.as_deref_mut() {
                         if scope.phase == Phase::Refit {
-                            store.capture_refit_artifacts(&prepared_task.task, &result)?;
+                            store.capture_refit_artifacts(plan, &prepared_task.task, &result)?;
                         }
                     }
                     for prediction in &result.predictions {
@@ -1989,8 +3221,11 @@ impl ParallelScheduler {
                     for prediction in &result.aggregated_predictions {
                         ctx.aggregated_prediction_store.append(prediction.clone())?;
                     }
+                    ctx.classification_probability_blocks
+                        .extend(result.classification_probabilities.iter().cloned());
                     apply_result_scoring(
                         &result,
+                        &auxiliary_prediction_ports_for_node(plan, &result.node_id)?,
                         &mut ctx.score_collector,
                         &mut ctx.regression_target_records,
                     )?;
@@ -2021,6 +3256,7 @@ impl ParallelScheduler {
                     let task_node_plan = effective_node_plan_for_scope(node_plan, &scope)?;
                     let task = NodeTask {
                         inner_fold_set: None,
+                        residual_targets: None,
                         run_id: ctx.run_id.clone(),
                         node_plan: task_node_plan.clone(),
                         phase: scope.phase,
@@ -2032,6 +3268,8 @@ impl ParallelScheduler {
                         input_handles: BTreeMap::new(),
                         data_views: BTreeMap::new(),
                         prediction_inputs: BTreeMap::new(),
+                        prediction_feature_matrix: None,
+                        prediction_feature_off_fold_matrix: None,
                         artifact_inputs: BTreeMap::new(),
                         required_loss_attestations: NodeTask::required_loss_attestations_for(
                             &task_node_plan,
@@ -2045,8 +3283,11 @@ impl ParallelScheduler {
                     for prediction in &result.predictions {
                         ctx.prediction_store.append(prediction.clone())?;
                     }
+                    ctx.classification_probability_blocks
+                        .extend(result.classification_probabilities.iter().cloned());
                     apply_result_scoring(
                         &result,
+                        &auxiliary_prediction_ports_for_node(plan, &result.node_id)?,
                         &mut ctx.score_collector,
                         &mut ctx.regression_target_records,
                     )?;
@@ -2281,6 +3522,7 @@ mod hpo_scheduler_tests {
             };
             Ok(NodeResult {
                 schema_version: None,
+                classification_probabilities: Vec::new(),
                 node_id: task.node_plan.node_id.clone(),
                 outputs: BTreeMap::from([(
                     "prediction".to_string(),
@@ -3443,6 +4685,26 @@ pub(crate) fn inferred_input_lineage_for_node(
         .into_iter()
         .collect()
 }
+fn data_output_scope_key(
+    node_id: &NodeId,
+    scope: &PhaseScope,
+    resources: &PhaseScopeResources<'_>,
+    plan: &ExecutionPlan,
+) -> DataOutputScopeKey {
+    let fold_set_id = resources
+        .fold_set_override
+        .or(plan.fold_set.as_ref())
+        .map(|fold_set| fold_set.id.clone())
+        .unwrap_or_default();
+    (
+        node_id.clone(),
+        scope.phase,
+        scope.variant_id.clone(),
+        scope.fold_id.clone(),
+        fold_set_id,
+    )
+}
+
 pub(crate) fn collect_input_handles(
     plan: &ExecutionPlan,
     node_plan: &NodePlan,
@@ -3569,6 +4831,31 @@ pub(crate) fn collect_input_handles(
             )));
         }
     }
+    // An explicitly marked FIT_CV consumer may also evaluate its already-fitted
+    // learner on the current fold's external Test cohort. The `:test` inputs
+    // remain separate from the unsuffixed Validation OOF fit inputs.
+    let cv_test_capture = scope.phase == Phase::FitCv
+        && plan.graph_plan.graph.nodes.iter().any(|node| {
+            node.id == node_plan.node_id
+                && node.metadata.get("stacking_fold_test_capture")
+                    == Some(&serde_json::Value::Bool(true))
+        });
+    if cv_test_capture {
+        for edge in incoming_oof_edges(plan, node_plan)? {
+            let Some(input) = collect_cv_fold_test_prediction_input(plan, edge, ctx, scope)? else {
+                continue;
+            };
+            let key = format!("{}.{}:test", edge.source.node_id, edge.source.port_name);
+            if inputs.insert(key.clone(), input.handle).is_some()
+                || prediction_inputs.insert(key.clone(), input.spec).is_some()
+            {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "node `{}` received duplicate CV fold Test input `{key}`",
+                    node_plan.node_id
+                )));
+            }
+        }
+    }
     // REFIT / PREDICT: deliver each base producer's off-fold (test / predict)
     // predictions to the stacking meta-node as a SEPARATE prediction input (suffixed
     // `:test` / `:predict`) so the host meta-model predicts from them. The FIT_CV
@@ -3611,20 +4898,29 @@ pub(crate) fn collect_input_handles(
         // fitting scopes. A top-level PREDICT must not even resolve the CV
         // relation authority: its separately attested cohort below owns the
         // complete identity universe for that read.
-        let excluded_samples = if scope.phase == Phase::Predict {
-            BTreeSet::new()
+        let coordinator_relations = if scope.phase == Phase::Predict {
+            None
         } else {
             coordinator_relations_for_node(node_plan, resources)?
-                .map(|relations| relations.excluded_sample_ids())
-                .unwrap_or_default()
         };
+        let excluded_samples = coordinator_relations
+            .as_ref()
+            .map(|relations| relations.excluded_sample_ids())
+            .unwrap_or_default();
         let scope_fold_set = resources.fold_set_override.or(plan.fold_set.as_ref());
         for binding in &node_plan.data_bindings {
             let predict_cohort = if scope.phase == Phase::Predict {
                 data_provider.predict_cohort(binding, scope.phase)?
+            } else if scope.phase == Phase::FitCv {
+                data_provider.cv_test_cohort(binding)?
             } else {
                 None
             };
+            // FIT_CV keeps its ordinary train/validation materialization. The separately
+            // attested external test cohort is materialized only for a companion non-fit view.
+            let primary_cohort = (scope.phase == Phase::Predict)
+                .then(|| predict_cohort.clone())
+                .flatten();
             let materialized = data_provider.materialize(&DataMaterializationRequest {
                 run_id: ctx.run_id.clone(),
                 node_id: node_plan.node_id.clone(),
@@ -3633,7 +4929,7 @@ pub(crate) fn collect_input_handles(
                 variant_id: scope.variant_id.clone(),
                 fold_id: scope.fold_id.clone(),
                 binding: binding.clone(),
-                predict_cohort: predict_cohort.clone(),
+                predict_cohort: primary_cohort.clone(),
             })?;
             let branch_view_for_node = branch_view_from_node_metadata(plan, &node_plan.node_id)?;
             let mut view = data_view_for_scope(
@@ -3643,6 +4939,17 @@ pub(crate) fn collect_input_handles(
                 branch_view_for_node.as_ref(),
                 &excluded_samples,
             )?;
+            if scope.phase == Phase::FitCv
+                && binding.view_policy.include_augmented_cv_train_predictions
+            {
+                let relations = coordinator_relations.as_ref().ok_or_else(|| {
+                    DagMlError::RuntimeValidation(format!(
+                        "node `{}` requires coordinator relations for augmented CV train predictions",
+                        node_plan.node_id
+                    ))
+                })?;
+                validate_cv_augmented_train_prediction_view(&view, relations)?;
+            }
             if scope.phase == Phase::Refit
                 && scope_fold_set.is_none()
                 && view.partition == DataRequestPartition::FullTrain
@@ -3656,7 +4963,7 @@ pub(crate) fn collect_input_handles(
                 }
                 view.validate()?;
             }
-            if let Some(cohort) = predict_cohort.as_ref() {
+            if let Some(cohort) = primary_cohort.as_ref() {
                 bind_predict_cohort_to_view(&mut view, cohort)?;
             }
             let key = data_view_key(&binding.input_name);
@@ -3669,7 +4976,7 @@ pub(crate) fn collect_input_handles(
                 DataViewHandleInput {
                     data_handle: &materialized,
                     view: &view,
-                    predict_cohort: predict_cohort.as_ref(),
+                    predict_cohort: primary_cohort.as_ref(),
                 },
             )?;
             if data_views.insert(key.clone(), view).is_some() {
@@ -3683,6 +4990,48 @@ pub(crate) fn collect_input_handles(
                     "node `{}` received duplicate data input `{key}`",
                     node_plan.node_id
                 )));
+            }
+
+            if scope.phase == Phase::FitCv {
+                if let Some(cohort) = predict_cohort.as_ref() {
+                    let test_materialized =
+                        data_provider.materialize(&DataMaterializationRequest {
+                            run_id: ctx.run_id.clone(),
+                            node_id: node_plan.node_id.clone(),
+                            input_name: binding.input_name.clone(),
+                            phase: scope.phase,
+                            variant_id: scope.variant_id.clone(),
+                            fold_id: scope.fold_id.clone(),
+                            binding: binding.clone(),
+                            predict_cohort: Some(cohort.clone()),
+                        })?;
+                    let mut test_view = data_view_for_partition(
+                        binding,
+                        scope_fold_set,
+                        scope,
+                        DataRequestPartition::Predict,
+                        branch_view_for_node.as_ref(),
+                        DataViewRole::NonFit,
+                        &excluded_samples,
+                    )?;
+                    test_view.include_augmented = false;
+                    bind_predict_cohort_to_view(&mut test_view, cohort)?;
+                    let test_key = format!("{key}:test");
+                    let test_handle = make_data_view_handle(
+                        data_provider,
+                        ctx,
+                        node_plan,
+                        scope,
+                        binding,
+                        DataViewHandleInput {
+                            data_handle: &test_materialized,
+                            view: &test_view,
+                            predict_cohort: Some(cohort),
+                        },
+                    )?;
+                    data_views.insert(test_key.clone(), test_view);
+                    inputs.insert(test_key, test_handle);
+                }
             }
 
             if let Some(validation_view) = validation_data_view_for_scope(

@@ -19,7 +19,17 @@ const REQUIRED_DTS_EXPORTS = [
   "derive_controller_manifest_json",
   "derive_controller_manifest_list_json",
   "execute_execution_plan_phase_json",
+  "execute_initial_full_refit_json",
+  "replay_initial_full_refit_json",
+  "validate_initial_full_refit_package_json",
+  "initial_full_refit_predict_envelope_json",
+  "select_stacking_producers_json",
   "fold_set_fingerprint_json",
+  "host_hpo_search_json",
+  "host_hpo_search_parallel_json",
+  "host_hpo_evaluate_worker_task_json",
+  "host_hpo_evaluate_worker_fold_json",
+  "recover_host_hpo_checkpoint_json",
   "loss_execution_attestation_json",
   "validate_fold_set_json",
 ];
@@ -118,6 +128,9 @@ if (!manifest.capabilities.includes("bind_training_losses_to_execution_plan")) {
 }
 if (!manifest.capabilities.includes("execute_execution_plan_phase")) {
   throw new Error("contract manifest is missing execution-plan runtime capability");
+}
+if (!manifest.capabilities.includes("host_hpo_search_sequential")) {
+  throw new Error("contract manifest is missing native sequential host HPO capability");
 }
 if (manifest.shared.fold_set_fixture_fingerprint !== SHARED_FOLD_SET_FINGERPRINT) {
   throw new Error("contract manifest shared fold fingerprint drifted");
@@ -535,6 +548,23 @@ if (dagMl.fold_set_fingerprint_json(JSON.stringify(reorderedFoldSet)) !== foldFi
 }
 if (!dagMl.dag_ml_version()) {
   throw new Error("dag_ml_version() returned an empty version");
+}
+require("./smoke_wasm_hpo.cjs")(dagMl, repo, pkgDir).catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});
+require("./smoke_wasm_initial_refit.cjs")(dagMl, repo);
+const stackingSelection = dagMl.select_stacking_producers_json(JSON.stringify({
+  producer_nodes: ["model:a", "model:b"], select: "best", metric: "rmse",
+  reports: [
+    { producer_node: "model:a", partition: "validation", fold_id: "fold:0",
+      level: "sample", row_count: 1, target_width: 1, metrics: { rmse: 4 } },
+    { producer_node: "model:b", partition: "validation", fold_id: "fold:0",
+      level: "sample", row_count: 1, target_width: 1, metrics: { rmse: 2 } },
+  ],
+}));
+if (JSON.stringify(JSON.parse(stackingSelection)) !== JSON.stringify(["model:b"])) {
+  throw new Error("WASM stacking selection did not choose the better producer");
 }
 try {
   dagMl.validate_graph_json('{"id":"","interface":{},"nodes":[],"edges":[]}');

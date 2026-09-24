@@ -81,6 +81,17 @@ pub struct NodeTask {
     pub data_views: BTreeMap<String, DataProviderViewSpec>,
     #[serde(default)]
     pub prediction_inputs: BTreeMap<String, PredictionInputSpec>,
+    /// Native, sample-keyed prediction features for a PredictionJoin Data
+    /// output. The host only materializes this attested matrix as a handle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prediction_feature_matrix: Option<crate::oof::OofMatrix>,
+    /// Separately attested outer-validation or external-test feature rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prediction_feature_off_fold_matrix: Option<crate::oof::OofMatrix>,
+    /// Scheduler-derived `y - base OOF` target rows for a declared residual
+    /// learner. Rows are keyed by sample identity and scoped to inner folds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub residual_targets: Option<crate::residual::ResidualTargetSet>,
     #[serde(default)]
     pub artifact_inputs: BTreeMap<String, ArtifactInputSpec>,
     /// Native-produced attestation templates for the training losses that must
@@ -784,6 +795,71 @@ impl ExplanationBlock {
     }
 }
 
+/// Class-aligned probabilities for one labelled CV prediction block. Validation
+/// probabilities also attest the class score of a projected stacking feature;
+/// they never replace the prediction values delivered across the graph edge.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClassificationProbabilityBlock {
+    pub producer_node: NodeId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub producer_port: Option<String>,
+    pub partition: PredictionPartition,
+    pub fold_id: Option<FoldId>,
+    pub sample_ids: Vec<SampleId>,
+    pub class_labels: Vec<f64>,
+    pub values: Vec<Vec<f64>>,
+}
+
+impl ClassificationProbabilityBlock {
+    pub fn validate(&self) -> Result<()> {
+        if !matches!(
+            self.partition,
+            PredictionPartition::Train
+                | PredictionPartition::TrainPool
+                | PredictionPartition::Validation
+                | PredictionPartition::Test
+        ) || (self.partition != PredictionPartition::Test && self.fold_id.is_none())
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "classification probabilities require a CV train, train-pool or validation fold, or a test block"
+                    .to_string(),
+            ));
+        }
+        if self.class_labels.is_empty()
+            || self.class_labels.iter().any(|label| !label.is_finite())
+            || self.class_labels.iter().any(|label| {
+                self.class_labels
+                    .iter()
+                    .filter(|other| *other == label)
+                    .count()
+                    != 1
+            })
+            || self.sample_ids.is_empty()
+            || self.sample_ids.len() != self.values.len()
+            || self.sample_ids.iter().collect::<BTreeSet<_>>().len() != self.sample_ids.len()
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "classification probabilities have invalid class or sample identities".to_string(),
+            ));
+        }
+        for row in &self.values {
+            if row.len() != self.class_labels.len()
+                || row
+                    .iter()
+                    .any(|p| !p.is_finite() || !(0.0..=1.0).contains(p))
+                || (row.iter().sum::<f64>() - 1.0).abs() > 1e-6
+            {
+                return Err(DagMlError::RuntimeValidation(
+                    "classification probabilities must be finite, non-negative and sum to one"
+                        .to_string(),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NodeResult {
@@ -794,6 +870,8 @@ pub struct NodeResult {
     pub outputs: BTreeMap<String, HandleRef>,
     #[serde(default)]
     pub predictions: Vec<PredictionBlock>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub classification_probabilities: Vec<ClassificationProbabilityBlock>,
     #[serde(default)]
     pub observation_predictions: Vec<ObservationPredictionBlock>,
     #[serde(default)]
@@ -1035,6 +1113,32 @@ impl NodeResult {
             }
             validate_prediction_scope(prediction, task)?;
         }
+        for block in &self.classification_probabilities {
+            block.validate()?;
+            if !matches!(task.phase, Phase::FitCv | Phase::Refit)
+                || block.producer_node != self.node_id
+                || block.fold_id != task.fold_id
+                || (task.phase == Phase::Refit && block.partition != PredictionPartition::Test)
+                || !self.predictions.iter().any(|prediction| {
+                    matches!(
+                        prediction.partition,
+                        PredictionPartition::Train
+                            | PredictionPartition::TrainPool
+                            | PredictionPartition::Validation
+                            | PredictionPartition::Test
+                    ) && prediction.fold_id == block.fold_id
+                        && prediction.producer_port == block.producer_port
+                        && prediction.sample_ids.iter().collect::<BTreeSet<_>>()
+                            == block.sample_ids.iter().collect::<BTreeSet<_>>()
+                        && prediction.values.iter().all(|row| row.len() == 1)
+                })
+            {
+                return Err(DagMlError::RuntimeValidation(
+                    "classification probabilities require a matching single-target CV prediction"
+                        .to_string(),
+                ));
+            }
+        }
         for prediction in &self.observation_predictions {
             prediction.validate_shape()?;
             if prediction.producer_node != task.node_plan.node_id {
@@ -1130,6 +1234,138 @@ pub(crate) fn validate_prediction_scope(
     prediction: &PredictionBlock,
     task: &NodeTask,
 ) -> Result<()> {
+    if prediction.partition == PredictionPartition::TrainPool {
+        if task.phase != Phase::FitCv || prediction.fold_id != task.fold_id {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "node `{}` emitted train-pool predictions outside its FIT_CV fold",
+                task.node_plan.node_id
+            )));
+        }
+        // This report-only view can include both fit and validation rows, but
+        // never an external test row. The two attested fold views define its
+        // allowed population; it cannot be used as OOF training input.
+        let pool_ids: BTreeSet<_> = task
+            .data_views
+            .values()
+            .filter(|view| {
+                matches!(
+                    view.partition,
+                    DataRequestPartition::FoldTrain | DataRequestPartition::FoldValidation
+                )
+            })
+            .filter_map(|view| view.sample_ids.as_ref())
+            .flat_map(|ids| ids.iter().cloned())
+            .collect();
+        if pool_ids.is_empty()
+            || prediction
+                .sample_ids
+                .iter()
+                .any(|id| !pool_ids.contains(id))
+        {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "node `{}` emitted train-pool predictions outside its attested fold population",
+                task.node_plan.node_id
+            )));
+        }
+        return Ok(());
+    }
+    if prediction.partition == PredictionPartition::Train && task.phase == Phase::FitCv {
+        if prediction.fold_id != task.fold_id {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "node `{}` emitted train predictions for fold {:?}, expected {:?}",
+                task.node_plan.node_id, prediction.fold_id, task.fold_id
+            )));
+        }
+        if !task.data_views.is_empty() {
+            let mut train_ids: BTreeSet<_> = task
+                .data_views
+                .values()
+                .filter(|view| view.partition == DataRequestPartition::FoldTrain)
+                .filter_map(|view| view.sample_ids.as_ref())
+                .flat_map(|ids| ids.iter().cloned())
+                .collect();
+            for view in task.data_views.values().filter(|view| {
+                view.partition == DataRequestPartition::FoldTrain
+                    && view.extra.get("include_augmented_cv_train_predictions")
+                        == Some(&serde_json::Value::Bool(true))
+            }) {
+                let children: Vec<SampleId> = serde_json::from_value(
+                    view.extra
+                        .get("augmented_cv_train_prediction_ids")
+                        .cloned()
+                        .ok_or_else(|| {
+                            DagMlError::RuntimeValidation(format!(
+                                "node `{}` has no declared augmented CV train prediction IDs",
+                                task.node_plan.node_id
+                            ))
+                        })?,
+                )
+                .map_err(|error| {
+                    DagMlError::RuntimeValidation(format!(
+                        "node `{}` has malformed augmented CV train prediction IDs: {error}",
+                        task.node_plan.node_id
+                    ))
+                })?;
+                train_ids.extend(children);
+            }
+            if train_ids.is_empty()
+                || prediction
+                    .sample_ids
+                    .iter()
+                    .any(|id| !train_ids.contains(id))
+            {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "node `{}` emitted FIT_CV train predictions outside its fold-train data view",
+                    task.node_plan.node_id
+                )));
+            }
+        }
+        return Ok(());
+    }
+    if prediction.partition == PredictionPartition::Test && task.phase == Phase::FitCv {
+        if prediction.fold_id != task.fold_id {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "node `{}` emitted test predictions for fold {:?}, expected {:?}",
+                task.node_plan.node_id, prediction.fold_id, task.fold_id
+            )));
+        }
+        let mut test_ids: BTreeSet<_> = task
+            .data_views
+            .values()
+            .filter(|view| view.partition == DataRequestPartition::Predict)
+            .filter_map(|view| view.sample_ids.as_ref())
+            .flat_map(|ids| ids.iter().cloned())
+            .collect();
+        // A prediction-only stacking learner has no raw data binding. Its
+        // current-fold `:test` inputs were already attested against each
+        // producer's external Test view; intersect their identities so the
+        // downstream learner can emit only rows every source actually supplied.
+        if test_ids.is_empty() {
+            let mut fold_inputs = task.prediction_inputs.iter().filter(|(key, spec)| {
+                key.ends_with(":test")
+                    && spec.partition == PredictionPartition::Test
+                    && spec.fold_id == task.fold_id
+            });
+            if let Some((_, first)) = fold_inputs.next() {
+                test_ids = first.sample_ids.iter().cloned().collect();
+                for (_, input) in fold_inputs {
+                    test_ids.retain(|id| input.sample_ids.contains(id));
+                }
+            }
+        }
+        if test_ids.is_empty()
+            || prediction
+                .sample_ids
+                .iter()
+                .any(|id| !test_ids.contains(id))
+        {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "node `{}` emitted FIT_CV test predictions outside an attested external-test data view",
+                task.node_plan.node_id
+            )));
+        }
+        return Ok(());
+    }
     if prediction.partition != PredictionPartition::Validation {
         return Ok(());
     }
@@ -1435,7 +1671,9 @@ pub(crate) fn equal_sample_influence_weights(
         .filter(|view| {
             matches!(
                 view.partition,
-                DataRequestPartition::FoldTrain | DataRequestPartition::FullTrain
+                DataRequestPartition::FoldTrain
+                    | DataRequestPartition::FullTrain
+                    | DataRequestPartition::AllObservations
             )
         })
         .filter_map(|view| view.sample_ids.as_ref())

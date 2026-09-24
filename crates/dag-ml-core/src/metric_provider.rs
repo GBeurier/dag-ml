@@ -448,6 +448,7 @@ pub fn builtin_metric_registry() -> Result<MetricProviderRegistry> {
         RegressionMetricKind::R2,
         RegressionMetricKind::Accuracy,
         RegressionMetricKind::BalancedAccuracy,
+        RegressionMetricKind::F1,
     ] {
         let reference = builtin_metric_reference(metric)?;
         registry.register(

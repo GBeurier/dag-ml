@@ -71,3 +71,61 @@ Run the binding test with GNU Octave:
 octave --no-gui --quiet --eval \
   "addpath('bindings/matlab/tests'); local_implementation_registry"
 ```
+
+For host hyperparameter search, `dagml.hostHpoSearch` calls the standalone
+native scheduler through executable JSONL operator and optimizer adapters.
+The three JSON files are an `ExecutionPlan`, `ExternalDataPlanEnvelope`, and
+`HostHpoSearchRequest`:
+
+```matlab
+result = dagml.hostHpoSearch( ...
+    'plan.json', 'envelope.json', 'hpo.json', ...
+    './matlab-operator-adapter', './matlab-optimizer-adapter', ...
+    'checkpoint', 'search.checkpoint.json', ...
+    'operatorPersistent', true);
+```
+
+The executables can launch MATLAB or Octave and must implement the same
+JSONL protocol as the [CLI examples](../../examples/adapters/). DAG-ML owns
+trial scheduling, fold scoring, pruning, selection, and durable checkpoints.
+The real Octave Ridge oracle in `crates/dag-ml-cli/tests/octave_hpo_ridge.rs`
+qualifies that path through native OOF scoring, pruning and resume, selected
+REFIT into a host-owned MAT sidecar, and fresh-process replay. Run it with
+`DAGML_REQUIRE_HPO_OCTAVE=1 cargo test -p dag-ml-cli --test octave_hpo_ridge`
+when `octave` is on `PATH`. The core records the MAT artifact and validates
+its fingerprint; Octave alone serializes and loads the fitted model.
+The wrapper is POSIX-only and accepts `parallelTrials = N`. DAG-ML starts an
+isolated operator-adapter process per candidate and keeps optimizer callbacks
+on the coordinator thread. Run its smoke with `addpath('bindings/matlab');
+addpath('bindings/matlab/tests'); host_hpo_search` in MATLAB or Octave.
+
+For a no-splitter pipeline, capture a signed initial REFIT package and replay
+PREDICT on a separate V2 cohort through the native CLI:
+
+```matlab
+refit = dagml.initialFullRefit( ...
+    'pipeline.json', 'controllers.json', 'train-envelope.json', ...
+    'training-ids.json', './matlab-operator-adapter', 'full-refit.package.json');
+prediction = dagml.predictInitialFullRefit( ...
+    'full-refit.package.json', 'predict-envelope.json', ...
+    './matlab-operator-adapter', 'artifact-handles.json', 'output-ids.json');
+```
+
+MATLAB/Octave retains host model sidecars. The replay adapter must resolve
+exactly the artifact handles attested in the package. Run the wrapper smoke
+with `addpath('bindings/matlab'); addpath('bindings/matlab/tests');
+initial_full_refit`.
+
+`dagml.cvRefitPredict()` runs a pipeline with CV, winner REFIT and PREDICT in
+one native CLI session, returning the bundle, OOF averages and replay
+prediction blocks. It keeps host model handles alive for that replay only;
+the bundle JSON alone does not contain MATLAB/Octave model sidecars. Its smoke
+is `addpath('bindings/matlab'); addpath('bindings/matlab/tests');
+cv_refit_predict`.
+
+For replay after restarting MATLAB/Octave, persist model sidecars in the host
+and pass their exact invocation-local handle JSON to `dagml.replayBundle()`.
+Its `envelopes` argument is a `containers.Map` from data key to V2 JSON path.
+DAG-ML validates the artifact map against the bundle; the adapter reloads and
+checks its sidecar bytes. The CLI's `--artifact-handles` selects this real
+replay path; omitting it still uses mock handles for conformance examples.

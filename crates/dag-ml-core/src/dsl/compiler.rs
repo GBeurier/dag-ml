@@ -227,6 +227,7 @@ pub(crate) struct BranchCompileOutput {
 #[derive(Clone, Debug)]
 pub(crate) struct SequenceCompileState {
     current_data: DataSource,
+    current_target: Option<PortRef>,
     pending_predictions: Vec<PredictionSource>,
     pending_branch_data: Vec<BranchDataSource>,
 }
@@ -234,8 +235,16 @@ impl SequenceCompileState {
     fn new(current_data: DataSource) -> Self {
         Self {
             current_data,
+            current_target: None,
             pending_predictions: Vec::new(),
             pending_branch_data: Vec::new(),
+        }
+    }
+
+    fn with_target(current_data: DataSource, current_target: Option<PortRef>) -> Self {
+        Self {
+            current_target,
+            ..Self::new(current_data)
         }
     }
 
@@ -279,7 +288,11 @@ impl PipelineCompiler {
                 Ok(())
             }
             PipelineDslStep::YTransform(step) => {
-                self.compile_y_transform_with_extra(step, extra_metadata)?;
+                state.current_target = Some(self.compile_y_transform_with_extra(
+                    step,
+                    state.current_target.as_ref(),
+                    extra_metadata,
+                )?);
                 state.clear_pending();
                 Ok(())
             }
@@ -377,6 +390,7 @@ impl PipelineCompiler {
                     .push(self.compile_model_with_extra(
                         step,
                         &state.current_data,
+                        state.current_target.as_ref(),
                         branch_id,
                         extra_metadata,
                     )?);
@@ -388,21 +402,30 @@ impl PipelineCompiler {
                     .push(self.compile_tuner_with_extra(
                         step,
                         &state.current_data,
+                        state.current_target.as_ref(),
                         branch_id,
                         extra_metadata,
                     )?);
                 Ok(())
             }
             PipelineDslStep::Branch(step) => {
-                let output =
-                    self.compile_branch_with_extra(step, &state.current_data, extra_metadata)?;
+                let output = self.compile_branch_with_extra(
+                    step,
+                    &state.current_data,
+                    state.current_target.as_ref(),
+                    extra_metadata,
+                )?;
                 state.pending_predictions = output.predictions;
                 state.pending_branch_data = output.data_sources;
                 Ok(())
             }
             PipelineDslStep::Generator(step) => {
-                state.pending_predictions =
-                    self.compile_generator_with_extra(step, &state.current_data, extra_metadata)?;
+                state.pending_predictions = self.compile_generator_with_extra(
+                    step,
+                    &state.current_data,
+                    state.current_target.as_ref(),
+                    extra_metadata,
+                )?;
                 state.pending_branch_data.clear();
                 Ok(())
             }
@@ -436,12 +459,84 @@ impl PipelineCompiler {
                 Ok(())
             }
             PipelineDslStep::MergeModel(step) => {
-                let prediction = self.compile_merge_model_with_extra(
-                    step,
-                    &state.pending_predictions,
-                    original_data,
-                    extra_metadata,
-                )?;
+                // A residual learner predicts from the same feature stream as
+                // its base branch.  Ordinary stacking keeps its historical
+                // `include_original_data` input instead.
+                let data = if step.metadata.contains_key("residual_target_execution") {
+                    &state.current_data
+                } else {
+                    original_data
+                };
+                let available = if step.sources.is_empty() {
+                    state
+                        .pending_predictions
+                        .iter()
+                        .map(|source| &source.node_id)
+                        .collect::<BTreeSet<_>>()
+                } else {
+                    step.sources.iter().collect::<BTreeSet<_>>()
+                };
+                if step.source_ports.keys().any(|id| !available.contains(id)) {
+                    return Err(DagMlError::GraphValidation(format!(
+                        "pipeline DSL merge_model `{}` source_ports names an undeclared source",
+                        step.id
+                    )));
+                }
+                let predictions = if step.sources.is_empty() {
+                    state.pending_predictions.iter().map(|pending| {
+                        let mut source = pending.clone();
+                        if let Some(requested_port) = step.source_ports.get(&source.node_id) {
+                            let node = self.nodes.iter().find(|node| node.id == source.node_id)
+                                .expect("pending prediction source is compiled");
+                            if !node.ports.outputs.iter().any(|port| {
+                                port.kind == PortKind::Prediction && port.name == *requested_port
+                            }) {
+                                return Err(DagMlError::GraphValidation(format!(
+                                    "pipeline DSL merge_model `{}` source `{}` has no prediction output `{requested_port}`",
+                                    step.id, source.node_id
+                                )));
+                            }
+                            source.port_name = requested_port.clone();
+                        }
+                        Ok(source)
+                    }).collect::<Result<Vec<_>>>()?
+                } else {
+                    if step.sources.iter().collect::<BTreeSet<_>>().len() != step.sources.len() {
+                        return Err(DagMlError::GraphValidation(format!(
+                            "pipeline DSL merge_model `{}` sources must be distinct",
+                            step.id
+                        )));
+                    }
+                    step.sources.iter().enumerate().map(|(index, source_id)| {
+                        let source = self.nodes.iter().find(|node| node.id == *source_id)
+                            .ok_or_else(|| DagMlError::GraphValidation(format!(
+                                "pipeline DSL merge_model `{}` source `{source_id}` must precede it",
+                                step.id
+                            )))?;
+                        let requested_port = step.source_ports.get(source_id);
+                        let output = source.ports.outputs.iter().find(|port| {
+                            port.kind == PortKind::Prediction
+                                && requested_port.is_none_or(|requested| &port.name == requested)
+                        })
+                            .ok_or_else(|| DagMlError::GraphValidation(format!(
+                                "pipeline DSL merge_model `{}` source `{source_id}` has no prediction output{}",
+                                step.id,
+                                requested_port.map_or_else(String::new, |port| format!(" `{port}`")),
+                            )))?;
+                        Ok(PredictionSource {
+                            node_id: source_id.clone(),
+                            port_name: output.name.clone(),
+                            input_name: format!("source_{index}_oof"),
+                            branch_id: source
+                                .metadata
+                                .get("dsl_branch")
+                                .and_then(serde_json::Value::as_str)
+                                .map(str::to_string),
+                        })
+                    }).collect::<Result<Vec<_>>>()?
+                };
+                let prediction =
+                    self.compile_merge_model_with_extra(step, &predictions, data, extra_metadata)?;
                 state.clear_pending();
                 state.pending_predictions.push(prediction);
                 Ok(())
@@ -504,6 +599,7 @@ impl PipelineCompiler {
         &mut self,
         step: &PipelineDslBranchStep,
         current_data: &DataSource,
+        current_target: Option<&PortRef>,
         extra_metadata: BTreeMap<String, serde_json::Value>,
     ) -> Result<BranchCompileOutput> {
         if step.branches.is_empty() {
@@ -523,7 +619,8 @@ impl PipelineCompiler {
                 )));
             }
             let branch_view_plan = compile_branch_view_plan(step, branch)?;
-            let mut branch_state = SequenceCompileState::new(current_data.clone());
+            let mut branch_state =
+                SequenceCompileState::with_target(current_data.clone(), current_target.cloned());
             let mut branch_metadata = branch_context_metadata(step, branch)?;
             if let Some(plan) = &branch_view_plan {
                 branch_metadata.insert(
@@ -595,6 +692,7 @@ impl PipelineCompiler {
         &mut self,
         step: &PipelineDslGeneratorStep,
         current_data: &DataSource,
+        current_target: Option<&PortRef>,
         extra_metadata: BTreeMap<String, serde_json::Value>,
     ) -> Result<Vec<PredictionSource>> {
         let choices = expand_generator_sequences(step)?;
@@ -614,7 +712,8 @@ impl PipelineCompiler {
                     step.id, choice.id
                 )));
             }
-            let mut choice_state = SequenceCompileState::new(current_data.clone());
+            let mut choice_state =
+                SequenceCompileState::with_target(current_data.clone(), current_target.cloned());
             let mut choice_metadata = generator_choice_metadata(step, &choice)?;
             choice_metadata.extend(extra_metadata.clone());
             for choice_step in &choice.steps {
@@ -718,6 +817,12 @@ impl PipelineCompiler {
         input: &DataSource,
         extra_metadata: BTreeMap<String, serde_json::Value>,
     ) -> Result<DataSource> {
+        if !step.prediction_output_ports.is_empty() {
+            return Err(DagMlError::GraphValidation(format!(
+                "pipeline DSL data operator `{}` cannot declare prediction output ports",
+                step.id
+            )));
+        }
         if kind == NodeKind::Augmentation && step.shape.is_none() {
             return Err(DagMlError::GraphValidation(format!(
                 "pipeline DSL augmentation `{}` requires a shape plan for leakage-safe scope validation",
@@ -757,8 +862,9 @@ impl PipelineCompiler {
     fn compile_y_transform_with_extra(
         &mut self,
         step: &PipelineDslOperatorStep,
+        input: Option<&PortRef>,
         extra_metadata: BTreeMap<String, serde_json::Value>,
-    ) -> Result<()> {
+    ) -> Result<PortRef> {
         let mut metadata = operator_runtime_metadata(step, None)?;
         metadata.extend(extra_metadata);
         let node = NodeSpec {
@@ -775,7 +881,12 @@ impl PipelineCompiler {
         };
         self.push_node(node)?;
         self.collect_operator_generation(&step.id, &step.variants, &step.param_generators)?;
-        self.collect_shape_plan(&step.id, step.shape.as_ref())
+        self.collect_shape_plan(&step.id, step.shape.as_ref())?;
+        self.connect_target(input, &step.id, "y")?;
+        Ok(PortRef {
+            node_id: step.id.clone(),
+            port_name: "y_out".to_string(),
+        })
     }
 
     fn compile_concat_transform_with_extra(
@@ -842,6 +953,7 @@ impl PipelineCompiler {
         &mut self,
         step: &PipelineDslOperatorStep,
         input: &DataSource,
+        target: Option<&PortRef>,
         branch_id: Option<&str>,
         extra_metadata: BTreeMap<String, serde_json::Value>,
     ) -> Result<PredictionSource> {
@@ -849,6 +961,7 @@ impl PipelineCompiler {
             NodeKind::Model,
             step,
             input,
+            target,
             branch_id,
             extra_metadata,
         )
@@ -858,6 +971,7 @@ impl PipelineCompiler {
         &mut self,
         step: &PipelineDslOperatorStep,
         input: &DataSource,
+        target: Option<&PortRef>,
         branch_id: Option<&str>,
         extra_metadata: BTreeMap<String, serde_json::Value>,
     ) -> Result<PredictionSource> {
@@ -865,6 +979,7 @@ impl PipelineCompiler {
             NodeKind::Tuner,
             step,
             input,
+            target,
             branch_id,
             extra_metadata,
         )
@@ -875,19 +990,33 @@ impl PipelineCompiler {
         kind: NodeKind,
         step: &PipelineDslOperatorStep,
         input: &DataSource,
+        target: Option<&PortRef>,
         branch_id: Option<&str>,
         extra_metadata: BTreeMap<String, serde_json::Value>,
     ) -> Result<PredictionSource> {
         let mut metadata = operator_runtime_metadata(step, branch_id)?;
         metadata.extend(extra_metadata);
+        if !step.prediction_output_ports.is_empty() {
+            metadata.insert(
+                "auxiliary_prediction_ports".to_string(),
+                serde_json::to_value(&step.prediction_output_ports).expect("string port list"),
+            );
+        }
         let node = NodeSpec {
             id: step.id.clone(),
             kind,
             operator: Some(step.operator.clone()),
             params: step.params.clone(),
             ports: PortSchema {
-                inputs: vec![data_port("x", input.representation.clone(), "")],
-                outputs: vec![prediction_port("oof", "")],
+                inputs: if target.is_some() {
+                    vec![
+                        data_port("x", input.representation.clone(), ""),
+                        target_port("y", ""),
+                    ]
+                } else {
+                    vec![data_port("x", input.representation.clone(), "")]
+                },
+                outputs: prediction_output_schema(&step.id, &step.prediction_output_ports)?,
             },
             metadata,
             seed_label: step.seed_label.clone(),
@@ -896,6 +1025,7 @@ impl PipelineCompiler {
         self.collect_operator_generation(&step.id, &step.variants, &step.param_generators)?;
         self.collect_shape_plan(&step.id, step.shape.as_ref())?;
         self.connect_data(input, &step.id, "x")?;
+        self.connect_target(target, &step.id, "y")?;
         Ok(PredictionSource {
             node_id: step.id.clone(),
             port_name: "oof".to_string(),
@@ -1103,6 +1233,31 @@ impl PipelineCompiler {
                 step.id
             )));
         }
+        validate_merge_selectors(&step.id, &step.selectors, predictions)?;
+        for (index, selector) in step.selectors.iter().enumerate() {
+            let global_candidate_selection = selector
+                .select
+                .as_ref()
+                .and_then(|value| value.as_object())
+                .is_some_and(|select| {
+                    select.contains_key("fold_candidates_top_k")
+                        || select.contains_key("diverse_fold_candidates")
+                });
+            if !matches!(
+                selector.aggregate.as_deref(),
+                None | Some("mean" | "weighted_mean" | "proba_mean")
+            ) || (selector.branch.is_none()
+                && selector.model.is_none()
+                && !global_candidate_selection)
+                || selector.input_name.is_some()
+                || (selector.aggregate.is_some() && selector.branch.is_none())
+            {
+                return Err(DagMlError::GraphValidation(format!(
+                    "pipeline DSL merge_model `{}` selector {index} requires a branch or model (except global fold candidate selection) and aggregate=mean/weighted_mean/proba_mean when present",
+                    step.id
+                )));
+            }
+        }
         let mut input_ports = Vec::with_capacity(predictions.len() + 1);
         for prediction in predictions {
             input_ports.push(prediction_port(&prediction.input_name, ""));
@@ -1126,8 +1281,42 @@ impl PipelineCompiler {
             "merge_mode".to_string(),
             serde_json::Value::String(step.merge_mode.clone()),
         );
+        if !step.selectors.is_empty() {
+            metadata.insert(
+                "selectors".to_string(),
+                serde_json::to_value(&step.selectors).map_err(|error| {
+                    DagMlError::GraphValidation(format!(
+                        "failed to serialize pipeline DSL merge_model `{}` selectors: {error}",
+                        step.id
+                    ))
+                })?,
+            );
+        }
+        if !step.sources.is_empty() {
+            metadata.insert(
+                "prediction_source_order".to_string(),
+                serde_json::to_value(&step.sources).map_err(|error| {
+                    DagMlError::GraphValidation(format!(
+                        "failed to serialize pipeline DSL merge_model `{}` sources: {error}",
+                        step.id
+                    ))
+                })?,
+            );
+        }
+        if !step.source_ports.is_empty() {
+            metadata.insert(
+                "prediction_source_ports".to_string(),
+                serde_json::to_value(&step.source_ports).expect("source port map"),
+            );
+        }
         let branch_id = branch_id_from_metadata(&extra_metadata);
         metadata.extend(extra_metadata);
+        if !step.prediction_output_ports.is_empty() {
+            metadata.insert(
+                "auxiliary_prediction_ports".to_string(),
+                serde_json::to_value(&step.prediction_output_ports).expect("string port list"),
+            );
+        }
         let node = NodeSpec {
             id: step.id.clone(),
             kind: NodeKind::Model,
@@ -1135,7 +1324,7 @@ impl PipelineCompiler {
             params: step.params.clone(),
             ports: PortSchema {
                 inputs: input_ports,
-                outputs: vec![prediction_port("oof", "")],
+                outputs: prediction_output_schema(&step.id, &step.prediction_output_ports)?,
             },
             metadata,
             seed_label: step.seed_label.clone(),
@@ -1163,12 +1352,81 @@ impl PipelineCompiler {
         if step.include_original_data {
             self.connect_data_to_port(external_data, &step.id, "x_original")?;
         }
-        Ok(PredictionSource {
+        let learner_prediction = PredictionSource {
             node_id: step.id.clone(),
             port_name: "oof".to_string(),
             input_name: "oof".to_string(),
             branch_id,
-        })
+        };
+        if step.metadata.contains_key("residual_target_execution") {
+            if predictions.len() != 1 || !step.include_original_data {
+                return Err(DagMlError::GraphValidation(format!(
+                    "residual learner `{}` requires exactly one base prediction and original data",
+                    step.id
+                )));
+            }
+            let base = &predictions[0];
+            let fusion_id = NodeId::new(format!("{}.residual_fusion", step.id))?;
+            let mut fusion_metadata = BTreeMap::from([
+                (
+                    "merge_mode".to_string(),
+                    serde_json::json!("residual_fusion"),
+                ),
+                (
+                    "residual_fusion_for".to_string(),
+                    serde_json::json!(step.id.as_str()),
+                ),
+                (
+                    "residual_base".to_string(),
+                    serde_json::json!(base.node_id.as_str()),
+                ),
+                (
+                    "residual_learner".to_string(),
+                    serde_json::json!(step.id.as_str()),
+                ),
+            ]);
+            for key in ["residual_lambda", "residual_gate", "residual_rli_threshold"] {
+                if let Some(value) = step.metadata.get(key) {
+                    fusion_metadata.insert(key.to_string(), value.clone());
+                }
+            }
+            self.push_node(NodeSpec {
+                id: fusion_id.clone(),
+                kind: NodeKind::PredictionJoin,
+                operator: None,
+                params: BTreeMap::new(),
+                ports: PortSchema {
+                    inputs: vec![prediction_port("base", ""), prediction_port("learner", "")],
+                    outputs: vec![prediction_port("prediction", "")],
+                },
+                metadata: fusion_metadata,
+                seed_label: None,
+            })?;
+            for (source, target_port) in [(base, "base"), (&learner_prediction, "learner")] {
+                self.edges.push(EdgeSpec {
+                    source: PortRef {
+                        node_id: source.node_id.clone(),
+                        port_name: source.port_name.clone(),
+                    },
+                    target: PortRef {
+                        node_id: fusion_id.clone(),
+                        port_name: target_port.to_string(),
+                    },
+                    contract: EdgeContract {
+                        requires_oof: true,
+                        requires_fold_alignment: true,
+                        ..EdgeContract::new(PortKind::Prediction, None)
+                    },
+                });
+            }
+            return Ok(PredictionSource {
+                node_id: fusion_id,
+                port_name: "prediction".to_string(),
+                input_name: "prediction".to_string(),
+                branch_id: None,
+            });
+        }
+        Ok(learner_prediction)
     }
 
     fn push_node(&mut self, node: NodeSpec) -> Result<()> {
@@ -1263,6 +1521,28 @@ impl PipelineCompiler {
                     requires_oof: false,
                     requires_fold_alignment: true,
                     ..EdgeContract::new(PortKind::Data, input.representation.clone())
+                },
+            });
+        }
+        Ok(())
+    }
+
+    fn connect_target(
+        &mut self,
+        input: Option<&PortRef>,
+        target_id: &NodeId,
+        target_port: &str,
+    ) -> Result<()> {
+        if let Some(source) = input {
+            self.edges.push(EdgeSpec {
+                source: source.clone(),
+                target: PortRef {
+                    node_id: target_id.clone(),
+                    port_name: target_port.to_string(),
+                },
+                contract: EdgeContract {
+                    requires_fold_alignment: true,
+                    ..EdgeContract::new(PortKind::Target, None)
                 },
             });
         }
@@ -1794,7 +2074,7 @@ pub(crate) fn validate_merge_selectors(
                 "pipeline DSL merge `{merge_id}` selector {selector_index} does not match any pending prediction input"
             )));
         }
-        validate_merge_selector_select(merge_id, selector_index, selector, matched.len())?;
+        validate_merge_selector_select(merge_id, selector_index, selector, &matched)?;
     }
     Ok(())
 }
@@ -1802,7 +2082,7 @@ pub(crate) fn validate_merge_selector_select(
     merge_id: &NodeId,
     selector_index: usize,
     selector: &PipelineDslMergeSelector,
-    matched_count: usize,
+    matched: &[&PredictionSource],
 ) -> Result<()> {
     let Some(select) = &selector.select else {
         return Ok(());
@@ -1823,12 +2103,99 @@ pub(crate) fn validate_merge_selector_select(
     }
     let Some(object) = select.as_object() else {
         return Err(DagMlError::GraphValidation(format!(
-            "pipeline DSL merge `{merge_id}` selector {selector_index} select must be `all`, `best` or an object with `top_k`"
+            "pipeline DSL merge `{merge_id}` selector {selector_index} select must be `all`, `best` or an object with `top_k`, `fold_candidates_top_k` or `models`"
         )));
     };
+    if object.len() == 1 && object.contains_key("models") {
+        let Some(models) = object.get("models").and_then(|value| value.as_array()) else {
+            return Err(DagMlError::GraphValidation(format!(
+                "pipeline DSL merge `{merge_id}` selector {selector_index} models must be an array of producer node ids"
+            )));
+        };
+        let selected = models
+            .iter()
+            .map(|value| value.as_str())
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| DagMlError::GraphValidation(format!(
+                "pipeline DSL merge `{merge_id}` selector {selector_index} models must contain producer node ids"
+            )))?;
+        if selected.is_empty() || selected.iter().collect::<BTreeSet<_>>().len() != selected.len() {
+            return Err(DagMlError::GraphValidation(format!(
+                "pipeline DSL merge `{merge_id}` selector {selector_index} models must be non-empty and distinct"
+            )));
+        }
+        if selected
+            .iter()
+            .any(|id| !matched.iter().any(|source| source.node_id.as_str() == *id))
+        {
+            return Err(DagMlError::GraphValidation(format!(
+                "pipeline DSL merge `{merge_id}` selector {selector_index} models must be producers in the matched prediction scope"
+            )));
+        }
+        return Ok(());
+    }
+    if object.contains_key("fold_candidates_top_k") {
+        if object
+            .keys()
+            .any(|key| key != "fold_candidates_top_k" && key != "ascending")
+            || object
+                .get("ascending")
+                .is_some_and(|value| !value.is_boolean())
+            || object
+                .get("fold_candidates_top_k")
+                .and_then(|value| value.as_u64())
+                .is_none_or(|value| value == 0)
+        {
+            return Err(DagMlError::GraphValidation(format!(
+                "pipeline DSL merge `{merge_id}` selector {selector_index} fold_candidates_top_k must be a positive integer with optional boolean ascending"
+            )));
+        }
+        return require_selector_metric(
+            merge_id,
+            selector_index,
+            selector,
+            "fold_candidates_top_k",
+        );
+    }
+    if object.len() == 1 && object.contains_key("diverse_fold_candidates") {
+        let Some(diverse) = object["diverse_fold_candidates"].as_object() else {
+            return Err(DagMlError::GraphValidation(format!(
+                "pipeline DSL merge `{merge_id}` selector {selector_index} diverse_fold_candidates must be an object"
+            )));
+        };
+        let max_per_class = diverse
+            .get("max_per_class")
+            .and_then(|value| value.as_u64());
+        let preferred = diverse
+            .get("preferred_classes")
+            .and_then(|value| value.as_array());
+        if diverse
+            .keys()
+            .any(|key| key != "max_per_class" && key != "preferred_classes" && key != "ascending")
+            || max_per_class.is_none_or(|value| value == 0)
+            || diverse
+                .get("ascending")
+                .is_some_and(|value| !value.is_boolean())
+            || preferred.is_none_or(|values| {
+                values
+                    .iter()
+                    .any(|value| value.as_str().is_none_or(str::is_empty))
+            })
+        {
+            return Err(DagMlError::GraphValidation(format!(
+                "pipeline DSL merge `{merge_id}` selector {selector_index} diverse_fold_candidates needs positive max_per_class and preferred_classes strings"
+            )));
+        }
+        return require_selector_metric(
+            merge_id,
+            selector_index,
+            selector,
+            "diverse_fold_candidates",
+        );
+    }
     if object.len() != 1 || !object.contains_key("top_k") {
         return Err(DagMlError::GraphValidation(format!(
-            "pipeline DSL merge `{merge_id}` selector {selector_index} object select currently supports only `top_k`"
+            "pipeline DSL merge `{merge_id}` selector {selector_index} object select supports only `top_k` or `models`"
         )));
     }
     let Some(top_k) = object.get("top_k").and_then(|value| value.as_u64()) else {
@@ -1841,9 +2208,9 @@ pub(crate) fn validate_merge_selector_select(
             "pipeline DSL merge `{merge_id}` selector {selector_index} top_k must be positive"
         )));
     }
-    if top_k as usize > matched_count {
+    if top_k as usize > matched.len() {
         return Err(DagMlError::GraphValidation(format!(
-            "pipeline DSL merge `{merge_id}` selector {selector_index} top_k={top_k} exceeds {matched_count} matched prediction inputs"
+            "pipeline DSL merge `{merge_id}` selector {selector_index} top_k={top_k} exceeds {} matched prediction inputs", matched.len()
         )));
     }
     require_selector_metric(merge_id, selector_index, selector, "top_k")
@@ -1980,6 +2347,19 @@ pub(crate) fn target_port(name: &str, description: &str) -> PortSpec {
         target_level: None,
         description: description.to_string(),
     }
+}
+fn prediction_output_schema(node_id: &NodeId, additional: &[String]) -> Result<Vec<PortSpec>> {
+    let mut seen = BTreeSet::from(["oof"]);
+    let mut outputs = vec![prediction_port("oof", "")];
+    for name in additional {
+        if name.trim().is_empty() || name != name.trim() || !seen.insert(name.as_str()) {
+            return Err(DagMlError::GraphValidation(format!(
+                "pipeline DSL model `{node_id}` has a blank, duplicate, or reserved prediction output port `{name}`"
+            )));
+        }
+        outputs.push(prediction_port(name, ""));
+    }
+    Ok(outputs)
 }
 pub(crate) fn prediction_port(name: &str, description: &str) -> PortSpec {
     PortSpec {

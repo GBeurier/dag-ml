@@ -64,6 +64,43 @@ fn compiles_linear_pipeline_dsl_to_valid_graph() {
 }
 
 #[test]
+fn source_models_keep_their_target_transform_in_predictor_closure() {
+    let spec: PipelineDslSpec = serde_json::from_str(
+        r#"{
+  "id": "dsl-source-target-closure",
+  "steps": [{
+    "kind": "branch", "mode": "duplication", "branches": [
+      {"id": "source_0", "steps": [
+        {"kind": "y_transform", "id": "source_0:target", "operator": {"type": "MinMaxScaler"}},
+        {"kind": "transform", "id": "source_0:scale", "operator": {"type": "StandardScaler"}},
+        {"kind": "model", "id": "source_0:model", "operator": {"type": "PLSRegression"}}
+      ]},
+      {"id": "source_1", "steps": [
+        {"kind": "y_transform", "id": "source_1:target", "operator": {"type": "MinMaxScaler"}},
+        {"kind": "transform", "id": "source_1:scale", "operator": {"type": "StandardScaler"}},
+        {"kind": "model", "id": "source_1:model", "operator": {"type": "PLSRegression"}}
+      ]}
+    ]
+  }]
+}"#,
+    )
+    .unwrap();
+    let graph = compile_pipeline_dsl(&spec).unwrap();
+    for index in 0..2 {
+        let source = format!("source_{index}:target");
+        let target = format!("source_{index}:model");
+        assert!(graph.edges.iter().any(|edge| {
+            edge.source.node_id.as_str() == source
+                && edge.source.port_name == "y_out"
+                && edge.target.node_id.as_str() == target
+                && edge.target.port_name == "y"
+                && edge.contract.kind == PortKind::Target
+        }));
+    }
+    graph.validate().unwrap();
+}
+
+#[test]
 fn compiles_pipeline_dsl_unit_contracts_to_graph_interface() {
     let spec: PipelineDslSpec = serde_json::from_str(
         r#"{
@@ -207,6 +244,329 @@ fn compiles_branch_merge_predictions_plus_original_dsl() {
         == "branch:b1.augment:noise"
         && edge.target.node_id.as_str() == "branch:b1.model:rf"));
     graph.validate().unwrap();
+}
+
+#[test]
+fn merge_model_can_reuse_earlier_prediction_producers_in_declared_order() {
+    let spec: PipelineDslSpec = serde_json::from_value(serde_json::json!({
+        "id": "dsl-multilevel-sources",
+        "steps": [
+            {"kind": "model", "id": "model:base", "operator": {"type": "Ridge"}},
+            {"kind": "merge_model", "id": "model:first", "operator": {"type": "Ridge"}},
+            {"kind": "merge_model", "id": "model:second", "operator": {"type": "Lasso"},
+             "sources": ["model:first", "model:base"]}
+        ]
+    }))
+    .unwrap();
+    let graph = compile_pipeline_dsl(&spec).unwrap();
+    let second = graph
+        .nodes
+        .iter()
+        .find(|node| node.id.as_str() == "model:second")
+        .unwrap();
+    assert_eq!(
+        second.metadata["prediction_source_order"],
+        serde_json::json!(["model:first", "model:base"])
+    );
+    let inputs = graph
+        .edges
+        .iter()
+        .filter(|edge| edge.target.node_id == second.id)
+        .filter(|edge| edge.contract.requires_oof)
+        .collect::<Vec<_>>();
+    assert_eq!(inputs.len(), 2);
+    assert_eq!(inputs[0].source.node_id.as_str(), "model:first");
+    assert_eq!(inputs[1].source.node_id.as_str(), "model:base");
+    assert_eq!(inputs[0].target.port_name, "source_0_oof");
+    assert_eq!(inputs[1].target.port_name, "source_1_oof");
+    graph.validate().unwrap();
+}
+
+#[test]
+fn merge_model_routes_explicit_auxiliary_prediction_ports_without_changing_primary_oof() {
+    let spec: PipelineDslSpec = serde_json::from_value(serde_json::json!({
+        "id": "dsl-dual-prediction-output",
+        "steps": [
+            {"kind": "model", "id": "model:base", "operator": {"type": "Classifier"},
+             "prediction_output_ports": ["proba"]},
+            {"kind": "merge_model", "id": "model:first", "operator": {"type": "Meta"},
+             "prediction_output_ports": ["proba"],
+             "source_ports": {"model:base": "proba"}},
+            {"kind": "merge_model", "id": "model:second", "operator": {"type": "Meta"},
+             "sources": ["model:first", "model:base"],
+             "source_ports": {"model:first": "proba", "model:base": "proba"}}
+        ]
+    }))
+    .unwrap();
+    let graph = compile_pipeline_dsl(&spec).unwrap();
+    let first = graph
+        .nodes
+        .iter()
+        .find(|node| node.id.as_str() == "model:first")
+        .unwrap();
+    assert_eq!(
+        first
+            .ports
+            .outputs
+            .iter()
+            .map(|port| port.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["oof", "proba"]
+    );
+    assert_eq!(
+        first.metadata["auxiliary_prediction_ports"],
+        serde_json::json!(["proba"])
+    );
+    assert_eq!(
+        first.metadata["prediction_source_ports"],
+        serde_json::json!({"model:base": "proba"})
+    );
+    assert!(graph
+        .edges
+        .iter()
+        .any(|edge| edge.target.node_id == first.id
+            && edge.source.node_id.as_str() == "model:base"
+            && edge.source.port_name == "proba"));
+    let second = graph
+        .nodes
+        .iter()
+        .find(|node| node.id.as_str() == "model:second")
+        .unwrap();
+    assert_eq!(
+        second.metadata["prediction_source_order"],
+        serde_json::json!(["model:first", "model:base"])
+    );
+    assert_eq!(
+        second.metadata["prediction_source_ports"],
+        serde_json::json!({"model:first": "proba", "model:base": "proba"})
+    );
+    let edges = graph
+        .edges
+        .iter()
+        .filter(|edge| edge.target.node_id == second.id && edge.contract.requires_oof)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        edges
+            .iter()
+            .map(|edge| edge.source.port_name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["proba", "proba"]
+    );
+    graph.validate().unwrap();
+
+    let mut missing_port = spec.clone();
+    if let PipelineDslStep::MergeModel(second) = &mut missing_port.steps[2] {
+        second
+            .source_ports
+            .insert(NodeId::new("model:base").unwrap(), "unknown".to_string());
+    }
+    assert!(compile_pipeline_dsl(&missing_port)
+        .unwrap_err()
+        .to_string()
+        .contains("no prediction output `unknown`"));
+    let mut duplicate = spec;
+    if let PipelineDslStep::Model(base) = &mut duplicate.steps[0] {
+        base.prediction_output_ports.push("oof".to_string());
+    }
+    assert!(compile_pipeline_dsl(&duplicate)
+        .unwrap_err()
+        .to_string()
+        .contains("reserved prediction output port"));
+
+    let invalid_data_step: PipelineDslSpec = serde_json::from_value(serde_json::json!({
+        "id": "dsl-invalid-data-prediction-output",
+        "steps": [
+            {"kind": "transform", "id": "transform:x", "operator": {"type": "Scale"},
+             "prediction_output_ports": ["proba"]},
+            {"kind": "model", "id": "model:base", "operator": {"type": "Classifier"}}
+        ]
+    }))
+    .unwrap();
+    assert!(compile_pipeline_dsl(&invalid_data_step)
+        .unwrap_err()
+        .to_string()
+        .contains("cannot declare prediction output ports"));
+}
+
+#[test]
+fn merge_model_compiles_per_branch_probability_selector() {
+    let spec: PipelineDslSpec = serde_json::from_value(serde_json::json!({
+        "id": "dsl-branch-proba",
+        "steps": [
+            {"kind": "branch", "mode": "duplication", "branches": [
+                {"id": "branch_0", "steps": [
+                    {"kind": "model", "id": "model:a", "operator": {"type": "Classifier"}},
+                    {"kind": "model", "id": "model:b", "operator": {"type": "Classifier"}}
+                ]}
+            ]},
+            {"kind": "merge_model", "id": "model:meta", "operator": {"type": "Classifier"},
+             "selectors": [{"branch": "branch_0", "select": "all", "aggregate": "proba_mean"}]}
+        ]
+    }))
+    .unwrap();
+    let graph = compile_pipeline_dsl(&spec).unwrap();
+    let meta = graph
+        .nodes
+        .iter()
+        .find(|node| node.id.as_str() == "model:meta")
+        .unwrap();
+    assert_eq!(meta.metadata["selectors"][0]["aggregate"], "proba_mean");
+    assert_eq!(
+        graph
+            .edges
+            .iter()
+            .filter(|edge| edge.target.node_id == meta.id && edge.contract.requires_oof)
+            .count(),
+        2
+    );
+
+    let mut weighted = spec;
+    if let PipelineDslStep::MergeModel(step) = &mut weighted.steps[1] {
+        step.selectors[0].aggregate = Some("weighted_mean".to_string());
+    } else {
+        panic!("expected merge_model step");
+    }
+    assert!(compile_pipeline_dsl(&weighted).is_ok());
+    if let PipelineDslStep::MergeModel(step) = &mut weighted.steps[1] {
+        step.selectors[0].select = Some(serde_json::json!("best"));
+        step.selectors[0].metric = Some("rmse".to_string());
+    }
+    assert!(compile_pipeline_dsl(&weighted).is_ok());
+    if let PipelineDslStep::MergeModel(step) = &mut weighted.steps[1] {
+        step.selectors[0].select = Some(serde_json::json!({"top_k": 2}));
+    }
+    assert!(compile_pipeline_dsl(&weighted).is_ok());
+    if let PipelineDslStep::MergeModel(step) = &mut weighted.steps[1] {
+        step.selectors[0].aggregate = Some("median".to_string());
+    }
+    assert!(compile_pipeline_dsl(&weighted)
+        .unwrap_err()
+        .to_string()
+        .contains("aggregate=mean/weighted_mean/proba_mean"));
+}
+
+#[test]
+fn residual_merge_model_compiles_native_base_learner_fusion_graph() {
+    let spec: PipelineDslSpec = serde_json::from_str(
+        r#"{
+      "id": "dsl-residual",
+      "steps": [
+        {"kind": "transform", "id": "transform:scale", "operator": {"type": "StandardScaler"}},
+        {"kind": "branch", "mode": "duplication", "branches": [
+          {"id": "base", "steps": [
+            {"kind": "model", "id": "model:base", "operator": {"type": "PLSRegression"}}
+          ]}
+        ]},
+        {"kind": "merge_model", "id": "model:learner",
+         "operator": {"type": "Ridge"}, "include_original_data": true,
+         "metadata": {"residual_target_execution": "nested_oof_v1",
+                      "residual_gate": false, "residual_lambda": 1.0}}
+      ]
+    }"#,
+    )
+    .unwrap();
+    let graph = compile_pipeline_dsl(&spec).unwrap();
+    graph.validate().unwrap();
+    let learner = graph
+        .nodes
+        .iter()
+        .find(|node| node.id.as_str() == "model:learner")
+        .unwrap();
+    assert_eq!(learner.ports.inputs.len(), 2);
+    assert!(graph.edges.iter().any(|edge| {
+        edge.source.node_id.as_str() == "transform:scale"
+            && edge.target.node_id == learner.id
+            && edge.target.port_name == "x_original"
+    }));
+    assert!(graph.edges.iter().any(|edge| {
+        edge.source.node_id.as_str() == "transform:scale"
+            && edge.target.node_id.as_str() == "model:base"
+    }));
+    assert!(learner
+        .ports
+        .inputs
+        .iter()
+        .any(|port| port.name == "x_original"));
+    let fusion = graph
+        .nodes
+        .iter()
+        .find(|node| node.id.as_str() == "model:learner.residual_fusion")
+        .unwrap();
+    assert_eq!(fusion.kind, NodeKind::PredictionJoin);
+    assert_eq!(fusion.metadata["merge_mode"], "residual_fusion");
+    assert_eq!(fusion.metadata["residual_base"], "model:base");
+    assert_eq!(fusion.metadata["residual_learner"], "model:learner");
+    assert_eq!(
+        graph
+            .edges
+            .iter()
+            .filter(|edge| edge.contract.requires_oof)
+            .count(),
+        3
+    );
+    assert_eq!(
+        graph
+            .edges
+            .iter()
+            .filter(|edge| edge.target.node_id == fusion.id)
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn prediction_feature_merge_before_residual_keeps_the_data_edge() {
+    let spec: PipelineDslSpec = serde_json::from_str(
+        r#"{
+      "id": "dsl-prediction-features-residual",
+      "steps": [
+        {"kind": "branch", "mode": "duplication", "branches": [
+          {"id": "a", "steps": [
+            {"kind": "model", "id": "model:a", "operator": {"type": "Ridge"}}
+          ]},
+          {"id": "b", "steps": [
+            {"kind": "model", "id": "model:b", "operator": {"type": "Ridge"}}
+          ]}
+        ]},
+        {"kind": "merge", "id": "merge:prediction.features",
+         "merge_mode": "predictions", "output_as": "features",
+         "include_original_data": false},
+        {"kind": "branch", "mode": "duplication", "branches": [
+          {"id": "base", "steps": [
+            {"kind": "model", "id": "model:base", "operator": {"type": "PLSRegression"}}
+          ]}
+        ]},
+        {"kind": "merge_model", "id": "model:learner",
+         "operator": {"type": "Ridge"}, "include_original_data": true,
+         "metadata": {"residual_target_execution": "nested_oof_v1"}}
+      ]
+    }"#,
+    )
+    .unwrap();
+    let graph = compile_pipeline_dsl(&spec).unwrap();
+    graph.validate().unwrap();
+    let merge = graph
+        .nodes
+        .iter()
+        .find(|node| node.id.as_str() == "merge:prediction.features")
+        .unwrap();
+    assert_eq!(merge.kind, NodeKind::PredictionJoin);
+    assert_eq!(merge.ports.outputs[0].kind, PortKind::Data);
+    for consumer in ["model:base", "model:learner"] {
+        assert!(graph.edges.iter().any(|edge| {
+            edge.source.node_id == merge.id
+                && edge.target.node_id.as_str() == consumer
+                && edge.contract.kind == PortKind::Data
+        }));
+    }
+    assert_eq!(
+        graph
+            .edges
+            .iter()
+            .filter(|edge| edge.target.node_id == merge.id && edge.contract.requires_oof)
+            .count(),
+        2
+    );
 }
 
 #[test]
@@ -622,6 +982,78 @@ fn merge_selectors_reject_top_k_above_scope() {
 
     let error = compile_pipeline_dsl_with_generation(&spec).unwrap_err();
     assert!(format!("{error}").contains("top_k=2 exceeds 1 matched prediction inputs"));
+}
+
+#[test]
+fn merge_selector_explicit_models_stay_inside_branch_scope() {
+    let mut value = serde_json::json!({
+        "id": "dsl-explicit-merge-models",
+        "steps": [
+            {"kind": "branch", "branches": [
+                {"id": "left", "steps": [
+                    {"kind": "model", "id": "branch:left.model:a", "operator": {"type": "Ridge"}},
+                    {"kind": "model", "id": "branch:left.model:b", "operator": {"type": "Ridge"}}
+                ]},
+                {"id": "right", "steps": [
+                    {"kind": "model", "id": "branch:right.model:c", "operator": {"type": "Ridge"}}
+                ]}
+            ]},
+            {"kind": "merge", "id": "merge:explicit", "selectors": [
+                {"branch": "left", "select": {"models": ["branch:left.model:b"]}}
+            ]}
+        ]
+    });
+    let spec: PipelineDslSpec = serde_json::from_value(value.clone()).unwrap();
+    compile_pipeline_dsl_with_generation(&spec).unwrap();
+    value["steps"][1]["selectors"][0]["select"] =
+        serde_json::json!({"models": ["branch:right.model:c"]});
+    let out_of_scope: PipelineDslSpec = serde_json::from_value(value).unwrap();
+    let error = compile_pipeline_dsl_with_generation(&out_of_scope).unwrap_err();
+    assert!(format!("{error}").contains("matched prediction scope"));
+}
+
+#[test]
+fn merge_model_ordered_sources_retain_branch_selection_scope() {
+    let spec: PipelineDslSpec = serde_json::from_value(serde_json::json!({
+        "id": "dsl-ordered-selected-merge",
+        "steps": [
+            {"kind": "branch", "branches": [
+                {"id": "left", "steps": [
+                    {"kind": "model", "id": "model:left.a", "operator": {"type": "Ridge"}},
+                    {"kind": "model", "id": "model:left.b", "operator": {"type": "Ridge"}}
+                ]},
+                {"id": "right", "steps": [
+                    {"kind": "model", "id": "model:right", "operator": {"type": "Ridge"}}
+                ]}
+            ]},
+            {"kind": "merge_model", "id": "model:meta", "operator": {"type": "Ridge"},
+             "sources": ["model:left.b", "model:left.a", "model:right"],
+             "selectors": [
+                {"branch": "left", "select": {"models": ["model:left.b", "model:left.a"]}},
+                {"branch": "right", "select": "all"}
+             ]}
+        ]
+    }))
+    .unwrap();
+    let graph = compile_pipeline_dsl(&spec).unwrap();
+    let meta = graph
+        .nodes
+        .iter()
+        .find(|node| node.id.as_str() == "model:meta")
+        .unwrap();
+    assert_eq!(
+        meta.metadata["prediction_source_order"],
+        serde_json::json!(["model:left.b", "model:left.a", "model:right"])
+    );
+    assert_eq!(
+        graph
+            .edges
+            .iter()
+            .filter(|edge| edge.target.node_id == meta.id && edge.contract.requires_oof)
+            .map(|edge| edge.source.node_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["model:left.b", "model:left.a", "model:right"]
+    );
 }
 
 #[test]
@@ -2147,6 +2579,7 @@ fn operator_variant_label_matches_pinned_host_contract() {
         PipelineDslStep::Transform(PipelineDslOperatorStep {
             id: NodeId::new("transform:snv").unwrap(),
             operator: serde_json::Value::String("SNV".to_string()),
+            prediction_output_ports: Vec::new(),
             params: BTreeMap::new(),
             metadata: BTreeMap::new(),
             seed_label: None,
@@ -2161,6 +2594,7 @@ fn operator_variant_label_matches_pinned_host_contract() {
         PipelineDslStep::Model(PipelineDslOperatorStep {
             id: NodeId::new("model:pls").unwrap(),
             operator: serde_json::json!({"class": "sklearn.cross_decomposition.PLSRegression"}),
+            prediction_output_ports: Vec::new(),
             params: BTreeMap::from([("n_components".to_string(), serde_json::json!(5))]),
             metadata: BTreeMap::new(),
             seed_label: None,
@@ -2239,6 +2673,7 @@ fn operator_variant_label_preserves_numeric_value_forms() {
     let with_int = vec![PipelineDslStep::Model(PipelineDslOperatorStep {
         id: NodeId::new("model:pls").unwrap(),
         operator: serde_json::Value::String("PLS".to_string()),
+        prediction_output_ports: Vec::new(),
         params: BTreeMap::from([("alpha".to_string(), serde_json::json!(1))]),
         metadata: BTreeMap::new(),
         seed_label: None,
@@ -2253,6 +2688,7 @@ fn operator_variant_label_preserves_numeric_value_forms() {
     let with_float = vec![PipelineDslStep::Model(PipelineDslOperatorStep {
         id: NodeId::new("model:pls").unwrap(),
         operator: serde_json::Value::String("PLS".to_string()),
+        prediction_output_ports: Vec::new(),
         params: BTreeMap::from([("alpha".to_string(), serde_json::json!(1.0))]),
         metadata: BTreeMap::new(),
         seed_label: None,
@@ -4367,7 +4803,7 @@ fn fan_out_rejects_merge_inside_auto_separation_template() {
 }
 
 #[test]
-fn fan_out_rejects_generation_override_on_fanned_node() {
+fn fan_out_rewrites_generation_override_on_fanned_node() {
     let mut spec = auto_separation_by_metadata_spec();
     spec.generation_dimensions = vec![PipelineDslGenerationDimension {
         name: "dim".to_string(),
@@ -4383,11 +4819,49 @@ fn fan_out_rejects_generation_override_on_fanned_node() {
         }],
     }];
     let envelope = fanout_envelope(&[("s1", "A", &[]), ("s2", "B", &[])]);
+    let expanded = fan_out_data_aware_branches(&spec, &envelope).unwrap();
+    let overrides = &expanded.generation_dimensions[0].choices[0].param_overrides;
+    assert_eq!(overrides.len(), 2);
+    assert_eq!(overrides[0].node_id.as_str(), "model:site__A");
+    assert_eq!(overrides[1].node_id.as_str(), "model:site__B");
+    assert_eq!(overrides[0].params["alpha"], serde_json::json!(0.1));
+    assert_eq!(overrides[1].params["alpha"], serde_json::json!(0.1));
+    let compiled = compile_pipeline_dsl_with_generation(&expanded).unwrap();
+    assert_eq!(
+        compiled.generation.dimensions[0].choices[0]
+            .param_overrides
+            .len(),
+        2
+    );
+}
+
+#[test]
+fn fan_out_rejects_generation_override_collision_with_explicit_clone() {
+    let mut spec = auto_separation_by_metadata_spec();
+    spec.generation_dimensions = vec![PipelineDslGenerationDimension {
+        name: "dim".to_string(),
+        choices: vec![PipelineDslGenerationChoice {
+            label: "choice".to_string(),
+            value: None,
+            param_overrides: vec![
+                PipelineDslGenerationParamOverride {
+                    node_id: NodeId::new("model:site").unwrap(),
+                    params: BTreeMap::from([("alpha".to_string(), serde_json::json!(0.1))]),
+                },
+                PipelineDslGenerationParamOverride {
+                    node_id: NodeId::new("model:site__A").unwrap(),
+                    params: BTreeMap::from([("alpha".to_string(), serde_json::json!(0.2))]),
+                },
+            ],
+            active_subsequence: None,
+        }],
+    }];
+    let envelope = fanout_envelope(&[("s1", "A", &[]), ("s2", "B", &[])]);
     let error = fan_out_data_aware_branches(&spec, &envelope)
         .unwrap_err()
         .to_string();
     assert!(
-        error.contains("generation param_override targeting node `model:site`"),
+        error.contains("targets node `model:site__A` more than once"),
         "{error}"
     );
 }

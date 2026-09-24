@@ -9,11 +9,62 @@ use crate::fold::{FoldAssignment, FoldPartitionMode, FoldSet};
 use crate::ids::{FoldId, NodeId, SampleId};
 
 pub const STACKING_OOF_REFIT_CONTRACT_METADATA_KEY: &str = "stacking_oof_refit_contract";
+pub const STACKING_OOF_COVERAGE_CONTRACT_METADATA_KEY: &str = "stacking_oof_coverage_contract";
+pub const STACKING_MISSING_PREDICTION_POLICY_METADATA_KEY: &str =
+    "stacking_missing_prediction_policy";
+
+/// Policy for missing rows in the OOF feature matrix consumed by a stack.
+/// A partial matrix is refused until a real imputation operation (with
+/// per-source column means and lineage) is available.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StackingMissingPredictionPolicy {
+    CompleteInnerOofNoImputation,
+}
+
+impl StackingMissingPredictionPolicy {
+    pub fn from_metadata(metadata: &BTreeMap<String, Value>) -> Result<Option<Self>> {
+        let Some(value) = metadata.get(STACKING_MISSING_PREDICTION_POLICY_METADATA_KEY) else {
+            return Ok(None);
+        };
+        serde_json::from_value(value.clone())
+            .map(Some)
+            .map_err(|error| {
+                DagMlError::OofValidation(format!(
+                    "`{STACKING_MISSING_PREDICTION_POLICY_METADATA_KEY}` is invalid: {error}"
+                ))
+            })
+    }
+
+    pub fn validate_complete_input(
+        self,
+        producer_node: &NodeId,
+        blocks: &[&PredictionBlock],
+        requested: &[SampleId],
+    ) -> Result<()> {
+        let requested = requested.iter().collect::<BTreeSet<_>>();
+        let mut covered = BTreeSet::new();
+        for block in blocks {
+            block.validate_content()?;
+            covered.extend(block.sample_ids.iter());
+        }
+        if covered != requested {
+            return Err(DagMlError::OofValidation(format!(
+                "stacking source `{producer_node}` requires complete finite inner OOF input; missing-row imputation is unavailable ({} missing, {} unexpected)",
+                requested.difference(&covered).count(),
+                covered.difference(&requested).count(),
+            )));
+        }
+        Ok(())
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PredictionPartition {
     Train,
+    /// Report-only CV fold-model predictions on the whole training pool.
+    TrainPool,
     Validation,
     Test,
     Final,
@@ -185,6 +236,80 @@ pub fn validate_producer_oof_coverage(
         }
     }
     Ok(())
+}
+
+/// Minimum fraction of the training universe with report-grade validation OOF.
+/// A nested stack may train on a complete inner OOF set while its outer
+/// ShuffleSplit evaluation covers only part of the original training pool.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StackingOofCoverageContract {
+    pub min_coverage_ratio: f64,
+}
+
+impl StackingOofCoverageContract {
+    pub fn from_metadata(metadata: &BTreeMap<String, Value>) -> Result<Option<Self>> {
+        let Some(value) = metadata.get(STACKING_OOF_COVERAGE_CONTRACT_METADATA_KEY) else {
+            return Ok(None);
+        };
+        let contract = serde_json::from_value::<Self>(value.clone()).map_err(|error| {
+            DagMlError::OofValidation(format!(
+                "`{STACKING_OOF_COVERAGE_CONTRACT_METADATA_KEY}` requires min_coverage_ratio: {error}"
+            ))
+        })?;
+        if !contract.min_coverage_ratio.is_finite()
+            || !(0.0..=1.0).contains(&contract.min_coverage_ratio)
+        {
+            return Err(DagMlError::OofValidation(
+                "stacking min_coverage_ratio must be finite and between 0 and 1".to_string(),
+            ));
+        }
+        Ok(Some(contract))
+    }
+}
+
+pub fn validate_stacking_oof_coverage_ratio(
+    producer_node: &NodeId,
+    blocks: &[&PredictionBlock],
+    fold_set: &FoldSet,
+    contract: &StackingOofCoverageContract,
+) -> Result<f64> {
+    let requested = fold_set.sample_ids.iter().collect::<BTreeSet<_>>();
+    if requested.is_empty() {
+        return Err(DagMlError::OofValidation(
+            "stacking coverage universe is empty".to_string(),
+        ));
+    }
+    let mut covered = BTreeSet::new();
+    for block in blocks {
+        if block.producer_node != *producer_node
+            || block.partition != PredictionPartition::Validation
+        {
+            return Err(DagMlError::OofValidation(format!(
+                "stacking coverage for `{producer_node}` received a foreign or non-validation block"
+            )));
+        }
+        block.validate_content()?;
+        for sample_id in &block.sample_ids {
+            if !requested.contains(sample_id) {
+                return Err(DagMlError::OofValidation(format!(
+                    "stacking coverage for `{producer_node}` received unknown sample `{sample_id}`"
+                )));
+            }
+            covered.insert(sample_id);
+        }
+    }
+    let ratio = covered.len() as f64 / requested.len() as f64;
+    if ratio < contract.min_coverage_ratio {
+        return Err(DagMlError::OofValidation(format!(
+            "stacking OOF coverage ratio {:.1}% for `{producer_node}` is below minimum required {:.1}% ({} of {} training samples)",
+            ratio * 100.0,
+            contract.min_coverage_ratio * 100.0,
+            covered.len(),
+            requested.len(),
+        )));
+    }
+    Ok(ratio)
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -697,7 +822,9 @@ pub fn validate_prediction_blocks_against_folds(
         let Some(fold_id) = &block.fold_id else {
             if matches!(
                 block.partition,
-                PredictionPartition::Train | PredictionPartition::Validation
+                PredictionPartition::Train
+                    | PredictionPartition::TrainPool
+                    | PredictionPartition::Validation
             ) {
                 return Err(DagMlError::OofValidation(format!(
                     "producer `{}` emitted {:?} predictions without fold_id",
@@ -715,6 +842,19 @@ pub fn validate_prediction_blocks_against_folds(
         match block.partition {
             PredictionPartition::Train => {
                 assert_exact_partition_samples(block, &fold.train_sample_ids, "train")?
+            }
+            PredictionPartition::TrainPool => {
+                let pool = fold
+                    .train_sample_ids
+                    .iter()
+                    .chain(&fold.validation_sample_ids)
+                    .collect::<BTreeSet<_>>();
+                if block.sample_ids.iter().any(|id| !pool.contains(id)) {
+                    return Err(DagMlError::OofValidation(format!(
+                        "producer `{}` emitted train-pool predictions outside fold `{fold_id}` training population",
+                        block.producer_node
+                    )));
+                }
             }
             PredictionPartition::Validation => {
                 assert_exact_partition_samples(block, &fold.validation_sample_ids, "validation")?
@@ -903,8 +1043,76 @@ mod tests {
         }
     }
 
+    #[test]
+    fn stacking_coverage_contract_counts_unique_oof_ids_and_enforces_minimum() {
+        let folds = contract_fold_set();
+        let producer = NodeId::new("model:meta").unwrap();
+        let first = campaign_block("model:meta", "fold0", &["s1", "s2"]);
+        let second = campaign_block("model:meta", "fold1", &["s2"]);
+        let blocks = [&first, &second];
+        assert_eq!(
+            validate_stacking_oof_coverage_ratio(
+                &producer,
+                &blocks,
+                &folds,
+                &StackingOofCoverageContract {
+                    min_coverage_ratio: 0.5
+                },
+            )
+            .unwrap(),
+            0.5
+        );
+        let error = validate_stacking_oof_coverage_ratio(
+            &producer,
+            &blocks,
+            &folds,
+            &StackingOofCoverageContract {
+                min_coverage_ratio: 0.75,
+            },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("below minimum required 75.0%"));
+    }
+
     fn load_fixture(source: &str) -> OofCampaign {
         serde_json::from_str(source).unwrap()
+    }
+
+    #[test]
+    fn mean_missing_policy_accepts_only_attested_complete_finite_oof() {
+        let metadata = BTreeMap::from([(
+            STACKING_MISSING_PREDICTION_POLICY_METADATA_KEY.to_string(),
+            serde_json::json!("complete_inner_oof_no_imputation"),
+        )]);
+        let policy = StackingMissingPredictionPolicy::from_metadata(&metadata)
+            .unwrap()
+            .unwrap();
+        let complete = block(PredictionPartition::Validation);
+        policy
+            .validate_complete_input(&producer(), &[&complete], &[sid("s1"), sid("s2")])
+            .unwrap();
+        let error = policy
+            .validate_complete_input(
+                &producer(),
+                &[&complete],
+                &[sid("s1"), sid("s2"), sid("s3")],
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("1 missing"));
+        let mut non_finite = complete.clone();
+        non_finite.values[0][0] = f64::NAN;
+        assert!(policy
+            .validate_complete_input(&producer(), &[&non_finite], &[sid("s1"), sid("s2")])
+            .unwrap_err()
+            .to_string()
+            .contains("non-finite"));
+        assert!(
+            StackingMissingPredictionPolicy::from_metadata(&BTreeMap::from([(
+                STACKING_MISSING_PREDICTION_POLICY_METADATA_KEY.to_string(),
+                serde_json::json!("unknown_policy"),
+            )]))
+            .is_err()
+        );
     }
 
     #[test]

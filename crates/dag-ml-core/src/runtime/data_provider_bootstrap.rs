@@ -140,6 +140,7 @@ impl RuntimeController for SourceController {
         }
         let result = NodeResult {
             schema_version: None,
+            classification_probabilities: Vec::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([("data".into(), materialized.handle.clone())]),
             predictions: Vec::new(),

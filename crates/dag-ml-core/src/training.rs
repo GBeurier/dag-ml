@@ -2019,7 +2019,42 @@ pub struct PortablePredictorPackage {
     pub package_fingerprint: String,
 }
 
+/// One caller-selected output of a fingerprint-validated portable package.
+///
+/// A package may carry several independent terminal predictions.  The caller
+/// must name the binding; package order and score ranking never choose one.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct PortableOutputSelection {
+    pub package_id: String,
+    pub package_fingerprint: String,
+    pub output_binding: OutputBinding,
+}
+
 impl PortablePredictorPackage {
+    /// Resolve an explicit output id to its native node/port replay contract.
+    pub fn select_output(&self, binding_id: &str) -> Result<PortableOutputSelection> {
+        self.validate()?;
+        if binding_id.trim().is_empty() {
+            return contract_error("portable output selection requires a binding_id".to_string());
+        }
+        let output_binding = self
+            .output_bindings
+            .iter()
+            .find(|binding| binding.binding_id == binding_id)
+            .cloned()
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "portable package `{}` has no output binding `{binding_id}`",
+                    self.package_id
+                ))
+            })?;
+        Ok(PortableOutputSelection {
+            package_id: self.package_id.clone(),
+            package_fingerprint: self.package_fingerprint.clone(),
+            output_binding,
+        })
+    }
+
     pub fn compute_fingerprint(&self) -> Result<String> {
         tcv1_fingerprint_without(self, "package_fingerprint", "portable predictor package")
     }
@@ -4909,6 +4944,27 @@ mod tests {
         let mut binary64 = serde_json::to_value(package).unwrap();
         binary64["effective_plan"]["campaign"]["root_seed"] = json!(12345.0);
         assert!(serde_json::from_value::<PortablePredictorPackage>(binary64).is_err());
+    }
+
+    #[cfg(dag_ml_workspace_contract_fixtures)]
+    #[test]
+    fn portable_package_selects_output_only_by_explicit_binding_id() {
+        let package = package();
+        package.validate().unwrap();
+
+        for binding in &package.output_bindings {
+            let selected = package.select_output(&binding.binding_id).unwrap();
+            assert_eq!(selected.output_binding, *binding);
+            assert_eq!(selected.package_fingerprint, package.package_fingerprint);
+        }
+        assert!(package.select_output("").is_err());
+        assert!(package.select_output("output:missing").is_err());
+
+        let mut tampered = package.clone();
+        tampered.output_bindings[0].port_name = "other".to_string();
+        assert!(tampered
+            .select_output(&package.output_bindings[0].binding_id)
+            .is_err());
     }
 
     #[cfg(dag_ml_workspace_contract_fixtures)]
