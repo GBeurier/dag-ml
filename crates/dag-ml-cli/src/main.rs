@@ -47,7 +47,9 @@ use dag_ml_core::{
 };
 use serde::{Deserialize, Serialize};
 
-const DEFAULT_PROCESS_TIMEOUT_MS: u64 = 30_000;
+// A model fit can legitimately take hours. Keep execution unbounded unless the
+// caller explicitly opts into a process timeout with --process-timeout-ms.
+const DEFAULT_PROCESS_TIMEOUT_MS: u64 = 0;
 const PROCESS_ADAPTER_DESCRIPTION_SCHEMA_VERSION: u32 = 1;
 const PROCESS_ADAPTER_PROTOCOL: &str = "dag-ml-process-adapter";
 const PROCESS_ADAPTER_MODE_ONE_SHOT: &str = "one_shot";
@@ -4583,7 +4585,11 @@ impl PersistentProcessSession {
             stdin,
             stdout_rx: spawn_persistent_stdout_reader(stdout),
             control_frames,
-            close_timeout: timeout.min(Duration::from_millis(250)),
+            close_timeout: if timeout.is_zero() {
+                Duration::from_millis(250)
+            } else {
+                timeout.min(Duration::from_millis(250))
+            },
         };
         if control_frames {
             session
@@ -4788,7 +4794,14 @@ impl PersistentProcessSession {
         adapter: &Path,
         timeout: Duration,
     ) -> Result<String, PersistentWorkerFailure> {
-        match self.stdout_rx.recv_timeout(timeout) {
+        let response = if timeout.is_zero() {
+            self.stdout_rx
+                .recv()
+                .map_err(|_| RecvTimeoutError::Disconnected)
+        } else {
+            self.stdout_rx.recv_timeout(timeout)
+        };
+        match response {
             Ok(PersistentReadEvent::Line(line)) => Ok(line),
             Ok(PersistentReadEvent::Eof) => {
                 let status = self
@@ -4938,6 +4951,28 @@ fn wait_with_output_timeout(
     })?;
     let stdout_reader = spawn_pipe_reader(stdout);
     let stderr_reader = spawn_pipe_reader(stderr);
+    if timeout.is_zero() {
+        let status = match child.wait() {
+            Ok(status) => status,
+            Err(err) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = join_pipe_reader(stdout_reader, controller_id, adapter, "stdout");
+                let _ = join_pipe_reader(stderr_reader, controller_id, adapter, "stderr");
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "controller `{controller_id}` failed while waiting for adapter `{}`: {err}",
+                    adapter.display()
+                )));
+            }
+        };
+        let stdout = join_pipe_reader(stdout_reader, controller_id, adapter, "stdout")?;
+        let stderr = join_pipe_reader(stderr_reader, controller_id, adapter, "stderr")?;
+        return Ok(std::process::Output {
+            status,
+            stdout,
+            stderr,
+        });
+    }
     let started_at = Instant::now();
 
     loop {
@@ -5688,9 +5723,6 @@ fn process_adapter_runtime_config(
     process_timeout_ms: u64,
     process_retries: usize,
 ) -> Result<ProcessAdapterRuntimeConfig> {
-    if process_timeout_ms == 0 {
-        bail!("--process-timeout-ms must be at least 1");
-    }
     Ok(ProcessAdapterRuntimeConfig {
         process_workers,
         timeout: Duration::from_millis(process_timeout_ms),
@@ -6590,6 +6622,40 @@ fn emit_json<T: Serialize>(output: Option<&PathBuf>, value: &T, label: &str) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn process_campaign_defaults_to_unbounded_task_execution() {
+        // The generated clap parser has a large stack frame for this CLI.
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                let cli = Cli::try_parse_from([
+                    "dag-ml",
+                    "run-process-campaign",
+                    "--graph",
+                    "graph.json",
+                    "--campaign",
+                    "campaign.json",
+                    "--controllers",
+                    "controllers.json",
+                    "--envelope",
+                    "envelope.json",
+                    "--adapter",
+                    "adapter.py",
+                ])
+                .expect("valid process command");
+                let Command::RunProcessCampaign {
+                    process_timeout_ms, ..
+                } = cli.command
+                else {
+                    panic!("unexpected command");
+                };
+                assert_eq!(process_timeout_ms, 0);
+            })
+            .expect("spawn CLI parser test")
+            .join()
+            .expect("CLI parser test");
+    }
 
     fn group_oof_plan() -> dag_ml_core::ExecutionPlan {
         let graph: GraphSpec = serde_json::from_str(
