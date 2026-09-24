@@ -52,10 +52,10 @@ def test_base_pack_remains_byte_current() -> None:
     # Current W1 bytes and its 105 artifacts are pinned independently of D4.
     pack = load_json(BASE_PACK)
     assert _sha256(BASE_PACK) == (
-        "7a90db95a802b2b121a6da6314bd87483abe8d7f91be47d4ebd2cd6010308229"
+        "494e3dced801dd47e23228bff09c07719bd6128e7b6c32e44e88ad14c4edfd69"
     )
     assert pack["pack_checksum"] == (
-        "4aa569a9b3bcd8a1988d8bc7444603f3f78bf4fb7e9980b98b42549d0e14337a"
+        "ae774b2b69f554d33dfdbd892a1fda9df12eef1ddccd72b38f1e1bb578ab08be"
     )
     assert len(pack["artifacts"]) == 105
     assert all(

@@ -6,7 +6,7 @@
   "artifacts": [
     {
       "path": ".github/workflows/ci.yml",
-      "sha256": "2e7422d580a2e8f4e0b8854bf5e96fcd14952aad75045129e15309c447af60ea",
+      "sha256": "cfdb9510bffa3d89bb1cedb4baf4fedf35e330e5a19e428b18fec8c1ca0dacd9",
       "kind": "ci_gate"
     },
     {
@@ -251,7 +251,7 @@
     },
     {
       "path": "docs/contracts/abi_snapshot.v1.json",
-      "sha256": "ea868bb4fd8f145f878c67e94dd0146e980af487141f90922a96ca2140fae46e",
+      "sha256": "669cbbd9a4bf9f8f869afbd4ec88afd0074cbfda938d7eebe1d9b40183809e94",
       "kind": "c_abi_snapshot"
     },
     {
@@ -599,5 +599,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "4aa569a9b3bcd8a1988d8bc7444603f3f78bf4fb7e9980b98b42549d0e14337a"
+  "pack_checksum": "ae774b2b69f554d33dfdbd892a1fda9df12eef1ddccd72b38f1e1bb578ab08be"
 }
