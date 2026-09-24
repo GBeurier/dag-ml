@@ -32,7 +32,8 @@ use crate::graph::{NodeKind, PortKind};
 use crate::hpo::{methods_optimizer_preflight, MethodsHpoStudyConfig};
 use crate::ids::{ArtifactId, BundleId, FoldId, LineageId, NodeId, RunId, SampleId, VariantId};
 use crate::metrics::{
-    RegressionMetricKind, ScoreSet, LEGACY_SCORE_SET_SCHEMA_VERSION, SCORE_SET_SCHEMA_VERSION,
+    score_regression_aggregated_block, OofAverageBlock, RegressionMetricKind, ScoreSet,
+    LEGACY_SCORE_SET_SCHEMA_VERSION, SCORE_SET_SCHEMA_VERSION,
 };
 use crate::oof::{PredictionBlock, PredictionPartition};
 use crate::phase::Phase;
@@ -45,7 +46,7 @@ use crate::runtime::{
     is_nested_stacking_meta_node, nested_stacking_campaign_plan, plan_oof_partition_mode,
     select_best_variant_outcome_by_cv_for_target, InMemoryArtifactStore, LineageRecord, NodeResult,
     ParallelScheduler, RunContext, RuntimeControllerRegistry, RuntimeDataProvider,
-    SequentialScheduler, VariantExecutionSpec,
+    SequentialScheduler, VariantExecutionSpec, SCORE_METRICS,
 };
 #[cfg(feature = "methods-optimizer")]
 use crate::runtime::{
@@ -124,6 +125,12 @@ pub struct TrainingOutcome {
     pub parameter_patches: Vec<ParameterPatch>,
     pub refit: TrainingRefitOutcome,
     pub score_set: ScoreSet,
+    /// Selected variant's exact per-sample CV averages, retained even when REFIT runs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub oof_averages: Vec<OofAverageBlock>,
+    /// Selected variant's native train/test CV ensembles; never selection evidence.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ensemble_averages: Vec<OofAverageBlock>,
     pub outputs: Vec<BoundTrainingOutput>,
     pub lineage: Vec<LineageRecord>,
     pub portable_prediction_caches: Option<BundlePredictionCachePayloadSet>,
@@ -2046,14 +2053,6 @@ pub fn execute_training(input: TrainingExecutionInput<'_>) -> Result<TrainingOut
         &selected_variant_id,
     )?;
 
-    let score_set = ScoreSet {
-        schema_version: SCORE_SET_SCHEMA_VERSION,
-        plan_id: effective_plan.id.clone(),
-        selection_metric: Some(selection_metric.name().to_string()),
-        reports: selection.selection.validation_reports,
-    };
-    score_set.validate()?;
-
     let prediction_requirements = build_oof_prediction_requirements(
         &effective_plan,
         selected_ctx.prediction_store.blocks(),
@@ -2105,6 +2104,30 @@ pub fn execute_training(input: TrainingExecutionInput<'_>) -> Result<TrainingOut
     } else {
         Vec::new()
     };
+    // SELECT owns the validation reports across all candidates. The selected
+    // run owns the actual REFIT final/test reports; attach those only after
+    // REFIT has executed so the outcome retains the same scored partitions as
+    // a normal native CV+refit campaign. Methods HPO has a strict terminal-OOF
+    // score contract and keeps its existing validation-only ScoreSet.
+    let mut reports = selection.selection.validation_reports;
+    if native_hpo_descriptor.is_none() {
+        selected_ctx.collect_cross_fold_train_scores(selection_metric)?;
+        selected_ctx.collect_cross_fold_test_scores(selection_metric)?;
+        reports.extend(
+            selected_ctx
+                .score_collector
+                .iter()
+                .filter(|report| report.partition != PredictionPartition::Validation)
+                .cloned(),
+        );
+    }
+    let score_set = ScoreSet {
+        schema_version: SCORE_SET_SCHEMA_VERSION,
+        plan_id: effective_plan.id.clone(),
+        selection_metric: Some(selection_metric.name().to_string()),
+        reports,
+    };
+    score_set.validate()?;
 
     let mut execution_bundle = build_execution_bundle_with_prediction_contracts(
         input.bundle_id.clone(),
@@ -2201,6 +2224,26 @@ pub fn execute_training(input: TrainingExecutionInput<'_>) -> Result<TrainingOut
         &execution_bundle,
         portable_prediction_caches.as_ref(),
     )?;
+    // Methods HPO persists only the terminal OOF report for each completed
+    // trial. The selected rerun may also compute weighted averages, but those
+    // are not part of that signed terminal score transcript. Expose only OOF
+    // blocks with an exact selected-variant score report in the outcome.
+    let oof_averages = selected_ctx
+        .oof_average_blocks
+        .iter()
+        .filter(|average| {
+            native_hpo_descriptor.is_none()
+                || score_set.reports.iter().any(|report| {
+                    report.variant_id.as_ref() == Some(&selected_variant_id)
+                        && report.producer_node == average.predictions.producer_node
+                        && report.producer_port == average.predictions.producer_port
+                        && report.partition == average.predictions.partition
+                        && report.fold_id == average.predictions.fold_id
+                        && report.level == average.predictions.level
+                })
+        })
+        .cloned()
+        .collect();
     let mut outcome = TrainingOutcome {
         schema_version: TRAINING_OUTCOME_SCHEMA_VERSION,
         outcome_id: input.outcome_id,
@@ -2215,6 +2258,13 @@ pub fn execute_training(input: TrainingExecutionInput<'_>) -> Result<TrainingOut
         parameter_patches,
         refit: refit_outcome,
         score_set,
+        oof_averages,
+        ensemble_averages: selected_ctx
+            .train_ensemble_blocks
+            .iter()
+            .chain(selected_ctx.test_ensemble_blocks.iter())
+            .cloned()
+            .collect(),
         outputs,
         lineage,
         portable_prediction_caches,
@@ -2727,9 +2777,22 @@ fn materialize_selected_variant(
 fn is_cv_ensemble_partition(partition: &PredictionPartition) -> bool {
     match partition {
         PredictionPartition::Validation => true,
-        PredictionPartition::Train | PredictionPartition::Test | PredictionPartition::Final => {
-            false
-        }
+        PredictionPartition::Train
+        | PredictionPartition::TrainPool
+        | PredictionPartition::Test
+        | PredictionPartition::Final => false,
+    }
+}
+
+fn is_bound_output_partition(
+    refit: bool,
+    partition: &PredictionPartition,
+    fold_id: Option<&crate::ids::FoldId>,
+) -> bool {
+    if refit {
+        partition == &PredictionPartition::Final && fold_id.is_none()
+    } else {
+        is_cv_ensemble_partition(partition)
     }
 }
 
@@ -2823,8 +2886,11 @@ fn bind_training_outputs(
                                     &output.node_id,
                                     &output.port_name,
                                     &block.producer_port,
-                                ) && (request.options.refit
-                                    || is_cv_ensemble_partition(&block.partition))
+                                ) && is_bound_output_partition(
+                                    request.options.refit,
+                                    &block.partition,
+                                    block.fold_id.as_ref(),
+                                )
                             })
                             .cloned(),
                     );
@@ -2842,8 +2908,11 @@ fn bind_training_outputs(
                                     &output.node_id,
                                     &output.port_name,
                                     &block.producer_port,
-                                ) && (request.options.refit
-                                    || is_cv_ensemble_partition(&block.partition))
+                                ) && is_bound_output_partition(
+                                    request.options.refit,
+                                    &block.partition,
+                                    block.fold_id.as_ref(),
+                                )
                             })
                             .cloned(),
                     );
@@ -2858,8 +2927,11 @@ fn bind_training_outputs(
                                     &output.port_name,
                                     &block.producer_port,
                                 ) && block.level == PredictionLevel::Sample
-                                    && (request.options.refit
-                                        || is_cv_ensemble_partition(&block.partition))
+                                    && is_bound_output_partition(
+                                        request.options.refit,
+                                        &block.partition,
+                                        block.fold_id.as_ref(),
+                                    )
                             })
                             .cloned(),
                     );
@@ -2895,8 +2967,11 @@ fn bind_training_outputs(
                                     &output.port_name,
                                     &block.producer_port,
                                 ) && block.level == output.prediction_level
-                                    && (request.options.refit
-                                        || is_cv_ensemble_partition(&block.partition))
+                                    && is_bound_output_partition(
+                                        request.options.refit,
+                                        &block.partition,
+                                        block.fold_id.as_ref(),
+                                    )
                             })
                             .cloned(),
                     );
@@ -2981,7 +3056,30 @@ pub fn build_oof_prediction_requirements(
         // report-grade outer rows.  Keeping child rows here would duplicate
         // sample ids across outer scopes and violate the cache's exact OOF
         // identity contract.
-        let report_fold_ids = if is_nested_stacking_meta_node(plan, &edge.target.node_id)? {
+        let residual_fusion_target = plan.graph_plan.graph.nodes.iter().any(|node| {
+            node.id == edge.target.node_id
+                && node
+                    .metadata
+                    .get("residual_fusion_for")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some()
+        });
+        // A native prediction-feature join consumes nested OOF rows while
+        // fitting each outer-fold residual base model.  Only its outer-fold
+        // source predictions are portable report/refit evidence.
+        let prediction_feature_target = plan.graph_plan.graph.nodes.iter().any(|node| {
+            node.id == edge.target.node_id
+                && node.kind == NodeKind::PredictionJoin
+                && node
+                    .metadata
+                    .get("prediction_feature_execution")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("native_oof_v1")
+        });
+        let report_fold_ids = if is_nested_stacking_meta_node(plan, &edge.target.node_id)?
+            || residual_fusion_target
+            || prediction_feature_target
+        {
             Some(
                 plan.fold_set
                     .as_ref()
@@ -3336,6 +3434,149 @@ fn oof_cache_namespace_fingerprints(
 }
 
 impl TrainingOutcome {
+    fn validate_ensemble_averages(&self) -> Result<()> {
+        let mut seen = BTreeSet::new();
+        for average in &self.ensemble_averages {
+            let predictions = &average.predictions;
+            let targets = &average.y_true;
+            let width = predictions.validate_shape()?;
+            if targets.validate_shape()? != width
+                || predictions.unit_ids != targets.unit_ids
+                || predictions.level != targets.level
+                || predictions.target_names != targets.target_names
+            {
+                return contract_error(
+                    "training outcome CV ensemble predictions and targets must align exactly",
+                );
+            }
+            if !matches!(
+                predictions.partition,
+                PredictionPartition::Train | PredictionPartition::Test
+            ) || !matches!(
+                predictions.fold_id.as_ref().map(FoldId::as_str),
+                Some("avg" | "w_avg")
+            ) {
+                return contract_error(
+                    "training outcome CV ensemble must identify train/test fold avg or w_avg",
+                );
+            }
+            let key = (
+                predictions.producer_node.clone(),
+                predictions.producer_port.clone(),
+                predictions.partition.clone(),
+                predictions.fold_id.clone(),
+                predictions.level,
+            );
+            if !seen.insert(key) {
+                return contract_error("training outcome has duplicate CV ensemble blocks");
+            }
+            let matching_reports = self
+                .score_set
+                .reports
+                .iter()
+                .filter(|report| {
+                    (report.variant_id.is_none()
+                        || report.variant_id.as_ref() == Some(&self.selected_variant_id))
+                        && report.producer_node == predictions.producer_node
+                        && report.producer_port == predictions.producer_port
+                        && report.partition == predictions.partition
+                        && report.fold_id == predictions.fold_id
+                        && report.level == predictions.level
+                })
+                .collect::<Vec<_>>();
+            let [report] = matching_reports.as_slice() else {
+                return contract_error(
+                    "training outcome CV ensemble has no unique selected score report",
+                );
+            };
+            if report.row_count != predictions.unit_ids.len()
+                || report.target_width != width
+                || report.target_names != predictions.target_names
+            {
+                return contract_error(
+                    "training outcome CV ensemble shape differs from score report",
+                );
+            }
+            let rescored = score_regression_aggregated_block(predictions, targets, SCORE_METRICS)?;
+            if rescored.metrics != report.metrics {
+                return contract_error(
+                    "training outcome CV ensemble values disagree with score report",
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_oof_averages(&self) -> Result<()> {
+        let mut seen = BTreeSet::new();
+        for average in &self.oof_averages {
+            let predictions = &average.predictions;
+            let targets = &average.y_true;
+            let width = predictions.validate_shape()?;
+            if targets.validate_shape()? != width
+                || predictions.unit_ids != targets.unit_ids
+                || predictions.level != targets.level
+                || predictions.target_names != targets.target_names
+            {
+                return contract_error(
+                    "training outcome OOF average predictions and targets must align exactly",
+                );
+            }
+            if predictions.partition != PredictionPartition::Validation
+                || !matches!(
+                    predictions.fold_id.as_ref().map(FoldId::as_str),
+                    Some("avg" | "w_avg")
+                )
+            {
+                return contract_error(
+                    "training outcome OOF average must identify validation fold avg or w_avg",
+                );
+            }
+            let key = (
+                predictions.producer_node.clone(),
+                predictions.producer_port.clone(),
+                predictions.fold_id.clone(),
+                predictions.level,
+            );
+            if !seen.insert(key) {
+                return contract_error("training outcome has duplicate OOF average blocks");
+            }
+            let matching_reports = self
+                .score_set
+                .reports
+                .iter()
+                .filter(|report| {
+                    report.variant_id.as_ref() == Some(&self.selected_variant_id)
+                        && report.producer_node == predictions.producer_node
+                        && report.producer_port == predictions.producer_port
+                        && report.partition == predictions.partition
+                        && report.fold_id == predictions.fold_id
+                        && report.level == predictions.level
+                })
+                .collect::<Vec<_>>();
+            let [report] = matching_reports.as_slice() else {
+                return contract_error(
+                    "training outcome OOF average has no unique selected-variant score report",
+                );
+            };
+            if report.row_count != predictions.unit_ids.len()
+                || report.target_width != width
+                || report.target_names != predictions.target_names
+            {
+                return contract_error(
+                    "training outcome OOF average shape differs from selected score report",
+                );
+            }
+            let rescored = score_regression_aggregated_block(predictions, targets, SCORE_METRICS)?;
+            if rescored.metrics != report.metrics {
+                return contract_error(
+                    "training outcome OOF average values disagree with selected score report",
+                );
+            }
+        }
+        Ok(())
+    }
+
     /// Strictly parse a self-fingerprinted W0 outcome without losing the JSON
     /// integer-versus-binary64 token distinction before verification.
     pub fn from_json(json: &str) -> Result<Self> {
@@ -3623,6 +3864,8 @@ impl TrainingOutcome {
 
         self.validate_refit()?;
         self.score_set.validate()?;
+        self.validate_oof_averages()?;
+        self.validate_ensemble_averages()?;
         self.validate_version_family()?;
         if self.schema_version == LEGACY_TRAINING_OUTCOME_SCHEMA_VERSION
             && (self.conformal_calibration.is_some() || self.conformal_calibration_replay.is_some())
@@ -5376,6 +5619,28 @@ mod tests {
                 expected,
                 "unexpected CvEnsemble retention decision for {partition:?}"
             );
+        }
+    }
+
+    #[test]
+    fn refit_output_binding_retains_only_unfolded_final_blocks() {
+        let fold = crate::ids::FoldId::new("fold:0").unwrap();
+        assert!(is_bound_output_partition(
+            true,
+            &PredictionPartition::Final,
+            None,
+        ));
+        assert!(!is_bound_output_partition(
+            true,
+            &PredictionPartition::Final,
+            Some(&fold),
+        ));
+        for partition in [
+            PredictionPartition::Train,
+            PredictionPartition::Validation,
+            PredictionPartition::Test,
+        ] {
+            assert!(!is_bound_output_partition(true, &partition, None));
         }
     }
 

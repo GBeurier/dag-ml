@@ -34,6 +34,11 @@ from ._dag_ml import (
     fold_set_fingerprint_json,
     project_training_request_json,
     sample_relation_set_fingerprint_json,
+    select_candidate_json,
+    select_portable_output_json,
+    select_stacking_producers_json,
+    select_stacking_fold_json,
+    stacking_fold_weights_json,
     validate_cache_namespace_json,
     validate_campaign_json,
     validate_controller_manifest_json,
@@ -46,6 +51,7 @@ from ._dag_ml import (
     validate_pipeline_dsl_json,
     validate_portable_predictor_package_json,
     validate_portable_refit_package_v3_json,
+    validate_initial_full_refit_package_json,
     validate_training_contract_projection_json,
     validate_training_outcome_json,
     validate_training_replay_outcome_json,
@@ -57,6 +63,9 @@ from ._dag_ml import (
 )
 from ._dag_ml import (
     TrainingResult as _NativeTrainingResult,
+)
+from ._dag_ml import (
+    align_named_source_rows_json as _native_align_named_source_rows_json,
 )
 from ._dag_ml import (
     attach_predict_cohort_to_envelope_json as _native_attach_predict_cohort_to_envelope_json,
@@ -99,6 +108,7 @@ from ._dag_ml import (
 )
 from ._dag_ml import (
     execute_phase_in_process as _native_execute_phase_in_process,
+    replay_initial_full_refit_in_process as _native_replay_initial_full_refit_in_process,
 )
 from ._dag_ml import (
     execute_training_json as _native_execute_training_json,
@@ -117,6 +127,9 @@ from ._dag_ml import (
 )
 from ._dag_ml import (
     run_host_hpo_search_in_process as _native_run_host_hpo_search_in_process,
+)
+from ._dag_ml import (
+    recover_host_hpo_checkpoint_json as _native_recover_host_hpo_checkpoint_json,
 )
 from ._dag_ml import (
     sign_training_replay_request_json as _native_sign_training_replay_request_json,
@@ -163,6 +176,7 @@ _FACADE_EXPORTS = [
     "CacheNamespace",
     "PortablePredictorPackage",
     "PortableRefitPackageV3",
+    "InitialFullRefitPackage",
     "PortableRefitReplayOutcomeV3",
     "CompiledPipelineArtifact",
     "compile_pipeline_dsl_graph",
@@ -176,6 +190,7 @@ _FACADE_EXPORTS = [
     "derive_controller_manifests",
     "fan_out_data_aware_branches",
     "build_execution_plan",
+    "align_named_source_rows",
     "project_training_request",
     "sign_training_request",
     "sign_training_replay_request",
@@ -193,7 +208,9 @@ _FACADE_EXPORTS = [
     "execute_training_json",
     "execute_data_provider",
     "execute_phase_in_process",
+    "replay_initial_full_refit_in_process",
     "run_host_hpo_search_in_process",
+    "recover_host_hpo_checkpoint",
     "replay_loaded_predictor_package",
     "replay_loaded_predictor_package_json",
     "run_cv_refit_predict_in_process",
@@ -526,6 +543,7 @@ def run_host_hpo_search_in_process(
     dsl: Any, envelope: Any, controller_manifests: Any, request: Any,
     op_callback: Any, optimizer_callback: Any,
     *, resume_checkpoint: Any = None, progress_callback: Any = None,
+    candidate_callback_factory: Any = None,
 ) -> dict[str, Any]:
     """Run scheduler-owned FIT_CV trials using host ask/tell proposals.
 
@@ -551,6 +569,16 @@ def run_host_hpo_search_in_process(
         _coerce_json(request), op_callback, optimizer_callback,
         resume_checkpoint_json=None if resume_checkpoint is None else _coerce_json(resume_checkpoint),
         progress_callback=progress_callback,
+        candidate_callback_factory=candidate_callback_factory,
+    ))
+
+
+def recover_host_hpo_checkpoint(
+    checkpoint: Any, prepared: Any = None, interrupted: Any = (),
+) -> dict[str, Any]:
+    """Verify the native checkpoint journal and mark interrupted trials failed."""
+    return json.loads(_native_recover_host_hpo_checkpoint_json(
+        _coerce_json(checkpoint), _coerce_json(prepared), _coerce_json(list(interrupted)),
     ))
 
 
@@ -583,6 +611,8 @@ def execute_phase_in_process(
     op_callback: Any,
     phase: str,
     training_sample_ids: list[str] | None = None,
+    package_id: str | None = None,
+    artifact_callback: Any = None,
 ) -> str:
     """Run one explicit phase without selection or synthetic CV.
 
@@ -590,6 +620,9 @@ def execute_phase_in_process(
     universe. Rust verifies the unique identities against the attested envelope
     and records their order in the effective plan. PREDICT forbids this argument
     and uses only its separately attested V2 cohort.
+    ``package_id`` captures an independent no-CV full-refit package during REFIT.
+    A controller publishing ``Raw`` artifacts must supply ``artifact_callback``
+    with an ``export`` operation returning the portable bytes.
     """
     return _native_execute_phase_in_process(
         _coerce_json(dsl_json),
@@ -598,7 +631,26 @@ def execute_phase_in_process(
         op_callback,
         phase,
         training_sample_ids,
+        package_id,
+        artifact_callback,
     )
+
+
+def replay_initial_full_refit_in_process(
+    package: Any, envelope: Any, op_callback: Any,
+    artifact_handles: Any, output_ids: list[str], run_id: str,
+    artifact_callback: Any = None,
+) -> dict[str, Any]:
+    """Replay explicit outputs from a no-CV package on an attested PREDICT cohort.
+
+    Raw package payloads use ``artifact_callback`` to hydrate and release
+    invocation-local handles; host sidecars use ``artifact_handles``.
+    """
+    return json.loads(_native_replay_initial_full_refit_in_process(
+        _coerce_json(package), _coerce_json(envelope), op_callback,
+        _coerce_json(artifact_handles), _coerce_json(output_ids), run_id,
+        artifact_callback,
+    ))
 
 
 def run_cv_refit_in_process_with_training_losses(
@@ -768,6 +820,10 @@ class PortablePredictorPackage(JsonContract):
     def _validate_json(cls, json_text: str) -> None:
         validate_portable_predictor_package_json(json_text)
 
+    def select_output(self, binding_id: str) -> dict[str, Any]:
+        """Resolve one explicitly named output of this validated package."""
+        return json.loads(select_portable_output_json(self.json(), binding_id))
+
 
 class PortableRefitPackageV3(JsonContract):
     """Strict, target-bound native full-refit Package V3 contract."""
@@ -775,6 +831,14 @@ class PortableRefitPackageV3(JsonContract):
     @classmethod
     def _validate_json(cls, json_text: str) -> None:
         validate_portable_refit_package_v3_json(json_text)
+
+
+class InitialFullRefitPackage(JsonContract):
+    """Strict, independent full-refit package for a no-splitter campaign."""
+
+    @classmethod
+    def _validate_json(cls, json_text: str) -> None:
+        validate_initial_full_refit_package_json(json_text)
 
 
 class PortableRefitReplayOutcomeV3(JsonContract):
@@ -1077,6 +1141,21 @@ def fan_out_data_aware_branches(dsl: Any, envelope: Any) -> PipelineDslSpec:
     return PipelineDslSpec(
         fan_out_data_aware_branches_json(_coerce_json(dsl), _coerce_json(envelope))
     )
+
+
+def select_candidate(policy: Any, candidates: Any) -> dict[str, Any]:
+    """Rank candidate scores with dag-ml-core's deterministic SELECT policy."""
+    return json.loads(select_candidate_json(_coerce_json(policy), _coerce_json(candidates)))
+
+
+def select_portable_output(package: Any, binding_id: str) -> dict[str, Any]:
+    """Select a portable package output by binding id, with native validation."""
+    return json.loads(select_portable_output_json(_coerce_json(package), binding_id))
+
+
+def align_named_source_rows(request: Any) -> dict[str, Any]:
+    """Validate named source/sample coverage and return native row permutations."""
+    return json.loads(_native_align_named_source_rows_json(_coerce_json(request)))
 
 
 def build_execution_plan(
@@ -1740,6 +1819,7 @@ def replay_loaded_predictor_package(
 
 
 __all__ = [
+    "align_named_source_rows",
     "CacheNamespace",
     "CampaignSpec",
     "CompiledPipelineArtifact",
@@ -1769,6 +1849,7 @@ __all__ = [
     "PipelineDslSpec",
     "PortablePredictorPackage",
     "PortableRefitPackageV3",
+    "InitialFullRefitPackage",
     "PortableRefitReplayOutcomeV3",
     "TrainingContractProjection",
     "TrainingOutcome",
@@ -1802,10 +1883,18 @@ __all__ = [
     "execute_methods_portable_full_refit",
     "execute_methods_portable_full_refit_json",
     "execute_phase_in_process",
+    "replay_initial_full_refit_in_process",
     "execute_training",
     "execute_training_json",
     "fan_out_data_aware_branches",
+    "select_candidate",
+    "select_portable_output",
     "fan_out_data_aware_branches_json",
+    "select_candidate_json",
+    "select_portable_output_json",
+    "select_stacking_producers_json",
+    "select_stacking_fold_json",
+    "stacking_fold_weights_json",
     "fold_set_fingerprint_json",
     "loss_execution_attestation",
     "project_training_request",
@@ -1817,6 +1906,7 @@ __all__ = [
     "run_cv_refit_in_process_with_training_losses",
     "run_cv_refit_predict_in_process",
     "run_host_hpo_search_in_process",
+    "recover_host_hpo_checkpoint",
     "sample_relation_set_fingerprint_json",
     "sign_training_replay_request",
     "sign_training_replay_request_json",

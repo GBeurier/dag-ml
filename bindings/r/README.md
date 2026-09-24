@@ -67,3 +67,66 @@ export DAGML_NATIVE_LIBRARY="$PWD/target/release/libdag_ml_capi.so"
 R CMD build bindings/r
 R CMD check --no-manual dagml_*.tar.gz
 ```
+
+Host hyperparameter search can use the native scheduler through executable
+JSONL operator and optimizer adapters. The three JSON inputs are an
+`ExecutionPlan`, `ExternalDataPlanEnvelope`, and `HostHpoSearchRequest`.
+The CLI, rather than an R callback thread, owns trial scheduling, folds,
+pruning, selection, and durable checkpoints:
+
+```r
+outcome <- dagml_host_hpo_search(
+  plan = "plan.json", envelope = "envelope.json", request = "hpo.json",
+  operator_adapter = "./r-operator-adapter",
+  optimizer_adapter = "./r-optimizer-adapter",
+  checkpoint = "search.checkpoint.json",
+  operator_persistent = TRUE
+)
+```
+
+The executables can launch `Rscript` but must implement the same JSONL
+protocol as the [CLI examples](../../examples/adapters/). The wrapper accepts
+`parallel_trials = N`; DAG-ML starts a separate operator-adapter process per
+candidate and keeps optimizer callbacks on the coordinator thread. The R adapter
+processes and their optimizer state remain host-owned. Run the wrapper smoke with
+`R CMD check`; a working R installation is required.
+
+The strict `r_hpo_ridge` integration test also calls this wrapper with a real
+R Ridge operator. It reads the plan's physical FoldSet IDs, fits on each
+fold-train cohort, and checks native per-fold/OOF RMSE, the two-candidate
+parallel scheduler path, pruning and checkpoint resume. It then passes the
+selected parameter to a real full-train REFIT, persists an RDS sidecar, and
+checks a fresh-process PREDICT replay against exact held-out values. A corrupt
+sidecar is rejected. Run it with
+`DAGML_REQUIRE_HPO_R=1 cargo test -p dag-ml-cli --test r_hpo_ridge`.
+
+A no-splitter pipeline can capture an initial full REFIT package and replay
+PREDICT on a separate V2 cohort through the same native CLI:
+
+```r
+refit <- dagml_initial_full_refit(
+  "pipeline.json", "controllers.json", "train-envelope.json",
+  "training-ids.json", "./r-operator-adapter", "full-refit.package.json"
+)
+prediction <- dagml_initial_full_refit_predict(
+  "full-refit.package.json", "predict-envelope.json",
+  "./r-operator-adapter", "artifact-handles.json", "output-ids.json"
+)
+```
+
+The package contains native lineage and artifact identities, while R retains
+model sidecars. The replay adapter must resolve the exact host artifact handles
+listed in the package; DAG-ML rejects missing or extra handles.
+
+For a pipeline with CV, `dagml_cv_refit_predict()` executes CV, winner REFIT
+and PREDICT in one native CLI session. Its outcome includes the execution
+bundle, OOF averages and replay prediction blocks. This keeps host model
+handles alive for the replay in that session; persisting the bundle JSON alone
+does not persist R model sidecars.
+
+For replay in a later process, persist those sidecars in the host and call
+`dagml_replay_bundle()` with the bundle JSON, V2 replay envelopes and an exact
+artifact-ID-to-invocation-handle JSON map. The host adapter reloads sidecars
+from its own storage and checks their fingerprints; DAG-ML validates the map
+against the bundle before PREDICT. `--artifact-handles` on the CLI enables this
+path, while omitting it retains mock handles for conformance examples only.

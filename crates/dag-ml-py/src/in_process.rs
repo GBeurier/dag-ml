@@ -33,6 +33,7 @@
 //! returned `scores` is byte-identical to the bundle's `scores` the subprocess
 //! path reads back.
 
+use std::collections::BTreeMap;
 use std::panic::AssertUnwindSafe;
 
 use pyo3::prelude::*;
@@ -41,70 +42,29 @@ use pythonize::{depythonize, pythonize};
 
 use dag_ml_core::{
     build_execution_bundle, build_execution_plan, compile_operator_variant_models,
-    compile_pipeline_dsl_with_generation_and_controller_registry, enumerate_variants,
+    compile_pipeline_dsl_with_generation_and_controller_registry, enumerate_operator_variants,
     execute_terminal_prediction, fan_out_data_aware_branches, parse_pipeline_dsl_json,
-    plan_oof_partition_mode, prune_plan_to_active, select_best_operator_variant_from_models,
-    select_best_variant_by_cv, validate_terminal_prediction_preflight, AggregationControllerResult,
-    AggregationControllerTask, ArtifactMaterializationRequest, BundleId, ControllerId,
-    ControllerRegistry, DagMlError as CoreDagMlError, ExecutionPlan, ExternalDataPlanEnvelope,
-    HandleKind, HandleRef, InMemoryArtifactStore, InMemoryDataProvider, NodeResult, NodeTask,
-    OperatorVariantModel, Phase, RegressionMetricKind, RegressionMetricReport, RunContext, RunId,
-    RuntimeController, RuntimeControllerRegistry, ScoreSet, SequentialScheduler,
-    TerminalPredictionReplay, TerminalPredictionSelector, TrainingLossRoleReference,
-    TrainingResourceLimits, VariantId, VariantValidationPredictions, SCORE_SET_SCHEMA_VERSION,
+    plan_oof_partition_mode, pruned_plan_for_operator_models,
+    select_best_operator_variant_outcome_from_models, select_best_variant_outcome_by_cv,
+    validate_terminal_prediction_preflight, AggregationControllerResult, AggregationControllerTask,
+    ArtifactMaterializationRequest, BundleId, ControllerId, ControllerRegistry,
+    DagMlError as CoreDagMlError, ExecutionPlan, ExplicitPhaseDataProvider,
+    ExternalDataPlanEnvelope, HandleKind, HandleRef, InMemoryArtifactStore, InMemoryDataProvider,
+    NodeResult, NodeTask, OperatorVariantModel, Phase, RegressionMetricKind,
+    RegressionMetricReport, RunContext, RunId, RuntimeController, RuntimeControllerRegistry,
+    ScoreSet, SequentialScheduler, TerminalPredictionReplay, TerminalPredictionSelector,
+    TrainingLossRoleReference, TrainingResourceLimits, VariantId, VariantValidationPredictions,
+    SCORE_SET_SCHEMA_VERSION,
 };
 
 use crate::{py_core_error, py_serde_error};
-
-/// Provider for explicit phase execution. Training and external prediction
-/// universes stay distinct; no synthetic fold set is introduced.
-struct ExplicitPhaseDataProvider {
-    inner: InMemoryDataProvider,
-    envelope: ExternalDataPlanEnvelope,
-    training_sample_ids: Option<Vec<dag_ml_core::SampleId>>,
-}
-
-impl dag_ml_core::RuntimeDataProvider for ExplicitPhaseDataProvider {
-    fn materialize(
-        &self,
-        request: &dag_ml_core::DataMaterializationRequest,
-    ) -> dag_ml_core::Result<HandleRef> {
-        self.inner.materialize(request)
-    }
-
-    fn make_view(&self, request: &dag_ml_core::DataViewRequest) -> dag_ml_core::Result<HandleRef> {
-        self.inner.make_view(request)
-    }
-
-    fn coordinator_relations(
-        &self,
-        binding: &dag_ml_core::DataBinding,
-    ) -> dag_ml_core::Result<Option<dag_ml_core::SampleRelationSet>> {
-        self.inner.coordinator_relations(binding)
-    }
-
-    fn predict_cohort(
-        &self,
-        binding: &dag_ml_core::DataBinding,
-        phase: Phase,
-    ) -> dag_ml_core::Result<Option<dag_ml_core::PredictCohort>> {
-        self.inner.predict_cohort(binding, phase)
-    }
-
-    fn refit_sample_ids(
-        &self,
-        binding: &dag_ml_core::DataBinding,
-    ) -> dag_ml_core::Result<Option<Vec<dag_ml_core::SampleId>>> {
-        binding.validate_envelope(&self.envelope)?;
-        Ok(self.training_sample_ids.clone())
-    }
-}
 
 /// Execute exactly one concrete REFIT or PREDICT phase through the Rust
 /// scheduler. This does not select variants, invent folds, fit before PREDICT,
 /// or claim a portable predictor package for host-managed artifacts.
 #[pyfunction]
-#[pyo3(signature = (dsl_json, envelope_json, controller_manifests_json, op_callback, phase, training_sample_ids=None))]
+#[pyo3(signature = (dsl_json, envelope_json, controller_manifests_json, op_callback, phase, training_sample_ids=None, package_id=None, artifact_callback=None))]
+#[allow(clippy::too_many_arguments)] // Preserve the public PyO3 phase call while adding optional package capture.
 pub fn execute_phase_in_process(
     py: Python<'_>,
     dsl_json: &str,
@@ -113,6 +73,8 @@ pub fn execute_phase_in_process(
     op_callback: Py<PyAny>,
     phase: &str,
     training_sample_ids: Option<Vec<String>>,
+    package_id: Option<String>,
+    artifact_callback: Option<Py<PyAny>>,
 ) -> PyResult<String> {
     let phase = match phase {
         "REFIT" => Phase::Refit,
@@ -126,6 +88,11 @@ pub fn execute_phase_in_process(
     if !op_callback.bind(py).is_callable() {
         return Err(py_core_error(CoreDagMlError::RuntimeValidation(
             "op_callback must be callable".into(),
+        )));
+    }
+    if package_id.is_some() && phase != Phase::Refit {
+        return Err(py_core_error(CoreDagMlError::RuntimeValidation(
+            "initial full-refit package is only available for REFIT".into(),
         )));
     }
     let envelope: ExternalDataPlanEnvelope = dag_ml_core::canonical::deserialize_external_contract(
@@ -142,16 +109,6 @@ pub fn execute_phase_in_process(
         (Phase::Refit, Some(ids)) => {
             let ids = ids.into_iter().map(dag_ml_core::SampleId::new)
                 .collect::<dag_ml_core::Result<Vec<_>>>().map_err(py_core_error)?;
-            let relations = envelope.coordinator_relations.as_ref().ok_or_else(|| py_core_error(
-                CoreDagMlError::RuntimeValidation("REFIT requires attested training relations".into())
-            ))?;
-            let expected = relations.records.iter().map(|record| record.sample_id.clone()).collect::<std::collections::BTreeSet<_>>();
-            let supplied = ids.iter().cloned().collect::<std::collections::BTreeSet<_>>();
-            if ids.is_empty() || supplied.len() != ids.len() || supplied != expected {
-                return Err(py_core_error(CoreDagMlError::RuntimeValidation(
-                    "training_sample_ids must be an exact unique ordering of the attested training universe".into()
-                )));
-            }
             Some(ids)
         }
         (Phase::Refit, None) => return Err(py_core_error(CoreDagMlError::RuntimeValidation(
@@ -207,18 +164,55 @@ pub fn execute_phase_in_process(
     plan.campaign
         .validate_data_envelope_relations(&envelope)
         .map_err(py_core_error)?;
-    let provider = ExplicitPhaseDataProvider {
-        inner: InMemoryDataProvider::with_envelope(
-            ControllerId::new("controller:data.provider").map_err(py_core_error)?,
-            envelope.clone(),
-        )
-        .map_err(py_core_error)?,
-        envelope,
-        training_sample_ids,
-    };
-    let controllers = build_runtime_controllers(py, &plan, &op_callback).map_err(py_core_error)?;
+    let provider = ExplicitPhaseDataProvider::new(
+        ControllerId::new("controller:data.provider").map_err(py_core_error)?,
+        envelope.clone(),
+        training_sample_ids.clone(),
+    )
+    .map_err(py_core_error)?;
+    if artifact_callback
+        .as_ref()
+        .is_some_and(|callback| !callback.bind(py).is_callable())
+    {
+        return Err(py_core_error(CoreDagMlError::RuntimeValidation(
+            "artifact_callback must be callable".into(),
+        )));
+    }
+    let controllers = build_runtime_controllers_with_artifact_callback(
+        py,
+        &plan,
+        &op_callback,
+        artifact_callback.as_ref(),
+    )
+    .map_err(py_core_error)?;
     let run_id = RunId::new(format!("run:{}:{}:in-process", dsl.id, phase.as_str()))
         .map_err(py_core_error)?;
+    if let Some(package_id) = package_id {
+        let execution =
+            dag_ml_core::execute_initial_full_refit(dag_ml_core::InitialFullRefitExecutionInput {
+                package_id,
+                run_id,
+                plan: &plan,
+                training_envelope: &envelope,
+                training_sample_ids: training_sample_ids.as_deref().ok_or_else(|| {
+                    py_core_error(CoreDagMlError::RuntimeValidation(
+                        "REFIT package requires training ids".into(),
+                    ))
+                })?,
+                controllers: &controllers,
+                data_provider: &provider,
+                root_seed: plan.campaign.root_seed,
+                resource_limits: None,
+                scheduler: dag_ml_core::InitialRefitScheduler::Sequential,
+            })
+            .map_err(py_core_error)?;
+        return serde_json::to_string(&serde_json::json!({
+            "node_results": execution.results, "phase": phase,
+            "effective_plan": plan, "initial_full_refit_package": execution.package,
+            "scores": execution.scores,
+        }))
+        .map_err(py_serde_error);
+    }
     let mut context = RunContext::new(run_id, plan.campaign.root_seed);
     let results = SequentialScheduler
         .execute_campaign_phase_with_data_provider(
@@ -231,6 +225,100 @@ pub fn execute_phase_in_process(
         .map_err(py_core_error)?;
     let scores = context.build_score_set(plan.id.clone(), None);
     serde_json::to_string(&serde_json::json!({"node_results": results, "scores": scores, "phase": phase, "effective_plan": plan})).map_err(py_serde_error)
+}
+
+/// Replay a separately attested PREDICT cohort from a no-CV REFIT package.
+/// The host supplies only invocation-local handles for the package's exact
+/// artifact IDs; the core checks their metadata before invoking any operator.
+#[pyfunction]
+#[pyo3(signature = (package_json, envelope_json, op_callback, artifact_handles_json, output_ids_json, run_id, artifact_callback=None))]
+#[allow(clippy::too_many_arguments)] // Keep the public replay call compatible while adding an optional Raw bridge.
+pub fn replay_initial_full_refit_in_process(
+    py: Python<'_>,
+    package_json: &str,
+    envelope_json: &str,
+    op_callback: Py<PyAny>,
+    artifact_handles_json: &str,
+    output_ids_json: &str,
+    run_id: &str,
+    artifact_callback: Option<Py<PyAny>>,
+) -> PyResult<String> {
+    if !op_callback.bind(py).is_callable() {
+        return Err(py_core_error(CoreDagMlError::RuntimeValidation(
+            "op_callback must be callable".into(),
+        )));
+    }
+    if artifact_callback
+        .as_ref()
+        .is_some_and(|callback| !callback.bind(py).is_callable())
+    {
+        return Err(py_core_error(CoreDagMlError::RuntimeValidation(
+            "artifact_callback must be callable".into(),
+        )));
+    }
+    let package =
+        dag_ml_core::InitialFullRefitPackage::from_json(package_json).map_err(py_core_error)?;
+    let envelope: ExternalDataPlanEnvelope = dag_ml_core::canonical::deserialize_external_contract(
+        envelope_json,
+        "initial full-refit replay envelope",
+        CoreDagMlError::CampaignValidation,
+    )
+    .map_err(py_core_error)?;
+    let handles: BTreeMap<dag_ml_core::ArtifactId, HandleRef> =
+        serde_json::from_str(artifact_handles_json).map_err(py_serde_error)?;
+    let output_ids: Vec<String> = serde_json::from_str(output_ids_json).map_err(py_serde_error)?;
+    let expected = package
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact.load_mode == dag_ml_core::ArtifactLoadMode::HostSidecar)
+        .map(|artifact| &artifact.record.artifact.id)
+        .collect::<std::collections::BTreeSet<_>>();
+    if handles.keys().collect::<std::collections::BTreeSet<_>>() != expected {
+        return Err(py_core_error(CoreDagMlError::RuntimeValidation(
+            "initial full-refit replay handles must exactly cover package host-sidecar artifacts"
+                .into(),
+        )));
+    }
+    let provider = ExplicitPhaseDataProvider::new(
+        ControllerId::new("controller:data.provider").map_err(py_core_error)?,
+        envelope.clone(),
+        None,
+    )
+    .map_err(py_core_error)?;
+    let controllers = build_runtime_controllers_with_artifact_callback(
+        py,
+        &package.effective_plan,
+        &op_callback,
+        artifact_callback.as_ref(),
+    )
+    .map_err(py_core_error)?;
+    let mut artifact_store = InMemoryArtifactStore::new();
+    for artifact in &package.artifacts {
+        if artifact.load_mode != dag_ml_core::ArtifactLoadMode::HostSidecar {
+            continue;
+        }
+        artifact_store
+            .register(
+                &artifact.record,
+                handles[&artifact.record.artifact.id].clone(),
+            )
+            .map_err(py_core_error)?;
+    }
+    let execution =
+        dag_ml_core::execute_initial_full_refit_prediction(dag_ml_core::InitialRefitReplayInput {
+            package: &package,
+            envelope: &envelope,
+            output_ids: &output_ids,
+            run_id: RunId::new(run_id.to_owned()).map_err(py_core_error)?,
+            controllers: &controllers,
+            data_provider: &provider,
+            artifact_store: &artifact_store,
+        })
+        .map_err(py_core_error)?;
+    serde_json::to_string(&serde_json::json!({
+        "replay_outcome": execution.outcome, "node_results": execution.results,
+    }))
+    .map_err(py_serde_error)
 }
 
 /// Serialize a `dag-ml-core` value directly to a Python object with `pythonize`
@@ -333,12 +421,55 @@ struct PyHostHpoProposals {
     callback: Py<PyAny>,
 }
 
+struct PyHostHpoProviderFactory {
+    envelope: ExternalDataPlanEnvelope,
+    controller_id: ControllerId,
+}
+
+struct PyHostHpoControllerFactory {
+    callback_factory: Py<PyAny>,
+    plan: ExecutionPlan,
+}
+
+impl dag_ml_core::HostHpoCandidateControllerFactory for PyHostHpoControllerFactory {
+    fn create(&self, trial_index: u32) -> dag_ml_core::Result<RuntimeControllerRegistry> {
+        Python::attach(|py| {
+            let callback = self
+                .callback_factory
+                .bind(py)
+                .call1((trial_index,))
+                .map_err(core_error_from_py)?;
+            if !callback.is_callable() {
+                return Err(CoreDagMlError::RuntimeValidation(
+                    "host HPO candidate callback factory must return a callable".into(),
+                ));
+            }
+            build_runtime_controllers(py, &self.plan, &callback.unbind())
+        })
+    }
+}
+
+impl dag_ml_core::HostHpoCandidateProviderFactory for PyHostHpoProviderFactory {
+    fn create(
+        &self,
+        _trial_index: u32,
+    ) -> dag_ml_core::Result<Box<dyn dag_ml_core::RuntimeDataProvider + Send>> {
+        Ok(Box::new(InMemoryDataProvider::with_envelope(
+            self.controller_id.clone(),
+            self.envelope.clone(),
+        )?))
+    }
+}
+
 struct PyDataProviderSource {
     callback: Py<PyAny>,
 }
 
 impl dag_ml_core::RuntimeDataProviderSource for PyDataProviderSource {
-    fn materialize(&self, task: &NodeTask) -> dag_ml_core::Result<dag_ml_core::DataProviderMaterialization> {
+    fn materialize(
+        &self,
+        task: &NodeTask,
+    ) -> dag_ml_core::Result<dag_ml_core::DataProviderMaterialization> {
         call_py_bridge(&self.callback, task, "data provider")
     }
 }
@@ -346,15 +477,25 @@ impl dag_ml_core::RuntimeDataProviderSource for PyDataProviderSource {
 /// Execute one finite source in native PLAN; the host retains all data buffers.
 #[pyfunction]
 pub fn execute_data_provider(
-    py: Python<'_>, recipe_json: &str, callback: Py<PyAny>,
+    py: Python<'_>,
+    recipe_json: &str,
+    callback: Py<PyAny>,
 ) -> PyResult<String> {
     if !callback.bind(py).is_callable() {
-        return Err(py_core_error(CoreDagMlError::RuntimeValidation("data provider callback must be callable".into())));
+        return Err(py_core_error(CoreDagMlError::RuntimeValidation(
+            "data provider callback must be callable".into(),
+        )));
     }
-    let recipe: dag_ml_core::DataProviderRecipe = dag_ml_core::canonical::deserialize_external_contract(
-        recipe_json, "data provider recipe", CoreDagMlError::RuntimeValidation,
-    ).map_err(py_core_error)?;
-    let result = dag_ml_core::execute_data_provider(&recipe, Box::new(PyDataProviderSource { callback })).map_err(py_core_error)?;
+    let recipe: dag_ml_core::DataProviderRecipe =
+        dag_ml_core::canonical::deserialize_external_contract(
+            recipe_json,
+            "data provider recipe",
+            CoreDagMlError::RuntimeValidation,
+        )
+        .map_err(py_core_error)?;
+    let result =
+        dag_ml_core::execute_data_provider(&recipe, Box::new(PyDataProviderSource { callback }))
+            .map_err(py_core_error)?;
     serde_json::to_string(&result).map_err(py_serde_error)
 }
 
@@ -370,10 +511,43 @@ impl dag_ml_core::HostHpoProposalSource for PyHostHpoProposals {
         )
     }
 
+    fn ask_in_phase(
+        &mut self,
+        trial_index: u32,
+        phase_index: Option<u32>,
+    ) -> dag_ml_core::Result<Option<std::collections::BTreeMap<String, serde_json::Value>>> {
+        call_py_bridge(
+            &self.callback,
+            &serde_json::json!({"operation": "ask", "trial_index": trial_index, "phase_index": phase_index}),
+            "host optimizer",
+        )
+    }
+
     fn tell(&mut self, trial_index: u32, score: f64) -> dag_ml_core::Result<()> {
         call_py_bridge(
             &self.callback,
             &serde_json::json!({"operation": "tell", "trial_index": trial_index, "score": score}),
+            "host optimizer",
+        )
+    }
+
+    fn report_intermediate(
+        &mut self,
+        trial_index: u32,
+        step: u32,
+        score: f64,
+    ) -> dag_ml_core::Result<bool> {
+        call_py_bridge(
+            &self.callback,
+            &serde_json::json!({"operation": "report_intermediate", "trial_index": trial_index, "step": step, "score": score}),
+            "host optimizer",
+        )
+    }
+
+    fn pruned(&mut self, trial_index: u32) -> dag_ml_core::Result<()> {
+        call_py_bridge(
+            &self.callback,
+            &serde_json::json!({"operation": "pruned", "trial_index": trial_index}),
             "host optimizer",
         )
     }
@@ -392,6 +566,21 @@ struct PyHostHpoProgress {
 }
 
 impl dag_ml_core::HostHpoProgress for PyHostHpoProgress {
+    fn prepare_terminal(
+        &mut self,
+        checkpoint: &dag_ml_core::HostHpoCheckpoint,
+        status: dag_ml_core::HostHpoSearchStatus,
+    ) -> dag_ml_core::Result<()> {
+        if let Some(callback) = &self.callback {
+            let _: Option<bool> = call_py_bridge(
+                callback,
+                &serde_json::json!({"operation": "prepare_terminal", "checkpoint": checkpoint, "status": status}),
+                "host HPO progress",
+            )?;
+        }
+        Ok(())
+    }
+
     fn checkpoint(
         &mut self,
         checkpoint: &dag_ml_core::HostHpoCheckpoint,
@@ -409,10 +598,31 @@ impl dag_ml_core::HostHpoProgress for PyHostHpoProgress {
     }
 }
 
+/// Verify a prepared native terminal and append trials interrupted before
+/// native evaluation. The recovered checkpoint is revalidated by core when
+/// the search resumes; the host never constructs its fingerprint itself.
+#[pyfunction]
+pub fn recover_host_hpo_checkpoint_json(
+    checkpoint_json: &str,
+    prepared_json: &str,
+    interrupted_json: &str,
+) -> PyResult<String> {
+    let checkpoint: dag_ml_core::HostHpoCheckpoint =
+        serde_json::from_str(checkpoint_json).map_err(py_serde_error)?;
+    let prepared: Option<dag_ml_core::HostHpoCheckpoint> =
+        serde_json::from_str(prepared_json).map_err(py_serde_error)?;
+    let interrupted: Vec<dag_ml_core::HostHpoInterruptedTrial> =
+        serde_json::from_str(interrupted_json).map_err(py_serde_error)?;
+    let recovered = checkpoint
+        .recover_interrupted_trials(prepared, interrupted)
+        .map_err(py_core_error)?;
+    serde_json::to_string(&recovered).map_err(py_serde_error)
+}
+
 /// Bounded nonportable host-optimizer search. Only proposals cross from the
 /// tuner; all candidate execution, scoring and selection remain in core.
 #[pyfunction]
-#[pyo3(signature = (dsl_json, envelope_json, controller_manifests_json, request_json, op_callback, optimizer_callback, *, resume_checkpoint_json=None, progress_callback=None))]
+#[pyo3(signature = (dsl_json, envelope_json, controller_manifests_json, request_json, op_callback, optimizer_callback, *, resume_checkpoint_json=None, progress_callback=None, candidate_callback_factory=None))]
 #[allow(clippy::too_many_arguments)]
 pub fn run_host_hpo_search_in_process(
     py: Python<'_>,
@@ -424,6 +634,7 @@ pub fn run_host_hpo_search_in_process(
     optimizer_callback: Py<PyAny>,
     resume_checkpoint_json: Option<&str>,
     progress_callback: Option<Py<PyAny>>,
+    candidate_callback_factory: Option<Py<PyAny>>,
 ) -> PyResult<String> {
     if !op_callback.bind(py).is_callable() || !optimizer_callback.bind(py).is_callable() {
         return Err(py_core_error(CoreDagMlError::RuntimeValidation(
@@ -436,6 +647,14 @@ pub fn run_host_hpo_search_in_process(
     {
         return Err(py_core_error(CoreDagMlError::RuntimeValidation(
             "host HPO progress callback must be callable".into(),
+        )));
+    }
+    if candidate_callback_factory
+        .as_ref()
+        .is_some_and(|callback| !callback.bind(py).is_callable())
+    {
+        return Err(py_core_error(CoreDagMlError::RuntimeValidation(
+            "host HPO candidate callback factory must be callable".into(),
         )));
     }
     let envelope: ExternalDataPlanEnvelope = dag_ml_core::canonical::deserialize_external_contract(
@@ -494,18 +713,97 @@ pub fn run_host_hpo_search_in_process(
     plan.campaign
         .validate_data_envelope_relations(&envelope)
         .map_err(py_core_error)?;
-    let provider = InMemoryDataProvider::with_envelope(
-        ControllerId::new("controller:data.provider").map_err(py_core_error)?,
-        envelope,
-    )
-    .map_err(py_core_error)?;
+    let provider_controller_id =
+        ControllerId::new("controller:data.provider").map_err(py_core_error)?;
+    let provider_factory = PyHostHpoProviderFactory {
+        envelope: envelope.clone(),
+        controller_id: provider_controller_id.clone(),
+    };
+    let provider = InMemoryDataProvider::with_envelope(provider_controller_id, envelope)
+        .map_err(py_core_error)?;
     let controllers = build_runtime_controllers(py, &plan, &op_callback).map_err(py_core_error)?;
+    let candidate_controllers =
+        candidate_callback_factory.map(|callback_factory| PyHostHpoControllerFactory {
+            callback_factory,
+            plan: plan.clone(),
+        });
+    let n_jobs = request
+        .optimizer_descriptor
+        .get("n_jobs")
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or(1);
+    if n_jobs != 1 {
+        let workers = if n_jobs == -1 {
+            std::thread::available_parallelism()
+                .map(|count| count.get())
+                .unwrap_or(1)
+        } else {
+            usize::try_from(n_jobs).map_err(|_| {
+                py_core_error(CoreDagMlError::RuntimeValidation(
+                    "host HPO n_jobs must be positive or -1".into(),
+                ))
+            })?
+        };
+        if workers == 0 {
+            return Err(py_core_error(CoreDagMlError::RuntimeValidation(
+                "host HPO n_jobs must be positive or -1".into(),
+            )));
+        }
+        // n_jobs=-1 on a one-core host remains sequential.
+        if workers > 1 {
+            let factory = candidate_controllers.as_ref().ok_or_else(|| {
+                py_core_error(CoreDagMlError::RuntimeValidation(
+                    "parallel host HPO requires candidate-local operator callbacks".into(),
+                ))
+            })?;
+            if durable {
+                let result = py
+                    .detach(|| {
+                        SequentialScheduler
+                            .execute_resumable_parallel_host_hpo_search_with_candidate_factories(
+                                &plan,
+                                &provider_factory,
+                                factory,
+                                &request,
+                                &mut PyHostHpoProposals {
+                                    callback: optimizer_callback,
+                                },
+                                workers,
+                                &resume_options,
+                                &mut PyHostHpoProgress {
+                                    callback: progress_callback,
+                                },
+                            )
+                    })
+                    .map_err(py_core_error)?;
+                return serde_json::to_string(&result).map_err(py_serde_error);
+            }
+            let result = py
+                .detach(|| {
+                    SequentialScheduler.execute_parallel_host_hpo_search_with_candidate_factories(
+                        &plan,
+                        &provider_factory,
+                        factory,
+                        &request,
+                        &mut PyHostHpoProposals {
+                            callback: optimizer_callback,
+                        },
+                        workers,
+                    )
+                })
+                .map_err(py_core_error)?;
+            return serde_json::to_string(&result).map_err(py_serde_error);
+        }
+    }
     if durable {
-        let result = SequentialScheduler
-            .execute_resumable_host_hpo_search(
+        let scheduler = SequentialScheduler;
+        let result = if let Some(factory) = &candidate_controllers {
+            scheduler.execute_resumable_host_hpo_search_with_candidate_factories(
                 &plan,
                 &controllers,
                 &provider,
+                &provider_factory,
+                factory,
                 &request,
                 &mut PyHostHpoProposals {
                     callback: optimizer_callback,
@@ -515,21 +813,58 @@ pub fn run_host_hpo_search_in_process(
                     callback: progress_callback,
                 },
             )
-            .map_err(py_core_error)?;
+        } else {
+            scheduler.execute_resumable_host_hpo_search_with_provider_factory(
+                &plan,
+                &controllers,
+                &provider,
+                &provider_factory,
+                &request,
+                &mut PyHostHpoProposals {
+                    callback: optimizer_callback,
+                },
+                &resume_options,
+                &mut PyHostHpoProgress {
+                    callback: progress_callback,
+                },
+            )
+        }
+        .map_err(py_core_error)?;
         return serde_json::to_string(&result).map_err(py_serde_error);
     }
-    let result = SequentialScheduler
-        .execute_host_hpo_search(
+    let scheduler = SequentialScheduler;
+    let result = if let Some(factory) = &candidate_controllers {
+        scheduler.execute_host_hpo_search_with_candidate_factories(
             &plan,
             &controllers,
             &provider,
+            &provider_factory,
+            factory,
             &request,
             &mut PyHostHpoProposals {
                 callback: optimizer_callback,
             },
         )
-        .map_err(py_core_error)?;
+    } else {
+        scheduler.execute_host_hpo_search_with_provider_factory(
+            &plan,
+            &controllers,
+            &provider,
+            &provider_factory,
+            &request,
+            &mut PyHostHpoProposals {
+                callback: optimizer_callback,
+            },
+        )
+    }
+    .map_err(py_core_error)?;
     serde_json::to_string(&result).map_err(py_serde_error)
+}
+
+#[derive(serde::Serialize)]
+struct PyArtifactExportRequest<'a> {
+    operation: &'static str,
+    artifact_id: &'a dag_ml_core::ArtifactId,
 }
 
 #[derive(serde::Serialize)]
@@ -563,6 +898,32 @@ impl RuntimeController for PyOperatorController {
             task,
             "aggregation",
         )
+    }
+
+    fn export_artifact_payload(
+        &self,
+        artifact_id: &dag_ml_core::ArtifactId,
+    ) -> Result<Option<Vec<u8>>, CoreDagMlError> {
+        let callback = self.artifact_callback.as_ref().ok_or_else(|| {
+            CoreDagMlError::RuntimeValidation(format!(
+                "Python runtime controller `{}` cannot export a raw portable artifact without artifact_callback",
+                self.controller_id
+            ))
+        })?;
+        let payload = call_py_bridge::<PyArtifactExportRequest<'_>, Vec<u8>>(
+            callback,
+            &PyArtifactExportRequest {
+                operation: "export",
+                artifact_id,
+            },
+            "artifact export",
+        )?;
+        if payload.is_empty() {
+            return Err(CoreDagMlError::RuntimeValidation(
+                "Python artifact_callback returned an empty raw payload".into(),
+            ));
+        }
+        Ok(Some(payload))
     }
 
     fn hydrate_artifact_payload(
@@ -679,6 +1040,7 @@ pub(crate) fn build_runtime_controllers_with_artifact_callback(
 #[derive(Debug)]
 struct ResolvedRefitVariant {
     variant_id: VariantId,
+    ranked_variant_ids: Vec<VariantId>,
     loser_validation_reports: Vec<RegressionMetricReport>,
     /// The non-selected variants' VALIDATION (OOF) PREDICTIONS, each re-tagged with its own variant
     /// id + content fingerprint, so the host can fill a LOSER variant's per-sample prediction rows
@@ -700,7 +1062,8 @@ struct ResolvedRefitVariant {
 /// `resolve_operator_select`: score each choice on its PRUNED plan, return the winner together with
 /// its pruned plan, the losers' OOF reports, and the winner's content fingerprint. Returns
 /// `Ok(None)` when scoring is off (no host targets) so the caller falls back to the default. Keeps
-/// winner-ONLY refit (the multi-model 32-not-34 contract).
+/// The caller may subsequently refit several ranked candidates on their own pruned plans.
+#[allow(clippy::too_many_arguments)]
 fn resolve_operator_select(
     plan: &ExecutionPlan,
     operator_variant_models: &[OperatorVariantModel],
@@ -711,7 +1074,7 @@ fn resolve_operator_select(
     data_provider: &InMemoryDataProvider,
     resource_limits: Option<&TrainingResourceLimits>,
 ) -> Result<Option<ResolvedRefitVariant>, CoreDagMlError> {
-    let selected = select_best_operator_variant_from_models(
+    let selected = select_best_operator_variant_outcome_from_models(
         plan,
         operator_variant_models,
         run_id,
@@ -730,9 +1093,16 @@ fn resolve_operator_select(
                 .map(|_results| ())
         },
     )?;
-    let Some(selection) = selected else {
+    let Some(outcome) = selected else {
         return Ok(None);
     };
+    let ranked_variant_ids = outcome
+        .decision
+        .ranked_candidates
+        .iter()
+        .map(|candidate| VariantId::new(candidate.candidate_id.clone()))
+        .collect::<dag_ml_core::Result<Vec<_>>>()?;
+    let selection = outcome.selection;
     let variant_id = selection.selected_variant_id.clone();
     // The winner's content fingerprint (Phase 5) — recovered from its OWN report in the selection
     // loop (already stamped there) so the fresh winner FIT_CV/REFIT reports get the SAME label.
@@ -753,11 +1123,11 @@ fn resolve_operator_select(
         .into_iter()
         .filter(|captured| captured.variant_id != variant_id)
         .collect();
-    // Recompute the WINNER's pruned plan so FIT_CV + REFIT run on it (not the union). The single
-    // operator model is guaranteed by `select_best_operator_variant_from_models`.
-    let model = &operator_variant_models[0];
-    let pruned_plan = pruned_plan_for_operator_variant(plan, model, &variant_id, root_seed)?;
+    // Recompute the complete winning combination so FIT_CV + REFIT use all selected branches.
+    let pruned_plan =
+        pruned_plan_for_operator_variant(plan, operator_variant_models, &variant_id, root_seed)?;
     Ok(Some(ResolvedRefitVariant {
+        ranked_variant_ids,
         variant_id,
         loser_validation_reports,
         loser_validation_predictions,
@@ -766,17 +1136,15 @@ fn resolve_operator_select(
     }))
 }
 
-/// Rebuild the PRUNED plan for a chosen operator variant id by re-enumerating the model's variants
-/// (deterministic), matching the winner, and pruning the union to its active choice. Mirrors the
-/// CLI's `pruned_plan_for_operator_variant` so the in-process winner refits on the pruned candidate
-/// rather than the stacking union.
+/// Rebuild the PRUNED plan for a chosen operator combination by re-enumerating
+/// the product deterministically, then pruning all inactive choices.
 fn pruned_plan_for_operator_variant(
     union_plan: &ExecutionPlan,
-    model: &OperatorVariantModel,
+    models: &[OperatorVariantModel],
     variant_id: &VariantId,
     root_seed: u64,
 ) -> Result<ExecutionPlan, CoreDagMlError> {
-    let variants = enumerate_variants(&model.generation_spec(), Some(root_seed))?;
+    let variants = enumerate_operator_variants(models, Some(root_seed))?;
     let variant = variants
         .iter()
         .find(|variant| &variant.variant_id == variant_id)
@@ -785,28 +1153,7 @@ fn pruned_plan_for_operator_variant(
                 "operator-SELECT winner `{variant_id}` not found in enumerated variants"
             ))
         })?;
-    let choice = variant.choices.get(&model.dimension.name).ok_or_else(|| {
-        CoreDagMlError::RuntimeValidation(format!(
-            "operator winner `{variant_id}` missing operator dimension"
-        ))
-    })?;
-    let active_subsequence = choice.active_subsequence.as_ref().ok_or_else(|| {
-        CoreDagMlError::RuntimeValidation(format!(
-            "operator winner `{variant_id}` choice has no active_subsequence"
-        ))
-    })?;
-    let active_nodes = model.active_nodes.get(active_subsequence).ok_or_else(|| {
-        CoreDagMlError::RuntimeValidation(format!(
-            "operator model has no active-node set for `{active_subsequence}`"
-        ))
-    })?;
-    let all_choice_nodes = model
-        .active_nodes
-        .values()
-        .flatten()
-        .cloned()
-        .collect::<std::collections::BTreeSet<_>>();
-    prune_plan_to_active(union_plan, active_nodes, &all_choice_nodes, variant)
+    pruned_plan_for_operator_models(union_plan, models, variant)
 }
 
 /// Resolve the variant REFIT targets, mirroring the CLI's `resolve_refit_variant`:
@@ -817,6 +1164,7 @@ fn pruned_plan_for_operator_variant(
 /// * otherwise, a multi-variant plan runs one single-variant FIT_CV per variant and refits the best
 ///   by `selection_metric` (Mechanism A), or
 /// * a single-variant plan refits that variant (or the default when native scoring is off).
+#[allow(clippy::too_many_arguments)]
 fn resolve_refit_variant(
     plan: &ExecutionPlan,
     operator_variant_models: &[OperatorVariantModel],
@@ -844,7 +1192,7 @@ fn resolve_refit_variant(
         // exactly today's behavior for unscored runs.
     }
     if plan.variants.len() > 1 {
-        let selected = select_best_variant_by_cv(
+        let selected = select_best_variant_outcome_by_cv(
             plan,
             run_id,
             Some(root_seed),
@@ -862,8 +1210,15 @@ fn resolve_refit_variant(
                     .map(|_results| ())
             },
         )?;
-        if let Some(selection) = selected {
+        if let Some(outcome) = selected {
+            let selection = outcome.selection;
             let variant_id = selection.selected_variant_id.clone();
+            let ranked_variant_ids = outcome
+                .decision
+                .ranked_candidates
+                .iter()
+                .map(|candidate| VariantId::new(candidate.candidate_id.clone()))
+                .collect::<dag_ml_core::Result<Vec<_>>>()?;
             // Keep only the LOSER variants' reports — the winner's come from the real FIT_CV run.
             let loser_validation_reports = selection
                 .validation_reports
@@ -876,6 +1231,7 @@ fn resolve_refit_variant(
                 .filter(|captured| captured.variant_id != variant_id)
                 .collect();
             return Ok(ResolvedRefitVariant {
+                ranked_variant_ids,
                 variant_id,
                 loser_validation_reports,
                 loser_validation_predictions,
@@ -892,6 +1248,7 @@ fn resolve_refit_variant(
             CoreDagMlError::RuntimeValidation("execution plan has no variants to refit".to_string())
         })?;
     Ok(ResolvedRefitVariant {
+        ranked_variant_ids: Vec::new(),
         variant_id,
         loser_validation_reports: Vec::new(),
         loser_validation_predictions: Vec::new(),
@@ -969,7 +1326,7 @@ fn surface_loser_validation_frames(
             "regression_targets": [target],
         }));
     }
-    if let Some(oof) = &captured.oof_average {
+    for oof in &captured.oof_averages {
         frames.push(serde_json::json!({
             "node_id": oof.predictions.producer_node,
             "variant_id": variant_id,
@@ -1005,7 +1362,10 @@ fn surface_loser_validation_frames(
     op_callback,
     selection_metric,
     resource_limits_json = None,
+    refit = true,
+    refit_top_k = 1,
 ))]
+#[allow(clippy::too_many_arguments)]
 pub fn run_cv_refit_in_process(
     py: Python<'_>,
     dsl_json: &str,
@@ -1014,6 +1374,8 @@ pub fn run_cv_refit_in_process(
     op_callback: Py<PyAny>,
     selection_metric: &str,
     resource_limits_json: Option<&str>,
+    refit: bool,
+    refit_top_k: usize,
 ) -> PyResult<String> {
     run_cv_refit_in_process_impl(
         py,
@@ -1024,6 +1386,8 @@ pub fn run_cv_refit_in_process(
         op_callback,
         selection_metric,
         resource_limits_json,
+        refit,
+        refit_top_k,
     )
 }
 
@@ -1055,6 +1419,8 @@ pub fn run_cv_refit_in_process_with_training_losses(
         op_callback,
         selection_metric,
         None,
+        true,
+        1,
     )
 }
 
@@ -1187,6 +1553,10 @@ pub fn run_cv_refit_predict_in_process(
     // CV selection evidence.
     ctx.collect_cross_fold_validation_scores(plan_oof_partition_mode(refit_plan))
         .map_err(py_core_error)?;
+    ctx.collect_cross_fold_train_scores(metric)
+        .map_err(py_core_error)?;
+    ctx.collect_cross_fold_test_scores(metric)
+        .map_err(py_core_error)?;
     let mut scores = ctx.build_score_set(refit_plan.id.clone(), None);
     stamp_winner_variant_label(&mut scores, winner_variant_label);
     merge_loser_validation_reports(&mut scores, &refit_plan.id, loser_validation_reports);
@@ -1200,6 +1570,12 @@ pub fn run_cv_refit_predict_in_process(
     )
     .map_err(py_core_error)?;
     bundle.scores = scores;
+    if !ctx.residual_gate_records().is_empty() {
+        bundle.metadata.insert(
+            "residual_gates".to_string(),
+            serde_json::to_value(ctx.residual_gate_records()).map_err(py_serde_error)?,
+        );
+    }
 
     let terminal = execute_terminal_prediction(
         TerminalPredictionReplay {
@@ -1223,6 +1599,7 @@ pub fn run_cv_refit_predict_in_process(
     .map_err(py_serde_error)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_cv_refit_in_process_impl(
     py: Python<'_>,
     dsl_json: &str,
@@ -1232,7 +1609,14 @@ fn run_cv_refit_in_process_impl(
     op_callback: Py<PyAny>,
     selection_metric: &str,
     resource_limits_json: Option<&str>,
+    refit: bool,
+    refit_top_k: usize,
 ) -> PyResult<String> {
+    if refit_top_k == 0 || (!refit && refit_top_k != 1) {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "refit_top_k must be positive and requires refit enabled",
+        ));
+    }
     let metric = parse_selection_metric(selection_metric).map_err(py_core_error)?;
     let resource_limits = resource_limits_json
         .map(serde_json::from_str::<TrainingResourceLimits>)
@@ -1325,17 +1709,26 @@ fn run_cv_refit_in_process_impl(
     )
     .map_err(py_core_error)?;
     let selected_variant_id = resolved.variant_id;
+    let additional_variant_ids = resolved
+        .ranked_variant_ids
+        .into_iter()
+        .filter(|variant_id| *variant_id != selected_variant_id)
+        .take(refit_top_k.saturating_sub(1))
+        .collect::<Vec<_>>();
     let loser_validation_reports = resolved.loser_validation_reports;
+    let additional_variant_labels = loser_validation_reports
+        .iter()
+        .filter_map(|report| Some((report.variant_id.clone()?, report.variant_label.clone()?)))
+        .collect::<BTreeMap<_, _>>();
     let loser_validation_predictions = resolved.loser_validation_predictions;
     let winner_variant_label = resolved.winner_variant_label;
     // For operator-SELECT the winner FIT_CV + REFIT run on the WINNER's PRUNED plan; for all other
     // paths the union plan IS the refit plan.
     let refit_plan = resolved.pruned_plan.as_ref().unwrap_or(&plan);
 
-    let mut artifact_store = InMemoryArtifactStore::new();
-    let mut ctx = RunContext::new(run_id, Some(root_seed));
-    ctx.variant_id = Some(selected_variant_id);
-    ctx.resource_limits = resource_limits;
+    let mut ctx = RunContext::new(run_id.clone(), Some(root_seed));
+    ctx.variant_id = Some(selected_variant_id.clone());
+    ctx.resource_limits = resource_limits.clone();
 
     let fit_cv_results = SequentialScheduler
         .execute_campaign_phase_with_data_provider(
@@ -1347,16 +1740,21 @@ fn run_cv_refit_in_process_impl(
         )
         .map_err(py_core_error)?;
 
-    let refit_results = SequentialScheduler
-        .execute_campaign_phase_with_data_provider_and_artifact_store(
-            refit_plan,
-            &runtime_controllers,
-            &data_provider,
-            &mut artifact_store,
-            &mut ctx,
-            Phase::Refit,
-        )
-        .map_err(py_core_error)?;
+    let refit_results = if refit {
+        let mut artifact_store = InMemoryArtifactStore::new();
+        SequentialScheduler
+            .execute_campaign_phase_with_data_provider_and_artifact_store(
+                refit_plan,
+                &runtime_controllers,
+                &data_provider,
+                &mut artifact_store,
+                &mut ctx,
+                Phase::Refit,
+            )
+            .map_err(py_core_error)?
+    } else {
+        Vec::new()
+    };
 
     // 5. Score: collect the cross-fold OOF average (cv_best_score) + the REFIT
     //    final/test reports. The loser variants' VALIDATION (OOF) reports captured
@@ -1366,6 +1764,10 @@ fn run_cv_refit_in_process_impl(
     //    ScoreSet the host maps to a RunResult — identical to the CLI's
     //    `bundle.scores`.
     ctx.collect_cross_fold_validation_scores(plan_oof_partition_mode(refit_plan))
+        .map_err(py_core_error)?;
+    ctx.collect_cross_fold_train_scores(metric)
+        .map_err(py_core_error)?;
+    ctx.collect_cross_fold_test_scores(metric)
         .map_err(py_core_error)?;
     let mut scores = ctx.build_score_set(refit_plan.id.clone(), None);
     // Phase 5: the winner reports come from the REAL winner FIT_CV/REFIT pass above (not the
@@ -1377,6 +1779,63 @@ fn run_cv_refit_in_process_impl(
 
     let mut node_results = fit_cv_results;
     node_results.extend(refit_results);
+    for variant_id in &additional_variant_ids {
+        let extra_pruned_plan = if !operator_variant_models.is_empty() {
+            Some(
+                pruned_plan_for_operator_variant(
+                    &plan,
+                    &operator_variant_models,
+                    variant_id,
+                    root_seed,
+                )
+                .map_err(py_core_error)?,
+            )
+        } else {
+            None
+        };
+        let extra_plan = extra_pruned_plan.as_ref().unwrap_or(refit_plan);
+        let mut extra_ctx = RunContext::new(run_id.clone(), Some(root_seed));
+        extra_ctx.variant_id = Some(variant_id.clone());
+        extra_ctx.resource_limits = resource_limits.clone();
+        SequentialScheduler
+            .execute_campaign_phase_with_data_provider(
+                extra_plan,
+                &runtime_controllers,
+                &data_provider,
+                &mut extra_ctx,
+                Phase::FitCv,
+            )
+            .map_err(py_core_error)?;
+        let mut extra_store = InMemoryArtifactStore::new();
+        let extra_results = SequentialScheduler
+            .execute_campaign_phase_with_data_provider_and_artifact_store(
+                extra_plan,
+                &runtime_controllers,
+                &data_provider,
+                &mut extra_store,
+                &mut extra_ctx,
+                Phase::Refit,
+            )
+            .map_err(py_core_error)?;
+        if extra_store.is_empty() {
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
+                "additional refit for `{variant_id}` captured no artifacts"
+            )));
+        }
+        node_results.extend(extra_results);
+        if let Some(mut extra_scores) = extra_ctx.build_score_set(refit_plan.id.clone(), None) {
+            for report in &mut extra_scores.reports {
+                report.variant_label = additional_variant_labels.get(variant_id).cloned();
+            }
+            if let Some(primary_scores) = scores.as_mut() {
+                primary_scores
+                    .reports
+                    .extend(extra_scores.reports.into_iter().filter(|report| {
+                        report.partition != dag_ml_core::PredictionPartition::Validation
+                    }));
+            }
+        }
+    }
 
     // 6. ADDITIVELY surface the per-sample cross-fold OOF AVERAGE so the host fills the
     //    `(validation, avg)` row's y_pred (it had only the scalar OOF report before). Each
@@ -1390,7 +1849,12 @@ fn run_cv_refit_in_process_impl(
         serde_json::Value::Array(frames) => frames,
         other => vec![other],
     };
-    for oof in &ctx.oof_average_blocks {
+    for oof in ctx
+        .oof_average_blocks
+        .iter()
+        .chain(&ctx.test_ensemble_blocks)
+        .chain(&ctx.train_ensemble_blocks)
+    {
         node_results.push(serde_json::json!({
             "node_id": oof.predictions.producer_node,
             "aggregated_predictions": [oof.predictions],
@@ -1413,6 +1877,10 @@ fn run_cv_refit_in_process_impl(
     let payload = serde_json::json!({
         "node_results": node_results,
         "scores": scores,
+        "residual_gates": ctx.residual_gate_records(),
+        "refit_enabled": refit,
+        "selected_refit_variant_ids": std::iter::once(&selected_variant_id).chain(additional_variant_ids.iter()).collect::<Vec<_>>(),
+        "variant_catalog": plan.variants,
     });
     serde_json::to_string(&payload).map_err(py_serde_error)
 }
@@ -1465,6 +1933,15 @@ mod tests {
                 .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("missing operation"))?;
             self.calls.lock().unwrap().push(operation.to_string());
             match operation {
+                "export" => {
+                    assert!(
+                        request["artifact_id"] == "artifact:python.native"
+                            || request["artifact_id"] == "artifact:model:terminal:refit"
+                    );
+                    pythonize(py, &vec![1u8, 2, 3])
+                        .map(|value| value.unbind())
+                        .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))
+                }
                 "hydrate" => {
                     assert_eq!(request["payload"], serde_json::json!([1, 2, 3]));
                     let owner: ControllerId =
@@ -1492,7 +1969,7 @@ mod tests {
     }
 
     #[test]
-    fn python_artifact_callback_hydrates_and_releases_invocation_local_handles() {
+    fn python_artifact_callback_exports_hydrates_and_releases_portable_payloads() {
         Python::initialize();
         Python::attach(|py| {
             let controller_id = ControllerId::new("controller:python.native").unwrap();
@@ -1527,6 +2004,12 @@ mod tests {
                 params_fingerprint: "a".repeat(64),
                 training_loss_fingerprint: None,
             };
+            assert_eq!(
+                controller
+                    .export_artifact_payload(&ArtifactId::new("artifact:python.native").unwrap())
+                    .unwrap(),
+                Some(vec![1, 2, 3])
+            );
             let handle = controller
                 .hydrate_artifact_payload(&request, &[1, 2, 3])
                 .unwrap();
@@ -1535,7 +2018,7 @@ mod tests {
                 .release_hydrated_artifact_payload(&handle)
                 .unwrap();
             let calls = callback.bind(py).borrow().calls.lock().unwrap().clone();
-            assert_eq!(calls, ["hydrate", "release"]);
+            assert_eq!(calls, ["export", "hydrate", "release"]);
         });
     }
 
@@ -1706,6 +2189,7 @@ mod tests {
                 .collect::<BTreeMap<_, _>>();
             Ok(NodeResult {
                 schema_version: None,
+                classification_probabilities: Vec::new(),
                 node_id: task.node_plan.node_id.clone(),
                 outputs: BTreeMap::from([
                     ("x".to_string(), data_output.clone()),
@@ -2176,35 +2660,33 @@ mod tests {
     }
 
     #[test]
-    fn in_process_resolve_refit_variant_rejects_multiple_operator_generators() {
-        // (6) Multiple operator generators are rejected for this phase (flat single operator generator
-        // scope), exactly as the CLI / core do.
+    fn in_process_refit_plan_replays_multiple_operator_choices() {
+        // Product IDs are resolved to the same selected choices during refit.
         let union_plan = operator_select_union_plan();
         let model = operator_select_model();
         let mut second = model.clone();
         second.generator_id = NodeId::new("generator:other").unwrap();
         second.dimension.name = "generator:other.operators".to_string();
         let models = vec![model, second];
-        let controllers = operator_select_controllers();
-        let provider = empty_provider();
-        let run_id = RunId::new("run:in_process.operator.multi").unwrap();
-
-        let error = resolve_refit_variant(
-            &union_plan,
-            &models,
-            &run_id,
-            7,
-            RegressionMetricKind::Rmse,
-            &controllers,
-            &provider,
-            None,
-        )
-        .unwrap_err()
-        .to_string();
-        assert!(
-            error.contains("does not support 2 operator generators"),
-            "multiple operator generators must be rejected: {error}"
-        );
+        let variant = enumerate_operator_variants(&models, Some(7))
+            .unwrap()
+            .into_iter()
+            .find(|variant| {
+                variant
+                    .choices
+                    .values()
+                    .all(|choice| choice.label == "choice0")
+            })
+            .unwrap();
+        let pruned =
+            pruned_plan_for_operator_variant(&union_plan, &models, &variant.variant_id, 7).unwrap();
+        assert_eq!(pruned.variants[0].variant_id, variant.variant_id);
+        assert!(pruned
+            .node_plans
+            .contains_key(&NodeId::new("model:choice0__pls").unwrap()));
+        assert!(!pruned
+            .node_plans
+            .contains_key(&NodeId::new("model:choice1__ridge").unwrap()));
     }
 
     #[derive(Default)]
@@ -2213,6 +2695,7 @@ mod tests {
         calls: std::sync::Mutex<Vec<String>>,
         saw_predict_refit_artifact: std::sync::Mutex<bool>,
         explicit_phase: bool,
+        portable_raw: bool,
     }
 
     #[pymethods]
@@ -2340,10 +2823,14 @@ mod tests {
                     id: ArtifactId::new("artifact:model:terminal:refit").unwrap(),
                     kind: "mock_model".to_string(),
                     controller_id: task.node_plan.controller_id.clone(),
-                    backend: None,
+                    backend: self
+                        .portable_raw
+                        .then_some(dag_ml_core::ArtifactBackend::Raw),
                     uri: None,
-                    content_fingerprint: None,
-                    size_bytes: Some(1),
+                    content_fingerprint: self.portable_raw.then(|| {
+                        "039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81".into()
+                    }),
+                    size_bytes: Some(if self.portable_raw { 3 } else { 1 }),
                     plugin: None,
                     plugin_version: None,
                     abi_major: None,
@@ -2368,6 +2855,7 @@ mod tests {
                 .collect::<BTreeMap<_, _>>();
             let result = NodeResult {
                 schema_version: None,
+                classification_probabilities: Vec::new(),
                 node_id: task.node_plan.node_id.clone(),
                 outputs: BTreeMap::from([(
                     "oof".to_string(),
@@ -2584,6 +3072,8 @@ mod tests {
                     callback.clone_ref(py).into_any(),
                     phase,
                     (phase == "REFIT").then(|| vec!["sample:2".into(), "sample:1".into()]),
+                    None,
+                    None,
                 )
                 .unwrap();
                 let result: serde_json::Value = serde_json::from_str(&payload).unwrap();
@@ -2623,12 +3113,213 @@ mod tests {
     }
 
     #[test]
+    fn initial_full_refit_package_has_no_cv_parent_or_selection() {
+        Python::initialize();
+        Python::attach(|py| {
+            let mut dsl: serde_json::Value =
+                serde_json::from_str(&terminal_predict_dsl_json()).unwrap();
+            dsl.as_object_mut().unwrap().remove("split_invocation");
+            let mut envelope: ExternalDataPlanEnvelope =
+                serde_json::from_str(&terminal_predict_envelope_json()).unwrap();
+            envelope.data_content_fingerprint = Some("e".repeat(64));
+            envelope.target_content_fingerprint = Some("f".repeat(64));
+            let relations_fingerprint = envelope
+                .coordinator_relations
+                .as_ref()
+                .unwrap()
+                .fingerprint()
+                .unwrap();
+            envelope.relation_fingerprint = Some(relations_fingerprint.clone());
+            dsl["data_bindings"][0]["relation_fingerprint"] =
+                serde_json::json!(relations_fingerprint);
+            let callback = Py::new(
+                py,
+                TerminalPredictCallback {
+                    explicit_phase: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let payload = execute_phase_in_process(
+                py,
+                &dsl.to_string(),
+                &serde_json::to_string(&envelope).unwrap(),
+                &terminal_predict_manifest_json(),
+                callback.clone_ref(py).into_any(),
+                "REFIT",
+                Some(vec!["sample:2".into(), "sample:1".into()]),
+                Some("package:test:initial-refit".into()),
+                None,
+            )
+            .expect("initial package executes without CV");
+            let outcome: serde_json::Value = serde_json::from_str(&payload).unwrap();
+            assert!(outcome["scores"]["reports"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|report| report["partition"] == "final" || report["partition"] == "test"));
+            let package = &outcome["initial_full_refit_package"];
+            assert_eq!(package["schema_version"], 1);
+            assert_eq!(package["execution_root_seed"], 7);
+            assert_eq!(
+                package["training_sample_ids"],
+                serde_json::json!(["sample:2", "sample:1"])
+            );
+            assert!(package.get("parent_bundle_id").is_none());
+            assert!(package.get("selection").is_none());
+            let parsed =
+                dag_ml_core::InitialFullRefitPackage::from_json(&package.to_string()).unwrap();
+            assert_eq!(
+                parsed
+                    .predict_envelope(envelope.predict_cohort.clone().unwrap())
+                    .unwrap(),
+                envelope,
+            );
+            crate::validate_initial_full_refit_package_json(&package.to_string()).unwrap();
+            assert_eq!(parsed.artifacts.len(), 1);
+            assert_eq!(
+                parsed.artifacts[0].load_mode,
+                dag_ml_core::ArtifactLoadMode::HostSidecar
+            );
+            let mut tampered = package.clone();
+            tampered["training_sample_ids"][0] = serde_json::json!("sample:1");
+            assert!(
+                dag_ml_core::InitialFullRefitPackage::from_json(&tampered.to_string()).is_err()
+            );
+            assert!(
+                crate::validate_initial_full_refit_package_json(&tampered.to_string()).is_err()
+            );
+            let replay_callback = Py::new(py, TerminalPredictCallback::default()).unwrap();
+            let artifact_handles = outcome["node_results"][0]["artifact_handles"].to_string();
+            let output_ids = serde_json::json!([package["outputs"][0]["output_id"]]).to_string();
+            let replay = replay_initial_full_refit_in_process(
+                py,
+                &package.to_string(),
+                &serde_json::to_string(&envelope).unwrap(),
+                replay_callback.clone_ref(py).into_any(),
+                &artifact_handles,
+                &output_ids,
+                "run:test:initial.refit.predict",
+                None,
+            )
+            .expect("independent initial-refit package replays PREDICT");
+            let replay: serde_json::Value = serde_json::from_str(&replay).unwrap();
+            assert_eq!(
+                replay["replay_outcome"]["outputs"][0]["prediction"]["sample_ids"],
+                serde_json::json!(["sample:holdout:1", "sample:holdout:2"])
+            );
+            assert!(*replay_callback
+                .bind(py)
+                .borrow()
+                .saw_predict_refit_artifact
+                .lock()
+                .unwrap());
+        });
+    }
+
+    #[test]
+    fn initial_full_refit_raw_package_replays_without_host_sidecars() {
+        Python::initialize();
+        Python::attach(|py| {
+            let mut dsl: serde_json::Value =
+                serde_json::from_str(&terminal_predict_dsl_json()).unwrap();
+            dsl.as_object_mut().unwrap().remove("split_invocation");
+            let mut envelope: ExternalDataPlanEnvelope =
+                serde_json::from_str(&terminal_predict_envelope_json()).unwrap();
+            envelope.data_content_fingerprint = Some("e".repeat(64));
+            envelope.target_content_fingerprint = Some("f".repeat(64));
+            let relation_fingerprint = envelope
+                .coordinator_relations
+                .as_ref()
+                .unwrap()
+                .fingerprint()
+                .unwrap();
+            envelope.relation_fingerprint = Some(relation_fingerprint.clone());
+            dsl["data_bindings"][0]["relation_fingerprint"] =
+                serde_json::json!(relation_fingerprint);
+            let refit_callback = Py::new(
+                py,
+                TerminalPredictCallback {
+                    explicit_phase: true,
+                    portable_raw: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let capture_artifacts = Py::new(py, ArtifactCallback::default()).unwrap();
+            let captured = execute_phase_in_process(
+                py,
+                &dsl.to_string(),
+                &serde_json::to_string(&envelope).unwrap(),
+                &terminal_predict_manifest_json(),
+                refit_callback.into_any(),
+                "REFIT",
+                Some(vec!["sample:2".into(), "sample:1".into()]),
+                Some("package:test:python.raw".into()),
+                Some(capture_artifacts.clone_ref(py).into_any()),
+            )
+            .unwrap();
+            let captured: serde_json::Value = serde_json::from_str(&captured).unwrap();
+            let package = &captured["initial_full_refit_package"];
+            assert_eq!(package["artifacts"][0]["load_mode"], "native_portable");
+            assert_eq!(
+                package["raw_artifact_payloads"]["artifact:model:terminal:refit"],
+                serde_json::json!([1, 2, 3])
+            );
+            let predict_callback = Py::new(py, TerminalPredictCallback::default()).unwrap();
+            let replay_artifacts = Py::new(py, ArtifactCallback::default()).unwrap();
+            let output_ids = serde_json::json!([package["outputs"][0]["output_id"]]).to_string();
+            let replay = replay_initial_full_refit_in_process(
+                py,
+                &package.to_string(),
+                &serde_json::to_string(&envelope).unwrap(),
+                predict_callback.clone_ref(py).into_any(),
+                "{}",
+                &output_ids,
+                "run:test:python.raw.predict",
+                Some(replay_artifacts.clone_ref(py).into_any()),
+            )
+            .unwrap();
+            let replay: serde_json::Value = serde_json::from_str(&replay).unwrap();
+            assert_eq!(
+                replay["replay_outcome"]["outputs"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                1
+            );
+            assert!(*predict_callback
+                .bind(py)
+                .borrow()
+                .saw_predict_refit_artifact
+                .lock()
+                .unwrap());
+            let capture_calls = capture_artifacts
+                .bind(py)
+                .borrow()
+                .calls
+                .lock()
+                .unwrap()
+                .clone();
+            let replay_calls = replay_artifacts
+                .bind(py)
+                .borrow()
+                .calls
+                .lock()
+                .unwrap()
+                .clone();
+            assert_eq!(capture_calls, ["export"]);
+            assert_eq!(replay_calls, ["hydrate", "release"]);
+        });
+    }
+
+    #[test]
     fn explicit_phase_rejects_invalid_phase_and_unattested_predict_before_callback() {
         Python::initialize();
         Python::attach(|py| {
             let callback = Py::new(py, TerminalPredictCallback::default()).unwrap();
             for phase in ["FIT_CV", "PREDICT"] {
-                let error = execute_phase_in_process(py, "{}", include_str!("../../dag-ml-core/tests/fixtures/package/data/coordinator_data_plan_envelope_sample12.json"), "[]", callback.clone_ref(py).into_any(), phase, None).unwrap_err().to_string();
+                let error = execute_phase_in_process(py, "{}", include_str!("../../dag-ml-core/tests/fixtures/package/data/coordinator_data_plan_envelope_sample12.json"), "[]", callback.clone_ref(py).into_any(), phase, None, None, None).unwrap_err().to_string();
                 assert!(
                     error.contains(if phase == "FIT_CV" {
                         "REFIT or PREDICT"
@@ -2655,6 +3346,8 @@ mod tests {
                 callback.clone_ref(py).into_any(),
                 "REFIT",
                 Some(vec!["sample:1".into(), "sample:2".into()]),
+                None,
+                None,
             )
             .unwrap_err()
             .to_string();
@@ -2668,6 +3361,9 @@ mod tests {
         Python::initialize();
         Python::attach(|py| {
             let callback = Py::new(py, TerminalPredictCallback::default()).unwrap();
+            let mut dsl: serde_json::Value =
+                serde_json::from_str(&terminal_predict_dsl_json()).unwrap();
+            dsl.as_object_mut().unwrap().remove("split_invocation");
             for ids in [
                 None,
                 Some(vec![]),
@@ -2677,12 +3373,14 @@ mod tests {
             ] {
                 let error = execute_phase_in_process(
                     py,
-                    "{}",
+                    &dsl.to_string(),
                     &terminal_predict_envelope_json(),
-                    "[]",
+                    &terminal_predict_manifest_json(),
                     callback.clone_ref(py).into_any(),
                     "REFIT",
                     ids,
+                    None,
+                    None,
                 )
                 .unwrap_err()
                 .to_string();
@@ -2690,12 +3388,14 @@ mod tests {
             }
             let error = execute_phase_in_process(
                 py,
-                "{}",
+                &dsl.to_string(),
                 &terminal_predict_envelope_json(),
-                "[]",
+                &terminal_predict_manifest_json(),
                 callback.clone_ref(py).into_any(),
                 "PREDICT",
                 Some(vec!["sample:1".into()]),
+                None,
+                None,
             )
             .unwrap_err()
             .to_string();
@@ -2720,6 +3420,8 @@ mod tests {
                 callback.clone_ref(py).into_any(),
                 "REFIT",
                 Some(vec!["sample:2".into(), "sample:1".into()]),
+                None,
+                None,
             )
             .unwrap_err()
             .to_string();

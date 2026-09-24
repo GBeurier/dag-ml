@@ -10,9 +10,8 @@ pub struct DataMaterializationRequest {
     pub variant_id: Option<VariantId>,
     pub fold_id: Option<FoldId>,
     pub binding: crate::data::DataBinding,
-    /// The optional, separately attested cohort selected only for a top-level
-    /// PREDICT operation.  It is absent for the V1 path and for every phase
-    /// that can fit, validate, select, refit, or calibrate a model.
+    /// Separately attested cohort for top-level PREDICT, or an external-test
+    /// companion read during FIT_CV. It never contributes to a fitting view.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub predict_cohort: Option<crate::data::PredictCohort>,
 }
@@ -65,7 +64,9 @@ impl DataProviderViewSpec {
                     )));
                 }
             }
-            DataRequestPartition::FullTrain | DataRequestPartition::Predict => {
+            DataRequestPartition::FullTrain
+            | DataRequestPartition::AllObservations
+            | DataRequestPartition::Predict => {
                 if self.fold_id.is_some() {
                     return Err(DagMlError::RuntimeValidation(format!(
                         "data provider view {:?} must not carry a fold id",
@@ -301,8 +302,8 @@ pub struct DataViewRequest {
     pub binding: crate::data::DataBinding,
     pub data_handle: HandleRef,
     pub view: DataProviderViewSpec,
-    /// The same PREDICT-only authority carried by the materialization
-    /// request.  The envelope-attested wrapper compares it exactly before a
+    /// The same separately attested cohort carried by the materialization
+    /// request. The envelope-attested wrapper compares it exactly before a
     /// host provider can observe a data view.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub predict_cohort: Option<crate::data::PredictCohort>,
@@ -343,6 +344,11 @@ pub trait RuntimeDataProvider {
         phase: Phase,
     ) -> Result<Option<crate::data::PredictCohort>> {
         validate_predict_cohort_phase(phase)?;
+        Ok(None)
+    }
+
+    /// Optional separately attested external-test cohort for a non-fit FIT_CV companion view.
+    fn cv_test_cohort(&self, _binding: &DataBinding) -> Result<Option<crate::data::PredictCohort>> {
         Ok(None)
     }
 
@@ -770,6 +776,10 @@ impl RuntimeDataProvider for MethodsPlsPredictDataProvider {
         self.inner.predict_cohort(binding, phase)
     }
 
+    fn cv_test_cohort(&self, binding: &DataBinding) -> Result<Option<crate::data::PredictCohort>> {
+        self.inner.cv_test_cohort(binding)
+    }
+
     fn methods_pls_capability(&self) -> Result<()> {
         Ok(())
     }
@@ -952,13 +962,22 @@ impl<P> EnvelopeAttestedRuntimeDataProvider<P> {
     ) -> Result<()> {
         let attestation = self.attestation_for_binding(binding)?;
         match phase {
-            Phase::Predict => {
+            Phase::Predict | Phase::FitCv => {
                 if let Some(cohort) = supplied {
                     cohort.validate()?;
+                    if phase == Phase::FitCv
+                        && cohort.role != crate::data::PredictCohortRole::ExternalTest
+                    {
+                        return Err(DagMlError::RuntimeValidation(
+                            "FIT_CV may read only an external_test cohort".to_string(),
+                        ));
+                    }
                 }
-                if supplied != &attestation.envelope.predict_cohort {
+                if (phase == Phase::Predict || supplied.is_some())
+                    && supplied != &attestation.envelope.predict_cohort
+                {
                     return Err(DagMlError::RuntimeValidation(format!(
-                        "PREDICT cohort for runtime binding `{}` does not exactly match its envelope attestation",
+                    "predict cohort for runtime binding `{}` does not exactly match its envelope attestation",
                         data_binding_requirement_key(&binding.node_id, &binding.input_name)
                     )));
                 }
@@ -1023,6 +1042,20 @@ impl<P: RuntimeDataProvider> RuntimeDataProvider for EnvelopeAttestedRuntimeData
             .envelope
             .predict_cohort
             .clone())
+    }
+
+    fn cv_test_cohort(&self, binding: &DataBinding) -> Result<Option<crate::data::PredictCohort>> {
+        let cohort = self
+            .attestation_for_binding(binding)?
+            .envelope
+            .predict_cohort
+            .clone();
+        match cohort {
+            Some(cohort) if cohort.role == crate::data::PredictCohortRole::ExternalTest => {
+                Ok(Some(cohort))
+            }
+            _ => Ok(None),
+        }
     }
 
     fn methods_pls_capability(&self) -> Result<()> {
@@ -1201,13 +1234,65 @@ pub(crate) fn derive_output_data_views(
                 task.node_plan.node_id, port.name, handle.kind
             )));
         }
-        if let Some(view) = primary_output_data_view(task) {
+        let prediction_primary = if node.kind == NodeKind::PredictionJoin
+            && node
+                .metadata
+                .get("prediction_feature_execution")
+                .and_then(serde_json::Value::as_str)
+                == Some("native_oof_v1")
+        {
+            prediction_feature_data_view(task, false)?
+        } else {
+            None
+        };
+        let joined_primary = if node.kind == NodeKind::FeatureJoin
+            && node
+                .metadata
+                .get("merge_mode")
+                .and_then(|value| value.as_str())
+                == Some("concat")
+        {
+            joined_feature_partition_view(task, false)?
+        } else {
+            None
+        };
+        if let Some(view) = prediction_primary
+            .as_ref()
+            .or(joined_primary.as_ref())
+            .or_else(|| primary_output_data_view(task))
+        {
             views.insert(
                 port.name.clone(),
                 output_data_view_for_port(task, result, &port.name, view)?,
             );
         }
-        if let Some(validation_view) = validation_output_data_view(task) {
+        let prediction_validation = if node.kind == NodeKind::PredictionJoin
+            && node
+                .metadata
+                .get("prediction_feature_execution")
+                .and_then(serde_json::Value::as_str)
+                == Some("native_oof_v1")
+        {
+            prediction_feature_data_view(task, true)?
+        } else {
+            None
+        };
+        let joined_validation = if node.kind == NodeKind::FeatureJoin
+            && node
+                .metadata
+                .get("merge_mode")
+                .and_then(|value| value.as_str())
+                == Some("concat")
+        {
+            joined_feature_partition_view(task, true)?
+        } else {
+            None
+        };
+        if let Some(validation_view) = prediction_validation
+            .as_ref()
+            .or(joined_validation.as_ref())
+            .or_else(|| validation_output_data_view(task))
+        {
             views.insert(
                 validation_data_view_key(&port.name),
                 output_data_view_for_port(task, result, &port.name, validation_view)?,
@@ -1215,6 +1300,119 @@ pub(crate) fn derive_output_data_views(
         }
     }
     Ok(views)
+}
+
+pub(crate) fn prediction_feature_data_view(
+    task: &NodeTask,
+    validation: bool,
+) -> Result<Option<DataProviderViewSpec>> {
+    let matrix = if validation {
+        task.prediction_feature_off_fold_matrix.as_ref()
+    } else {
+        task.prediction_feature_matrix.as_ref()
+    };
+    let Some(matrix) = matrix else {
+        return Ok(None);
+    };
+    if validation && task.phase == Phase::FitCv {
+        let train_ids = task
+            .prediction_feature_matrix
+            .as_ref()
+            .map(|train| train.sample_ids.iter().collect::<BTreeSet<_>>())
+            .unwrap_or_default();
+        if !matrix
+            .sample_ids
+            .iter()
+            .collect::<BTreeSet<_>>()
+            .is_disjoint(&train_ids)
+        {
+            return Err(DagMlError::OofValidation(format!(
+                "prediction feature join `{}` has overlapping train/outer-validation identities",
+                task.node_plan.node_id
+            )));
+        }
+    }
+    let sample_ids = matrix.sample_ids.clone();
+    let partition = match (task.phase, validation) {
+        (Phase::FitCv, false) => DataRequestPartition::FoldTrain,
+        (Phase::FitCv, true) => DataRequestPartition::FoldValidation,
+        (Phase::Refit, false) => DataRequestPartition::FullTrain,
+        (Phase::Refit, true) => DataRequestPartition::Predict,
+        (Phase::Predict, false) => DataRequestPartition::Predict,
+        _ => return Ok(None),
+    };
+    let view = DataProviderViewSpec {
+        sample_ids: Some(sample_ids),
+        partition,
+        fold_id: (task.phase == Phase::FitCv)
+            .then(|| task.fold_id.clone())
+            .flatten(),
+        source_ids: None,
+        columns: None,
+        include_augmented: false,
+        include_excluded: false,
+        branch_view: None,
+        extra: BTreeMap::new(),
+    };
+    view.validate()?;
+    Ok(Some(view))
+}
+
+/// A row-partition feature join restores the full fold view after its branches.
+/// The host applies each selector to its feature buffer; the core requires every
+/// predecessor to describe the same identity universe and removes the branch
+/// selector before a downstream consumer is scheduled.
+pub(crate) fn joined_feature_partition_view(
+    task: &NodeTask,
+    validation: bool,
+) -> Result<Option<DataProviderViewSpec>> {
+    let branch_inputs = task
+        .data_views
+        .iter()
+        .filter(|(key, view)| {
+            key.starts_with("data:")
+                && key.ends_with(":validation") == validation
+                && !key.ends_with(":test")
+                && view.branch_view.is_some()
+        })
+        .map(|(_, view)| view)
+        .collect::<Vec<_>>();
+    if branch_inputs.is_empty() {
+        return Ok(None);
+    }
+    if branch_inputs.len() < 2 {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "feature join `{}` needs at least two branch views for partition concat",
+            task.node_plan.node_id
+        )));
+    }
+    let first = branch_inputs[0];
+    let mut selectors = BTreeSet::new();
+    for view in &branch_inputs {
+        if view.partition != first.partition
+            || view.fold_id != first.fold_id
+            || view.sample_ids != first.sample_ids
+            || view.include_augmented != first.include_augmented
+            || view.include_excluded != first.include_excluded
+        {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "feature join `{}` branch views disagree on the sample identity universe",
+                task.node_plan.node_id
+            )));
+        }
+        let branch = view.branch_view.as_ref().expect("filtered branch view");
+        let selector = stable_json_fingerprint(&branch.selector)?;
+        if !selectors.insert(selector) {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "feature join `{}` repeats a branch selector",
+                task.node_plan.node_id
+            )));
+        }
+    }
+    let mut output = first.clone();
+    output.branch_view = None;
+    output.validate()?;
+    Ok(Some(output))
 }
 
 pub(crate) fn output_data_view_for_port(
@@ -1371,7 +1569,76 @@ pub(crate) fn data_view_for_scope(
     )
 }
 
-/// Bind a separately attested PREDICT cohort to a scheduler-created view.
+/// Check that a CV in-sample prediction opt-in names only augmented rows whose
+/// physical origins are in this fold's fitted cohort. The declared list is
+/// exact: controllers may emit a subset, but no other fold's child can be
+/// smuggled into the result through `include_augmented=true` alone.
+pub(crate) fn validate_cv_augmented_train_prediction_view(
+    view: &DataProviderViewSpec,
+    relations: &crate::relation::SampleRelationSet,
+) -> Result<()> {
+    if view.extra.get("include_augmented_cv_train_predictions")
+        != Some(&serde_json::Value::Bool(true))
+    {
+        return Ok(());
+    }
+    if view.partition != DataRequestPartition::FoldTrain
+        || !view.include_augmented
+        || view.fold_id.is_none()
+    {
+        return Err(DagMlError::RuntimeValidation(
+            "augmented CV train prediction IDs require an augmented fold-train view".to_string(),
+        ));
+    }
+    let base_ids = view
+        .sample_ids
+        .as_ref()
+        .ok_or_else(|| {
+            DagMlError::RuntimeValidation(
+                "augmented CV train prediction view has no base sample IDs".to_string(),
+            )
+        })?
+        .iter()
+        .collect::<BTreeSet<_>>();
+    let declared: Vec<SampleId> = serde_json::from_value(
+        view.extra
+            .get("augmented_cv_train_prediction_ids")
+            .cloned()
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(
+                    "augmented CV train prediction view has no child IDs".to_string(),
+                )
+            })?,
+    )
+    .map_err(|error| {
+        DagMlError::RuntimeValidation(format!(
+            "augmented CV train prediction IDs are malformed: {error}"
+        ))
+    })?;
+    for child_id in declared {
+        let relation = relations
+            .records
+            .iter()
+            .find(|record| record.observation_id.as_str() == child_id.as_str())
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "augmented CV train prediction `{child_id}` has no coordinator relation"
+                ))
+            })?;
+        let origin = relation
+            .origin_sample_id
+            .as_ref()
+            .unwrap_or(&relation.sample_id);
+        if !relation.is_augmented || relation.excluded || !base_ids.contains(origin) {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "augmented CV train prediction `{child_id}` is not a permitted child of this fold's fitted cohort"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Bind a separately attested cohort to a scheduler-created non-fit view.
 ///
 /// This replaces, rather than merges with, ordinary partition-derived sample
 /// identities. Those identities are CV-derived and must never expand a
@@ -1385,7 +1652,7 @@ pub(crate) fn bind_predict_cohort_to_view(
     cohort.validate()?;
     if view.partition != DataRequestPartition::Predict || view.fold_id.is_some() {
         return Err(DagMlError::RuntimeValidation(
-            "PREDICT cohort may only bind a top-level Predict data view".to_string(),
+            "predict cohort may only bind a Predict data view without a fold id".to_string(),
         ));
     }
     view.sample_ids = Some(cohort.physical_sample_ids.clone());

@@ -156,6 +156,29 @@ impl RuntimeDataProvider for TrainingDataProvider {
         }
     }
 
+    fn predict_cohort(
+        &self,
+        binding: &DataBinding,
+        phase: dag_ml_core::Phase,
+    ) -> dag_ml_core::Result<Option<dag_ml_core::PredictCohort>> {
+        match self {
+            Self::Host(provider) => provider.predict_cohort(binding, phase),
+            #[cfg(feature = "methods-optimizer")]
+            Self::Methods(provider) => provider.predict_cohort(binding, phase),
+        }
+    }
+
+    fn cv_test_cohort(
+        &self,
+        binding: &DataBinding,
+    ) -> dag_ml_core::Result<Option<dag_ml_core::PredictCohort>> {
+        match self {
+            Self::Host(provider) => provider.cv_test_cohort(binding),
+            #[cfg(feature = "methods-optimizer")]
+            Self::Methods(provider) => provider.cv_test_cohort(binding),
+        }
+    }
+
     fn methods_pls_capability(&self) -> dag_ml_core::Result<()> {
         match self {
             Self::Host(provider) => provider.methods_pls_capability(),
@@ -355,6 +378,21 @@ impl RuntimeDataProvider for PyMethodsPlsTrainingProvider {
         binding: &DataBinding,
     ) -> dag_ml_core::Result<Option<SampleRelationSet>> {
         self.inner.coordinator_relations(binding)
+    }
+
+    fn predict_cohort(
+        &self,
+        binding: &DataBinding,
+        phase: dag_ml_core::Phase,
+    ) -> dag_ml_core::Result<Option<dag_ml_core::PredictCohort>> {
+        self.inner.predict_cohort(binding, phase)
+    }
+
+    fn cv_test_cohort(
+        &self,
+        binding: &DataBinding,
+    ) -> dag_ml_core::Result<Option<dag_ml_core::PredictCohort>> {
+        self.inner.cv_test_cohort(binding)
     }
 
     fn methods_pls_capability(&self) -> dag_ml_core::Result<()> {
@@ -3986,6 +4024,7 @@ mod tests {
             }
             let result = NodeResult {
                 schema_version: None,
+                classification_probabilities: Vec::new(),
                 node_id: task.node_plan.node_id.clone(),
                 outputs,
                 predictions,

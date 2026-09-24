@@ -19,16 +19,26 @@ use dag_ml_core::{
     fold_set_fingerprint, parse_pipeline_dsl_json, select_candidate, select_candidate_groups,
     CampaignSpec, CandidateScore, ControllerManifest, ControllerRegistry,
     DagMlError as CoreDagMlError, ExecutionBundle, ExecutionPlan, FoldSet, GraphSpec,
-    HostControllerSpec, KFoldSpec, SampleId, SelectionPolicy, StratifiedKFoldSpec,
-    TrainingLossRoleReference,
+    HostControllerSpec, InitialFullRefitPackage, KFoldSpec, PortablePredictorPackage,
+    PredictCohortConstructionRequest, SampleId, SelectionPolicy, StackingFoldSelectionRequest,
+    StackingProducerSelectionRequest, StratifiedKFoldSpec, TrainingLossRoleReference,
 };
 use dag_ml_core::{
-    ControllerId, NodeResult, NodeTask, Phase, Result as CoreResult, RunContext, RunId,
-    RuntimeController, RuntimeControllerRegistry, SequentialScheduler,
+    ArtifactId, ArtifactMaterializationRequest, ControllerId, HandleRef, NodeResult, NodeTask,
+    Phase, PortableArtifactBridgeResult, PortableArtifactBridgeTask, Result as CoreResult,
+    RunContext, RunId, RuntimeController, RuntimeControllerRegistry, SequentialScheduler,
+    PORTABLE_ARTIFACT_BRIDGE_SCHEMA_VERSION,
 };
 
+mod host_hpo;
+mod initial_refit;
 mod local_implementation;
 
+pub use host_hpo::{
+    host_hpo_evaluate_worker_fold_json, host_hpo_evaluate_worker_task_json, host_hpo_search_json,
+    host_hpo_search_parallel_json, recover_host_hpo_checkpoint_json,
+};
+pub use initial_refit::{execute_initial_full_refit_json, replay_initial_full_refit_json};
 pub use local_implementation::{loss_execution_attestation_json, LocalImplementationRegistry};
 
 const SHARED_FOLD_SET_FINGERPRINT: &str =
@@ -180,6 +190,92 @@ pub fn select_candidates_json(
     }
 }
 
+/// Resolve one explicitly named output of a signed portable package.
+#[wasm_bindgen]
+pub fn select_portable_output_json(
+    package_json: &str,
+    binding_id: &str,
+) -> Result<String, JsValue> {
+    let package = PortablePredictorPackage::from_json(package_json).map_err(js_core_error)?;
+    let selected = package.select_output(binding_id).map_err(js_core_error)?;
+    serde_json::to_string(&selected).map_err(js_serde_error)
+}
+
+/// Select stacking producers from validation scores with the native policy.
+#[wasm_bindgen]
+pub fn select_stacking_producers_json(request_json: &str) -> Result<String, JsValue> {
+    let request: StackingProducerSelectionRequest = deserialize_external_contract(
+        request_json,
+        "stacking producer selection",
+        CoreDagMlError::RuntimeValidation,
+    )
+    .map_err(js_core_error)?;
+    let selected = request.selected_producer_nodes().map_err(js_core_error)?;
+    serde_json::to_string(&selected).map_err(js_serde_error)
+}
+
+/// Select a CV fold for stacking test predictions from validation scores.
+#[wasm_bindgen]
+pub fn select_stacking_fold_json(request_json: &str) -> Result<String, JsValue> {
+    let request: StackingFoldSelectionRequest = deserialize_external_contract(
+        request_json,
+        "stacking fold selection",
+        CoreDagMlError::RuntimeValidation,
+    )
+    .map_err(js_core_error)?;
+    let selected = request.selected_fold_id().map_err(js_core_error)?;
+    serde_json::to_string(&selected).map_err(js_serde_error)
+}
+
+/// Objective-aware normalized CV-fold weights for stacking test predictions.
+#[wasm_bindgen]
+pub fn stacking_fold_weights_json(request_json: &str) -> Result<String, JsValue> {
+    let request: StackingFoldSelectionRequest = deserialize_external_contract(
+        request_json,
+        "stacking fold weights",
+        CoreDagMlError::RuntimeValidation,
+    )
+    .map_err(js_core_error)?;
+    let weights = request.normalized_weights().map_err(js_core_error)?;
+    serde_json::to_string(&weights).map_err(js_serde_error)
+}
+
+/// Validate a signed no-splitter REFIT package before any host operator callback.
+#[wasm_bindgen]
+pub fn validate_initial_full_refit_package_json(package_json: &str) -> Result<(), JsValue> {
+    InitialFullRefitPackage::from_json(package_json)
+        .map(|_| ())
+        .map_err(js_core_error)
+}
+
+/// Attach a new V2 PREDICT cohort to the package's signed training envelope.
+#[wasm_bindgen]
+pub fn initial_full_refit_predict_envelope_json(
+    package_json: &str,
+    cohort_json: &str,
+) -> Result<String, JsValue> {
+    let package = InitialFullRefitPackage::from_json(package_json).map_err(js_core_error)?;
+    let request: PredictCohortConstructionRequest = deserialize_external_contract(
+        cohort_json,
+        "predict cohort construction request",
+        CoreDagMlError::CampaignValidation,
+    )
+    .map_err(js_core_error)?;
+    let envelope = package
+        .predict_envelope(request.derive().map_err(js_core_error)?)
+        .map_err(js_core_error)?;
+    serde_json::to_string(&envelope).map_err(js_serde_error)
+}
+
+/// Validate named source/sample coverage and return identity-only row indices.
+#[wasm_bindgen]
+pub fn align_named_source_rows_json(request_json: &str) -> Result<String, JsValue> {
+    let request: dag_ml_core::NamedSourceAlignmentRequest =
+        serde_json::from_str(request_json).map_err(js_serde_error)?;
+    let alignment = dag_ml_core::align_named_source_rows(&request).map_err(js_core_error)?;
+    serde_json::to_string(&alignment).map_err(js_serde_error)
+}
+
 #[wasm_bindgen]
 pub fn compile_pipeline_dsl_graph_json(json: &str) -> Result<String, JsValue> {
     let spec = parse_pipeline_dsl_json(json.as_bytes()).map_err(js_core_error)?;
@@ -321,6 +417,10 @@ fn contract_manifest() -> serde_json::Value {
             "build_execution_plan",
             "bind_training_losses_to_execution_plan",
             "execute_execution_plan_phase",
+            "host_hpo_search_sequential",
+            "host_hpo_search_parallel_workers",
+            "host_hpo_search_parallel_pruning",
+            "host_hpo_checkpoint_recovery",
             "fold_set_fingerprint",
             "process_local_implementation_registry",
             "loss_execution_attestation",
@@ -370,10 +470,24 @@ fn contract_manifest() -> serde_json::Value {
             "kfold_split_json",
             "stratified_kfold_split_json",
             "select_candidates_json",
+            "select_portable_output_json",
+            "select_stacking_producers_json",
+            "select_stacking_fold_json",
+            "stacking_fold_weights_json",
+            "validate_initial_full_refit_package_json",
+            "initial_full_refit_predict_envelope_json",
+            "execute_initial_full_refit_json",
+            "replay_initial_full_refit_json",
+            "align_named_source_rows_json",
             "LocalImplementationRegistry",
             "loss_execution_attestation_json",
             "execute_campaign_phase_json",
-            "execute_execution_plan_phase_json"
+            "execute_execution_plan_phase_json",
+            "host_hpo_search_json",
+            "host_hpo_search_parallel_json",
+            "host_hpo_evaluate_worker_fold_json",
+            "host_hpo_evaluate_worker_task_json",
+            "recover_host_hpo_checkpoint_json"
         ]
     })
 }
@@ -457,6 +571,91 @@ impl RuntimeController for JsRuntimeController {
             result.lineage.seed = task.seed;
         }
         Ok(result)
+    }
+
+    fn export_artifact_payload(&self, artifact_id: &ArtifactId) -> CoreResult<Option<Vec<u8>>> {
+        let task = PortableArtifactBridgeTask::ExportArtifactPayload {
+            schema_version: PORTABLE_ARTIFACT_BRIDGE_SCHEMA_VERSION,
+            artifact_id: artifact_id.clone(),
+        };
+        match self.invoke_portable(&task)? {
+            PortableArtifactBridgeResult::ExportedArtifactPayload {
+                schema_version: 1,
+                payload,
+            } if !payload.is_empty() => Ok(Some(payload)),
+            _ => Err(CoreDagMlError::RuntimeValidation(
+                "JS controller returned invalid portable artifact export response".into(),
+            )),
+        }
+    }
+
+    fn hydrate_artifact_payload(
+        &self,
+        request: &ArtifactMaterializationRequest,
+        payload: &[u8],
+    ) -> CoreResult<HandleRef> {
+        let task = PortableArtifactBridgeTask::HydrateArtifactPayload {
+            schema_version: PORTABLE_ARTIFACT_BRIDGE_SCHEMA_VERSION,
+            request: Box::new(request.clone()),
+            payload: payload.to_vec(),
+        };
+        match self.invoke_portable(&task)? {
+            PortableArtifactBridgeResult::HydratedArtifactPayload {
+                schema_version: 1,
+                handle,
+            } if handle.owner_controller == self.id && handle.handle != 0 => Ok(handle),
+            _ => Err(CoreDagMlError::RuntimeValidation(
+                "JS controller returned invalid portable artifact hydration response".into(),
+            )),
+        }
+    }
+
+    fn release_hydrated_artifact_payload(&self, handle: &HandleRef) -> CoreResult<()> {
+        let task = PortableArtifactBridgeTask::ReleaseHydratedArtifactPayload {
+            schema_version: PORTABLE_ARTIFACT_BRIDGE_SCHEMA_VERSION,
+            handle: handle.clone(),
+        };
+        match self.invoke_portable(&task)? {
+            PortableArtifactBridgeResult::ReleasedHydratedArtifactPayload { schema_version: 1 } => {
+                Ok(())
+            }
+            _ => Err(CoreDagMlError::RuntimeValidation(
+                "JS controller returned invalid portable artifact release response".into(),
+            )),
+        }
+    }
+}
+
+impl JsRuntimeController {
+    fn invoke_portable(
+        &self,
+        task: &PortableArtifactBridgeTask,
+    ) -> CoreResult<PortableArtifactBridgeResult> {
+        let task_json = serde_json::to_string(task).map_err(CoreDagMlError::Serialization)?;
+        let returned = self
+            .js_invoke
+            .call3(
+                &JsValue::NULL,
+                &JsValue::from_str(self.id.as_str()),
+                &JsValue::from_str(&task_json),
+                &JsValue::NULL,
+            )
+            .map_err(|error| {
+                CoreDagMlError::RuntimeValidation(format!(
+                    "JS controller `{}` rejected portable artifact operation: {error:?}",
+                    self.id
+                ))
+            })?;
+        let result_json = returned.as_string().ok_or_else(|| {
+            CoreDagMlError::RuntimeValidation(
+                "JS controller must return a portable artifact result JSON string".into(),
+            )
+        })?;
+        deserialize_external_contract(
+            &result_json,
+            "portable artifact result",
+            CoreDagMlError::RuntimeValidation,
+        )
     }
 }
 
@@ -652,5 +851,144 @@ mod tests {
             role["loss"].clone()
         ]]);
         assert!(training_loss_roles_from_json(&positional.to_string()).is_err());
+    }
+
+    #[test]
+    fn initial_full_refit_package_predict_envelope_is_exposed() {
+        let package =
+            include_str!("../../dag-ml-core/tests/fixtures/initial_full_refit/package.json");
+        validate_initial_full_refit_package_json(package).unwrap();
+        let parsed = InitialFullRefitPackage::from_json(package).unwrap();
+        let heldout: dag_ml_core::SampleRelationSet =
+            serde_json::from_value(serde_json::json!({"records": [{
+                "observation_id": "obs.H001", "sample_id": "sample:heldout:1",
+                "target_id": "target:heldout:1", "group_id": "group:heldout",
+                "origin_sample_id": null, "source_id": "nir", "is_augmented": false
+            }]}))
+            .unwrap();
+        let cohort = dag_ml_core::PredictCohort::from_relations(
+            dag_ml_core::PredictCohortRole::ExternalTest,
+            heldout.clone(),
+            vec!["y".into()],
+            "a".repeat(64),
+            Some("b".repeat(64)),
+        )
+        .unwrap();
+        let request = PredictCohortConstructionRequest {
+            role: dag_ml_core::PredictCohortRole::ExternalTest,
+            relations: heldout,
+            target_names: vec!["y".into()],
+            data_content_fingerprint: "a".repeat(64),
+            target_content_fingerprint: Some("b".repeat(64)),
+        };
+        let envelope_json = initial_full_refit_predict_envelope_json(
+            package,
+            &serde_json::to_string(&request).unwrap(),
+        )
+        .unwrap();
+        let envelope: dag_ml_core::ExternalDataPlanEnvelope =
+            serde_json::from_str(&envelope_json).unwrap();
+        assert_eq!(envelope.schema_version, 2);
+        assert_eq!(envelope.predict_cohort, Some(cohort));
+        assert_eq!(
+            envelope.coordinator_relations,
+            Some(parsed.training_relations)
+        );
+        assert!(contract_manifest()["wasm_exports"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!(
+                "validate_initial_full_refit_package_json"
+            )));
+        assert!(contract_manifest()["wasm_exports"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!(
+                "initial_full_refit_predict_envelope_json"
+            )));
+    }
+
+    #[test]
+    fn portable_package_output_requires_explicit_binding_id() {
+        let package =
+            include_str!("../../../examples/fixtures/training/portable_predictor_package.v1.json");
+        let selected = select_portable_output_json(package, "output:meta.final").unwrap();
+        let selected: serde_json::Value = serde_json::from_str(&selected).unwrap();
+        assert_eq!(
+            selected["output_binding"]["binding_id"],
+            "output:meta.final"
+        );
+        assert!(contract_manifest()["wasm_exports"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("select_portable_output_json")));
+    }
+
+    #[test]
+    fn stacking_selection_uses_native_validation_scores() {
+        let request = serde_json::json!({
+            "producer_nodes": ["model:a", "model:b"], "select": "best", "metric": "rmse",
+            "reports": [
+                {"producer_node": "model:a", "partition": "validation", "fold_id": "fold:0",
+                 "level": "sample", "row_count": 1, "target_width": 1, "metrics": {"rmse": 4.0}},
+                {"producer_node": "model:b", "partition": "validation", "fold_id": "fold:0",
+                 "level": "sample", "row_count": 1, "target_width": 1, "metrics": {"rmse": 2.0}}
+            ]
+        });
+        let selected = select_stacking_producers_json(&request.to_string()).unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&selected).unwrap(),
+            serde_json::json!(["model:b"])
+        );
+        assert!(contract_manifest()["wasm_exports"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("select_stacking_producers_json")));
+    }
+
+    #[test]
+    fn stacking_fold_selection_uses_native_validation_scores() {
+        let request = serde_json::json!({
+            "producer_node": "model:a", "fold_ids": ["fold:0", "fold:1"], "metric": "rmse",
+            "reports": [
+                {"producer_node": "model:a", "partition": "validation", "fold_id": "fold:0",
+                 "level": "sample", "row_count": 1, "target_width": 1, "metrics": {"rmse": 4.0}},
+                {"producer_node": "model:a", "partition": "validation", "fold_id": "fold:1",
+                 "level": "sample", "row_count": 1, "target_width": 1, "metrics": {"rmse": 2.0}}
+            ]
+        });
+        let selected = select_stacking_fold_json(&request.to_string()).unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&selected).unwrap(),
+            serde_json::json!("fold:1")
+        );
+        assert!(contract_manifest()["wasm_exports"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("select_stacking_fold_json")));
+        let weights: Vec<f64> =
+            serde_json::from_str(&stacking_fold_weights_json(&request.to_string()).unwrap())
+                .unwrap();
+        assert_eq!(weights.len(), 2);
+        assert!(weights[1] > weights[0]);
+        assert!(contract_manifest()["wasm_exports"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("stacking_fold_weights_json")));
+    }
+
+    #[test]
+    fn aligns_named_source_rows_for_browser_hosts() {
+        let request = r#"{"sample_ids":["s1","s2"],"required_source_ids":["source_0"],"sources":[{"source_id":"source_0","sample_ids":["s2","s1"]}]}"#;
+        let aligned: serde_json::Value =
+            serde_json::from_str(&align_named_source_rows_json(request).unwrap()).unwrap();
+        assert_eq!(
+            aligned["sources"][0]["row_indices"],
+            serde_json::json!([1, 0])
+        );
+        assert!(contract_manifest()["wasm_exports"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("align_named_source_rows_json")));
     }
 }

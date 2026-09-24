@@ -108,6 +108,18 @@
         {
           "type": "object",
           "additionalProperties": false,
+          "required": ["kind", "min_splits", "max_splits"],
+          "properties": {
+            "kind": { "const": "capacity_kfold" },
+            "min_splits": { "type": "integer", "minimum": 2 },
+            "max_splits": { "type": "integer", "minimum": 2 },
+            "shuffle": { "type": "boolean" },
+            "seed": { "type": ["integer", "null"], "minimum": 0 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
           "required": ["kind", "n_splits"],
           "properties": {
             "kind": { "const": "group_kfold" },
@@ -214,7 +226,7 @@
       "enum": ["data", "data_view", "model", "artifact", "prediction", "relation"]
     },
     "artifact_backend": {
-      "enum": ["joblib", "torch", "tensorflow", "onnx", "safetensors", "json", "raw"]
+      "enum": ["joblib", "rds", "mat", "torch", "tensorflow", "onnx", "safetensors", "json", "raw"]
     },
     "controller_capability": {
       "enum": [
@@ -311,7 +323,7 @@
       "enum": ["serializable", "host_only", "content_addressed", "replay_required"]
     },
     "data_partition": {
-      "enum": ["fold_train", "fold_validation", "full_train", "predict"]
+      "enum": ["fold_train", "fold_validation", "full_train", "all_observations", "predict"]
     },
     "prediction_partition": {
       "enum": ["train", "validation", "test", "final"]

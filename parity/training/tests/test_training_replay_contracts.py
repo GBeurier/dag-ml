@@ -40,7 +40,7 @@ LEGACY_AUTHORITY_SHA256 = {
     "examples/fixtures/estimator/replay_outcome_explain.v1.json": "fe593f9bdd89ecfcffdb224435b0ce842f5a492a7b8045657ba22bfc63185db7",
     "docs/contracts/aggregation_controller_task.schema.json": "2b12131727f5e3a355b0c6b5e402f6075c37cf5ed3e7a186c9e0890da5583ccd",
     "docs/contracts/aggregation_controller_result.schema.json": "e782d57c2bff01031ab4cf453b362afab5bf25e1e83eac5cf65ef463347045ff",
-    "docs/contracts/process_adapter_frame.schema.json": "024ee268eca668479acc1e0ddf979247fb1214f5022373ce36f85e55bf9499f3",
+    "docs/contracts/process_adapter_frame.schema.json": "210616154f82135d9fcae7e4685b23c2ff72773b895177656b0fbcd5248bea3e",
 }
 
 
@@ -49,13 +49,13 @@ def _sha256(path: Path) -> str:
 
 
 def test_base_pack_remains_byte_current() -> None:
-    # Published v0.3.25 (233d4ec): retain the released pack and its 105 artifacts.
+    # Current W1 bytes and its 105 artifacts are pinned independently of D4.
     pack = load_json(BASE_PACK)
     assert _sha256(BASE_PACK) == (
-        "7a2b6bfe0a395f58c860aa3ca67f068f6efb6ca62c2549d16a62417a92371951"
+        "494e3dced801dd47e23228bff09c07719bd6128e7b6c32e44e88ad14c4edfd69"
     )
     assert pack["pack_checksum"] == (
-        "aed1893528ca56cba054e26350b5727bf8aee9be120a34956ebe72357d2a912c"
+        "ae774b2b69f554d33dfdbd892a1fda9df12eef1ddccd72b38f1e1bb578ab08be"
     )
     assert len(pack["artifacts"]) == 105
     assert all(

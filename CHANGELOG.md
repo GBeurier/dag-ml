@@ -9,6 +9,22 @@ deprecations follow [ADR-14](docs/adr/ADR-14-deprecation-policy.md).
 
 ## [Unreleased]
 
+## [0.3.27] - 2026-09-24
+
+### Added
+
+- Qualify native CV, stacking, residual and multi-output pipeline replay across
+  Python, R, Octave, Node and browser WASM hosts.
+- Support portable RDS and MAT artifact sidecars and weighted F1 classification
+  scoring in the core.
+
+### Fixed
+
+- Preserve ordered merge sources, independent prediction ports, fold-scoped
+  stacked learners and attested OOF coverage during training and replay.
+- Keep JS refit packages exact across the WASM boundary and publish Methods
+  HPO OOF averages only with attested scores.
+
 ## [0.3.26] - 2026-09-21
 
 ### Added
@@ -397,7 +413,8 @@ Initial active core scaffold. Executable Rust crates with:
   references.
 - Direct Python/YAML DSL frontends (JSON-only parser today).
 
-[Unreleased]: https://github.com/GBeurier/dag-ml/compare/v0.3.26...HEAD
+[Unreleased]: https://github.com/GBeurier/dag-ml/compare/v0.3.27...HEAD
+[0.3.27]: https://github.com/GBeurier/dag-ml/compare/v0.3.26...v0.3.27
 [0.3.26]: https://github.com/GBeurier/dag-ml/compare/v0.3.25...v0.3.26
 [0.3.25]: https://github.com/GBeurier/dag-ml/compare/v0.3.24...v0.3.25
 [0.3.24]: https://github.com/GBeurier/dag-ml/compare/v0.3.23...v0.3.24

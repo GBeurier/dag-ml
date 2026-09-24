@@ -1,7 +1,9 @@
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command as ProcessCommand, Stdio};
+use std::rc::Rc;
 use std::sync::{
     mpsc::{self, Receiver, RecvTimeoutError},
     Mutex,
@@ -16,27 +18,32 @@ use dag_ml_core::{
     build_openlineage_run_event_from_package_files, build_research_provenance_package,
     compile_operator_variant_models, compile_pipeline_dsl,
     compile_pipeline_dsl_with_controller_registry, compile_pipeline_dsl_with_generation,
-    compile_pipeline_dsl_with_generation_and_controller_registry, oof_campaign_fingerprint,
-    parse_pipeline_dsl_json, plan_oof_partition_mode, prune_plan_to_active,
-    regression_report_to_candidate_score, score_regression_aggregated_block,
-    score_regression_prediction_block, select_best_operator_variant_from_models,
-    select_best_variant_by_cv, select_candidate, select_candidate_groups, validate_oof_campaign,
-    validate_research_provenance_package_files, AggregatedPredictionBlock, ArtifactId, BundleId,
-    BundlePredictionCachePayload, BundlePredictionCachePayloadSet, BundlePredictionCacheRecord,
-    BundlePredictionRequirement, BundleReplayExecution, CacheNamespace, CampaignSpec,
-    CandidateScore, ColumnarPredictionCacheStore, ControllerId, ControllerManifest,
-    ControllerRegistry, DagMlError, DataRequestPartition, ExecutionBundle, ExplanationBlock,
+    compile_pipeline_dsl_with_generation_and_controller_registry, enumerate_operator_variants,
+    oof_campaign_fingerprint, parse_pipeline_dsl_json, plan_oof_partition_mode,
+    pruned_plan_for_operator_models, regression_report_to_candidate_score,
+    score_regression_aggregated_block, score_regression_prediction_block,
+    select_best_operator_variant_outcome_from_models, select_best_variant_outcome_by_cv,
+    select_candidate, select_candidate_groups, validate_oof_campaign,
+    validate_research_provenance_package_files, AggregatedPredictionBlock, ArtifactId,
+    ArtifactMaterializationRequest, BundleId, BundlePredictionCachePayload,
+    BundlePredictionCachePayloadSet, BundlePredictionCacheRecord, BundlePredictionRequirement,
+    BundleReplayExecution, CacheNamespace, CampaignSpec, CandidateScore,
+    ColumnarPredictionCacheStore, ControllerId, ControllerManifest, ControllerRegistry, DagMlError,
+    DataRequestPartition, ExecutionBundle, ExplanationBlock, ExplicitPhaseDataProvider,
     ExternalDataPlanEnvelope, FileArtifactManifestStore, FileArtifactPayloadStore,
-    FilePredictionCacheStore, GraphSpec, HandleKind, HandleRef, InMemoryArtifactStore,
+    FilePredictionCacheStore, GraphSpec, HandleKind, HandleRef, HostHpoCandidateControllerFactory,
+    HostHpoCandidateProviderFactory, HostHpoCheckpoint, HostHpoProgress, HostHpoProposalSource,
+    HostHpoResumeOptions, HostHpoSearchRequest, HostHpoSearchStatus, InMemoryArtifactStore,
     InMemoryDataProvider, LineageId, LineageRecord, LossSpec, MetricObjective, MetricSpec, NodeId,
     NodeResult, NodeTask, OofCampaign, OperatorVariantModel, ParallelScheduler, Phase,
-    PipelineDslSpec, PortablePredictorPackage, PredictionBlock, PredictionLevel,
-    PredictionPartition, PredictionUnitId, RefitArtifactRecord, RegressionMetricKind,
-    RegressionMetricReport, RegressionTargetBlock, ReplayPhaseRequest, ResearchProvenancePackage,
-    RunContext, RunId, RuntimeArtifactStore, RuntimeController, RuntimeControllerRegistry,
-    RuntimeDataProvider, RuntimePredictionCacheStore, RuntimeTunerSession, SampleId, ScoreSet,
-    SelectionDecision, SelectionMetric, SelectionPolicy, SequentialScheduler, TrainingRequest,
-    TrainingResourceLimits, VariantId, SCORE_SET_SCHEMA_VERSION,
+    PipelineDslSpec, PortableArtifactBridgeResult, PortableArtifactBridgeTask,
+    PortablePredictorPackage, PredictionBlock, PredictionLevel, PredictionPartition,
+    PredictionUnitId, RefitArtifactRecord, RegressionMetricKind, RegressionMetricReport,
+    RegressionTargetBlock, ReplayPhaseRequest, ResearchProvenancePackage, RunContext, RunId,
+    RuntimeArtifactStore, RuntimeController, RuntimeControllerRegistry, RuntimeDataProvider,
+    RuntimePredictionCacheStore, RuntimeTunerSession, SampleId, ScoreSet, SelectionDecision,
+    SelectionMetric, SelectionPolicy, SequentialScheduler, TrainingRequest, TrainingResourceLimits,
+    VariantId, SCORE_SET_SCHEMA_VERSION,
 };
 use serde::{Deserialize, Serialize};
 
@@ -51,6 +58,7 @@ const PROCESS_ADAPTER_CAP_CONTROL_FRAMES: &str = "control_frames_v1";
 const PROCESS_ADAPTER_CAP_PARALLEL_INVOCATION: &str = "parallel_invocation_v1";
 const PROCESS_ADAPTER_CAP_PERSISTENT_WORKERS: &str = "persistent_workers";
 const PROCESS_ADAPTER_CAP_WORKER_ENV: &str = "worker_env";
+const PROCESS_ADAPTER_CAP_PORTABLE_ARTIFACT_BRIDGE: &str = "portable_artifact_bridge_v1";
 const PROCESS_ADAPTER_FRAME_SCHEMA_VERSION: u32 = 1;
 /// Bounded retry budget for adapter `spawn`/`output` calls that transiently
 /// fail with `ENOENT`/`EACCES` because the host just wrote+chmod'd the shim
@@ -225,6 +233,29 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Run scheduler-owned HPO with host optimizer and operator JSONL adapters.
+    RunHostHpo {
+        #[arg(long)]
+        plan: PathBuf,
+        #[arg(long)]
+        envelope: PathBuf,
+        #[arg(long)]
+        request: PathBuf,
+        #[arg(long)]
+        operator_adapter: PathBuf,
+        #[arg(long)]
+        operator_persistent: bool,
+        #[arg(long)]
+        optimizer_adapter: PathBuf,
+        #[arg(long, default_value_t = 1)]
+        parallel_trials: usize,
+        #[arg(long)]
+        checkpoint: Option<PathBuf>,
+        #[arg(long)]
+        output: Option<PathBuf>,
+        #[arg(long, default_value_t = 30_000)]
+        adapter_timeout_ms: u64,
+    },
     ValidateGraph {
         path: PathBuf,
     },
@@ -248,6 +279,10 @@ enum Command {
     },
     /// Strictly validate a persisted W1 PortablePredictorPackage.
     ValidatePortablePredictorPackage {
+        path: PathBuf,
+    },
+    /// Strictly validate an independent no-splitter full-refit package.
+    ValidateInitialFullRefitPackage {
         path: PathBuf,
     },
     /// Strictly validate a FIT_CV-only W1 cache namespace.
@@ -598,6 +633,12 @@ enum Command {
         adapter: PathBuf,
         #[arg(long)]
         persistent: bool,
+        /// Score CV folds without executing REFIT or capturing fitted artifacts.
+        #[arg(long)]
+        no_refit: bool,
+        /// Refit the first N candidates in native CV ranking order.
+        #[arg(long, default_value_t = 1)]
+        refit_top_k: usize,
         #[arg(long, default_value_t = 1)]
         process_workers: usize,
         #[arg(long, default_value_t = DEFAULT_PROCESS_TIMEOUT_MS)]
@@ -610,6 +651,12 @@ enum Command {
         lineage_output: Option<PathBuf>,
         #[arg(long)]
         prediction_cache_output: Option<PathBuf>,
+        /// Native sample-level OOF average frames for host result projection.
+        #[arg(long)]
+        oof_average_output: Option<PathBuf>,
+        /// Native per-node FIT_CV and REFIT results, including core-generated nodes.
+        #[arg(long)]
+        node_results_output: Option<PathBuf>,
         #[arg(long, default_value = "bundle:cli.process.dsl.cv.refit")]
         bundle_id: String,
         #[arg(long)]
@@ -633,6 +680,73 @@ enum Command {
         #[arg(long = "gpu-device")]
         gpu_devices: Vec<String>,
     },
+    /// Execute one concrete no-splitter REFIT phase with explicit attested row order.
+    RunProcessDslRefitPhase {
+        #[arg(long)]
+        dsl: PathBuf,
+        #[arg(long)]
+        controllers: PathBuf,
+        #[arg(long)]
+        envelope: PathBuf,
+        #[arg(long)]
+        training_sample_ids: PathBuf,
+        #[arg(long)]
+        adapter: PathBuf,
+        #[arg(long)]
+        persistent: bool,
+        #[arg(long, default_value_t = 1)]
+        process_workers: usize,
+        #[arg(long, default_value_t = DEFAULT_PROCESS_TIMEOUT_MS)]
+        process_timeout_ms: u64,
+        #[arg(long, default_value_t = 0)]
+        process_retries: usize,
+        #[arg(long)]
+        output: Option<PathBuf>,
+        /// Write an independently attested package for this no-splitter full refit.
+        #[arg(long)]
+        package_output: Option<PathBuf>,
+        #[arg(long, default_value = "package:cli.process.dsl.initial.refit")]
+        package_id: String,
+        #[arg(long, default_value = "plan:cli.process.dsl.refit.phase")]
+        plan_id: String,
+        #[arg(long, default_value = "run:cli.process.dsl.refit.phase")]
+        run_id: String,
+        #[arg(long, default_value_t = 12345)]
+        root_seed: u64,
+        #[arg(long, value_enum, default_value = "sequential")]
+        scheduler: CliScheduler,
+        #[arg(long, default_value_t = 1)]
+        scheduler_workers: usize,
+        #[arg(long, default_value_t = 1)]
+        cpu_threads: u32,
+        #[arg(long = "gpu-device")]
+        gpu_devices: Vec<String>,
+    },
+    /// Replay PREDICT from an independently captured no-CV full-refit package.
+    RunProcessInitialFullRefitPredict {
+        #[arg(long)]
+        package: PathBuf,
+        #[arg(long)]
+        envelope: PathBuf,
+        #[arg(long)]
+        adapter: PathBuf,
+        #[arg(long)]
+        artifact_handles: PathBuf,
+        #[arg(long)]
+        output_ids: PathBuf,
+        #[arg(long)]
+        output: Option<PathBuf>,
+        #[arg(long, default_value = "run:cli.initial.refit.predict")]
+        run_id: String,
+        #[arg(long)]
+        persistent: bool,
+        #[arg(long, default_value_t = 1)]
+        process_workers: usize,
+        #[arg(long, default_value_t = DEFAULT_PROCESS_TIMEOUT_MS)]
+        process_timeout_ms: u64,
+        #[arg(long, default_value_t = 0)]
+        process_retries: usize,
+    },
     RunProcessDslCvRefitReplay {
         #[arg(long)]
         dsl: PathBuf,
@@ -642,6 +756,9 @@ enum Command {
         envelope: PathBuf,
         #[arg(long)]
         adapter: PathBuf,
+        /// Write the native bundle, replay results, prediction blocks and scores.
+        #[arg(long)]
+        output: Option<PathBuf>,
         #[arg(long, default_value_t = 1)]
         process_workers: usize,
         #[arg(long, default_value_t = DEFAULT_PROCESS_TIMEOUT_MS)]
@@ -848,6 +965,10 @@ enum Command {
         controllers: PathBuf,
         #[arg(long)]
         bundle: PathBuf,
+        /// Invocation-local handles supplied by the host after loading sidecars.
+        /// Without this, replay uses mock handles for conformance demos only.
+        #[arg(long)]
+        artifact_handles: Option<PathBuf>,
         #[arg(long)]
         replay_request: PathBuf,
         #[arg(long)]
@@ -879,6 +1000,9 @@ enum Command {
         /// Write the native ScoreSet (e.g. the final-test score from a PREDICT replay) to this path.
         #[arg(long)]
         score_output: Option<PathBuf>,
+        /// Write replay node results, prediction blocks, and scores as JSON.
+        #[arg(long)]
+        output: Option<PathBuf>,
     },
 }
 
@@ -904,6 +1028,29 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        Command::RunHostHpo {
+            plan,
+            envelope,
+            request,
+            operator_adapter,
+            operator_persistent,
+            optimizer_adapter,
+            parallel_trials,
+            checkpoint,
+            output,
+            adapter_timeout_ms,
+        } => run_host_hpo_cli(
+            &plan,
+            &envelope,
+            &request,
+            &operator_adapter,
+            operator_persistent,
+            &optimizer_adapter,
+            parallel_trials,
+            checkpoint.as_deref(),
+            output.as_deref(),
+            Duration::from_millis(adapter_timeout_ms),
+        )?,
         Command::ValidateGraph { path } => {
             let graph = read_external_contract(&path, "graph", GraphSpec::from_json)?;
             println!("valid graph: {}", graph.id);
@@ -946,6 +1093,19 @@ fn main() -> Result<()> {
                 format!("invalid portable predictor package at {}", path.display())
             })?;
             println!("valid portable predictor package: {}", package.package_id);
+        }
+        Command::ValidateInitialFullRefitPackage { path } => {
+            let json = std::fs::read_to_string(&path).with_context(|| {
+                format!(
+                    "failed to read initial full-refit package at {}",
+                    path.display()
+                )
+            })?;
+            let package =
+                dag_ml_core::InitialFullRefitPackage::from_json(&json).with_context(|| {
+                    format!("invalid initial full-refit package at {}", path.display())
+                })?;
+            println!("valid initial full-refit package: {}", package.package_id);
         }
         Command::ValidateCacheNamespace { path } => {
             let json = std::fs::read_to_string(&path).with_context(|| {
@@ -1649,12 +1809,16 @@ fn main() -> Result<()> {
             envelope,
             adapter,
             persistent,
+            no_refit,
+            refit_top_k,
             process_workers,
             process_timeout_ms,
             process_retries,
             output,
             lineage_output,
             prediction_cache_output,
+            oof_average_output,
+            node_results_output,
             bundle_id,
             variant_id,
             selection_metric,
@@ -1694,25 +1858,29 @@ fn main() -> Result<()> {
                 scheduler,
             )?;
             let selections = read_selection_decisions(selections.as_ref())?;
-            let captured = build_bundle_from_cv_then_captured_refit(CapturedRefitBundleInput {
-                plan: &plan,
-                data_provider: &data_provider,
-                runtime_controllers: &runtime_controllers,
-                bundle_id,
-                variant_id,
-                selections,
-                run_id,
-                root_seed,
-                scheduler,
-                selection_metric: selection_metric.into(),
-                operator_variant_models,
-                resource_limits: Some(TrainingResourceLimits {
-                    cpu_threads,
-                    memory_bytes: None,
-                    gpu_devices,
-                    wall_time_ms: None,
-                }),
-            })
+            let captured = build_bundle_from_cv_with_refit_count(
+                CapturedRefitBundleInput {
+                    plan: &plan,
+                    data_provider: &data_provider,
+                    runtime_controllers: &runtime_controllers,
+                    bundle_id,
+                    variant_id,
+                    selections,
+                    run_id,
+                    root_seed,
+                    scheduler,
+                    selection_metric: selection_metric.into(),
+                    operator_variant_models,
+                    resource_limits: Some(TrainingResourceLimits {
+                        cpu_threads,
+                        memory_bytes: None,
+                        gpu_devices,
+                        wall_time_ms: None,
+                    }),
+                },
+                !no_refit,
+                refit_top_k,
+            )
             .with_context(|| "process DSL CV+refit bundle capture failed")?;
             println!(
                 "process DSL cv refit bundle run: {} fit_cv result(s), {} OOF prediction block(s), {} refit result(s), {} captured artifact handle(s), {} prediction cache(s), scheduler={}, scheduler worker(s)={}, configured process worker(s)={}, observed process worker(s)={}",
@@ -1732,6 +1900,14 @@ fn main() -> Result<()> {
             );
             emit_json(output.as_ref(), &captured.bundle, "execution bundle")?;
             emit_json(
+                oof_average_output.as_ref(),
+                &captured.oof_average_results,
+                "OOF average results",
+            )?;
+            if let Some(path) = node_results_output.as_ref() {
+                emit_json(Some(path), &captured.node_results, "native node results")?;
+            }
+            emit_json(
                 lineage_output.as_ref(),
                 &captured.lineage_records,
                 "lineage records",
@@ -1748,11 +1924,211 @@ fn main() -> Result<()> {
                 emit_json(Some(path), &payload_set, "prediction cache payload set")?;
             }
         }
+        Command::RunProcessDslRefitPhase {
+            dsl,
+            controllers,
+            envelope,
+            training_sample_ids,
+            adapter,
+            persistent,
+            process_workers,
+            process_timeout_ms,
+            process_retries,
+            output,
+            package_output,
+            package_id,
+            plan_id,
+            run_id,
+            root_seed,
+            scheduler,
+            scheduler_workers,
+            cpu_threads,
+            gpu_devices,
+        } => {
+            let envelope: ExternalDataPlanEnvelope =
+                read_json(&envelope, "external data-plan envelope")?;
+            let ids: Vec<String> = read_json(&training_sample_ids, "training sample ids")?;
+            let ids = ids
+                .into_iter()
+                .map(SampleId::new)
+                .collect::<dag_ml_core::Result<Vec<_>>>()?;
+            let (plan, operator_models) =
+                build_plan_and_operator_models_from_dsl_path_with_envelope(
+                    &dsl,
+                    &controllers,
+                    &envelope,
+                    plan_id,
+                )?;
+            if !operator_models.is_empty() || plan.variants.len() != 1 || plan.fold_set.is_some() {
+                bail!("explicit REFIT phase requires one concrete no-splitter pipeline without unresolved operator choices");
+            }
+            plan.campaign.validate_data_envelope_relations(&envelope)?;
+            let provider = ExplicitPhaseDataProvider::new(
+                ControllerId::new("controller:data.provider")?,
+                envelope.clone(),
+                Some(ids.clone()),
+            )?;
+            let process_config = process_adapter_runtime_config(
+                process_workers,
+                process_timeout_ms,
+                process_retries,
+            )?;
+            let scheduler = SchedulerConfig::new(scheduler, scheduler_workers)?;
+            let runtime_controllers = process_runtime_controllers_for_mode(
+                &plan,
+                adapter,
+                persistent,
+                process_config,
+                scheduler,
+            )?;
+            let resource_limits = TrainingResourceLimits {
+                cpu_threads,
+                memory_bytes: None,
+                gpu_devices,
+                wall_time_ms: None,
+            };
+            if let Some(path) = package_output.as_ref() {
+                let execution = dag_ml_core::execute_initial_full_refit(
+                    dag_ml_core::InitialFullRefitExecutionInput {
+                        package_id,
+                        run_id: RunId::new(run_id)?,
+                        plan: &plan,
+                        training_envelope: &envelope,
+                        training_sample_ids: &ids,
+                        controllers: &runtime_controllers,
+                        data_provider: &provider,
+                        root_seed: Some(root_seed),
+                        resource_limits: Some(resource_limits),
+                        scheduler: match scheduler.scheduler {
+                            CliScheduler::Sequential => {
+                                dag_ml_core::InitialRefitScheduler::Sequential
+                            }
+                            CliScheduler::Parallel => {
+                                dag_ml_core::InitialRefitScheduler::Parallel {
+                                    workers: scheduler.workers,
+                                }
+                            }
+                        },
+                    },
+                )
+                .with_context(|| "explicit process DSL initial full-refit package failed")?;
+                emit_json(Some(path), &execution.package, "initial full-refit package")?;
+                emit_json(
+                    output.as_ref(),
+                    &serde_json::json!({
+                        "node_results": execution.results, "phase": Phase::Refit,
+                        "effective_plan": plan, "initial_full_refit_package": execution.package,
+                        "scores": execution.scores,
+                    }),
+                    "explicit phase outcome",
+                )?;
+                return Ok(());
+            }
+            let mut ctx = RunContext::new(RunId::new(run_id)?, Some(root_seed));
+            ctx.resource_limits = Some(resource_limits);
+            let results = execute_campaign_phase_with_scheduler(
+                scheduler,
+                &plan,
+                &runtime_controllers,
+                &provider,
+                &mut ctx,
+                Phase::Refit,
+            )
+            .with_context(|| "explicit process DSL REFIT phase failed")?;
+            let scores = ctx.build_score_set(plan.id.clone(), None);
+            emit_json(
+                output.as_ref(),
+                &serde_json::json!({
+                    "node_results": results, "scores": scores, "phase": Phase::Refit,
+                    "effective_plan": plan,
+                }),
+                "explicit phase outcome",
+            )?;
+        }
+        Command::RunProcessInitialFullRefitPredict {
+            package,
+            envelope,
+            adapter,
+            artifact_handles,
+            output_ids,
+            output,
+            run_id,
+            persistent,
+            process_workers,
+            process_timeout_ms,
+            process_retries,
+        } => {
+            let package_json = std::fs::read_to_string(&package)?;
+            let package = dag_ml_core::InitialFullRefitPackage::from_json(&package_json)?;
+            let envelope: ExternalDataPlanEnvelope =
+                read_json(&envelope, "PREDICT data-plan envelope")?;
+            let handles: BTreeMap<ArtifactId, HandleRef> =
+                read_json(&artifact_handles, "REFIT artifact handles")?;
+            let output_ids: Vec<String> = read_json(&output_ids, "PREDICT output IDs")?;
+            if handles.keys().collect::<BTreeSet<_>>()
+                != package
+                    .artifacts
+                    .iter()
+                    .filter(|artifact| {
+                        artifact.load_mode == dag_ml_core::ArtifactLoadMode::HostSidecar
+                    })
+                    .map(|artifact| &artifact.record.artifact.id)
+                    .collect()
+            {
+                bail!("initial full-refit PREDICT handles must exactly cover package host-sidecar artifacts");
+            }
+            let provider = ExplicitPhaseDataProvider::new(
+                ControllerId::new("controller:data.provider")?,
+                envelope.clone(),
+                None,
+            )?;
+            let scheduler = SchedulerConfig::new(CliScheduler::Sequential, 1)?;
+            let controllers = process_runtime_controllers_for_mode(
+                &package.effective_plan,
+                adapter,
+                persistent,
+                process_adapter_runtime_config(
+                    process_workers,
+                    process_timeout_ms,
+                    process_retries,
+                )?,
+                scheduler,
+            )?;
+            let mut artifact_store = InMemoryArtifactStore::new();
+            for artifact in &package.artifacts {
+                if artifact.load_mode != dag_ml_core::ArtifactLoadMode::HostSidecar {
+                    continue;
+                }
+                artifact_store.register(
+                    &artifact.record,
+                    handles[&artifact.record.artifact.id].clone(),
+                )?;
+            }
+            let replay = dag_ml_core::execute_initial_full_refit_prediction(
+                dag_ml_core::InitialRefitReplayInput {
+                    package: &package,
+                    envelope: &envelope,
+                    output_ids: &output_ids,
+                    run_id: RunId::new(run_id)?,
+                    controllers: &controllers,
+                    data_provider: &provider,
+                    artifact_store: &artifact_store,
+                },
+            )?;
+            emit_json(
+                output.as_ref(),
+                &serde_json::json!({
+                    "replay_outcome": replay.outcome, "node_results": replay.results,
+                }),
+                "initial full-refit PREDICT outcome",
+            )?;
+        }
         Command::RunProcessDslCvRefitReplay {
             dsl,
             controllers,
             envelope,
             adapter,
+            output,
             process_workers,
             process_timeout_ms,
             process_retries,
@@ -1844,6 +2220,21 @@ fn main() -> Result<()> {
                 captured.observed_process_worker_count,
                 observed_process_worker_count(&replay_ctx)
             );
+            if let Some(path) = output.as_ref() {
+                emit_json(
+                    Some(path),
+                    &serde_json::json!({
+                        "bundle": captured.bundle,
+                        "fit_cv_result_count": captured.fit_cv_result_count,
+                        "refit_result_count": captured.refit_result_count,
+                        "oof_average_results": captured.oof_average_results,
+                        "replay_node_results": replay_results,
+                        "replay_prediction_blocks": replay_ctx.prediction_store.blocks(),
+                        "replay_scores": replay_ctx.build_score_set(plan.id.clone(), None),
+                    }),
+                    "process DSL CV+REFIT+PREDICT outcome",
+                )?;
+            }
         }
         Command::RunProcessRefitReplay {
             graph,
@@ -2294,6 +2685,7 @@ fn main() -> Result<()> {
             campaign,
             controllers,
             bundle,
+            artifact_handles,
             replay_request,
             prediction_cache_payload,
             prediction_cache_store,
@@ -2309,6 +2701,7 @@ fn main() -> Result<()> {
             scheduler,
             scheduler_workers,
             score_output,
+            output,
         } => {
             let plan = build_plan_from_paths(&graph, &campaign, &controllers, plan_id)?;
             let bundle =
@@ -2332,7 +2725,11 @@ fn main() -> Result<()> {
             for envelope in envelope_map.values() {
                 data_provider.register_envelope(envelope.clone())?;
             }
-            let artifact_store = mock_artifact_store(&plan, &bundle)?;
+            let artifact_store = if let Some(path) = artifact_handles.as_ref() {
+                host_artifact_store(&plan, &bundle, path)?
+            } else {
+                mock_artifact_store(&plan, &bundle)?
+            };
             let process_config = process_adapter_runtime_config(
                 process_workers,
                 process_timeout_ms,
@@ -2383,13 +2780,26 @@ fn main() -> Result<()> {
             );
             // Persist the native scores collected during replay (e.g. the final-test score from a
             // PREDICT replay) when the host requested it.
+            let scores = ctx.build_score_set(plan.id.clone(), None);
             if let Some(score_path) = score_output {
-                if let Some(scores) = ctx.build_score_set(plan.id.clone(), None) {
+                if let Some(scores) = scores.as_ref() {
                     std::fs::write(&score_path, serde_json::to_string_pretty(&scores)?)
                         .with_context(|| {
                             format!("failed to write score output to {}", score_path.display())
                         })?;
                 }
+            }
+            if let Some(path) = output.as_ref() {
+                emit_json(
+                    Some(path),
+                    &serde_json::json!({
+                        "bundle_id": bundle.bundle_id,
+                        "node_results": results,
+                        "prediction_blocks": ctx.prediction_store.blocks(),
+                        "scores": scores,
+                    }),
+                    "process bundle replay outcome",
+                )?;
             }
         }
     }
@@ -2762,6 +3172,8 @@ struct CapturedRefitBundle {
     artifact_store: InMemoryArtifactStore,
     lineage_records: Vec<LineageRecord>,
     prediction_cache_payloads: Vec<BundlePredictionCachePayload>,
+    oof_average_results: Vec<serde_json::Value>,
+    node_results: Vec<NodeResult>,
     fit_cv_result_count: usize,
     fit_cv_oof_prediction_block_count: usize,
     refit_result_count: usize,
@@ -2806,7 +3218,7 @@ fn build_bundle_from_captured_refit(
     let selected_variant_id = selected_refit_variant(input.plan, input.variant_id)?;
 
     let mut artifact_store = InMemoryArtifactStore::new();
-    let mut ctx = RunContext::new(RunId::new(input.run_id)?, Some(input.root_seed));
+    let mut ctx = RunContext::new(RunId::new(input.run_id.clone())?, Some(input.root_seed));
     ctx.variant_id = Some(selected_variant_id.clone());
     ctx.resource_limits = input.resource_limits.clone();
 
@@ -2827,7 +3239,7 @@ fn build_bundle_from_captured_refit(
     let mut bundle = build_execution_bundle(
         BundleId::new(input.bundle_id)?,
         input.plan,
-        Some(selected_variant_id),
+        Some(selected_variant_id.clone()),
         input.selections,
         artifact_store.refit_artifacts(),
     )
@@ -2840,14 +3252,17 @@ fn build_bundle_from_captured_refit(
         "refit_lineage_count".to_string(),
         serde_json::json!(ctx.lineage.len()),
     );
+    let refit_result_count = results.len();
     Ok(CapturedRefitBundle {
         bundle,
         artifact_store,
         lineage_records: ctx.lineage.records().cloned().collect(),
         prediction_cache_payloads: Vec::new(),
+        oof_average_results: Vec::new(),
+        node_results: results,
         fit_cv_result_count: 0,
         fit_cv_oof_prediction_block_count: 0,
-        refit_result_count: results.len(),
+        refit_result_count,
         observed_process_worker_count: observed_process_worker_count(&ctx),
         // The non-CV refit path never prunes (no operator-SELECT) — the bundle matches input.plan.
         effective_plan: None,
@@ -2865,6 +3280,7 @@ fn build_bundle_from_captured_refit(
 /// (Mechanism A) and pinned/single-variant runs it is `None` (the union plan is the refit plan).
 struct ResolvedRefitVariant {
     variant_id: VariantId,
+    ranked_variant_ids: Vec<VariantId>,
     loser_validation_reports: Vec<RegressionMetricReport>,
     pruned_plan: Option<dag_ml_core::ExecutionPlan>,
     /// The WINNER's operator-variant content fingerprint (Phase 5): `Some(<sha256>)` for an
@@ -2882,7 +3298,7 @@ struct ResolvedRefitVariant {
 fn resolve_operator_select(
     input: &CapturedRefitBundleInput<'_>,
 ) -> Result<Option<ResolvedRefitVariant>> {
-    let selected = select_best_operator_variant_from_models(
+    let selected = select_best_operator_variant_outcome_from_models(
         input.plan,
         &input.operator_variant_models,
         &RunId::new(input.run_id.clone())?,
@@ -2907,9 +3323,16 @@ fn resolve_operator_select(
         },
     )
     .with_context(|| "native operator-variant selection failed")?;
-    let Some(selection) = selected else {
+    let Some(outcome) = selected else {
         return Ok(None);
     };
+    let ranked_variant_ids = outcome
+        .decision
+        .ranked_candidates
+        .iter()
+        .map(|candidate| VariantId::new(candidate.candidate_id.clone()))
+        .collect::<dag_ml_core::Result<Vec<_>>>()?;
+    let selection = outcome.selection;
     let variant_id = selection.selected_variant_id.clone();
     // The winner's operator-variant content fingerprint (Phase 5) — recovered from its OWN report in
     // the selection loop (already stamped there), so the fresh winner FIT_CV/REFIT reports get the
@@ -2924,12 +3347,15 @@ fn resolve_operator_select(
         .into_iter()
         .filter(|report| report.variant_id.as_ref() != Some(&variant_id))
         .collect();
-    // Recompute the WINNER's pruned plan so FIT_CV + REFIT + bundle run on it (not the union). The
-    // single operator model has been guarded to exactly one by `select_best_operator_variant_from_models`.
-    let model = &input.operator_variant_models[0];
-    let pruned_plan =
-        pruned_plan_for_operator_variant(input.plan, model, &variant_id, input.root_seed)?;
+    // Recompute the winning combination so FIT_CV + REFIT use every selected branch.
+    let pruned_plan = pruned_plan_for_operator_variant(
+        input.plan,
+        &input.operator_variant_models,
+        &variant_id,
+        input.root_seed,
+    )?;
     Ok(Some(ResolvedRefitVariant {
+        ranked_variant_ids,
         variant_id,
         loser_validation_reports,
         pruned_plan: Some(pruned_plan),
@@ -2937,17 +3363,15 @@ fn resolve_operator_select(
     }))
 }
 
-/// Rebuild the PRUNED plan for a chosen operator variant id by re-enumerating the model's variants
-/// (deterministic), matching the winner, and pruning the union to its active choice. Used to recover
-/// the winner's pruned plan after operator-SELECT picks it, so the real FIT_CV + REFIT run on the
-/// pruned candidate rather than the stacking union.
+/// Rebuild the PRUNED plan for the chosen Cartesian combination of independent
+/// operator generators, retaining every selected branch for refit.
 fn pruned_plan_for_operator_variant(
     union_plan: &dag_ml_core::ExecutionPlan,
-    model: &OperatorVariantModel,
+    models: &[OperatorVariantModel],
     variant_id: &VariantId,
     root_seed: u64,
 ) -> Result<dag_ml_core::ExecutionPlan> {
-    let variants = dag_ml_core::enumerate_variants(&model.generation_spec(), Some(root_seed))
+    let variants = enumerate_operator_variants(models, Some(root_seed))
         .with_context(|| "failed to enumerate operator variants for winner prune")?;
     let variant = variants
         .iter()
@@ -2955,26 +3379,7 @@ fn pruned_plan_for_operator_variant(
         .with_context(|| {
             format!("operator-SELECT winner `{variant_id}` not found in enumerated variants")
         })?;
-    let choice = variant
-        .choices
-        .get(&model.dimension.name)
-        .with_context(|| format!("operator winner `{variant_id}` missing operator dimension"))?;
-    let active_subsequence = choice.active_subsequence.as_ref().with_context(|| {
-        format!("operator winner `{variant_id}` choice has no active_subsequence")
-    })?;
-    let active_nodes = model
-        .active_nodes
-        .get(active_subsequence)
-        .with_context(|| {
-            format!("operator model has no active-node set for `{active_subsequence}`")
-        })?;
-    let all_choice_nodes = model
-        .active_nodes
-        .values()
-        .flatten()
-        .cloned()
-        .collect::<std::collections::BTreeSet<_>>();
-    prune_plan_to_active(union_plan, active_nodes, &all_choice_nodes, variant)
+    pruned_plan_for_operator_models(union_plan, models, variant)
         .with_context(|| "failed to prune union plan to operator-SELECT winner")
 }
 
@@ -2995,7 +3400,7 @@ fn resolve_refit_variant(input: &CapturedRefitBundleInput<'_>) -> Result<Resolve
         // exactly today's behavior for unscored runs.
     }
     if input.variant_id.is_none() && input.plan.variants.len() > 1 {
-        let selected = select_best_variant_by_cv(
+        let selected = select_best_variant_outcome_by_cv(
             input.plan,
             &RunId::new(input.run_id.clone())?,
             Some(input.root_seed),
@@ -3021,8 +3426,15 @@ fn resolve_refit_variant(input: &CapturedRefitBundleInput<'_>) -> Result<Resolve
         .with_context(|| "native variant selection failed")?;
         // `None` means scoring was off (no host targets) — fall back to the default variant, which is
         // exactly today's behavior for unscored multi-variant runs.
-        if let Some(selection) = selected {
+        if let Some(outcome) = selected {
+            let selection = outcome.selection;
             let variant_id = selection.selected_variant_id.clone();
+            let ranked_variant_ids = outcome
+                .decision
+                .ranked_candidates
+                .iter()
+                .map(|candidate| VariantId::new(candidate.candidate_id.clone()))
+                .collect::<dag_ml_core::Result<Vec<_>>>()?;
             // Keep only the LOSER variants' reports — the winner's come from the real FIT_CV run.
             let loser_validation_reports = selection
                 .validation_reports
@@ -3030,6 +3442,7 @@ fn resolve_refit_variant(input: &CapturedRefitBundleInput<'_>) -> Result<Resolve
                 .filter(|report| report.variant_id.as_ref() != Some(&variant_id))
                 .collect();
             return Ok(ResolvedRefitVariant {
+                ranked_variant_ids,
                 variant_id,
                 loser_validation_reports,
                 pruned_plan: None,
@@ -3039,6 +3452,7 @@ fn resolve_refit_variant(input: &CapturedRefitBundleInput<'_>) -> Result<Resolve
     }
     Ok(ResolvedRefitVariant {
         variant_id: selected_refit_variant(input.plan, input.variant_id.clone())?,
+        ranked_variant_ids: Vec::new(),
         loser_validation_reports: Vec::new(),
         pruned_plan: None,
         winner_variant_label: None,
@@ -3091,9 +3505,37 @@ fn stamp_winner_variant_label(scores: &mut Option<ScoreSet>, label: Option<Strin
 fn build_bundle_from_cv_then_captured_refit(
     input: CapturedRefitBundleInput<'_>,
 ) -> Result<CapturedRefitBundle> {
+    build_bundle_from_cv_with_optional_refit(input, true)
+}
+
+fn build_bundle_from_cv_with_optional_refit(
+    input: CapturedRefitBundleInput<'_>,
+    refit: bool,
+) -> Result<CapturedRefitBundle> {
+    build_bundle_from_cv_with_refit_count(input, refit, 1)
+}
+
+fn build_bundle_from_cv_with_refit_count(
+    input: CapturedRefitBundleInput<'_>,
+    refit: bool,
+    top_k: usize,
+) -> Result<CapturedRefitBundle> {
+    if top_k == 0 || (!refit && top_k != 1) {
+        bail!("refit_top_k must be positive and requires refit enabled");
+    }
     let resolved = resolve_refit_variant(&input)?;
     let selected_variant_id = resolved.variant_id;
+    let additional_variant_ids = resolved
+        .ranked_variant_ids
+        .into_iter()
+        .filter(|variant_id| *variant_id != selected_variant_id)
+        .take(top_k.saturating_sub(1))
+        .collect::<Vec<_>>();
     let loser_validation_reports = resolved.loser_validation_reports;
+    let additional_variant_labels = loser_validation_reports
+        .iter()
+        .filter_map(|report| Some((report.variant_id.clone()?, report.variant_label.clone()?)))
+        .collect::<BTreeMap<_, _>>();
     let winner_variant_label = resolved.winner_variant_label;
     // For operator-SELECT the winner FIT_CV + REFIT + bundle capture run on the WINNER's PRUNED plan
     // (merge + meta-model + inactive choices elided), NOT the Mechanism-B stacking union. For all
@@ -3104,7 +3546,7 @@ fn build_bundle_from_cv_then_captured_refit(
     let plan: &dag_ml_core::ExecutionPlan = pruned_plan.as_ref().unwrap_or(input.plan);
 
     let mut artifact_store = InMemoryArtifactStore::new();
-    let mut ctx = RunContext::new(RunId::new(input.run_id)?, Some(input.root_seed));
+    let mut ctx = RunContext::new(RunId::new(input.run_id.clone())?, Some(input.root_seed));
     ctx.variant_id = Some(selected_variant_id.clone());
     ctx.resource_limits = input.resource_limits.clone();
 
@@ -3153,17 +3595,21 @@ fn build_bundle_from_cv_then_captured_refit(
         ctx.aggregated_prediction_store.blocks(),
     )?;
 
-    let refit_results = execute_campaign_phase_with_artifact_store_and_scheduler(
-        input.scheduler,
-        plan,
-        input.runtime_controllers,
-        input.data_provider,
-        &mut artifact_store,
-        &mut ctx,
-        Phase::Refit,
-    )
-    .with_context(|| "refit execution after FIT_CV failed")?;
-    if artifact_store.is_empty() {
+    let refit_results = if refit {
+        execute_campaign_phase_with_artifact_store_and_scheduler(
+            input.scheduler,
+            plan,
+            input.runtime_controllers,
+            input.data_provider,
+            &mut artifact_store,
+            &mut ctx,
+            Phase::Refit,
+        )
+        .with_context(|| "refit execution after FIT_CV failed")?
+    } else {
+        Vec::new()
+    };
+    if refit && artifact_store.is_empty() {
         bail!("refit did not capture any refit artifacts");
     }
     let refit_lineage_count = ctx.lineage.len().saturating_sub(fit_cv_lineage_count);
@@ -3177,7 +3623,7 @@ fn build_bundle_from_cv_then_captured_refit(
     let mut bundle = build_execution_bundle_with_prediction_contracts(
         BundleId::new(input.bundle_id)?,
         plan,
-        Some(selected_variant_id),
+        Some(selected_variant_id.clone()),
         input.selections,
         artifact_store.refit_artifacts(),
         prediction_requirements,
@@ -3191,6 +3637,8 @@ fn build_bundle_from_cv_then_captured_refit(
     // no predictions/handles ride along), so the bundle surfaces every variant's CV score, not
     // just the winner's.
     ctx.collect_cross_fold_validation_scores(plan_oof_partition_mode(plan))?;
+    ctx.collect_cross_fold_train_scores(input.selection_metric)?;
+    ctx.collect_cross_fold_test_scores(input.selection_metric)?;
     let mut scores = ctx.build_score_set(plan.id.clone(), None);
     // Phase 5: the winner reports come from the REAL winner FIT_CV/REFIT pass above (not the
     // transient selection loop), so stamp the winner's operator-variant content fingerprint on them
@@ -3199,6 +3647,119 @@ fn build_bundle_from_cv_then_captured_refit(
     stamp_winner_variant_label(&mut scores, winner_variant_label);
     merge_loser_validation_reports(&mut scores, &plan.id, loser_validation_reports);
     bundle.scores = scores;
+    if !ctx.residual_gate_records().is_empty() {
+        bundle.metadata.insert(
+            "residual_gates".to_string(),
+            serde_json::to_value(ctx.residual_gate_records())?,
+        );
+    }
+    let mut additional_artifacts = Vec::<RefitArtifactRecord>::new();
+    let mut additional_refit_result_count = 0usize;
+    let mut additional_node_results = Vec::<NodeResult>::new();
+    let mut additional_refit_lineage_count = 0usize;
+    let mut additional_refit_prediction_block_count = 0usize;
+    let mut additional_lineage_records = Vec::<LineageRecord>::new();
+    for variant_id in &additional_variant_ids {
+        let extra_pruned_plan = if !input.operator_variant_models.is_empty() {
+            Some(pruned_plan_for_operator_variant(
+                input.plan,
+                &input.operator_variant_models,
+                variant_id,
+                input.root_seed,
+            )?)
+        } else {
+            None
+        };
+        let extra_plan = extra_pruned_plan.as_ref().unwrap_or(plan);
+        let mut extra_ctx =
+            RunContext::new(RunId::new(input.run_id.clone())?, Some(input.root_seed));
+        extra_ctx.variant_id = Some(variant_id.clone());
+        extra_ctx.resource_limits = input.resource_limits.clone();
+        execute_campaign_phase_with_scheduler(
+            input.scheduler,
+            extra_plan,
+            input.runtime_controllers,
+            input.data_provider,
+            &mut extra_ctx,
+            Phase::FitCv,
+        )
+        .with_context(|| format!("FIT_CV before additional refit for `{variant_id}` failed"))?;
+        let extra_fit_lineage_count = extra_ctx.lineage.len();
+        let mut extra_store = InMemoryArtifactStore::new();
+        let extra_results = execute_campaign_phase_with_artifact_store_and_scheduler(
+            input.scheduler,
+            extra_plan,
+            input.runtime_controllers,
+            input.data_provider,
+            &mut extra_store,
+            &mut extra_ctx,
+            Phase::Refit,
+        )
+        .with_context(|| format!("additional refit for `{variant_id}` failed"))?;
+        if extra_store.is_empty() {
+            bail!("additional refit for `{variant_id}` captured no artifacts");
+        }
+        additional_refit_result_count += extra_results.len();
+        additional_node_results.extend(extra_results);
+        additional_refit_lineage_count += extra_ctx.lineage.len() - extra_fit_lineage_count;
+        additional_lineage_records.extend(extra_ctx.lineage.records().cloned());
+        additional_refit_prediction_block_count += extra_ctx
+            .prediction_store
+            .blocks()
+            .iter()
+            .filter(|block| block.partition == PredictionPartition::Final)
+            .count();
+        additional_artifacts.extend(extra_store.refit_artifacts());
+        if let Some(mut extra_scores) = extra_ctx.build_score_set(plan.id.clone(), None) {
+            for report in &mut extra_scores.reports {
+                report.variant_label = additional_variant_labels.get(variant_id).cloned();
+            }
+            if let Some(primary_scores) = bundle.scores.as_mut() {
+                primary_scores.reports.extend(
+                    extra_scores
+                        .reports
+                        .into_iter()
+                        .filter(|report| report.partition != PredictionPartition::Validation),
+                );
+            }
+        }
+    }
+    if top_k > 1 {
+        bundle.metadata.insert(
+            "selected_refit_variant_ids".to_string(),
+            serde_json::to_value(
+                std::iter::once(&selected_variant_id)
+                    .chain(additional_variant_ids.iter())
+                    .collect::<Vec<_>>(),
+            )?,
+        );
+        bundle.metadata.insert(
+            "additional_refit_artifacts".to_string(),
+            serde_json::to_value(&additional_artifacts)?,
+        );
+    }
+    bundle.metadata.insert(
+        "variant_catalog".to_string(),
+        serde_json::to_value(&plan.variants)?,
+    );
+    let oof_average_results = ctx
+        .oof_average_blocks
+        .iter()
+        .chain(&ctx.test_ensemble_blocks)
+        .chain(&ctx.train_ensemble_blocks)
+        .map(|oof| {
+            serde_json::json!({
+                "node_id": oof.predictions.producer_node,
+                "aggregated_predictions": [oof.predictions],
+                "regression_targets": [oof.y_true],
+            })
+        })
+        .collect();
+    if !refit {
+        bundle
+            .metadata
+            .insert("refit_enabled".to_string(), serde_json::json!(false));
+    }
     bundle.metadata.insert(
         "fit_cv_result_count".to_string(),
         serde_json::json!(fit_cv_results.len()),
@@ -3217,29 +3778,43 @@ fn build_bundle_from_cv_then_captured_refit(
     );
     bundle.metadata.insert(
         "refit_result_count".to_string(),
-        serde_json::json!(refit_results.len()),
+        serde_json::json!(refit_results.len() + additional_refit_result_count),
     );
     bundle.metadata.insert(
         "refit_lineage_count".to_string(),
-        serde_json::json!(refit_lineage_count),
+        serde_json::json!(refit_lineage_count + additional_refit_lineage_count),
     );
     bundle.metadata.insert(
         "refit_prediction_block_count".to_string(),
-        serde_json::json!(refit_prediction_block_count),
+        serde_json::json!(refit_prediction_block_count + additional_refit_prediction_block_count),
     );
     bundle.metadata.insert(
         "total_lineage_count".to_string(),
-        serde_json::json!(ctx.lineage.len()),
+        serde_json::json!(ctx.lineage.len() + additional_lineage_records.len()),
     );
     bundle.validate_against_plan(plan)?;
+    let fit_cv_result_count = fit_cv_results.len();
+    let refit_result_count = refit_results.len() + additional_refit_result_count;
+    let node_results = fit_cv_results
+        .into_iter()
+        .chain(refit_results)
+        .chain(additional_node_results)
+        .collect();
     Ok(CapturedRefitBundle {
         bundle,
         artifact_store,
-        lineage_records: ctx.lineage.records().cloned().collect(),
+        lineage_records: ctx
+            .lineage
+            .records()
+            .cloned()
+            .chain(additional_lineage_records)
+            .collect(),
         prediction_cache_payloads,
-        fit_cv_result_count: fit_cv_results.len(),
+        oof_average_results,
+        node_results,
+        fit_cv_result_count,
         fit_cv_oof_prediction_block_count,
-        refit_result_count: refit_results.len(),
+        refit_result_count,
         observed_process_worker_count: observed_process_worker_count(&ctx),
         // Thread the SAME pruned winner plan out (operator-SELECT) — or `None` (union/param/no-variant)
         // — so the replay validates + executes the captured bundle against exactly what capture used.
@@ -3314,13 +3889,15 @@ fn oof_prediction_summary(
     blocks: &[PredictionBlock],
     aggregated_blocks: &[AggregatedPredictionBlock],
 ) -> Result<Vec<serde_json::Value>> {
-    let mut summaries = BTreeMap::<NodeId, OofPredictionSummary>::new();
+    let mut summaries = BTreeMap::<(NodeId, Option<String>), OofPredictionSummary>::new();
     for block in blocks
         .iter()
         .filter(|block| block.partition == PredictionPartition::Validation)
     {
         let width = block.validate_shape()?;
-        let entry = summaries.entry(block.producer_node.clone()).or_default();
+        let entry = summaries
+            .entry((block.producer_node.clone(), block.producer_port.clone()))
+            .or_default();
         entry.block_count += 1;
         if let Some(fold_id) = &block.fold_id {
             entry.fold_ids.insert(fold_id.to_string());
@@ -3350,10 +3927,17 @@ fn oof_prediction_summary(
         }
         entry.target_names = Some(block.target_names.clone());
     }
+    let sample_ports =
+        summaries
+            .keys()
+            .fold(BTreeMap::<NodeId, usize>::new(), |mut counts, (node, _)| {
+                *counts.entry(node.clone()).or_default() += 1;
+                counts
+            });
     let mut output = summaries
         .into_iter()
-        .map(|(producer_node, summary)| {
-            serde_json::json!({
+        .map(|((producer_node, producer_port), summary)| {
+            let mut record = serde_json::json!({
                 "producer_node": producer_node,
                 "prediction_level": PredictionLevel::Sample,
                 "block_count": summary.block_count,
@@ -3361,18 +3945,30 @@ fn oof_prediction_summary(
                 "sample_ids": summary.sample_ids.into_iter().collect::<Vec<_>>(),
                 "prediction_width": summary.prediction_width.unwrap_or_default(),
                 "target_names": summary.target_names.unwrap_or_default(),
-            })
+            });
+            if sample_ports
+                .get(&producer_node)
+                .is_some_and(|count| *count > 1)
+            {
+                record["producer_port"] = serde_json::json!(producer_port);
+            }
+            record
         })
         .collect::<Vec<_>>();
 
     let mut aggregated_summaries =
-        BTreeMap::<(NodeId, PredictionLevel), AggregatedOofPredictionSummary>::new();
+        BTreeMap::<(NodeId, Option<String>, PredictionLevel), AggregatedOofPredictionSummary>::new(
+        );
     for block in aggregated_blocks
         .iter()
         .filter(|block| block.partition == PredictionPartition::Validation)
     {
         let width = block.validate_shape()?;
-        let key = (block.producer_node.clone(), block.level);
+        let key = (
+            block.producer_node.clone(),
+            block.producer_port.clone(),
+            block.level,
+        );
         let entry = aggregated_summaries.entry(key).or_default();
         entry.block_count += 1;
         entry.prediction_level = Some(block.level);
@@ -3407,9 +4003,16 @@ fn oof_prediction_summary(
         }
         entry.target_names = Some(target_names);
     }
+    let aggregated_ports = aggregated_summaries.keys().fold(
+        BTreeMap::<(NodeId, PredictionLevel), usize>::new(),
+        |mut counts, (node, _, level)| {
+            *counts.entry((node.clone(), *level)).or_default() += 1;
+            counts
+        },
+    );
     output.extend(aggregated_summaries.into_iter().map(
-        |((producer_node, prediction_level), summary)| {
-            serde_json::json!({
+        |((producer_node, producer_port, prediction_level), summary)| {
+            let mut record = serde_json::json!({
                 "producer_node": producer_node,
                 "prediction_level": prediction_level,
                 "block_count": summary.block_count,
@@ -3417,10 +4020,395 @@ fn oof_prediction_summary(
                 "unit_ids": summary.unit_ids.into_iter().collect::<Vec<_>>(),
                 "prediction_width": summary.prediction_width.unwrap_or_default(),
                 "target_names": summary.target_names.unwrap_or_default(),
-            })
+            });
+            if aggregated_ports
+                .get(&(producer_node, prediction_level))
+                .is_some_and(|count| *count > 1)
+            {
+                record["producer_port"] = serde_json::json!(producer_port);
+            }
+            record
         },
     ));
     Ok(output)
+}
+
+struct CliHpoProviderFactory {
+    envelope: ExternalDataPlanEnvelope,
+}
+
+impl HostHpoCandidateProviderFactory for CliHpoProviderFactory {
+    fn create(
+        &self,
+        _trial_index: u32,
+    ) -> dag_ml_core::Result<Box<dyn RuntimeDataProvider + Send>> {
+        Ok(Box::new(InMemoryDataProvider::with_envelope(
+            ControllerId::new("controller:data.provider")?,
+            self.envelope.clone(),
+        )?))
+    }
+}
+
+struct CliHpoControllerFactory {
+    plan: dag_ml_core::ExecutionPlan,
+    adapter: PathBuf,
+    persistent: bool,
+    timeout: Duration,
+}
+
+impl HostHpoCandidateControllerFactory for CliHpoControllerFactory {
+    fn create(&self, _trial_index: u32) -> dag_ml_core::Result<RuntimeControllerRegistry> {
+        process_runtime_controllers_for_mode(
+            &self.plan,
+            self.adapter.clone(),
+            self.persistent,
+            ProcessAdapterRuntimeConfig {
+                process_workers: 1,
+                timeout: self.timeout,
+                retries: 0,
+                control_frames: false,
+            },
+            SchedulerConfig {
+                scheduler: CliScheduler::Sequential,
+                workers: 1,
+            },
+        )
+        .map_err(|error| DagMlError::RuntimeValidation(error.to_string()))
+    }
+}
+
+struct CliHpoOptimizer {
+    child: Child,
+    stdin: ChildStdin,
+    stdout_rx: Receiver<PersistentReadEvent>,
+    timeout: Duration,
+}
+
+impl CliHpoOptimizer {
+    fn spawn(path: &Path, timeout: Duration) -> Result<Self> {
+        if timeout.is_zero() {
+            bail!("--adapter-timeout-ms must be positive");
+        }
+        let mut command = process_adapter_command(path, ProcessAdapterMode::OneShot);
+        command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit());
+        let mut child = command
+            .spawn()
+            .with_context(|| format!("spawn HPO optimizer adapter {}", path.display()))?;
+        let stdin = child
+            .stdin
+            .take()
+            .context("HPO optimizer adapter has no stdin")?;
+        let stdout = child
+            .stdout
+            .take()
+            .context("HPO optimizer adapter has no stdout")?;
+        Ok(Self {
+            child,
+            stdin,
+            stdout_rx: spawn_persistent_stdout_reader(stdout),
+            timeout,
+        })
+    }
+
+    fn call(&mut self, event: serde_json::Value) -> dag_ml_core::Result<serde_json::Value> {
+        serde_json::to_writer(&mut self.stdin, &event).map_err(|error| {
+            DagMlError::RuntimeValidation(format!("write HPO optimizer event: {error}"))
+        })?;
+        self.stdin
+            .write_all(b"\n")
+            .and_then(|()| self.stdin.flush())
+            .map_err(|error| {
+                DagMlError::RuntimeValidation(format!("flush HPO optimizer event: {error}"))
+            })?;
+        let line = match self.stdout_rx.recv_timeout(self.timeout) {
+            Ok(PersistentReadEvent::Line(line)) => line,
+            Ok(PersistentReadEvent::Eof) => {
+                return Err(DagMlError::RuntimeValidation(
+                    "HPO optimizer adapter exited before responding".into(),
+                ))
+            }
+            Ok(PersistentReadEvent::Error(error)) => {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "read HPO optimizer adapter: {error}"
+                )))
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                return Err(DagMlError::RuntimeValidation(
+                    "HPO optimizer adapter timed out".into(),
+                ))
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                return Err(DagMlError::RuntimeValidation(
+                    "HPO optimizer adapter disconnected".into(),
+                ))
+            }
+        };
+        let reply: serde_json::Value = serde_json::from_str(&line).map_err(|error| {
+            DagMlError::RuntimeValidation(format!(
+                "HPO optimizer adapter returned invalid JSON: {error}"
+            ))
+        })?;
+        if let Some(error) = reply.get("error").and_then(serde_json::Value::as_str) {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "HPO optimizer adapter: {error}"
+            )));
+        }
+        Ok(reply)
+    }
+}
+
+impl Drop for CliHpoOptimizer {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+struct CliHpoProposals(Rc<RefCell<CliHpoOptimizer>>);
+
+impl HostHpoProposalSource for CliHpoProposals {
+    fn ask(
+        &mut self,
+        trial_index: u32,
+    ) -> dag_ml_core::Result<Option<BTreeMap<String, serde_json::Value>>> {
+        self.ask_in_phase(trial_index, None)
+    }
+
+    fn ask_in_phase(
+        &mut self,
+        trial_index: u32,
+        phase_index: Option<u32>,
+    ) -> dag_ml_core::Result<Option<BTreeMap<String, serde_json::Value>>> {
+        let reply = self.0.borrow_mut().call(serde_json::json!({
+            "operation": "ask", "trial_index": trial_index, "phase_index": phase_index,
+        }))?;
+        serde_json::from_value(reply.get("params").cloned().ok_or_else(|| {
+            DagMlError::RuntimeValidation("HPO optimizer ask reply lacks params".into())
+        })?)
+        .map_err(DagMlError::Serialization)
+    }
+
+    fn tell(&mut self, trial_index: u32, score: f64) -> dag_ml_core::Result<()> {
+        cli_hpo_ack(self.0.borrow_mut().call(serde_json::json!({
+            "operation": "tell", "trial_index": trial_index, "score": score,
+        }))?)
+    }
+
+    fn report_intermediate(
+        &mut self,
+        trial_index: u32,
+        step: u32,
+        score: f64,
+    ) -> dag_ml_core::Result<bool> {
+        self.0.borrow_mut().call(serde_json::json!({
+            "operation": "report_intermediate", "trial_index": trial_index, "step": step, "score": score,
+        }))?.get("prune").and_then(serde_json::Value::as_bool).ok_or_else(||
+            DagMlError::RuntimeValidation("HPO optimizer intermediate reply lacks prune boolean".into()))
+    }
+
+    fn pruned(&mut self, trial_index: u32) -> dag_ml_core::Result<()> {
+        cli_hpo_ack(self.0.borrow_mut().call(serde_json::json!({
+            "operation": "pruned", "trial_index": trial_index,
+        }))?)
+    }
+
+    fn fail(&mut self, trial_index: u32, error: &str) -> dag_ml_core::Result<()> {
+        cli_hpo_ack(self.0.borrow_mut().call(serde_json::json!({
+            "operation": "fail", "trial_index": trial_index, "error": error,
+        }))?)
+    }
+}
+
+fn cli_hpo_ack(reply: serde_json::Value) -> dag_ml_core::Result<()> {
+    if reply.get("ok").and_then(serde_json::Value::as_bool) == Some(true) {
+        Ok(())
+    } else {
+        Err(DagMlError::RuntimeValidation(
+            "HPO optimizer adapter did not acknowledge transition".into(),
+        ))
+    }
+}
+
+struct CliHpoProgress {
+    optimizer: Rc<RefCell<CliHpoOptimizer>>,
+    checkpoint_path: PathBuf,
+}
+
+impl HostHpoProgress for CliHpoProgress {
+    fn prepare_terminal(
+        &mut self,
+        checkpoint: &HostHpoCheckpoint,
+        status: HostHpoSearchStatus,
+    ) -> dag_ml_core::Result<()> {
+        cli_hpo_ack(self.optimizer.borrow_mut().call(serde_json::json!({
+            "operation": "prepare_terminal", "checkpoint": checkpoint, "status": status,
+        }))?)
+    }
+
+    fn checkpoint(
+        &mut self,
+        checkpoint: &HostHpoCheckpoint,
+        status: HostHpoSearchStatus,
+    ) -> dag_ml_core::Result<bool> {
+        let reply = self.optimizer.borrow_mut().call(serde_json::json!({
+            "operation": "checkpoint", "checkpoint": checkpoint, "status": status,
+        }))?;
+        cli_hpo_ack(reply.clone())?;
+        let bytes = serde_json::to_vec_pretty(checkpoint).map_err(DagMlError::Serialization)?;
+        let staging = self.checkpoint_path.with_extension("json.tmp");
+        std::fs::write(&staging, bytes)
+            .and_then(|()| std::fs::rename(&staging, &self.checkpoint_path))
+            .map_err(|error| {
+                DagMlError::RuntimeValidation(format!(
+                    "publish HPO checkpoint {}: {error}",
+                    self.checkpoint_path.display()
+                ))
+            })?;
+        Ok(reply
+            .get("continue")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(true))
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_host_hpo_cli(
+    plan_path: &Path,
+    envelope_path: &Path,
+    request_path: &Path,
+    operator_adapter: &Path,
+    operator_persistent: bool,
+    optimizer_adapter: &Path,
+    parallel_trials: usize,
+    checkpoint_path: Option<&Path>,
+    output: Option<&Path>,
+    timeout: Duration,
+) -> Result<()> {
+    if parallel_trials == 0 {
+        bail!("--parallel-trials must be positive");
+    }
+    let plan: dag_ml_core::ExecutionPlan =
+        read_json(&plan_path.to_path_buf(), "HPO execution plan")?;
+    plan.validate()?;
+    let envelope: ExternalDataPlanEnvelope =
+        read_json(&envelope_path.to_path_buf(), "HPO data envelope")?;
+    envelope.validate()?;
+    plan.campaign.validate_data_envelope_relations(&envelope)?;
+    let request: HostHpoSearchRequest = read_json(&request_path.to_path_buf(), "HPO request")?;
+    let provider_factory = CliHpoProviderFactory {
+        envelope: envelope.clone(),
+    };
+    let controller_factory = CliHpoControllerFactory {
+        plan: plan.clone(),
+        adapter: operator_adapter.to_path_buf(),
+        persistent: operator_persistent,
+        timeout,
+    };
+    let optimizer = Rc::new(RefCell::new(CliHpoOptimizer::spawn(
+        optimizer_adapter,
+        timeout,
+    )?));
+    let saved: Option<HostHpoCheckpoint> = checkpoint_path
+        .filter(|path| path.exists())
+        .map(|path| read_json(&path.to_path_buf(), "HPO checkpoint"))
+        .transpose()?;
+    let init = optimizer.borrow_mut().call(serde_json::json!({
+        "operation": "init", "request": request, "checkpoint": saved,
+    }))?;
+    let prepared: Option<HostHpoCheckpoint> = serde_json::from_value(
+        init.get("prepared_checkpoint")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null),
+    )?;
+    let interrupted = serde_json::from_value(
+        init.get("interrupted")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!([])),
+    )?;
+    let saved = match saved {
+        Some(saved) => Some(saved.recover_interrupted_trials(prepared, interrupted)?),
+        None if prepared.is_none() && interrupted.is_empty() => None,
+        None => {
+            bail!("HPO optimizer returned interrupted trials without a native checkpoint file")
+        }
+    };
+    let mut proposals = CliHpoProposals(optimizer.clone());
+    let scheduler = SequentialScheduler;
+    let result = if let Some(checkpoint_path) = checkpoint_path {
+        let options = HostHpoResumeOptions::from_envelope(&envelope, saved)?;
+        let mut progress = CliHpoProgress {
+            optimizer,
+            checkpoint_path: checkpoint_path.to_path_buf(),
+        };
+        if parallel_trials > 1 {
+            serde_json::to_value(
+                scheduler.execute_resumable_parallel_host_hpo_search_with_candidate_factories(
+                    &plan,
+                    &provider_factory,
+                    &controller_factory,
+                    &request,
+                    &mut proposals,
+                    parallel_trials,
+                    &options,
+                    &mut progress,
+                )?,
+            )?
+        } else {
+            let provider = InMemoryDataProvider::with_envelope(
+                ControllerId::new("controller:data.provider")?,
+                envelope,
+            )?;
+            serde_json::to_value(
+                scheduler.execute_resumable_host_hpo_search_with_candidate_factories(
+                    &plan,
+                    &RuntimeControllerRegistry::new(),
+                    &provider,
+                    &provider_factory,
+                    &controller_factory,
+                    &request,
+                    &mut proposals,
+                    &options,
+                    &mut progress,
+                )?,
+            )?
+        }
+    } else if parallel_trials > 1 {
+        serde_json::to_value(
+            scheduler.execute_parallel_host_hpo_search_with_candidate_factories(
+                &plan,
+                &provider_factory,
+                &controller_factory,
+                &request,
+                &mut proposals,
+                parallel_trials,
+            )?,
+        )?
+    } else {
+        let provider = InMemoryDataProvider::with_envelope(
+            ControllerId::new("controller:data.provider")?,
+            envelope,
+        )?;
+        serde_json::to_value(scheduler.execute_host_hpo_search_with_candidate_factories(
+            &plan,
+            &RuntimeControllerRegistry::new(),
+            &provider,
+            &provider_factory,
+            &controller_factory,
+            &request,
+            &mut proposals,
+        )?)?
+    };
+    let bytes = serde_json::to_vec_pretty(&result)?;
+    if let Some(path) = output {
+        std::fs::write(path, bytes)
+            .with_context(|| format!("write HPO result {}", path.display()))?;
+    } else {
+        println!("{}", String::from_utf8(bytes)?);
+    }
+    Ok(())
 }
 
 struct CliMockController {
@@ -3456,6 +4444,9 @@ struct PersistentProcessRuntimeController {
     adapter: PathBuf,
     config: ProcessAdapterRuntimeConfig,
     sessions: Vec<Mutex<PersistentProcessSession>>,
+    portable_artifact_bridge: bool,
+    refit_artifact_workers: Mutex<BTreeMap<ArtifactId, usize>>,
+    hydrated_artifact_workers: Mutex<BTreeMap<HandleRef, usize>>,
 }
 
 struct PersistentProcessSession {
@@ -3490,6 +4481,10 @@ enum ProcessAdapterRequestFrame<'a> {
         schema_version: u32,
         task: &'a NodeTask,
     },
+    PortableArtifact {
+        schema_version: u32,
+        task: &'a PortableArtifactBridgeTask,
+    },
     Close {
         schema_version: u32,
     },
@@ -3505,6 +4500,10 @@ enum ProcessAdapterResponseFrame {
     Result {
         schema_version: u32,
         result: Box<NodeResult>,
+    },
+    PortableArtifact {
+        schema_version: u32,
+        result: PortableArtifactBridgeResult,
     },
     Error {
         schema_version: u32,
@@ -3525,6 +4524,7 @@ impl ProcessAdapterResponseFrame {
         match self {
             Self::Ack { .. } => "ack",
             Self::Result { .. } => "result",
+            Self::PortableArtifact { .. } => "portable_artifact",
             Self::Error { .. } => "error",
         }
     }
@@ -3700,6 +4700,46 @@ impl PersistentProcessSession {
             }
             frame => Err(PersistentWorkerFailure::terminal(format!(
                 "adapter task returned unexpected frame `{}`",
+                frame.kind()
+            ))),
+        }
+    }
+
+    fn invoke_portable_artifact(
+        &mut self,
+        controller_id: &ControllerId,
+        adapter: &Path,
+        task: &PortableArtifactBridgeTask,
+        timeout: Duration,
+    ) -> Result<PortableArtifactBridgeResult, PersistentWorkerFailure> {
+        if !self.control_frames {
+            return Err(PersistentWorkerFailure::terminal(
+                "portable artifact bridge requires control frames",
+            ));
+        }
+        self.write_json_line(
+            controller_id,
+            ProcessAdapterRequestFrame::PortableArtifact {
+                schema_version: PROCESS_ADAPTER_FRAME_SCHEMA_VERSION,
+                task,
+            },
+        )?;
+        match self.read_response_frame(controller_id, adapter, timeout)? {
+            ProcessAdapterResponseFrame::PortableArtifact {
+                schema_version,
+                result,
+            } if schema_version == PROCESS_ADAPTER_FRAME_SCHEMA_VERSION => Ok(result),
+            ProcessAdapterResponseFrame::Error {
+                schema_version,
+                error,
+            } if schema_version == PROCESS_ADAPTER_FRAME_SCHEMA_VERSION => {
+                Err(PersistentWorkerFailure::terminal(format!(
+                    "adapter portable artifact operation returned error `{}`: {}",
+                    error.code, error.message
+                )))
+            }
+            frame => Err(PersistentWorkerFailure::terminal(format!(
+                "adapter portable artifact operation returned unexpected frame `{}`",
                 frame.kind()
             ))),
         }
@@ -4039,7 +5079,28 @@ impl RuntimeController for PersistentProcessRuntimeController {
         })?;
         for attempt in 0..=self.config.retries {
             match session.invoke_once(&self.id, &self.adapter, task, self.config.timeout) {
-                Ok(result) => return Ok(result),
+                Ok(result) => {
+                    if task.phase == Phase::Refit && !result.artifact_handles.is_empty() {
+                        let mut owners = self.refit_artifact_workers.lock().map_err(|_| {
+                            DagMlError::RuntimeValidation(format!(
+                                "controller `{}` REFIT artifact worker registry is poisoned",
+                                self.id
+                            ))
+                        })?;
+                        for artifact_id in result.artifact_handles.keys() {
+                            if owners
+                                .insert(artifact_id.clone(), worker_index)
+                                .is_some_and(|old| old != worker_index)
+                            {
+                                return Err(DagMlError::RuntimeValidation(format!(
+                                    "controller `{}` emitted REFIT artifact `{artifact_id}` from multiple workers",
+                                    self.id
+                                )));
+                            }
+                        }
+                    }
+                    return Ok(result);
+                }
                 Err(failure) => {
                     if failure.restartable {
                         session.terminate();
@@ -4075,6 +5136,164 @@ impl RuntimeController for PersistentProcessRuntimeController {
             self.id,
             self.adapter.display()
         )))
+    }
+
+    fn export_artifact_payload(
+        &self,
+        artifact_id: &ArtifactId,
+    ) -> dag_ml_core::Result<Option<Vec<u8>>> {
+        if !self.portable_artifact_bridge {
+            return Ok(None);
+        }
+        let worker_index = self
+            .refit_artifact_workers
+            .lock()
+            .map_err(|_| {
+                DagMlError::RuntimeValidation(format!(
+                    "controller `{}` REFIT artifact worker registry is poisoned",
+                    self.id
+                ))
+            })?
+            .get(artifact_id)
+            .copied()
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "controller `{}` has no live worker for REFIT artifact `{artifact_id}`",
+                    self.id
+                ))
+            })?;
+        let mut session = self.sessions[worker_index].lock().map_err(|_| {
+            DagMlError::RuntimeValidation(format!(
+                "controller `{}` portable artifact worker is poisoned",
+                self.id
+            ))
+        })?;
+        let task = PortableArtifactBridgeTask::ExportArtifactPayload {
+            schema_version: dag_ml_core::PORTABLE_ARTIFACT_BRIDGE_SCHEMA_VERSION,
+            artifact_id: artifact_id.clone(),
+        };
+        match session
+            .invoke_portable_artifact(&self.id, &self.adapter, &task, self.config.timeout)
+            .map_err(|failure| DagMlError::RuntimeValidation(failure.message))?
+        {
+            PortableArtifactBridgeResult::ExportedArtifactPayload {
+                schema_version,
+                payload,
+            } if schema_version == dag_ml_core::PORTABLE_ARTIFACT_BRIDGE_SCHEMA_VERSION => {
+                Ok(Some(payload))
+            }
+            other => Err(DagMlError::RuntimeValidation(format!(
+                "controller `{}` returned unexpected portable artifact export result {other:?}",
+                self.id
+            ))),
+        }
+    }
+
+    fn hydrate_artifact_payload(
+        &self,
+        request: &ArtifactMaterializationRequest,
+        payload: &[u8],
+    ) -> dag_ml_core::Result<HandleRef> {
+        if !self.portable_artifact_bridge {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "controller `{}` adapter lacks `{PROCESS_ADAPTER_CAP_PORTABLE_ARTIFACT_BRIDGE}`",
+                self.id
+            )));
+        }
+        let variant = request
+            .variant_id
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_else(|| "base".to_string());
+        let worker_index = (stable_handle(&format!("{}:{variant}", request.node_id)) as usize)
+            % self.sessions.len();
+        let task = PortableArtifactBridgeTask::HydrateArtifactPayload {
+            schema_version: dag_ml_core::PORTABLE_ARTIFACT_BRIDGE_SCHEMA_VERSION,
+            request: Box::new(request.clone()),
+            payload: payload.to_vec(),
+        };
+        let mut session = self.sessions[worker_index].lock().map_err(|_| {
+            DagMlError::RuntimeValidation(format!(
+                "controller `{}` portable artifact worker is poisoned",
+                self.id
+            ))
+        })?;
+        let handle = match session
+            .invoke_portable_artifact(&self.id, &self.adapter, &task, self.config.timeout)
+            .map_err(|failure| DagMlError::RuntimeValidation(failure.message))?
+        {
+            PortableArtifactBridgeResult::HydratedArtifactPayload {
+                schema_version,
+                handle,
+            } if schema_version == dag_ml_core::PORTABLE_ARTIFACT_BRIDGE_SCHEMA_VERSION => handle,
+            other => {
+                return Err(DagMlError::RuntimeValidation(format!(
+                "controller `{}` returned unexpected portable artifact hydrate result {other:?}",
+                self.id
+            )))
+            }
+        };
+        if handle.owner_controller != self.id
+            || !matches!(handle.kind, HandleKind::Model | HandleKind::Artifact)
+        {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "controller `{}` returned an invalid hydrated artifact handle",
+                self.id
+            )));
+        }
+        self.hydrated_artifact_workers
+            .lock()
+            .map_err(|_| {
+                DagMlError::RuntimeValidation(format!(
+                    "controller `{}` hydrated artifact worker registry is poisoned",
+                    self.id
+                ))
+            })?
+            .insert(handle.clone(), worker_index);
+        Ok(handle)
+    }
+
+    fn release_hydrated_artifact_payload(&self, handle: &HandleRef) -> dag_ml_core::Result<()> {
+        let worker_index = self
+            .hydrated_artifact_workers
+            .lock()
+            .map_err(|_| {
+                DagMlError::RuntimeValidation(format!(
+                    "controller `{}` hydrated artifact worker registry is poisoned",
+                    self.id
+                ))
+            })?
+            .remove(handle)
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "controller `{}` has no live worker for hydrated artifact handle {}",
+                    self.id, handle.handle
+                ))
+            })?;
+        let task = PortableArtifactBridgeTask::ReleaseHydratedArtifactPayload {
+            schema_version: dag_ml_core::PORTABLE_ARTIFACT_BRIDGE_SCHEMA_VERSION,
+            handle: handle.clone(),
+        };
+        let mut session = self.sessions[worker_index].lock().map_err(|_| {
+            DagMlError::RuntimeValidation(format!(
+                "controller `{}` portable artifact worker is poisoned",
+                self.id
+            ))
+        })?;
+        match session
+            .invoke_portable_artifact(&self.id, &self.adapter, &task, self.config.timeout)
+            .map_err(|failure| DagMlError::RuntimeValidation(failure.message))?
+        {
+            PortableArtifactBridgeResult::ReleasedHydratedArtifactPayload { schema_version }
+                if schema_version == dag_ml_core::PORTABLE_ARTIFACT_BRIDGE_SCHEMA_VERSION =>
+            {
+                Ok(())
+            }
+            other => Err(DagMlError::RuntimeValidation(format!(
+                "controller `{}` returned unexpected portable artifact release result {other:?}",
+                self.id
+            ))),
+        }
     }
 
     fn create_tuner_session(
@@ -4270,6 +5489,7 @@ impl RuntimeController for CliMockController {
         }
         Ok(NodeResult {
             schema_version: None,
+            classification_probabilities: Vec::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([("out".to_string(), output)]),
             predictions,
@@ -4417,6 +5637,11 @@ fn persistent_process_runtime_controllers(
             adapter: adapter.clone(),
             config,
             sessions,
+            portable_artifact_bridge: description
+                .capabilities
+                .contains(PROCESS_ADAPTER_CAP_PORTABLE_ARTIFACT_BRIDGE),
+            refit_artifact_workers: Mutex::new(BTreeMap::new()),
+            hydrated_artifact_workers: Mutex::new(BTreeMap::new()),
         }))?;
     }
     Ok(registry)
@@ -4687,6 +5912,34 @@ fn spawn_adapter_with_retry<T>(
             }
         }
     }
+}
+
+fn host_artifact_store(
+    plan: &dag_ml_core::ExecutionPlan,
+    bundle: &ExecutionBundle,
+    path: &Path,
+) -> Result<InMemoryArtifactStore> {
+    bundle.validate_against_plan(plan)?;
+    let handles: BTreeMap<ArtifactId, HandleRef> =
+        read_json(&path.to_path_buf(), "host sidecar artifact handles")?;
+    let expected = bundle
+        .refit_artifacts
+        .iter()
+        .map(|artifact| artifact.artifact.id.clone())
+        .collect::<BTreeSet<_>>();
+    let supplied = handles.keys().cloned().collect::<BTreeSet<_>>();
+    if supplied != expected {
+        bail!(
+            "host sidecar artifact handles must exactly cover bundle refit artifacts (expected {:?}, supplied {:?})",
+            expected,
+            supplied
+        );
+    }
+    let mut store = InMemoryArtifactStore::new();
+    for artifact in &bundle.refit_artifacts {
+        store.register(artifact, handles[&artifact.artifact.id].clone())?;
+    }
+    Ok(store)
 }
 
 fn mock_artifact_store(
@@ -5568,6 +6821,73 @@ mod tests {
         assert_eq!(summary[0]["block_count"], 2);
     }
 
+    #[test]
+    fn oof_summary_keeps_prediction_ports_independent() {
+        let producer_node = NodeId::new("model:base").unwrap();
+        let sample_id = dag_ml_core::SampleId::new("sample:0").unwrap();
+        let fold_id = Some(dag_ml_core::FoldId::new("fold:0").unwrap());
+        let blocks = [
+            PredictionBlock {
+                prediction_id: None,
+                producer_node: producer_node.clone(),
+                producer_port: Some("oof".to_string()),
+                partition: PredictionPartition::Validation,
+                fold_id: fold_id.clone(),
+                sample_ids: vec![sample_id.clone()],
+                values: vec![vec![1.0]],
+                target_names: vec!["label".to_string()],
+            },
+            PredictionBlock {
+                prediction_id: None,
+                producer_node,
+                producer_port: Some("proba".to_string()),
+                partition: PredictionPartition::Validation,
+                fold_id,
+                sample_ids: vec![sample_id],
+                values: vec![vec![0.2, 0.8]],
+                target_names: vec!["class:0".to_string(), "class:1".to_string()],
+            },
+        ];
+        let summary = oof_prediction_summary(&blocks, &[]).unwrap();
+        assert_eq!(summary.len(), 2);
+        assert_eq!(summary[0]["producer_port"], "oof");
+        assert_eq!(summary[0]["prediction_width"], 1);
+        assert_eq!(summary[1]["producer_port"], "proba");
+        assert_eq!(summary[1]["prediction_width"], 2);
+
+        let target_id = PredictionUnitId::Target(dag_ml_core::TargetId::new("target:one").unwrap());
+        let aggregated = [
+            AggregatedPredictionBlock {
+                prediction_id: None,
+                producer_node: NodeId::new("model:base").unwrap(),
+                producer_port: Some("oof".to_string()),
+                partition: PredictionPartition::Validation,
+                fold_id: Some(dag_ml_core::FoldId::new("fold:0").unwrap()),
+                level: PredictionLevel::Target,
+                unit_ids: vec![target_id.clone()],
+                values: vec![vec![1.0]],
+                target_names: vec!["label".to_string()],
+            },
+            AggregatedPredictionBlock {
+                prediction_id: None,
+                producer_node: NodeId::new("model:base").unwrap(),
+                producer_port: Some("proba".to_string()),
+                partition: PredictionPartition::Validation,
+                fold_id: Some(dag_ml_core::FoldId::new("fold:0").unwrap()),
+                level: PredictionLevel::Target,
+                unit_ids: vec![target_id],
+                values: vec![vec![0.2, 0.8]],
+                target_names: vec!["0".to_string(), "1".to_string()],
+            },
+        ];
+        let summary = oof_prediction_summary(&[], &aggregated).unwrap();
+        assert_eq!(summary.len(), 2);
+        assert_eq!(summary[0]["producer_port"], "oof");
+        assert_eq!(summary[0]["prediction_width"], 1);
+        assert_eq!(summary[1]["producer_port"], "proba");
+        assert_eq!(summary[1]["prediction_width"], 2);
+    }
+
     use std::cell::Cell;
     use std::io::{Error as IoError, ErrorKind};
 
@@ -5781,6 +7101,7 @@ mod tests {
 
             Ok(NodeResult {
                 schema_version: None,
+                classification_probabilities: Vec::new(),
                 node_id: task.node_plan.node_id.clone(),
                 outputs: BTreeMap::from([
                     ("x".to_string(), data_output.clone()),
@@ -6229,6 +7550,110 @@ mod tests {
     }
 
     #[test]
+    fn host_hpo_cli_runs_parallel_pruning_and_resumes_native_checkpoint() {
+        let directory = std::env::temp_dir().join(format!(
+            "dagml-host-hpo-cli-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let plan_path = directory.join("plan.json");
+        let envelope_path = directory.join("envelope.json");
+        let request_path = directory.join("request.json");
+        let output_path = directory.join("output.json");
+        let graph: GraphSpec =
+            serde_json::from_str(include_str!("../../../examples/minimal_graph.json")).unwrap();
+        let mut campaign: CampaignSpec = serde_json::from_str(include_str!(
+            "../../../examples/campaign_oof_generation.json"
+        ))
+        .unwrap();
+        campaign.generation = Default::default();
+        campaign.data_bindings.clear();
+        let manifests: Vec<ControllerManifest> =
+            serde_json::from_str(include_str!("../../../examples/controller_manifests.json"))
+                .unwrap();
+        let mut registry = ControllerRegistry::new();
+        for manifest in manifests {
+            registry.register(manifest).unwrap();
+        }
+        let plan = build_execution_plan("plan:cli.host_hpo", graph, campaign, &registry).unwrap();
+        std::fs::write(&plan_path, serde_json::to_vec(&plan).unwrap()).unwrap();
+        std::fs::write(
+            &envelope_path,
+            include_bytes!(
+                "../../../examples/fixtures/data/coordinator_data_plan_envelope_sample12.json"
+            ),
+        )
+        .unwrap();
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let operator = root.join("examples/adapters/hpo_process_controller.py");
+        let mut optimizers = vec![root.join("examples/adapters/hpo_optimizer_jsonl.py")];
+        let r_available = std::process::Command::new("Rscript")
+            .arg("--version")
+            .output()
+            .is_ok();
+        if r_available {
+            optimizers.push(root.join("examples/adapters/hpo_optimizer_jsonl.R"));
+        } else {
+            assert_ne!(std::env::var("DAGML_REQUIRE_HPO_R").as_deref(), Ok("1"));
+        }
+        let octave_available = std::process::Command::new("octave")
+            .arg("--version")
+            .output()
+            .is_ok();
+        if octave_available {
+            optimizers.push(root.join("examples/adapters/hpo_optimizer_matlab.sh"));
+        } else {
+            assert_ne!(
+                std::env::var("DAGML_REQUIRE_HPO_MATLAB").as_deref(),
+                Ok("1")
+            );
+        }
+        for (adapter_index, optimizer) in optimizers.iter().enumerate() {
+            let checkpoint_path = directory.join(format!("checkpoint-{adapter_index}.json"));
+            for budget in [2, 3] {
+                std::fs::write(
+                    &request_path,
+                    serde_json::to_vec(&serde_json::json!({
+                        "target_node": "model:base", "trial_budget": budget,
+                        "metric": "rmse", "direction": "minimize",
+                        "optimizer_descriptor": {"adapter": "example"},
+                        "progressive_pruning": true,
+                    }))
+                    .unwrap(),
+                )
+                .unwrap();
+                run_host_hpo_cli(
+                    &plan_path,
+                    &envelope_path,
+                    &request_path,
+                    &operator,
+                    false,
+                    optimizer,
+                    2,
+                    Some(&checkpoint_path),
+                    Some(&output_path),
+                    Duration::from_secs(10),
+                )
+                .unwrap();
+                let result: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(&output_path).unwrap()).unwrap();
+                assert_eq!(result["status"], "completed");
+                assert_eq!(result["trials"].as_array().unwrap().len(), budget);
+                assert_eq!(result["selected_trial_index"], 0);
+                let checkpoint: HostHpoCheckpoint =
+                    serde_json::from_slice(&std::fs::read(&checkpoint_path).unwrap()).unwrap();
+                assert_eq!(checkpoint.trials.len(), budget);
+                checkpoint.verify_seal().unwrap();
+            }
+        }
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn no_variant_capture_replays_against_union_plan_unchanged() {
         // A no-operator-generator / single-variant capture must leave `effective_plan` None, so the
         // replay binds to the union (input) plan exactly as before — operator-SELECT routing changes
@@ -6291,5 +7716,145 @@ mod tests {
         )
         .expect("no-variant replay against the union plan must succeed");
         assert!(!replay_results.is_empty());
+    }
+
+    #[test]
+    fn cv_only_capture_skips_refit_and_keeps_native_oof_scores() {
+        let plan = simple_no_variant_plan();
+        let data_provider =
+            InMemoryDataProvider::new(ControllerId::new("controller:data.provider").unwrap());
+        let controllers = operator_select_cli_controllers();
+        let scheduler = SchedulerConfig::new(CliScheduler::Sequential, 1).unwrap();
+        let captured = build_bundle_from_cv_with_optional_refit(
+            CapturedRefitBundleInput {
+                plan: &plan,
+                data_provider: &data_provider,
+                runtime_controllers: &controllers,
+                bundle_id: "bundle:cli.cv.only".to_string(),
+                variant_id: None,
+                selections: BTreeMap::new(),
+                run_id: "run:cli.cv.only".to_string(),
+                root_seed: 7,
+                scheduler,
+                selection_metric: RegressionMetricKind::Rmse,
+                operator_variant_models: Vec::new(),
+                resource_limits: None,
+            },
+            false,
+        )
+        .expect("native CV-only capture must succeed");
+
+        assert!(captured.fit_cv_result_count > 0);
+        assert_eq!(captured.refit_result_count, 0);
+        assert!(captured.artifact_store.is_empty());
+        assert!(captured.bundle.refit_artifacts.is_empty());
+        assert_eq!(
+            captured.bundle.metadata.get("refit_enabled"),
+            Some(&serde_json::json!(false))
+        );
+        assert_eq!(
+            captured.bundle.metadata.get("variant_catalog"),
+            Some(&serde_json::json!(plan.variants))
+        );
+        assert!(captured.bundle.scores.is_some());
+        assert!(!captured.oof_average_results.is_empty());
+        assert_eq!(captured.node_results.len(), captured.fit_cv_result_count);
+        assert!(serde_json::to_value(&captured.node_results)
+            .unwrap()
+            .is_array());
+        captured.bundle.validate_against_plan(&plan).unwrap();
+    }
+
+    #[test]
+    fn persistent_process_controller_roundtrips_portable_raw_artifact_frames() {
+        let directory = std::env::temp_dir().join(format!(
+            "dagml-cli-raw-bridge-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let adapter = directory.join("raw_adapter.py");
+        std::fs::write(
+            &adapter,
+            r#"import json
+import sys
+
+for line in sys.stdin:
+    frame = json.loads(line)
+    if frame['type'] == 'init':
+        reply = {'type': 'ack', 'schema_version': 1, 'status': 'initialized'}
+    elif frame['type'] == 'close':
+        reply = {'type': 'ack', 'schema_version': 1, 'status': 'closed'}
+        print(json.dumps(reply), flush=True)
+        break
+    elif frame['type'] == 'portable_artifact':
+        task = frame['task']
+        if task['operation'] == 'export_artifact_payload':
+            result = {'operation': 'exported_artifact_payload', 'schema_version': 1, 'payload': [1, 2, 3, 4]}
+        elif task['operation'] == 'hydrate_artifact_payload':
+            assert task['payload'] == [1, 2, 3, 4]
+            result = {'operation': 'hydrated_artifact_payload', 'schema_version': 1,
+                      'handle': {'handle': 404, 'kind': 'model',
+                                 'owner_controller': task['request']['controller_id']}}
+        elif task['operation'] == 'release_hydrated_artifact_payload':
+            assert task['handle']['handle'] == 404
+            result = {'operation': 'released_hydrated_artifact_payload', 'schema_version': 1}
+        else:
+            raise RuntimeError(task['operation'])
+        reply = {'type': 'portable_artifact', 'schema_version': 1, 'result': result}
+    else:
+        raise RuntimeError(frame['type'])
+    print(json.dumps(reply), flush=True)
+"#,
+        )
+        .unwrap();
+        let id = ControllerId::new("controller:cli.raw.bridge").unwrap();
+        let session =
+            PersistentProcessSession::spawn(&id, &adapter, 0, 1, true, Duration::from_secs(5))
+                .unwrap();
+        let artifact_id = ArtifactId::new("artifact:cli.raw.bridge").unwrap();
+        let controller = PersistentProcessRuntimeController {
+            id: id.clone(),
+            adapter,
+            config: ProcessAdapterRuntimeConfig {
+                process_workers: 1,
+                timeout: Duration::from_secs(5),
+                retries: 0,
+                control_frames: true,
+            },
+            sessions: vec![Mutex::new(session)],
+            portable_artifact_bridge: true,
+            refit_artifact_workers: Mutex::new(BTreeMap::from([(artifact_id.clone(), 0)])),
+            hydrated_artifact_workers: Mutex::new(BTreeMap::new()),
+        };
+        let payload = controller
+            .export_artifact_payload(&artifact_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(payload, vec![1, 2, 3, 4]);
+        let request: ArtifactMaterializationRequest = serde_json::from_value(serde_json::json!({
+            "run_id": "run:cli.raw.bridge", "bundle_id": "bundle:cli.raw.bridge",
+            "node_id": "model:cli.raw.bridge", "phase": "PREDICT", "variant_id": null,
+            "controller_id": id.as_str(), "artifact": {
+                "id": artifact_id.as_str(), "kind": "model", "controller_id": id.as_str(),
+                "backend": "raw", "size_bytes": 4
+            }, "params_fingerprint": "0".repeat(64)
+        }))
+        .unwrap();
+        let handle = controller
+            .hydrate_artifact_payload(&request, &payload)
+            .unwrap();
+        assert_eq!(handle.handle, 404);
+        controller
+            .release_hydrated_artifact_payload(&handle)
+            .unwrap();
+        assert!(controller
+            .release_hydrated_artifact_payload(&handle)
+            .is_err());
+        drop(controller);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }

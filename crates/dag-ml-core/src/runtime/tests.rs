@@ -100,6 +100,26 @@ fn lineage_rejects_duplicate_or_out_of_scope_early_stopping_records() {
         .contains("does not match lineage task scope"));
 }
 
+#[test]
+fn residual_gate_bundle_records_restore_one_portable_refit_scope() {
+    let mut ctx = RunContext::new(RunId::new("run:residual.gate.replay").unwrap(), Some(17));
+    let records = serde_json::json!([{
+        "variant_id": "variant:base", "fold_id": null, "gate": 0.625, "rli": 0.18
+    }]);
+    ctx.import_residual_gate_records(&records).unwrap();
+    assert_eq!(ctx.residual_gate_records()[0].gate, 0.625);
+    ctx.import_residual_gate_records(&records).unwrap();
+    assert_eq!(ctx.residual_gate_records().len(), 1);
+    let tampered = serde_json::json!([{
+        "variant_id": "variant:base", "fold_id": null, "gate": 0.75, "rli": 0.18
+    }]);
+    assert!(ctx.import_residual_gate_records(&tampered).is_err());
+    let invalid = serde_json::json!([{
+        "variant_id": "variant:base", "fold_id": null, "gate": 1.1, "rli": 0.18
+    }]);
+    assert!(ctx.import_residual_gate_records(&invalid).is_err());
+}
+
 struct MockController {
     id: ControllerId,
     handle: u64,
@@ -128,6 +148,7 @@ impl RuntimeController for VariantProbeController {
             .unwrap_or_else(|| "base".to_string());
         Ok(NodeResult {
             schema_version: None,
+            classification_probabilities: Vec::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([(
                 "out".to_string(),
@@ -211,6 +232,7 @@ impl RuntimeController for ShapeDataController {
         };
         Ok(NodeResult {
             schema_version: None,
+            classification_probabilities: Vec::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([("x_out".to_string(), output)]),
             predictions: Vec::new(),
@@ -281,6 +303,7 @@ impl RuntimeController for DataViewProbeController {
         });
         Ok(NodeResult {
             schema_version: None,
+            classification_probabilities: Vec::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([(
                 "oof".to_string(),
@@ -423,6 +446,7 @@ impl RuntimeController for MockController {
             .collect::<Vec<_>>();
         Ok(NodeResult {
             schema_version: None,
+            classification_probabilities: Vec::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([
                 ("out".to_string(), output.clone()),
@@ -661,6 +685,7 @@ impl RuntimeController for ReplayMockController {
             .collect::<BTreeMap<_, _>>();
         Ok(NodeResult {
             schema_version: None,
+            classification_probabilities: Vec::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([("out".to_string(), output)]),
             predictions,
@@ -814,6 +839,7 @@ impl RuntimeController for OofEdgeController {
         };
         Ok(NodeResult {
             schema_version: None,
+            classification_probabilities: Vec::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([(
                 "pred".to_string(),
@@ -933,6 +959,7 @@ impl RuntimeController for CaptureOofValuesController {
         };
         Ok(NodeResult {
             schema_version: None,
+            classification_probabilities: Vec::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([(
                 "pred".to_string(),
@@ -1043,6 +1070,7 @@ impl RuntimeController for ExpectedRefitOofController {
         };
         Ok(NodeResult {
             schema_version: None,
+            classification_probabilities: Vec::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([(
                 "pred".to_string(),
@@ -1153,6 +1181,7 @@ impl RuntimeController for GroupAggregatedOofController {
         };
         Ok(NodeResult {
             schema_version: None,
+            classification_probabilities: Vec::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([(
                 "pred".to_string(),
@@ -1440,6 +1469,7 @@ impl RuntimeController for ObservationPredictionRuntimeController {
             };
         Ok(NodeResult {
             schema_version: None,
+            classification_probabilities: Vec::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([(
                 "pred".to_string(),
@@ -2529,6 +2559,373 @@ fn fixture_plan(plan_id: &str) -> ExecutionPlan {
     build_execution_plan(plan_id, graph, campaign, &registry).unwrap()
 }
 
+#[test]
+fn stacking_probability_selector_reduces_inner_and_outer_inputs_by_identity() {
+    let mut plan = fixture_plan("plan:branch-proba");
+    let first = NodeId::new("model:base").unwrap();
+    let second = NodeId::new("model:second").unwrap();
+    let meta = NodeId::new("model:meta").unwrap();
+    let base_node = plan
+        .graph_plan
+        .graph
+        .nodes
+        .iter_mut()
+        .find(|node| node.id == first)
+        .unwrap();
+    base_node
+        .metadata
+        .insert("dsl_branch".to_string(), json!("branch_0"));
+    let mut second_node = base_node.clone();
+    second_node.id = second.clone();
+    let mut meta_node = base_node.clone();
+    meta_node.id = meta.clone();
+    meta_node.metadata.remove("dsl_branch");
+    meta_node
+        .metadata
+        .insert("merge_mode".to_string(), json!("predictions"));
+    meta_node.metadata.insert(
+        "selectors".to_string(),
+        json!([
+            {"branch": "branch_0", "select": "all", "aggregate": "proba_mean"}
+        ]),
+    );
+    plan.graph_plan.graph.nodes.extend([second_node, meta_node]);
+    let mut meta_plan = plan.node_plans[&first].clone();
+    meta_plan.node_id = meta.clone();
+
+    let input = |producer: NodeId, sample_ids: &[&str], values: &[[f64; 2]]| PredictionInputSpec {
+        producer_node: producer,
+        source_port: "oof".to_string(),
+        target_port: "oof".to_string(),
+        partition: PredictionPartition::Validation,
+        prediction_level: PredictionLevel::Sample,
+        fold_id: None,
+        fold_ids: vec![FoldId::new("fold:0").unwrap()],
+        unit_ids: sample_ids
+            .iter()
+            .map(|id| PredictionUnitId::Sample(SampleId::new(*id).unwrap()))
+            .collect(),
+        sample_ids: sample_ids
+            .iter()
+            .map(|id| SampleId::new(*id).unwrap())
+            .collect(),
+        values: values.iter().map(|row| row.to_vec()).collect(),
+        prediction_width: 2,
+        target_names: vec!["0".to_string(), "1".to_string()],
+    };
+    let mut inputs = BTreeMap::new();
+    for suffix in ["", ":outer"] {
+        inputs.insert(
+            format!("{first}.oof{suffix}"),
+            input(first.clone(), &["s1", "s2"], &[[0.2, 0.8], [0.7, 0.3]]),
+        );
+        inputs.insert(
+            format!("{second}.oof{suffix}"),
+            input(second.clone(), &["s2", "s1"], &[[0.5, 0.5], [0.6, 0.4]]),
+        );
+    }
+    apply_stacking_prediction_aggregations(&plan, &meta_plan, &mut inputs, &[], None, None)
+        .unwrap();
+    assert_eq!(inputs.len(), 2);
+    for suffix in ["", ":outer"] {
+        let spec = &inputs[&format!("model:meta.branch.branch_0.oof{suffix}")];
+        assert_eq!(
+            spec.sample_ids,
+            vec![SampleId::new("s1").unwrap(), SampleId::new("s2").unwrap()]
+        );
+        for (actual, expected) in spec.values.iter().zip([[0.4, 0.6], [0.6, 0.4]]) {
+            for (actual, expected) in actual.iter().zip(expected) {
+                assert!((actual - expected).abs() < 1e-12);
+            }
+        }
+    }
+}
+
+#[test]
+fn stacking_best_selector_uses_validation_score_before_meta_fit() {
+    let mut plan = fixture_plan("plan:stacking.best");
+    let first = NodeId::new("model:base").unwrap();
+    let second = NodeId::new("model:second").unwrap();
+    let meta = NodeId::new("model:meta").unwrap();
+    let base_node = plan
+        .graph_plan
+        .graph
+        .nodes
+        .iter_mut()
+        .find(|node| node.id == first)
+        .unwrap();
+    base_node
+        .metadata
+        .insert("dsl_branch".to_string(), json!("branch_0"));
+    let mut second_node = base_node.clone();
+    second_node.id = second.clone();
+    let mut meta_node = base_node.clone();
+    meta_node.id = meta.clone();
+    meta_node.metadata.remove("dsl_branch");
+    meta_node
+        .metadata
+        .insert("merge_mode".to_string(), json!("predictions"));
+    meta_node.metadata.insert(
+        "selectors".to_string(),
+        json!([{"branch": "branch_0", "select": "best", "metric": "rmse"}]),
+    );
+    plan.graph_plan.graph.nodes.extend([second_node, meta_node]);
+    let mut meta_plan = plan.node_plans[&first].clone();
+    meta_plan.node_id = meta;
+    let input = |producer: NodeId, value: f64| PredictionInputSpec {
+        producer_node: producer,
+        source_port: "oof".to_string(),
+        target_port: "oof".to_string(),
+        partition: PredictionPartition::Validation,
+        prediction_level: PredictionLevel::Sample,
+        fold_id: Some(FoldId::new("fold:0").unwrap()),
+        fold_ids: vec![FoldId::new("fold:0").unwrap()],
+        unit_ids: vec![PredictionUnitId::Sample(SampleId::new("s1").unwrap())],
+        sample_ids: vec![SampleId::new("s1").unwrap()],
+        values: vec![vec![value]],
+        prediction_width: 1,
+        target_names: vec!["y".to_string()],
+    };
+    let mut inputs = BTreeMap::from([
+        (format!("{first}.oof"), input(first.clone(), 1.0)),
+        (format!("{second}.oof"), input(second.clone(), 2.0)),
+    ]);
+    let report = |producer_node, rmse| crate::metrics::RegressionMetricReport {
+        prediction_id: None,
+        producer_node,
+        producer_port: None,
+        variant_id: None,
+        variant_label: None,
+        partition: PredictionPartition::Validation,
+        fold_id: Some(FoldId::new("fold:0").unwrap()),
+        level: PredictionLevel::Sample,
+        row_count: 1,
+        target_width: 1,
+        target_names: vec!["y".to_string()],
+        metrics: BTreeMap::from([("rmse".to_string(), rmse)]),
+    };
+    apply_stacking_prediction_aggregations(
+        &plan,
+        &meta_plan,
+        &mut inputs,
+        &[report(first, 4.0), report(second.clone(), 2.0)],
+        None,
+        None,
+    )
+    .unwrap();
+    assert_eq!(inputs.len(), 1);
+    assert_eq!(inputs.values().next().unwrap().producer_node, second);
+}
+
+#[test]
+fn stacking_fold_candidate_top_k_uses_only_inner_validation_scores() {
+    let mut plan = fixture_plan("plan:stacking.fold-candidates");
+    let first = NodeId::new("model:base").unwrap();
+    let second = NodeId::new("model:second").unwrap();
+    let meta = NodeId::new("model:meta").unwrap();
+    let base_node = plan
+        .graph_plan
+        .graph
+        .nodes
+        .iter()
+        .find(|node| node.id == first)
+        .unwrap()
+        .clone();
+    let mut second_node = base_node.clone();
+    second_node.id = second.clone();
+    let mut meta_node = base_node;
+    meta_node.id = meta.clone();
+    meta_node
+        .metadata
+        .insert("merge_mode".to_string(), json!("predictions"));
+    meta_node.metadata.insert(
+        "selectors".to_string(),
+        json!([{
+            "select": {"fold_candidates_top_k": 1}, "metric": "rmse"
+        }]),
+    );
+    plan.graph_plan.graph.nodes.extend([second_node, meta_node]);
+    let mut meta_plan = plan.node_plans[&first].clone();
+    meta_plan.node_id = meta;
+    let input = |producer_node: NodeId| PredictionInputSpec {
+        producer_node,
+        source_port: "oof".to_string(),
+        target_port: "oof".to_string(),
+        partition: PredictionPartition::Validation,
+        prediction_level: PredictionLevel::Sample,
+        fold_id: None,
+        fold_ids: vec![FoldId::new("fold:inner").unwrap()],
+        unit_ids: vec![PredictionUnitId::Sample(SampleId::new("s1").unwrap())],
+        sample_ids: vec![SampleId::new("s1").unwrap()],
+        values: vec![vec![1.0]],
+        prediction_width: 1,
+        target_names: vec!["y".to_string()],
+    };
+    let report = |producer_node, fold, rmse| crate::metrics::RegressionMetricReport {
+        prediction_id: None,
+        producer_node,
+        producer_port: None,
+        variant_id: None,
+        variant_label: None,
+        partition: PredictionPartition::Validation,
+        fold_id: Some(FoldId::new(fold).unwrap()),
+        level: PredictionLevel::Sample,
+        row_count: 1,
+        target_width: 1,
+        target_names: vec!["y".to_string()],
+        metrics: BTreeMap::from([("rmse".to_string(), rmse)]),
+    };
+    let reports = [
+        report(second.clone(), "fold:outer", 0.001),
+        report(first.clone(), "fold:inner", 0.2),
+        report(second.clone(), "fold:inner", 0.4),
+    ];
+    let allowed = BTreeSet::from([FoldId::new("fold:inner").unwrap()]);
+    let mut inputs = BTreeMap::from([
+        (format!("{first}.oof"), input(first.clone())),
+        (format!("{second}.oof"), input(second.clone())),
+    ]);
+    apply_stacking_prediction_aggregations(
+        &plan,
+        &meta_plan,
+        &mut inputs,
+        &reports,
+        Some(&allowed),
+        None,
+    )
+    .unwrap();
+    assert_eq!(inputs.len(), 1);
+    assert_eq!(inputs.values().next().unwrap().producer_node, first);
+}
+
+#[test]
+fn stacking_diverse_fold_candidates_are_ranked_per_operator_class() {
+    let report = |producer_node: &str, fold_id: &str, rmse: f64| {
+        json!({
+            "producer_node": producer_node,
+            "partition": "validation",
+            "fold_id": fold_id,
+            "level": "sample",
+            "row_count": 1,
+            "target_width": 1,
+            "metrics": {"rmse": rmse},
+        })
+    };
+    let mut request: StackingProducerSelectionRequest = serde_json::from_value(json!({
+        "producer_nodes": ["model:ridge1", "model:ridge2", "model:pls"],
+        "select": {"diverse_fold_candidates": {
+            "max_per_class": 1,
+            "preferred_classes": ["Ridge"],
+        }},
+        "metric": "rmse",
+        "fold_ids": ["fold:inner"],
+        "producer_classes": {
+            "model:ridge1": "Ridge",
+            "model:ridge2": "Ridge",
+            "model:pls": "PLSRegression",
+        },
+        "reports": [
+            report("model:ridge1", "fold:inner", 0.4),
+            report("model:ridge2", "fold:inner", 0.2),
+            report("model:pls", "fold:inner", 0.5),
+            report("model:ridge1", "fold:outer", 0.001),
+        ],
+    }))
+    .unwrap();
+    assert_eq!(
+        request.selected_producer_nodes().unwrap(),
+        vec![
+            NodeId::new("model:ridge2").unwrap(),
+            NodeId::new("model:pls").unwrap(),
+        ]
+    );
+    request.select["diverse_fold_candidates"]["ascending"] = json!(false);
+    assert_eq!(
+        request.selected_producer_nodes().unwrap(),
+        vec![
+            NodeId::new("model:ridge1").unwrap(),
+            NodeId::new("model:pls").unwrap()
+        ]
+    );
+}
+
+#[test]
+fn stacking_selection_ignores_test_scores_and_rejects_duplicate_producers() {
+    let mut request: StackingProducerSelectionRequest = serde_json::from_value(json!({
+        "producer_nodes": ["model:a", "model:b"], "select": "best", "metric": "rmse",
+        "reports": [{"producer_node": "model:b", "partition": "test", "fold_id": "fold:0",
+            "level": "sample", "row_count": 1, "target_width": 1, "metrics": {"rmse": 0.01}}]
+    }))
+    .unwrap();
+    assert_eq!(
+        request.selected_producer_nodes().unwrap(),
+        vec![NodeId::new("model:a").unwrap()]
+    );
+    request.producer_nodes.push(NodeId::new("model:a").unwrap());
+    assert!(request
+        .selected_producer_nodes()
+        .unwrap_err()
+        .to_string()
+        .contains("distinct producer"));
+}
+
+#[test]
+fn stacking_selection_accepts_only_explicit_producers_in_scope() {
+    let mut request: StackingProducerSelectionRequest = serde_json::from_value(json!({
+        "producer_nodes": ["model:a", "model:b", "model:c"],
+        "select": {"models": ["model:c", "model:a"]}, "metric": "rmse",
+        "reports": []
+    }))
+    .unwrap();
+    assert_eq!(
+        request.selected_producer_nodes().unwrap(),
+        vec![
+            NodeId::new("model:c").unwrap(),
+            NodeId::new("model:a").unwrap()
+        ]
+    );
+    request.select = json!({"models": ["model:other"]});
+    assert!(request.selected_producer_nodes().is_err());
+    request.select = json!({"models": ["model:a", "model:a"]});
+    assert!(request.selected_producer_nodes().is_err());
+}
+
+#[test]
+fn stacking_best_fold_uses_validation_score_only_and_stable_ties() {
+    let mut request: StackingFoldSelectionRequest = serde_json::from_value(json!({
+        "producer_node": "model:base", "fold_ids": ["fold:0", "fold:1", "fold:2"],
+        "metric": "rmse",
+        "reports": [
+            {"producer_node": "model:base", "partition": "test", "fold_id": "fold:0",
+             "level": "sample", "row_count": 1, "target_width": 1,
+             "metrics": {"rmse": 0.001}},
+            {"producer_node": "model:base", "partition": "validation", "fold_id": "fold:0",
+             "level": "sample", "row_count": 1, "target_width": 1,
+             "metrics": {"rmse": 4.0}},
+            {"producer_node": "model:base", "partition": "validation", "fold_id": "fold:1",
+             "level": "sample", "row_count": 1, "target_width": 1,
+             "metrics": {"rmse": 2.0}},
+            {"producer_node": "model:base", "partition": "validation", "fold_id": "fold:2",
+             "level": "sample", "row_count": 1, "target_width": 1,
+             "metrics": {"rmse": 2.0}}
+        ]
+    }))
+    .unwrap();
+    assert_eq!(request.selected_fold_id().unwrap().as_str(), "fold:1");
+    let weights = request.normalized_weights().unwrap();
+    assert!(weights[1] > weights[0]);
+    assert_eq!(weights[1], weights[2]);
+    assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+    request.metric = "r2".to_string();
+    assert_eq!(request.selected_fold_id().unwrap().as_str(), "fold:0");
+    request.fold_ids.push(FoldId::new("fold:0").unwrap());
+    assert!(request
+        .selected_fold_id()
+        .unwrap_err()
+        .to_string()
+        .contains("distinct fold ids"));
+}
+
 fn replay_bundle(plan: &ExecutionPlan) -> crate::bundle::ExecutionBundle {
     let model_plan = plan
         .node_plans
@@ -2683,6 +3080,7 @@ fn parallel_scheduler_invokes_independent_level_concurrently() {
             self.active.fetch_sub(1, Ordering::SeqCst);
             Ok(NodeResult {
                 schema_version: None,
+                classification_probabilities: Vec::new(),
                 node_id: task.node_plan.node_id.clone(),
                 outputs: BTreeMap::from([(
                     "x".to_string(),
@@ -2837,6 +3235,7 @@ fn parallel_campaign_scheduler_stress_matches_sequential_across_variants_and_fol
                 .collect::<Vec<_>>();
             Ok(NodeResult {
                 schema_version: None,
+                classification_probabilities: Vec::new(),
                 node_id: task.node_plan.node_id.clone(),
                 outputs: BTreeMap::from([(
                     output_name.to_string(),
@@ -6290,6 +6689,94 @@ fn campaign_data_bindings_require_unsafe_flags_for_full_train_cv_views() {
 }
 
 #[test]
+fn all_observations_fit_scope_is_explicit_and_visible_in_cv_and_refit_views() {
+    let model_id = NodeId::new("model:pls").unwrap();
+    let mut binding = data_binding(&model_id);
+    binding.view_policy.fit_partition = DataRequestPartition::AllObservations;
+    let mut invalid_campaign = oof_edge_campaign();
+    invalid_campaign.data_bindings = BTreeMap::from([(model_id.clone(), vec![binding.clone()])]);
+    let error = build_execution_plan(
+        "plan:data.all-observations.missing-flag",
+        simple_graph(),
+        invalid_campaign,
+        &manifests(),
+    )
+    .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("allow_fit_cv_all_observations_view"));
+
+    binding.view_policy.unsafe_flags =
+        BTreeSet::from([DataViewPolicy::ALLOW_FIT_CV_ALL_OBSERVATIONS_VIEW.to_string()]);
+    let mut campaign = oof_edge_campaign();
+    campaign.data_bindings = BTreeMap::from([(model_id, vec![binding.clone()])]);
+    let plan = build_execution_plan(
+        "plan:data.all-observations.opt-in",
+        simple_graph(),
+        campaign,
+        &manifests(),
+    )
+    .unwrap();
+    let envelope: ExternalDataPlanEnvelope = serde_json::from_str(include_str!(
+        "../../tests/fixtures/package/data/coordinator_data_plan_envelope_sample12.json"
+    ))
+    .unwrap();
+    let provider = InMemoryDataProvider::with_envelope(
+        ControllerId::new("controller:data.provider").unwrap(),
+        envelope,
+    )
+    .unwrap();
+    let mut ctx = RunContext::new(
+        RunId::new("run:data.all-observations.opt-in").unwrap(),
+        Some(11),
+    );
+    SequentialScheduler
+        .execute_campaign_phase_with_data_provider(
+            &plan,
+            &runtime_controllers(),
+            &provider,
+            &mut ctx,
+            Phase::FitCv,
+        )
+        .unwrap();
+    let views = provider.view_records();
+    let all_views = views
+        .iter()
+        .filter(|record| record.view.partition == DataRequestPartition::AllObservations)
+        .collect::<Vec<_>>();
+    assert_eq!(all_views.len(), 2);
+    assert!(all_views.iter().all(|record| {
+        record.view.sample_ids.is_none()
+            && record.view.fold_id.is_none()
+            && record.view.include_augmented
+            && record.view.extra["unsafe_flags"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|flag| {
+                    flag.as_str() == Some(DataViewPolicy::ALLOW_FIT_CV_ALL_OBSERVATIONS_VIEW)
+                })
+    }));
+    let refit_scope = PhaseScope {
+        phase: Phase::Refit,
+        variant_id: None,
+        variant: None,
+        fold_id: None,
+        seed_root: Some(11),
+    };
+    let refit_view = data_view_for_scope(
+        &binding,
+        plan.fold_set.as_ref(),
+        &refit_scope,
+        None,
+        &BTreeSet::new(),
+    )
+    .unwrap();
+    assert_eq!(refit_view.partition, DataRequestPartition::AllObservations);
+    assert!(refit_view.sample_ids.is_none());
+}
+
+#[test]
 fn campaign_refit_data_bindings_create_full_train_views() {
     let plan = fixture_plan("plan:refit.views");
     let provider = replay_data_provider();
@@ -6514,6 +7001,7 @@ fn fit_influence_validation_task(fit_influence: FitInfluenceTask) -> NodeTask {
         .clone();
     NodeTask {
         inner_fold_set: None,
+        residual_targets: None,
         run_id: RunId::new("run:fit.influence.validation").unwrap(),
         node_plan,
         phase: Phase::FitCv,
@@ -6525,11 +7013,99 @@ fn fit_influence_validation_task(fit_influence: FitInfluenceTask) -> NodeTask {
         input_handles: BTreeMap::new(),
         data_views: BTreeMap::new(),
         prediction_inputs: BTreeMap::new(),
+        prediction_feature_matrix: None,
+        prediction_feature_off_fold_matrix: None,
         artifact_inputs: BTreeMap::new(),
         required_loss_attestations: Vec::new(),
         fit_influence,
         seed: Some(7),
     }
+}
+
+#[test]
+fn feature_partition_join_restores_fold_identity_and_rejects_mismatched_inputs() {
+    let mut task = fit_influence_validation_task(FitInfluenceTask::default());
+    let ids = vec![
+        SampleId::new("sample:a").unwrap(),
+        SampleId::new("sample:b").unwrap(),
+    ];
+    for (index, value) in ["A", "B"].into_iter().enumerate() {
+        let branch_view = crate::data::BranchViewPlan {
+            view_id: format!("view:{value}"),
+            branch_id: format!("branch:{value}"),
+            mode: crate::data::BranchViewMode::ByMetadata,
+            selector: crate::data::DataViewSelector {
+                metadata: BTreeMap::from([("group".to_string(), serde_json::json!(value))]),
+                ..Default::default()
+            },
+            allow_overlap: false,
+            metadata: BTreeMap::new(),
+        };
+        task.data_views.insert(
+            format!("data:branch_{index}_x"),
+            DataProviderViewSpec {
+                sample_ids: Some(ids.clone()),
+                partition: DataRequestPartition::FoldTrain,
+                fold_id: task.fold_id.clone(),
+                source_ids: None,
+                columns: None,
+                include_augmented: false,
+                include_excluded: false,
+                branch_view: Some(branch_view),
+                extra: BTreeMap::new(),
+            },
+        );
+    }
+    let joined = super::joined_feature_partition_view(&task, false)
+        .unwrap()
+        .unwrap();
+    assert_eq!(joined.sample_ids, Some(ids));
+    assert!(joined.branch_view.is_none());
+
+    task.data_views
+        .get_mut("data:branch_1_x")
+        .unwrap()
+        .sample_ids = Some(vec![SampleId::new("sample:b").unwrap()]);
+    assert!(super::joined_feature_partition_view(&task, false)
+        .unwrap_err()
+        .to_string()
+        .contains("identity universe"));
+}
+
+#[test]
+fn fit_cv_test_predictions_require_attested_test_view_and_current_fold() {
+    let mut task = fit_influence_validation_task(FitInfluenceTask::default());
+    let test_id = SampleId::new("test:0").unwrap();
+    let mut prediction = PredictionBlock {
+        prediction_id: None,
+        producer_node: task.node_plan.node_id.clone(),
+        producer_port: Some("prediction".to_string()),
+        partition: PredictionPartition::Test,
+        fold_id: task.fold_id.clone(),
+        sample_ids: vec![test_id.clone()],
+        values: vec![vec![1.0]],
+        target_names: vec!["y".to_string()],
+    };
+    assert!(validate_prediction_scope(&prediction, &task).is_err());
+    task.data_views.insert(
+        "data:x:test".to_string(),
+        DataProviderViewSpec {
+            sample_ids: Some(vec![test_id]),
+            partition: DataRequestPartition::Predict,
+            fold_id: None,
+            source_ids: None,
+            columns: None,
+            include_augmented: false,
+            include_excluded: true,
+            branch_view: None,
+            extra: BTreeMap::new(),
+        },
+    );
+    validate_prediction_scope(&prediction, &task).unwrap();
+    prediction.sample_ids = vec![SampleId::new("test:unattested").unwrap()];
+    assert!(validate_prediction_scope(&prediction, &task).is_err());
+    prediction.fold_id = Some(FoldId::new("fold:other").unwrap());
+    assert!(validate_prediction_scope(&prediction, &task).is_err());
 }
 
 #[cfg(dag_ml_workspace_contract_fixtures)]
@@ -6696,6 +7272,7 @@ fn node_result_validation_rejects_external_conformance_mismatches() {
         .clone();
     let task = NodeTask {
         inner_fold_set: None,
+        residual_targets: None,
         run_id: RunId::new("run:result.validation").unwrap(),
         node_plan: node_plan.clone(),
         phase: Phase::FitCv,
@@ -6707,6 +7284,8 @@ fn node_result_validation_rejects_external_conformance_mismatches() {
         input_handles: BTreeMap::new(),
         data_views: BTreeMap::new(),
         prediction_inputs: BTreeMap::new(),
+        prediction_feature_matrix: None,
+        prediction_feature_off_fold_matrix: None,
         artifact_inputs: BTreeMap::new(),
         required_loss_attestations: Vec::new(),
         fit_influence: FitInfluenceTask::default(),
@@ -7163,6 +7742,7 @@ fn node_result_validation_checks_shape_fingerprints_and_feature_deltas() {
     let node_plan = plan.node_plans.get(&model_id).unwrap().clone();
     let task = NodeTask {
         inner_fold_set: None,
+        residual_targets: None,
         run_id: RunId::new("run:result.validation.shape").unwrap(),
         node_plan: node_plan.clone(),
         phase: Phase::FitCv,
@@ -7174,6 +7754,8 @@ fn node_result_validation_checks_shape_fingerprints_and_feature_deltas() {
         input_handles: BTreeMap::new(),
         data_views: BTreeMap::new(),
         prediction_inputs: BTreeMap::new(),
+        prediction_feature_matrix: None,
+        prediction_feature_off_fold_matrix: None,
         artifact_inputs: BTreeMap::new(),
         required_loss_attestations: Vec::new(),
         fit_influence: FitInfluenceTask::default(),
@@ -7254,6 +7836,7 @@ fn node_result_validation_rejects_bad_artifact_handles() {
         .clone();
     let task = NodeTask {
         inner_fold_set: None,
+        residual_targets: None,
         run_id: RunId::new("run:result.validation.artifacts").unwrap(),
         node_plan: node_plan.clone(),
         phase: Phase::Refit,
@@ -7265,6 +7848,8 @@ fn node_result_validation_rejects_bad_artifact_handles() {
         input_handles: BTreeMap::new(),
         data_views: BTreeMap::new(),
         prediction_inputs: BTreeMap::new(),
+        prediction_feature_matrix: None,
+        prediction_feature_off_fold_matrix: None,
         artifact_inputs: BTreeMap::new(),
         required_loss_attestations: Vec::new(),
         fit_influence: FitInfluenceTask::default(),
@@ -7484,6 +8069,7 @@ fn node_result_validation_rejects_predictions_outside_validation_view() {
     let node_plan = plan.node_plans.get(&model_id).unwrap().clone();
     let task = NodeTask {
         inner_fold_set: None,
+        residual_targets: None,
         run_id: RunId::new("run:result.validation.samples").unwrap(),
         node_plan: node_plan.clone(),
         phase: Phase::FitCv,
@@ -7508,6 +8094,8 @@ fn node_result_validation_rejects_predictions_outside_validation_view() {
             },
         )]),
         prediction_inputs: BTreeMap::new(),
+        prediction_feature_matrix: None,
+        prediction_feature_off_fold_matrix: None,
         artifact_inputs: BTreeMap::new(),
         required_loss_attestations: Vec::new(),
         fit_influence: FitInfluenceTask::default(),
@@ -7515,6 +8103,7 @@ fn node_result_validation_rejects_predictions_outside_validation_view() {
     };
     let result = NodeResult {
         schema_version: None,
+        classification_probabilities: Vec::new(),
         node_id: model_id.clone(),
         outputs: BTreeMap::from([(
             "out".to_string(),
@@ -7602,6 +8191,7 @@ fn node_result_validation_rejects_aggregated_units_outside_validation_view() {
     let node_plan = plan.node_plans.get(&model_id).unwrap().clone();
     let task = NodeTask {
         inner_fold_set: None,
+        residual_targets: None,
         run_id: RunId::new("run:result.validation.aggregated").unwrap(),
         node_plan: node_plan.clone(),
         phase: Phase::FitCv,
@@ -7626,6 +8216,8 @@ fn node_result_validation_rejects_aggregated_units_outside_validation_view() {
             },
         )]),
         prediction_inputs: BTreeMap::new(),
+        prediction_feature_matrix: None,
+        prediction_feature_off_fold_matrix: None,
         artifact_inputs: BTreeMap::new(),
         required_loss_attestations: Vec::new(),
         fit_influence: FitInfluenceTask::default(),
@@ -7644,6 +8236,7 @@ fn node_result_validation_rejects_aggregated_units_outside_validation_view() {
     };
     let mut result = NodeResult {
         schema_version: None,
+        classification_probabilities: Vec::new(),
         node_id: model_id.clone(),
         outputs: BTreeMap::from([(
             "out".to_string(),
@@ -7753,6 +8346,7 @@ fn controller_emitted_aggregated_block_must_match_policy_level() {
     let node_plan = plan.node_plans.get(&model_id).unwrap().clone();
     let task = NodeTask {
         inner_fold_set: None,
+        residual_targets: None,
         run_id: RunId::new("run:agg.policy.level").unwrap(),
         node_plan: node_plan.clone(),
         phase: Phase::FitCv,
@@ -7764,6 +8358,8 @@ fn controller_emitted_aggregated_block_must_match_policy_level() {
         input_handles: BTreeMap::new(),
         data_views: BTreeMap::new(),
         prediction_inputs: BTreeMap::new(),
+        prediction_feature_matrix: None,
+        prediction_feature_off_fold_matrix: None,
         artifact_inputs: BTreeMap::new(),
         required_loss_attestations: Vec::new(),
         fit_influence: FitInfluenceTask::default(),
@@ -7774,6 +8370,7 @@ fn controller_emitted_aggregated_block_must_match_policy_level() {
         data_provider: None,
         fold_set_override: None,
         node_filter: None,
+        cached_data_node_ids: None,
         suppress_inner_cv: false,
         nested_stacking: None,
         replay_artifact_handles: None,
@@ -7820,6 +8417,7 @@ fn controller_emitted_aggregated_block_must_match_policy_level() {
     };
     let base_result = |level: PredictionLevel, unit: PredictionUnitId| NodeResult {
         schema_version: None,
+        classification_probabilities: Vec::new(),
         node_id: model_id.clone(),
         outputs: BTreeMap::new(),
         predictions: vec![PredictionBlock {
@@ -7891,6 +8489,7 @@ fn coordinator_relations_required_but_unresolved_is_refused() {
         data_provider: None,
         fold_set_override: None,
         node_filter: None,
+        cached_data_node_ids: None,
         suppress_inner_cv: false,
         nested_stacking: None,
         replay_artifact_handles: None,
@@ -7924,6 +8523,7 @@ fn coordinator_relations_required_but_unresolved_is_refused() {
         data_provider: Some(&provider),
         fold_set_override: None,
         node_filter: None,
+        cached_data_node_ids: None,
         suppress_inner_cv: false,
         nested_stacking: None,
         replay_artifact_handles: None,
@@ -8227,6 +8827,7 @@ fn collect_input_handles_forwards_only_declared_source_ports() {
         data_provider: None,
         fold_set_override: None,
         node_filter: None,
+        cached_data_node_ids: None,
         suppress_inner_cv: false,
         nested_stacking: None,
         replay_artifact_handles: None,
@@ -8561,6 +9162,92 @@ fn predict_refuses_sibling_prediction_source_port() {
     assert!(matches!(&error, DagMlError::OofValidation(_)));
     let message = error.to_string();
     assert!(message.contains("none for source port `pred`"));
+}
+
+#[test]
+fn predict_routes_both_explicit_prediction_ports_from_one_producer() {
+    let plan = build_execution_plan(
+        "plan:oof.dual.port.predict",
+        oof_edge_graph_with_ambiguous_prediction_port(),
+        oof_edge_campaign(),
+        &oof_edge_manifests(BTreeSet::from([Phase::FitCv, Phase::Refit, Phase::Predict])),
+    )
+    .unwrap();
+    let base = NodeId::new("model:base").unwrap();
+    let meta = NodeId::new("model:meta").unwrap();
+    let owner = ControllerId::new("controller:model").unwrap();
+    let handles = BTreeMap::from([(
+        base.clone(),
+        BTreeMap::from([
+            (
+                "pred".to_string(),
+                HandleRef {
+                    handle: 50,
+                    kind: HandleKind::Prediction,
+                    owner_controller: owner.clone(),
+                },
+            ),
+            (
+                "aux".to_string(),
+                HandleRef {
+                    handle: 60,
+                    kind: HandleKind::Prediction,
+                    owner_controller: owner,
+                },
+            ),
+        ]),
+    )]);
+    let mut ctx = RunContext::new(RunId::new("run:oof.dual.port.predict").unwrap(), Some(11));
+    let ids = vec![SampleId::new("s1").unwrap(), SampleId::new("s2").unwrap()];
+    for (port_name, values) in [
+        ("pred", vec![vec![0.0], vec![1.0]]),
+        ("aux", vec![vec![0.8, 0.2], vec![0.1, 0.9]]),
+    ] {
+        ctx.prediction_store
+            .append(PredictionBlock {
+                prediction_id: Some(format!("pred:model:base:{port_name}:final")),
+                producer_node: base.clone(),
+                producer_port: Some(port_name.to_string()),
+                partition: PredictionPartition::Final,
+                fold_id: None,
+                sample_ids: ids.clone(),
+                target_names: if port_name == "aux" {
+                    vec!["0".to_string(), "1".to_string()]
+                } else {
+                    vec!["y".to_string()]
+                },
+                values,
+            })
+            .unwrap();
+    }
+    let collected = collect_input_handles(
+        &plan,
+        plan.node_plans.get(&meta).unwrap(),
+        &handles,
+        &BTreeMap::new(),
+        &PhaseScopeResources::default(),
+        &ctx,
+        &PhaseScope {
+            phase: Phase::Predict,
+            variant_id: Some(VariantId::new("variant:base").unwrap()),
+            variant: None,
+            fold_id: None,
+            seed_root: Some(11),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        collected.prediction_inputs["model:base.pred:predict"].prediction_width,
+        1
+    );
+    assert_eq!(
+        collected.prediction_inputs["model:base.aux:predict"].prediction_width,
+        2
+    );
+    assert_eq!(
+        collected.prediction_inputs["model:base.aux:predict"].values[0],
+        vec![0.8, 0.2]
+    );
 }
 
 #[test]
@@ -8928,6 +9615,965 @@ fn nested_stacking_test_plan(outer: FoldSet, partitioned_refit_oof: bool) -> Exe
 }
 
 #[test]
+fn independent_terminal_meta_nodes_keep_distinct_report_grade_oof() {
+    use crate::fold::KFoldSpec;
+
+    struct IndependentModel {
+        inner: VariantScoringController,
+        folds: BTreeMap<FoldId, FoldAssignment>,
+    }
+    impl RuntimeController for IndependentModel {
+        fn controller_id(&self) -> &ControllerId {
+            self.inner.controller_id()
+        }
+
+        fn invoke(&self, task: &NodeTask) -> Result<NodeResult> {
+            if task.phase == Phase::Refit {
+                if task.node_plan.node_id.as_str().starts_with("model:meta") {
+                    assert_eq!(task.prediction_inputs.len(), 1);
+                    assert_eq!(
+                        task.prediction_inputs
+                            .values()
+                            .next()
+                            .unwrap()
+                            .sample_ids
+                            .len(),
+                        12
+                    );
+                }
+                return self.inner.invoke(task);
+            }
+            let fold = &self.folds[task.fold_id.as_ref().expect("FIT_CV fold")];
+            if task.node_plan.node_id.as_str().starts_with("model:meta") {
+                assert_eq!(task.prediction_inputs.len(), 2);
+                for (key, input) in &task.prediction_inputs {
+                    let expected = if key.ends_with(":outer") {
+                        &fold.validation_sample_ids
+                    } else {
+                        &fold.train_sample_ids
+                    };
+                    assert_eq!(
+                        input.sample_ids.iter().collect::<BTreeSet<_>>(),
+                        expected.iter().collect::<BTreeSet<_>>()
+                    );
+                }
+            }
+            let mut result = self.inner.invoke(task)?;
+            result.predictions = vec![PredictionBlock {
+                prediction_id: Some(format!("pred:{}:{}", task.node_plan.node_id, fold.fold_id)),
+                producer_node: task.node_plan.node_id.clone(),
+                producer_port: Some("pred".into()),
+                partition: PredictionPartition::Validation,
+                fold_id: Some(fold.fold_id.clone()),
+                sample_ids: fold.validation_sample_ids.clone(),
+                values: vec![vec![1.0]; fold.validation_sample_ids.len()],
+                target_names: vec!["y".into()],
+            }];
+            result.regression_targets = vec![RegressionTargetBlock {
+                level: PredictionLevel::Sample,
+                unit_ids: fold
+                    .validation_sample_ids
+                    .iter()
+                    .cloned()
+                    .map(crate::aggregation::PredictionUnitId::Sample)
+                    .collect(),
+                values: vec![vec![0.0]; fold.validation_sample_ids.len()],
+                validity_masks: None,
+                target_names: vec!["y".into()],
+            }];
+            Ok(result)
+        }
+    }
+
+    let samples = (1..=12)
+        .map(|index| SampleId::new(format!("s{index}")).unwrap())
+        .collect::<Vec<_>>();
+    let outer = KFoldSpec {
+        n_splits: 3,
+        shuffle: false,
+        seed: Some(7),
+    }
+    .split("outer", &samples)
+    .unwrap();
+    let original = nested_stacking_test_plan(outer.clone(), true);
+    let mut graph = original.graph_plan.graph;
+    let first = NodeId::new("model:meta").unwrap();
+    let second = NodeId::new("model:meta.b").unwrap();
+    graph
+        .nodes
+        .iter_mut()
+        .find(|node| node.id == first)
+        .unwrap()
+        .ports
+        .inputs
+        .retain(|port| port.name == "a");
+    graph
+        .edges
+        .iter_mut()
+        .find(|edge| edge.source.node_id.as_str() == "model:base.b")
+        .unwrap()
+        .target = PortRef {
+        node_id: second.clone(),
+        port_name: "b".into(),
+    };
+    let mut second_node = node(
+        second.as_str(),
+        NodeKind::Model,
+        vec![port("b", PortKind::Prediction)],
+        vec![port("pred", PortKind::Prediction)],
+    );
+    second_node.metadata.insert(
+        NESTED_STACKING_EXECUTION_METADATA_KEY.into(),
+        json!(NESTED_STACKING_EXECUTION_V1),
+    );
+    second_node.metadata.insert(
+        STACKING_REFIT_OOF_METADATA_KEY.into(),
+        json!(STACKING_REFIT_PARTITIONED_INNER_V1),
+    );
+    graph.nodes.push(second_node);
+    let registry = oof_edge_manifests(BTreeSet::from([Phase::FitCv, Phase::Refit]));
+    let plan =
+        build_execution_plan("plan:independent.meta", graph, original.campaign, &registry).unwrap();
+    let campaigns = nested_stacking_campaign_plans(&plan).unwrap();
+    assert_eq!(
+        campaigns
+            .iter()
+            .map(|campaign| &campaign.meta_node_id)
+            .collect::<Vec<_>>(),
+        vec![&first, &second]
+    );
+    assert!(campaigns[0]
+        .base_node_ids
+        .is_disjoint(&campaigns[1].base_node_ids));
+
+    let folds = outer
+        .folds
+        .iter()
+        .chain(campaigns.iter().flat_map(|campaign| {
+            campaign
+                .outer_scopes
+                .iter()
+                .flat_map(|scope| &scope.inner.inner_fold_set.folds)
+        }))
+        .chain(
+            campaigns
+                .iter()
+                .flat_map(|campaign| campaign.refit_fold_set.as_ref().unwrap().folds.iter()),
+        )
+        .map(|fold| (fold.fold_id.clone(), fold.clone()))
+        .collect();
+    let mut controllers = RuntimeControllerRegistry::new();
+    controllers
+        .register(Box::new(IndependentModel {
+            inner: VariantScoringController {
+                id: ControllerId::new("controller:model").unwrap(),
+                handle: 1,
+                emit_targets: true,
+            },
+            folds,
+        }))
+        .unwrap();
+    let provider = InMemoryDataProvider::new(ControllerId::new("controller:data").unwrap());
+    let mut ctx = RunContext::new(RunId::new("run:independent.meta").unwrap(), Some(7));
+    SequentialScheduler
+        .execute_campaign_phase_with_data_provider(
+            &plan,
+            &controllers,
+            &provider,
+            &mut ctx,
+            Phase::FitCv,
+        )
+        .unwrap();
+    for producer in [&first, &second] {
+        for fold in &outer.folds {
+            assert_eq!(
+                ctx.prediction_store
+                    .find(
+                        Some(producer),
+                        Some(&PredictionPartition::Validation),
+                        Some(&fold.fold_id)
+                    )
+                    .len(),
+                1
+            );
+        }
+    }
+    let score_set = ctx.build_score_set(plan.id.clone(), None).unwrap();
+    for producer in [&first, &second] {
+        assert!(score_set
+            .reports
+            .iter()
+            .any(|report| report.producer_node == *producer && report.fold_id.is_some()));
+    }
+    let refit = SequentialScheduler
+        .execute_campaign_phase_with_data_provider(
+            &plan,
+            &controllers,
+            &provider,
+            &mut ctx,
+            Phase::Refit,
+        )
+        .unwrap();
+    for producer in [&first, &second] {
+        assert!(refit
+            .iter()
+            .any(|result| result.node_id == *producer && result.lineage.phase == Phase::Refit));
+    }
+}
+
+// Contract for a second OOF stage. The first meta-model must be fitted from
+// inner OOF predictions before it can itself produce OOF predictions for a
+// downstream residual learner. A single global inner fold set cannot attest
+// both. The independent Data edge here keeps the residual learner valid; the
+// full prediction-feature merge topology is covered by the DSL test.
+#[test]
+fn nested_stacking_then_residual_accepts_dependent_meta_models() {
+    use crate::fold::KFoldSpec;
+
+    let samples = (1..=6)
+        .map(|index| SampleId::new(format!("s{index}")).unwrap())
+        .collect::<Vec<_>>();
+    let outer = KFoldSpec {
+        n_splits: 3,
+        shuffle: false,
+        seed: Some(7),
+    }
+    .split("outer", &samples)
+    .unwrap();
+    let plan = nested_stacking_test_plan(outer, false);
+    let upstream_id = NodeId::new("model:meta").unwrap();
+    let downstream_id = NodeId::new("model:meta.downstream").unwrap();
+    let feature_id = NodeId::new("transform:features").unwrap();
+    let mut downstream = node(
+        downstream_id.as_str(),
+        NodeKind::Model,
+        vec![
+            port("upstream", PortKind::Prediction),
+            port("x_original", PortKind::Data),
+        ],
+        vec![port("pred", PortKind::Prediction)],
+    );
+    downstream.metadata.insert(
+        RESIDUAL_TARGET_EXECUTION_METADATA_KEY.to_string(),
+        json!(RESIDUAL_TARGET_EXECUTION_V1),
+    );
+    downstream.metadata.insert(
+        STACKING_REFIT_OOF_METADATA_KEY.to_string(),
+        json!(STACKING_REFIT_PARTITIONED_INNER_V1),
+    );
+    let mut graph = plan.graph_plan.graph.clone();
+    graph.nodes.push(node(
+        feature_id.as_str(),
+        NodeKind::Transform,
+        Vec::new(),
+        vec![port("x_out", PortKind::Data)],
+    ));
+    graph.nodes.push(downstream);
+    graph.edges.push(EdgeSpec {
+        source: PortRef {
+            node_id: upstream_id,
+            port_name: "pred".to_string(),
+        },
+        target: PortRef {
+            node_id: downstream_id.clone(),
+            port_name: "upstream".to_string(),
+        },
+        contract: EdgeContract {
+            requires_oof: true,
+            requires_fold_alignment: true,
+            ..EdgeContract::new(PortKind::Prediction, None)
+        },
+    });
+    graph.edges.push(EdgeSpec {
+        source: PortRef {
+            node_id: feature_id,
+            port_name: "x_out".to_string(),
+        },
+        target: PortRef {
+            node_id: downstream_id,
+            port_name: "x_original".to_string(),
+        },
+        contract: EdgeContract::new(PortKind::Data, None),
+    });
+    let plan = build_execution_plan("plan:dependent.meta", graph, plan.campaign, &manifests())
+        .expect("valid two-stage prediction and residual topology");
+
+    let terminal = nested_stacking_campaign_plan(&plan)
+        .expect("dependent OOF stages need separate nested fold scopes")
+        .expect("terminal meta node");
+    assert_eq!(
+        terminal.meta_node_id,
+        NodeId::new("model:meta.downstream").unwrap()
+    );
+    let upstream =
+        nested_stacking_campaign_plan_for_node(&plan, NodeId::new("model:meta").unwrap())
+            .unwrap()
+            .unwrap();
+    assert!(!upstream.base_node_ids.contains(&terminal.meta_node_id));
+}
+
+#[test]
+fn dependent_stacking_executes_parent_bound_oof_at_both_levels() {
+    use crate::fold::{KFoldSpec, NestedCvSpec};
+
+    struct LayeredModel {
+        inner: VariantScoringController,
+        folds: BTreeMap<FoldId, FoldAssignment>,
+        require_original_data: bool,
+    }
+    impl RuntimeController for LayeredModel {
+        fn controller_id(&self) -> &ControllerId {
+            self.inner.controller_id()
+        }
+
+        fn invoke(&self, task: &NodeTask) -> Result<NodeResult> {
+            if task.node_plan.node_id.as_str().starts_with("transform:") {
+                let mut result = self.inner.invoke(task)?;
+                result.outputs = BTreeMap::from([(
+                    "x_out".into(),
+                    HandleRef {
+                        handle: 2,
+                        kind: HandleKind::Data,
+                        owner_controller: self.inner.id.clone(),
+                    },
+                )]);
+                return Ok(result);
+            }
+            if self.require_original_data && task.node_plan.node_id.as_str() == "model:meta.second"
+            {
+                assert!(task.input_handles.contains_key("data:x_original"));
+            }
+            if task.phase == Phase::Refit {
+                return self.inner.invoke(task);
+            }
+            let fold = &self.folds[task.fold_id.as_ref().expect("fold scope")];
+            if task.node_plan.node_id.as_str().starts_with("model:meta") {
+                for (key, input) in &task.prediction_inputs {
+                    let expected = if key.ends_with(":outer") {
+                        &fold.validation_sample_ids
+                    } else {
+                        &fold.train_sample_ids
+                    };
+                    assert_eq!(
+                        input.sample_ids.iter().cloned().collect::<BTreeSet<_>>(),
+                        expected.iter().cloned().collect::<BTreeSet<_>>()
+                    );
+                }
+            }
+            let mut result = self.inner.invoke(task)?;
+            result.predictions = vec![PredictionBlock {
+                prediction_id: Some(format!("pred:{}:{}", task.node_plan.node_id, fold.fold_id)),
+                producer_node: task.node_plan.node_id.clone(),
+                producer_port: Some("pred".into()),
+                partition: PredictionPartition::Validation,
+                fold_id: Some(fold.fold_id.clone()),
+                sample_ids: fold.validation_sample_ids.clone(),
+                values: vec![vec![1.0]; fold.validation_sample_ids.len()],
+                target_names: vec!["y".into()],
+            }];
+            result.regression_targets = vec![RegressionTargetBlock {
+                level: PredictionLevel::Sample,
+                unit_ids: fold
+                    .validation_sample_ids
+                    .iter()
+                    .cloned()
+                    .map(crate::aggregation::PredictionUnitId::Sample)
+                    .collect(),
+                values: vec![vec![0.0]; fold.validation_sample_ids.len()],
+                validity_masks: None,
+                target_names: vec!["y".into()],
+            }];
+            Ok(result)
+        }
+    }
+
+    let samples = (1..=24)
+        .map(|i| SampleId::new(format!("s{i}")).unwrap())
+        .collect::<Vec<_>>();
+    let outer = KFoldSpec {
+        n_splits: 3,
+        shuffle: false,
+        seed: Some(7),
+    }
+    .split("outer", &samples)
+    .unwrap();
+    let original = nested_stacking_test_plan(outer.clone(), true);
+    let mut graph = original.graph_plan.graph;
+    let first = NodeId::new("model:meta").unwrap();
+    let second = NodeId::new("model:meta.second").unwrap();
+    let mut node_second = node(
+        second.as_str(),
+        NodeKind::Model,
+        vec![port("first", PortKind::Prediction)],
+        vec![port("pred", PortKind::Prediction)],
+    );
+    node_second.metadata.insert(
+        NESTED_STACKING_EXECUTION_METADATA_KEY.into(),
+        json!(NESTED_STACKING_EXECUTION_V1),
+    );
+    node_second.metadata.insert(
+        STACKING_REFIT_OOF_METADATA_KEY.into(),
+        json!(STACKING_REFIT_PARTITIONED_INNER_V1),
+    );
+    graph.nodes.push(node_second);
+    graph.edges.push(EdgeSpec {
+        source: PortRef {
+            node_id: first.clone(),
+            port_name: "pred".into(),
+        },
+        target: PortRef {
+            node_id: second.clone(),
+            port_name: "first".into(),
+        },
+        contract: EdgeContract {
+            requires_oof: true,
+            requires_fold_alignment: true,
+            ..EdgeContract::new(PortKind::Prediction, None)
+        },
+    });
+    let registry = oof_edge_manifests(BTreeSet::from([Phase::FitCv, Phase::Refit]));
+    let plan = build_execution_plan("plan:two.meta", graph, original.campaign, &registry).unwrap();
+    let spec = NestedCvSpec::KFold(KFoldSpec {
+        n_splits: 2,
+        shuffle: false,
+        seed: Some(13),
+    });
+    let mut folds = BTreeMap::new();
+    for outer_fold in &outer.folds {
+        folds.insert(outer_fold.fold_id.clone(), outer_fold.clone());
+        let inner = spec
+            .build_nested_fold_set(outer_fold, &outer.sample_groups)
+            .unwrap();
+        for inner_fold in &inner.inner_fold_set.folds {
+            folds.insert(inner_fold.fold_id.clone(), inner_fold.clone());
+            let deeper = spec
+                .build_nested_fold_set(inner_fold, &inner.inner_fold_set.sample_groups)
+                .unwrap();
+            for deep_fold in deeper.inner_fold_set.folds {
+                folds.insert(deep_fold.fold_id.clone(), deep_fold.clone());
+            }
+        }
+    }
+    let refit_folds = nested_stacking_campaign_plan(&plan)
+        .unwrap()
+        .unwrap()
+        .refit_fold_set
+        .unwrap();
+    for refit_fold in &refit_folds.folds {
+        folds.insert(refit_fold.fold_id.clone(), refit_fold.clone());
+        let inner = spec
+            .build_nested_fold_set(refit_fold, &refit_folds.sample_groups)
+            .unwrap();
+        for inner_fold in &inner.inner_fold_set.folds {
+            folds.insert(inner_fold.fold_id.clone(), inner_fold.clone());
+        }
+    }
+    let transform_folds = folds.clone();
+    let mut controllers = RuntimeControllerRegistry::new();
+    controllers
+        .register(Box::new(LayeredModel {
+            inner: VariantScoringController {
+                id: ControllerId::new("controller:model").unwrap(),
+                handle: 1,
+                emit_targets: true,
+            },
+            folds,
+            require_original_data: false,
+        }))
+        .unwrap();
+    let provider = InMemoryDataProvider::new(ControllerId::new("controller:data").unwrap());
+    let mut ctx = RunContext::new(RunId::new("run:two.meta").unwrap(), Some(7));
+    SequentialScheduler
+        .execute_campaign_phase_with_data_provider(
+            &plan,
+            &controllers,
+            &provider,
+            &mut ctx,
+            Phase::FitCv,
+        )
+        .unwrap();
+    for fold in &outer.folds {
+        assert_eq!(
+            ctx.prediction_store
+                .find(
+                    Some(&second),
+                    Some(&PredictionPartition::Validation),
+                    Some(&fold.fold_id)
+                )
+                .len(),
+            1
+        );
+    }
+    let refit = SequentialScheduler
+        .execute_campaign_phase_with_data_provider(
+            &plan,
+            &controllers,
+            &provider,
+            &mut ctx,
+            Phase::Refit,
+        )
+        .unwrap();
+    assert!(refit.iter().any(|result| result.node_id == second));
+
+    let mut residual_graph = plan.graph_plan.graph.clone();
+    let residual = residual_graph
+        .nodes
+        .iter_mut()
+        .find(|node| node.id == second)
+        .unwrap();
+    residual
+        .metadata
+        .remove(NESTED_STACKING_EXECUTION_METADATA_KEY);
+    residual.metadata.insert(
+        RESIDUAL_TARGET_EXECUTION_METADATA_KEY.into(),
+        json!(RESIDUAL_TARGET_EXECUTION_V1),
+    );
+    residual
+        .ports
+        .inputs
+        .push(port("x_original", PortKind::Data));
+    let transform_id = NodeId::new("transform:original").unwrap();
+    residual_graph.nodes.push(node(
+        transform_id.as_str(),
+        NodeKind::Transform,
+        Vec::new(),
+        vec![port("x_out", PortKind::Data)],
+    ));
+    residual_graph.edges.push(EdgeSpec {
+        source: PortRef {
+            node_id: transform_id,
+            port_name: "x_out".into(),
+        },
+        target: PortRef {
+            node_id: second.clone(),
+            port_name: "x_original".into(),
+        },
+        contract: EdgeContract::new(PortKind::Data, None),
+    });
+    let fusion_id = NodeId::new("model:meta.second.residual_fusion").unwrap();
+    let mut fusion = node(
+        fusion_id.as_str(),
+        NodeKind::PredictionJoin,
+        vec![
+            port("base", PortKind::Prediction),
+            port("learner", PortKind::Prediction),
+        ],
+        vec![port("prediction", PortKind::Prediction)],
+    );
+    fusion.metadata.extend(BTreeMap::from([
+        ("merge_mode".into(), json!("residual_fusion")),
+        ("residual_fusion_for".into(), json!(second.as_str())),
+        ("residual_base".into(), json!(first.as_str())),
+        ("residual_learner".into(), json!(second.as_str())),
+        ("residual_gate".into(), json!(false)),
+    ]));
+    residual_graph.nodes.push(fusion);
+    for (source, port_name) in [(first.clone(), "base"), (second.clone(), "learner")] {
+        residual_graph.edges.push(EdgeSpec {
+            source: PortRef {
+                node_id: source,
+                port_name: "pred".into(),
+            },
+            target: PortRef {
+                node_id: fusion_id.clone(),
+                port_name: port_name.into(),
+            },
+            contract: EdgeContract {
+                requires_oof: true,
+                requires_fold_alignment: true,
+                ..EdgeContract::new(PortKind::Prediction, None)
+            },
+        });
+    }
+    let mut residual_registry = registry;
+    let mut transform_manifest = controller_manifest("controller:transform", NodeKind::Transform);
+    transform_manifest.supported_phases.insert(Phase::Refit);
+    residual_registry.register(transform_manifest).unwrap();
+    let mut join_manifest =
+        controller_manifest("controller:prediction.join", NodeKind::PredictionJoin);
+    join_manifest
+        .capabilities
+        .insert(ControllerCapability::EmitsPredictions);
+    join_manifest
+        .capabilities
+        .insert(ControllerCapability::ConsumesOofPredictions);
+    join_manifest.supported_phases.insert(Phase::Refit);
+    residual_registry.register(join_manifest).unwrap();
+    let residual_plan = build_execution_plan(
+        "plan:two.meta.residual",
+        residual_graph,
+        plan.campaign.clone(),
+        &residual_registry,
+    )
+    .unwrap();
+    let mut residual_controllers = RuntimeControllerRegistry::new();
+    residual_controllers
+        .register(Box::new(LayeredModel {
+            inner: VariantScoringController {
+                id: ControllerId::new("controller:model").unwrap(),
+                handle: 1,
+                emit_targets: true,
+            },
+            folds: transform_folds.clone(),
+            require_original_data: true,
+        }))
+        .unwrap();
+    residual_controllers
+        .register(Box::new(LayeredModel {
+            inner: VariantScoringController {
+                id: ControllerId::new("controller:transform").unwrap(),
+                handle: 2,
+                emit_targets: false,
+            },
+            folds: transform_folds,
+            require_original_data: false,
+        }))
+        .unwrap();
+    let mut residual_ctx = RunContext::new(RunId::new("run:two.meta.residual").unwrap(), Some(7));
+    SequentialScheduler
+        .execute_campaign_phase_with_data_provider(
+            &residual_plan,
+            &residual_controllers,
+            &provider,
+            &mut residual_ctx,
+            Phase::FitCv,
+        )
+        .unwrap();
+    for fold in &outer.folds {
+        assert_eq!(
+            residual_ctx
+                .prediction_store
+                .find(
+                    Some(&fusion_id),
+                    Some(&PredictionPartition::Validation),
+                    Some(&fold.fold_id)
+                )
+                .len(),
+            1
+        );
+    }
+    let residual_refit = SequentialScheduler
+        .execute_campaign_phase_with_data_provider(
+            &residual_plan,
+            &residual_controllers,
+            &provider,
+            &mut residual_ctx,
+            Phase::Refit,
+        )
+        .unwrap();
+    assert!(residual_refit.iter().any(|result| result.node_id == second));
+}
+
+#[test]
+fn prediction_feature_specs_join_in_graph_order_by_sample_identity() {
+    let sample = |name: &str| SampleId::new(name).unwrap();
+    let source = |name: &str, ids: Vec<SampleId>, values: Vec<Vec<f64>>| PredictionInputSpec {
+        producer_node: NodeId::new(name).unwrap(),
+        source_port: "pred".to_string(),
+        target_port: "oof".to_string(),
+        partition: PredictionPartition::Validation,
+        prediction_level: PredictionLevel::Sample,
+        fold_id: None,
+        fold_ids: Vec::new(),
+        unit_ids: Vec::new(),
+        sample_ids: ids,
+        values,
+        prediction_width: 1,
+        target_names: vec!["y".to_string()],
+    };
+    let a = source(
+        "model:a",
+        vec![sample("s2"), sample("s1")],
+        vec![vec![2.0], vec![1.0]],
+    );
+    let b = source(
+        "model:b",
+        vec![sample("s1"), sample("s2")],
+        vec![vec![10.0], vec![20.0]],
+    );
+    let join_id = NodeId::new("merge:features").unwrap();
+    let matrix =
+        join_prediction_feature_specs(&join_id, &[&b, &a], &[sample("s1"), sample("s2")]).unwrap();
+    assert_eq!(matrix.columns, vec!["model:b.pred__y", "model:a.pred__y"]);
+    assert_eq!(matrix.values, vec![vec![10.0, 1.0], vec![20.0, 2.0]]);
+
+    let mut leaked = a.clone();
+    leaked.partition = PredictionPartition::Train;
+    assert!(
+        join_prediction_feature_specs(&join_id, &[&leaked], &matrix.sample_ids)
+            .unwrap_err()
+            .to_string()
+            .contains("validation OOF")
+    );
+    let mut incomplete = a;
+    incomplete.sample_ids.pop();
+    incomplete.values.pop();
+    assert!(
+        join_prediction_feature_specs(&join_id, &[&incomplete], &matrix.sample_ids)
+            .unwrap_err()
+            .to_string()
+            .contains("exactly cover")
+    );
+    let mut duplicate = b;
+    duplicate.sample_ids.push(sample("s2"));
+    duplicate.values.push(vec![20.0]);
+    assert!(
+        join_prediction_feature_specs(&join_id, &[&duplicate], &matrix.sample_ids)
+            .unwrap_err()
+            .to_string()
+            .contains("exactly cover")
+    );
+}
+
+#[test]
+fn prediction_feature_views_keep_train_and_outer_validation_separate() {
+    let mut task = fit_influence_validation_task(FitInfluenceTask::default());
+    let train = vec![SampleId::new("s1").unwrap(), SampleId::new("s2").unwrap()];
+    let validation = vec![SampleId::new("s3").unwrap()];
+    task.prediction_feature_matrix = Some(crate::oof::OofMatrix {
+        sample_ids: train.clone(),
+        columns: vec!["model:a.pred__y".to_string()],
+        values: vec![vec![1.0], vec![2.0]],
+    });
+    task.prediction_feature_off_fold_matrix = Some(crate::oof::OofMatrix {
+        sample_ids: validation.clone(),
+        columns: vec!["model:a.pred__y".to_string()],
+        values: vec![vec![3.0]],
+    });
+    let primary = prediction_feature_data_view(&task, false).unwrap().unwrap();
+    let outer = prediction_feature_data_view(&task, true).unwrap().unwrap();
+    assert_eq!(primary.sample_ids, Some(train));
+    assert_eq!(primary.partition, DataRequestPartition::FoldTrain);
+    assert_eq!(outer.sample_ids, Some(validation));
+    assert_eq!(outer.partition, DataRequestPartition::FoldValidation);
+    task.prediction_feature_off_fold_matrix
+        .as_mut()
+        .unwrap()
+        .sample_ids = vec![SampleId::new("s2").unwrap()];
+    assert!(prediction_feature_data_view(&task, true)
+        .unwrap_err()
+        .to_string()
+        .contains("overlapping train/outer-validation"));
+}
+
+#[test]
+fn nested_residual_prediction_feature_plan_separates_source_and_base_scopes() {
+    use crate::fold::KFoldSpec;
+
+    let samples = (1..=6)
+        .map(|index| SampleId::new(format!("s{index}")).unwrap())
+        .collect::<Vec<_>>();
+    let outer = KFoldSpec {
+        n_splits: 3,
+        shuffle: false,
+        seed: Some(7),
+    }
+    .split("outer", &samples)
+    .unwrap();
+    let original = nested_stacking_test_plan(outer, true);
+    let mut graph = original.graph_plan.graph;
+    let join_id = NodeId::new("merge:prediction.features").unwrap();
+    let base_id = NodeId::new("model:base.a").unwrap();
+    graph
+        .nodes
+        .iter_mut()
+        .find(|node| node.id == base_id)
+        .unwrap()
+        .ports
+        .inputs
+        .push(port("x", PortKind::Data));
+    let mut join = node(
+        join_id.as_str(),
+        NodeKind::PredictionJoin,
+        vec![
+            port("a", PortKind::Prediction),
+            port("b", PortKind::Prediction),
+        ],
+        vec![port("x_out", PortKind::Data)],
+    );
+    join.metadata.insert(
+        "prediction_feature_execution".to_string(),
+        json!("native_oof_v1"),
+    );
+    graph.nodes.push(join);
+    for (name, port_name) in [("model:source.a", "a"), ("model:source.b", "b")] {
+        let source_id = NodeId::new(name).unwrap();
+        graph.nodes.push(node(
+            name,
+            NodeKind::Model,
+            Vec::new(),
+            vec![port("pred", PortKind::Prediction)],
+        ));
+        graph.edges.push(EdgeSpec {
+            source: PortRef {
+                node_id: source_id,
+                port_name: "pred".to_string(),
+            },
+            target: PortRef {
+                node_id: join_id.clone(),
+                port_name: port_name.to_string(),
+            },
+            contract: EdgeContract {
+                requires_oof: true,
+                requires_fold_alignment: true,
+                ..EdgeContract::new(PortKind::Prediction, None)
+            },
+        });
+    }
+    graph.edges.push(EdgeSpec {
+        source: PortRef {
+            node_id: join_id.clone(),
+            port_name: "x_out".to_string(),
+        },
+        target: PortRef {
+            node_id: base_id.clone(),
+            port_name: "x".to_string(),
+        },
+        contract: EdgeContract::new(PortKind::Data, None),
+    });
+    let mut registry = manifests();
+    let mut join_manifest =
+        controller_manifest("controller:prediction.join", NodeKind::PredictionJoin);
+    join_manifest
+        .capabilities
+        .insert(ControllerCapability::ConsumesOofPredictions);
+    registry.register(join_manifest).unwrap();
+    let plan = build_execution_plan(
+        "plan:prediction.feature.residual",
+        graph,
+        original.campaign,
+        &registry,
+    )
+    .unwrap();
+    let nested = nested_stacking_campaign_plan(&plan).unwrap().unwrap();
+    let feature = prediction_feature_join_plan(&plan, &nested)
+        .unwrap()
+        .unwrap();
+    assert_eq!(feature.join_node_id, join_id);
+    assert_eq!(
+        feature.source_node_ids,
+        BTreeSet::from([
+            NodeId::new("model:source.a").unwrap(),
+            NodeId::new("model:source.b").unwrap(),
+        ])
+    );
+    assert!(feature.downstream_node_ids.contains(&base_id));
+    assert!(!feature.downstream_node_ids.contains(&join_id));
+
+    let final_sample = SampleId::new("external:1").unwrap();
+    let mut inputs = BTreeMap::new();
+    for (name, value) in [("model:source.a", 1.0), ("model:source.b", 2.0)] {
+        inputs.insert(
+            format!("{name}.pred:predict"),
+            PredictionInputSpec {
+                producer_node: NodeId::new(name).unwrap(),
+                source_port: "pred".to_string(),
+                target_port: "x".to_string(),
+                partition: PredictionPartition::Final,
+                prediction_level: PredictionLevel::Sample,
+                fold_id: None,
+                fold_ids: Vec::new(),
+                unit_ids: Vec::new(),
+                sample_ids: vec![final_sample.clone()],
+                values: vec![vec![value]],
+                prediction_width: 1,
+                target_names: vec!["y".to_string()],
+            },
+        );
+    }
+    let scope = PhaseScope {
+        phase: Phase::Predict,
+        variant_id: None,
+        variant: None,
+        fold_id: None,
+        seed_root: None,
+    };
+    let matrix = prediction_feature_matrix_for_task(
+        &plan,
+        plan.node_plans.get(&join_id).unwrap(),
+        &inputs,
+        &scope,
+        &PhaseScopeResources::default(),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(matrix.sample_ids, vec![final_sample]);
+    assert_eq!(matrix.values, vec![vec![1.0, 2.0]]);
+
+    let refit = nested.refit_fold_set.as_ref().unwrap();
+    let edge = plan
+        .graph_plan
+        .graph
+        .edges
+        .iter()
+        .find(|edge| {
+            edge.target.node_id == join_id
+                && edge.source.node_id == NodeId::new("model:source.a").unwrap()
+        })
+        .unwrap();
+    let mut ctx = RunContext::new(RunId::new("run:prediction.feature.refit").unwrap(), None);
+    for fold in plan
+        .fold_set
+        .as_ref()
+        .unwrap()
+        .folds
+        .iter()
+        .chain(&refit.folds)
+    {
+        ctx.prediction_store
+            .append(PredictionBlock {
+                prediction_id: None,
+                producer_node: edge.source.node_id.clone(),
+                producer_port: Some(edge.source.port_name.clone()),
+                partition: PredictionPartition::Validation,
+                fold_id: Some(fold.fold_id.clone()),
+                sample_ids: fold.validation_sample_ids.clone(),
+                values: vec![vec![1.0]; fold.validation_sample_ids.len()],
+                target_names: vec!["y".to_string()],
+            })
+            .unwrap();
+    }
+    let refit_blocks = validate_refit_oof_edge(&plan, edge, &ctx).unwrap().unwrap();
+    assert_eq!(refit_blocks.len(), refit.folds.len());
+    assert!(refit_blocks.iter().all(|block| refit
+        .folds
+        .iter()
+        .any(|fold| block.fold_id.as_ref() == Some(&fold.fold_id))));
+}
+
+#[test]
+fn nested_stacking_accepts_one_oof_base_producer() {
+    use crate::fold::KFoldSpec;
+
+    let samples = (1..=6)
+        .map(|index| SampleId::new(format!("s{index}")).unwrap())
+        .collect::<Vec<_>>();
+    let outer = KFoldSpec {
+        n_splits: 3,
+        shuffle: false,
+        seed: Some(7),
+    }
+    .split("outer", &samples)
+    .unwrap();
+    let mut plan = nested_stacking_test_plan(outer, false);
+    let base_b = NodeId::new("model:base.b").unwrap();
+    plan.graph_plan.graph.nodes.retain(|node| node.id != base_b);
+    plan.graph_plan
+        .graph
+        .edges
+        .retain(|edge| edge.source.node_id != base_b);
+    plan.node_plans.remove(&base_b);
+
+    let nested = nested_stacking_campaign_plan(&plan)
+        .unwrap()
+        .expect("one base producer is a valid nested OOF meta input");
+    assert_eq!(
+        nested.base_node_ids,
+        BTreeSet::from([NodeId::new("model:base.a").unwrap()])
+    );
+}
+
+#[test]
 fn nested_stacking_campaign_requires_explicit_marker_and_parent_bound_inner_oof() {
     use crate::fold::KFoldSpec;
     let samples = (1..=6)
@@ -9045,6 +10691,8 @@ fn nested_stacking_campaign_requires_explicit_marker_and_parent_bound_inner_oof(
         &NestedStackingInput {
             meta_node_id: &meta_id,
             inner: &selected_outer.inner,
+            parent_fold_set: &outer,
+            kind: NestedMetaKind::Stacking,
         },
         &mut handles,
         &mut prediction_inputs,
@@ -9073,6 +10721,132 @@ fn nested_stacking_campaign_requires_explicit_marker_and_parent_bound_inner_oof(
             "a meta training row cannot be an outer evaluation row"
         );
     }
+}
+
+#[test]
+fn nested_residual_campaign_delivers_only_parent_train_targets() {
+    use crate::fold::KFoldSpec;
+    let samples = (1..=6)
+        .map(|index| SampleId::new(format!("s{index}")).unwrap())
+        .collect::<Vec<_>>();
+    let outer = KFoldSpec {
+        n_splits: 3,
+        shuffle: false,
+        seed: Some(7),
+    }
+    .split("outer", &samples)
+    .unwrap();
+    let stacking = nested_stacking_test_plan(outer.clone(), true);
+    let mut graph = stacking.graph_plan.graph.clone();
+    let meta_id = NodeId::new("model:meta").unwrap();
+    let base_id = NodeId::new("model:base.a").unwrap();
+    graph
+        .nodes
+        .retain(|node| node.id != NodeId::new("model:base.b").unwrap());
+    graph.edges.retain(|edge| edge.source.node_id == base_id);
+    let meta = graph
+        .nodes
+        .iter_mut()
+        .find(|node| node.id == meta_id)
+        .unwrap();
+    meta.ports.inputs.retain(|port| port.name == "a");
+    meta.metadata.remove(NESTED_STACKING_EXECUTION_METADATA_KEY);
+    meta.metadata.insert(
+        RESIDUAL_TARGET_EXECUTION_METADATA_KEY.to_string(),
+        json!(RESIDUAL_TARGET_EXECUTION_V1),
+    );
+    let plan = build_execution_plan(
+        "plan:nested.residual",
+        graph,
+        stacking.campaign,
+        &manifests(),
+    )
+    .unwrap();
+    let nested = nested_stacking_campaign_plan(&plan).unwrap().unwrap();
+    assert_eq!(nested.kind, NestedMetaKind::Residual);
+    assert_eq!(nested.base_node_ids, BTreeSet::from([base_id.clone()]));
+    let selected = &nested.outer_scopes[0];
+    let scope = PhaseScope {
+        phase: Phase::FitCv,
+        variant_id: Some(plan.variants[0].variant_id.clone()),
+        variant: Some(VariantExecutionSpec::from_plan(&plan.variants[0])),
+        fold_id: Some(selected.outer_fold_id.clone()),
+        seed_root: Some(11),
+    };
+    let nested_input = NestedStackingInput {
+        meta_node_id: &meta_id,
+        inner: &selected.inner,
+        parent_fold_set: plan.fold_set.as_ref().expect("outer folds"),
+        kind: NestedMetaKind::Residual,
+    };
+    let mut ctx = RunContext::new(RunId::new("run:nested.residual.inputs").unwrap(), Some(11));
+    for fold in &selected.inner.inner_fold_set.folds {
+        let ids = fold.validation_sample_ids.clone();
+        ctx.prediction_store
+            .append(PredictionBlock {
+                prediction_id: Some(format!("pred:base:{}", fold.fold_id)),
+                producer_node: base_id.clone(),
+                producer_port: Some("pred".to_string()),
+                partition: PredictionPartition::Validation,
+                fold_id: Some(fold.fold_id.clone()),
+                sample_ids: ids.clone(),
+                values: vec![vec![1.0]; ids.len()],
+                target_names: vec!["y".to_string()],
+            })
+            .unwrap();
+        ctx.regression_target_records
+            .push(crate::metrics::RegressionTargetRecord {
+                producer_node: base_id.clone(),
+                producer_port: Some("pred".to_string()),
+                variant_id: scope.variant_id.clone(),
+                partition: PredictionPartition::Validation,
+                fold_id: Some(fold.fold_id.clone()),
+                block: RegressionTargetBlock {
+                    level: PredictionLevel::Sample,
+                    unit_ids: ids.iter().cloned().map(PredictionUnitId::Sample).collect(),
+                    values: ids
+                        .iter()
+                        .map(|sample| vec![sample.as_str()[1..].parse::<f64>().unwrap() * 10.0])
+                        .collect(),
+                    validity_masks: None,
+                    target_names: vec!["y".to_string()],
+                },
+            });
+    }
+    let target = nested_residual_targets(
+        &plan,
+        plan.node_plans.get(&meta_id).unwrap(),
+        &ctx,
+        &scope,
+        Some(&nested_input),
+    )
+    .unwrap()
+    .unwrap();
+    let parent = outer
+        .folds
+        .iter()
+        .find(|fold| fold.fold_id == selected.outer_fold_id)
+        .unwrap();
+    assert_eq!(target.sample_ids, parent.train_sample_ids);
+    assert!(target
+        .sample_ids
+        .iter()
+        .all(|sample| !parent.validation_sample_ids.contains(sample)));
+    for (sample, row) in target.sample_ids.iter().zip(&target.values) {
+        assert_eq!(
+            row,
+            &vec![sample.as_str()[1..].parse::<f64>().unwrap() * 10.0 - 1.0]
+        );
+    }
+    ctx.regression_target_records.clear();
+    assert!(nested_residual_targets(
+        &plan,
+        plan.node_plans.get(&meta_id).unwrap(),
+        &ctx,
+        &scope,
+        Some(&nested_input),
+    )
+    .is_err());
 }
 
 #[test]
@@ -9213,7 +10987,7 @@ fn nested_stacking_resampled_refit_has_separate_exact_partitioned_oof() {
     }
     ctx.collect_cross_fold_validation_scores(FoldPartitionMode::Resampled)
         .unwrap();
-    assert_eq!(ctx.oof_average_blocks.len(), 1);
+    assert_eq!(ctx.oof_average_blocks.len(), 2);
     assert_eq!(ctx.oof_average_blocks[0].predictions.unit_ids.len(), 4);
     assert_eq!(
         ctx.oof_average_blocks[0].predictions.values,
@@ -9222,6 +10996,19 @@ fn nested_stacking_resampled_refit_has_separate_exact_partitioned_oof() {
     assert_eq!(
         ctx.oof_average_blocks[0].y_true.values,
         vec![vec![100.0]; 4]
+    );
+    assert_eq!(
+        ctx.oof_average_blocks[1].predictions.values,
+        ctx.oof_average_blocks[0].predictions.values
+    );
+    assert_eq!(
+        ctx.oof_average_blocks[1]
+            .predictions
+            .fold_id
+            .as_ref()
+            .unwrap()
+            .as_str(),
+        "w_avg"
     );
 }
 
@@ -9255,6 +11042,7 @@ fn native_scoring_collects_reports_and_builds_score_set() {
     };
     let make = |regression_targets: Vec<RegressionTargetBlock>| NodeResult {
         schema_version: None,
+        classification_probabilities: Vec::new(),
         node_id: node.clone(),
         outputs: BTreeMap::new(),
         predictions: vec![predictions.clone()],
@@ -9293,6 +11081,7 @@ fn native_scoring_collects_reports_and_builds_score_set() {
     let mut ctx = RunContext::new(RunId::new("run:t").unwrap(), None);
     apply_result_scoring(
         &make(vec![targets]),
+        &BTreeSet::new(),
         &mut ctx.score_collector,
         &mut ctx.regression_target_records,
     )
@@ -9310,12 +11099,158 @@ fn native_scoring_collects_reports_and_builds_score_set() {
     let mut empty = RunContext::new(RunId::new("run:t").unwrap(), None);
     apply_result_scoring(
         &make(Vec::new()),
+        &BTreeSet::new(),
         &mut empty.score_collector,
         &mut empty.regression_target_records,
     )
     .unwrap();
     assert!(empty.score_collector.is_empty());
     assert!(empty.build_score_set("plan:t", None).is_none());
+}
+
+#[test]
+fn auxiliary_prediction_port_matches_primary_cohort_and_does_not_score() {
+    use crate::aggregation::PredictionUnitId;
+
+    let mut plan = fixture_plan("plan:dual-prediction-output");
+    let node_id = NodeId::new("model:base").unwrap();
+    let node = plan
+        .graph_plan
+        .graph
+        .nodes
+        .iter_mut()
+        .find(|node| node.id == node_id)
+        .unwrap();
+    node.ports.outputs.push(port("proba", PortKind::Prediction));
+    node.metadata
+        .insert("auxiliary_prediction_ports".to_string(), json!(["proba"]));
+    let mut task = fit_influence_validation_task(FitInfluenceTask::default());
+    task.node_plan = plan.node_plans[&node_id].clone();
+    let ids = vec![SampleId::new("s1").unwrap(), SampleId::new("s2").unwrap()];
+    let primary = PredictionBlock {
+        prediction_id: None,
+        producer_node: node_id.clone(),
+        producer_port: Some("oof".to_string()),
+        partition: PredictionPartition::Validation,
+        fold_id: Some(FoldId::new("fold:0").unwrap()),
+        sample_ids: ids.clone(),
+        values: vec![vec![0.0], vec![1.0]],
+        target_names: vec!["y".to_string()],
+    };
+    let auxiliary = PredictionBlock {
+        producer_port: Some("proba".to_string()),
+        values: vec![vec![0.8, 0.2], vec![0.1, 0.9]],
+        target_names: vec!["0".to_string(), "1".to_string()],
+        ..primary.clone()
+    };
+    let mut result = NodeResult {
+        schema_version: None,
+        classification_probabilities: Vec::new(),
+        node_id: node_id.clone(),
+        outputs: BTreeMap::new(),
+        predictions: vec![primary, auxiliary],
+        observation_predictions: Vec::new(),
+        aggregated_predictions: Vec::new(),
+        explanations: Vec::new(),
+        shape_deltas: Vec::new(),
+        artifacts: Vec::new(),
+        artifact_handles: BTreeMap::new(),
+        fit_influence_diagnostics: Vec::new(),
+        regression_targets: vec![RegressionTargetBlock {
+            level: PredictionLevel::Sample,
+            unit_ids: ids.into_iter().map(PredictionUnitId::Sample).collect(),
+            values: vec![vec![0.0], vec![1.0]],
+            target_names: vec!["y".to_string()],
+            validity_masks: None,
+        }],
+        lineage: LineageRecord {
+            record_id: LineageId::new("lineage:dual.prediction").unwrap(),
+            run_id: task.run_id.clone(),
+            node_id,
+            phase: task.phase,
+            controller_id: task.node_plan.controller_id.clone(),
+            controller_version: task.node_plan.controller_version.clone(),
+            variant_id: None,
+            fold_id: task.fold_id.clone(),
+            branch_path: Vec::new(),
+            input_lineage: Vec::new(),
+            artifact_refs: Vec::new(),
+            params_fingerprint: task.node_plan.params_fingerprint.clone(),
+            data_model_shape_fingerprint: None,
+            aggregation_policy_fingerprint: None,
+            seed: None,
+            unsafe_flags: BTreeSet::new(),
+            metrics: BTreeMap::new(),
+            loss_attestations: Vec::new(),
+            early_stopping_records: Vec::new(),
+        },
+    };
+    normalize_result_prediction_ports(&plan, &task, &mut result).unwrap();
+    let mut ctx = RunContext::new(task.run_id.clone(), None);
+    apply_result_scoring(
+        &result,
+        &BTreeSet::from(["proba".to_string()]),
+        &mut ctx.score_collector,
+        &mut ctx.regression_target_records,
+    )
+    .unwrap();
+    assert_eq!(ctx.score_collector.len(), 1);
+    assert_eq!(ctx.regression_target_records.len(), 1);
+    assert_eq!(ctx.score_collector[0].producer_port.as_deref(), Some("oof"));
+
+    result.predictions[1].sample_ids.reverse();
+    assert!(normalize_result_prediction_ports(&plan, &task, &mut result)
+        .unwrap_err()
+        .to_string()
+        .contains("ordered sample IDs"));
+
+    // Group/target-level outputs obey the same primary-only scoring rule.
+    let target_id = PredictionUnitId::Target(TargetId::new("target:one").unwrap());
+    result.predictions.clear();
+    result.aggregated_predictions = vec![
+        crate::aggregation::AggregatedPredictionBlock {
+            prediction_id: None,
+            producer_node: result.node_id.clone(),
+            producer_port: Some("oof".to_string()),
+            partition: PredictionPartition::Validation,
+            fold_id: task.fold_id.clone(),
+            level: PredictionLevel::Target,
+            unit_ids: vec![target_id.clone()],
+            values: vec![vec![1.0]],
+            target_names: vec!["y".to_string()],
+        },
+        crate::aggregation::AggregatedPredictionBlock {
+            prediction_id: None,
+            producer_node: result.node_id.clone(),
+            producer_port: Some("proba".to_string()),
+            partition: PredictionPartition::Validation,
+            fold_id: task.fold_id.clone(),
+            level: PredictionLevel::Target,
+            unit_ids: vec![target_id.clone()],
+            values: vec![vec![0.2, 0.8]],
+            target_names: vec!["0".to_string(), "1".to_string()],
+        },
+    ];
+    result.regression_targets = vec![RegressionTargetBlock {
+        level: PredictionLevel::Target,
+        unit_ids: vec![target_id],
+        values: vec![vec![1.0]],
+        target_names: vec!["y".to_string()],
+        validity_masks: None,
+    }];
+    let mut aggregated = RunContext::new(task.run_id.clone(), None);
+    apply_result_scoring(
+        &result,
+        &BTreeSet::from(["proba".to_string()]),
+        &mut aggregated.score_collector,
+        &mut aggregated.regression_target_records,
+    )
+    .unwrap();
+    assert_eq!(aggregated.score_collector.len(), 1);
+    assert_eq!(
+        aggregated.score_collector[0].producer_port.as_deref(),
+        Some("oof")
+    );
 }
 
 #[test]
@@ -9566,6 +11501,7 @@ impl RuntimeController for VariantScoringController {
             .unwrap_or_else(|| "nofold".to_string());
         Ok(NodeResult {
             schema_version: None,
+            classification_probabilities: Vec::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([("pred".to_string(), output)]),
             predictions,
@@ -9669,16 +11605,283 @@ fn variant_scoring_controllers() -> RuntimeControllerRegistry {
 }
 
 #[test]
+fn browser_hpo_worker_window_is_phase_bounded_and_checkpoint_keyed() {
+    struct Proposals;
+    impl HostHpoProposalSource for Proposals {
+        fn ask(&mut self, trial_index: u32) -> Result<Option<BTreeMap<String, serde_json::Value>>> {
+            Ok(Some(BTreeMap::from([(
+                "n_components".into(),
+                json!(trial_index + 1),
+            )])))
+        }
+        fn tell(&mut self, _trial_index: u32, _score: f64) -> Result<()> {
+            Ok(())
+        }
+    }
+    let mut campaign = variant_scoring_campaign(vec![("base", 0.0)]);
+    campaign.generation = GenerationSpec::default();
+    let plan = build_execution_plan(
+        "plan:host_hpo:browser.window",
+        simple_graph(),
+        campaign,
+        &manifests(),
+    )
+    .unwrap();
+    let mut request = HostHpoSearchRequest {
+        parameter_bindings: BTreeMap::new(),
+        phase_trial_budgets: vec![1, 2],
+        progressive_pruning: false,
+        fold_score_reduction: None,
+        target_node: NodeId::new("model:pls").unwrap(),
+        trial_budget: 3,
+        metric: RegressionMetricKind::Rmse,
+        direction: crate::selection::MetricObjective::Minimize,
+        optimizer_descriptor: BTreeMap::from([("owner".into(), json!("browser"))]),
+    };
+    let options = HostHpoResumeOptions {
+        data_fingerprint: "data:browser".into(),
+        checkpoint: None,
+    };
+    let first =
+        prepare_host_hpo_worker_window(&plan, &request, &options, &mut Proposals, 3).unwrap();
+    assert_eq!(
+        first.tasks.len(),
+        1,
+        "a window cannot cross a phase boundary"
+    );
+    assert_eq!(first.tasks[0].trial_index, 0);
+    assert_eq!(first.tasks[0].phase_index, Some(0));
+    assert_eq!(
+        first.tasks[0].candidate_plan.variants[0]
+            .variant_id
+            .as_str(),
+        "host_hpo:trial:0000000000"
+    );
+    assert_ne!(
+        first.tasks[0].candidate_plan.variants[0].fingerprint,
+        plan.variants[0].fingerprint
+    );
+    assert_eq!(
+        first.window_id,
+        prepare_host_hpo_worker_window(&plan, &request, &options, &mut Proposals, 3)
+            .unwrap()
+            .window_id
+    );
+    request.phase_trial_budgets.clear();
+    let parallel =
+        prepare_host_hpo_worker_window(&plan, &request, &options, &mut Proposals, 2).unwrap();
+    assert_eq!(parallel.tasks.len(), 2);
+    assert_eq!(parallel.tasks[1].trial_index, 1);
+    assert_ne!(first.window_id, parallel.window_id);
+}
+
+#[test]
+fn browser_hpo_worker_fold_stops_before_next_fold() {
+    struct Proposals;
+    impl HostHpoProposalSource for Proposals {
+        fn ask(&mut self, _: u32) -> Result<Option<BTreeMap<String, serde_json::Value>>> {
+            Ok(Some(BTreeMap::from([("n_components".into(), json!(2.0))])))
+        }
+        fn tell(&mut self, _: u32, _: f64) -> Result<()> {
+            Ok(())
+        }
+    }
+    let mut campaign = variant_scoring_campaign(vec![("base", 0.0)]);
+    campaign.generation = GenerationSpec::default();
+    let plan = build_execution_plan(
+        "plan:host_hpo:worker.fold",
+        simple_graph(),
+        campaign,
+        &manifests(),
+    )
+    .unwrap();
+    let request = HostHpoSearchRequest {
+        parameter_bindings: BTreeMap::new(),
+        phase_trial_budgets: Vec::new(),
+        progressive_pruning: false,
+        fold_score_reduction: None,
+        target_node: NodeId::new("model:pls").unwrap(),
+        trial_budget: 1,
+        metric: RegressionMetricKind::Rmse,
+        direction: crate::selection::MetricObjective::Minimize,
+        optimizer_descriptor: BTreeMap::from([("owner".into(), json!("browser"))]),
+    };
+    let options = HostHpoResumeOptions {
+        data_fingerprint: "data:browser".into(),
+        checkpoint: None,
+    };
+    let task = prepare_host_hpo_worker_window(&plan, &request, &options, &mut Proposals, 2)
+        .unwrap()
+        .tasks
+        .remove(0);
+    let provider = InMemoryDataProvider::new(ControllerId::new("controller:data").unwrap());
+    let controllers = variant_scoring_controllers();
+    let first = evaluate_host_hpo_worker_fold(
+        &task,
+        &request,
+        0,
+        &controllers,
+        &provider,
+        &options.data_fingerprint,
+    )
+    .unwrap();
+    assert_eq!(
+        first.fold_id,
+        plan.fold_set.as_ref().unwrap().folds[0].fold_id
+    );
+    assert_eq!(first.score, 2.0);
+    assert!(first.scores.reports.iter().all(|report| {
+        report.fold_id.as_ref() != Some(&plan.fold_set.as_ref().unwrap().folds[1].fold_id)
+    }));
+    assert!(evaluate_host_hpo_worker_fold(
+        &task,
+        &request,
+        99,
+        &controllers,
+        &provider,
+        &options.data_fingerprint,
+    )
+    .is_err());
+}
+
+#[test]
+fn browser_hpo_worker_window_terminalizes_real_pruned_prefix() {
+    struct Proposals {
+        told: Vec<u32>,
+        pruned: Vec<u32>,
+    }
+    impl HostHpoProposalSource for Proposals {
+        fn ask(&mut self, trial: u32) -> Result<Option<BTreeMap<String, serde_json::Value>>> {
+            Ok(Some(BTreeMap::from([(
+                "n_components".into(),
+                json!(trial + 1),
+            )])))
+        }
+        fn tell(&mut self, trial: u32, _: f64) -> Result<()> {
+            self.told.push(trial);
+            Ok(())
+        }
+        fn pruned(&mut self, trial: u32) -> Result<()> {
+            self.pruned.push(trial);
+            Ok(())
+        }
+    }
+    let mut campaign = variant_scoring_campaign(vec![("base", 0.0)]);
+    campaign.generation = GenerationSpec::default();
+    let plan = build_execution_plan(
+        "plan:host_hpo:worker.prune",
+        simple_graph(),
+        campaign,
+        &manifests(),
+    )
+    .unwrap();
+    let request = HostHpoSearchRequest {
+        parameter_bindings: BTreeMap::new(),
+        phase_trial_budgets: Vec::new(),
+        progressive_pruning: true,
+        fold_score_reduction: None,
+        target_node: NodeId::new("model:pls").unwrap(),
+        trial_budget: 2,
+        metric: RegressionMetricKind::Rmse,
+        direction: crate::selection::MetricObjective::Minimize,
+        optimizer_descriptor: BTreeMap::from([("owner".into(), json!("browser"))]),
+    };
+    let options = HostHpoResumeOptions {
+        data_fingerprint: "data:worker.prune".into(),
+        checkpoint: None,
+    };
+    let mut proposals = Proposals {
+        told: Vec::new(),
+        pruned: Vec::new(),
+    };
+    let window =
+        prepare_host_hpo_worker_window(&plan, &request, &options, &mut proposals, 2).unwrap();
+    let controllers = variant_scoring_controllers();
+    let provider = InMemoryDataProvider::new(ControllerId::new("controller:data").unwrap());
+    let complete_task = &window.tasks[0];
+    let complete_folds = (0..2)
+        .map(|index| {
+            evaluate_host_hpo_worker_fold(
+                complete_task,
+                &request,
+                index,
+                &controllers,
+                &provider,
+                &options.data_fingerprint,
+            )
+            .unwrap()
+        })
+        .collect::<Vec<_>>();
+    let pruned_task = &window.tasks[1];
+    let pruned_folds = vec![evaluate_host_hpo_worker_fold(
+        pruned_task,
+        &request,
+        0,
+        &controllers,
+        &provider,
+        &options.data_fingerprint,
+    )
+    .unwrap()];
+    let pruned = host_hpo_worker_pruned_evidence(
+        pruned_task,
+        &request,
+        &options.data_fingerprint,
+        &pruned_folds,
+    )
+    .unwrap();
+    assert_eq!(pruned.intermediate_scores.len(), 1);
+    let results = vec![
+        HostHpoWorkerResult::Pruned {
+            evidence: pruned,
+            data_fingerprint: options.data_fingerprint.clone(),
+            fold_evidence: pruned_folds,
+        },
+        HostHpoWorkerResult::Complete {
+            evidence: evaluate_host_hpo_worker_task(
+                complete_task,
+                &request,
+                &controllers,
+                &provider,
+            )
+            .unwrap(),
+            data_fingerprint: options.data_fingerprint.clone(),
+            fold_evidence: complete_folds,
+        },
+    ];
+    let mut progress = DurableHostProgress {
+        stop_after: usize::MAX,
+        checkpoints: Vec::new(),
+    };
+    let outcome = complete_host_hpo_worker_window(
+        &plan,
+        &request,
+        &options,
+        window,
+        results,
+        &mut proposals,
+        &mut progress,
+    )
+    .unwrap();
+    assert_eq!(outcome.status, HostHpoSearchStatus::Completed);
+    assert_eq!(proposals.told, vec![0]);
+    assert_eq!(proposals.pruned, vec![1]);
+    assert_eq!(outcome.result.unwrap().pruned_trials.len(), 1);
+}
+
+#[test]
 fn host_hpo_owns_budget_native_scores_and_selection_without_refit() {
     struct Proposals {
         asked: u32,
+        phases: Vec<Option<u32>>,
         told: Vec<(u32, f64)>,
+        pruned: Vec<u32>,
+        intermediates: Vec<(u32, u32, f64)>,
     }
     impl HostHpoProposalSource for Proposals {
         fn ask(&mut self, trial_index: u32) -> Result<Option<BTreeMap<String, serde_json::Value>>> {
             assert_eq!(
                 trial_index as usize,
-                self.told.len(),
+                self.told.len() + self.pruned.len(),
                 "each proposal must be terminal before asking again"
             );
             self.asked += 1;
@@ -9689,6 +11892,22 @@ fn host_hpo_owns_budget_native_scores_and_selection_without_refit() {
         }
         fn tell(&mut self, trial_index: u32, score: f64) -> Result<()> {
             self.told.push((trial_index, score));
+            Ok(())
+        }
+        fn ask_in_phase(
+            &mut self,
+            trial_index: u32,
+            phase_index: Option<u32>,
+        ) -> Result<Option<BTreeMap<String, serde_json::Value>>> {
+            self.phases.push(phase_index);
+            self.ask(trial_index)
+        }
+        fn report_intermediate(&mut self, trial_index: u32, step: u32, score: f64) -> Result<bool> {
+            self.intermediates.push((trial_index, step, score));
+            Ok(trial_index == 1 && step == 0)
+        }
+        fn pruned(&mut self, trial_index: u32) -> Result<()> {
+            self.pruned.push(trial_index);
             Ok(())
         }
     }
@@ -9728,6 +11947,8 @@ fn host_hpo_owns_budget_native_scores_and_selection_without_refit() {
     let provider = InMemoryDataProvider::new(ControllerId::new("controller:data").unwrap());
     let mut request = HostHpoSearchRequest {
         parameter_bindings: BTreeMap::new(),
+        phase_trial_budgets: vec![1, 2],
+        progressive_pruning: false,
         fold_score_reduction: None,
         target_node: NodeId::new("model:pls").unwrap(),
         trial_budget: 3,
@@ -9737,12 +11958,16 @@ fn host_hpo_owns_budget_native_scores_and_selection_without_refit() {
     };
     let mut proposals = Proposals {
         asked: 0,
+        phases: Vec::new(),
         told: Vec::new(),
+        pruned: Vec::new(),
+        intermediates: Vec::new(),
     };
     let result = SequentialScheduler
         .execute_host_hpo_search(&plan, &controllers, &provider, &request, &mut proposals)
         .unwrap();
     assert_eq!(proposals.asked, 3);
+    assert_eq!(proposals.phases, vec![Some(0), Some(1), Some(1)]);
     assert_eq!(proposals.told, vec![(0, 3.0), (1, 1.0), (2, 2.0)]);
     assert_eq!(result.selected_trial_index, 1);
     assert_eq!(result.selected_params["n_components"], json!(1.0));
@@ -9763,7 +11988,10 @@ fn host_hpo_owns_budget_native_scores_and_selection_without_refit() {
     request.fold_score_reduction = Some(HostHpoFoldReduction::Mean);
     let mut reduced_proposals = Proposals {
         asked: 0,
+        phases: Vec::new(),
         told: Vec::new(),
+        pruned: Vec::new(),
+        intermediates: Vec::new(),
     };
     let reduced = SequentialScheduler
         .execute_host_hpo_search(
@@ -9787,6 +12015,44 @@ fn host_hpo_owns_budget_native_scores_and_selection_without_refit() {
             "selection reduction cannot rewrite native per-fold/OOF reports"
         );
     }
+    request.progressive_pruning = true;
+    let mut pruning_proposals = Proposals {
+        asked: 0,
+        phases: Vec::new(),
+        told: Vec::new(),
+        pruned: Vec::new(),
+        intermediates: Vec::new(),
+    };
+    let pruned = SequentialScheduler
+        .execute_host_hpo_search(
+            &plan,
+            &controllers,
+            &provider,
+            &request,
+            &mut pruning_proposals,
+        )
+        .unwrap();
+    assert_eq!(pruning_proposals.asked, 3);
+    assert_eq!(pruning_proposals.pruned, vec![1]);
+    assert_eq!(
+        pruning_proposals
+            .intermediates
+            .iter()
+            .filter(|(trial, _, _)| *trial == 1)
+            .count(),
+        1
+    );
+    assert_eq!(pruned.trials.len(), 2);
+    assert_eq!(pruned.pruned_trials.len(), 1);
+    assert_eq!(pruned.pruned_trials[0].intermediate_scores.len(), 1);
+    request.phase_trial_budgets = vec![1, 1];
+    assert!(SequentialScheduler
+        .execute_host_hpo_search(&plan, &controllers, &provider, &request, &mut proposals)
+        .is_err());
+    assert_eq!(
+        proposals.asked, 3,
+        "invalid phase budgets cannot ask or evaluate"
+    );
     request.trial_budget = 0;
     assert!(SequentialScheduler
         .execute_host_hpo_search(&plan, &controllers, &provider, &request, &mut proposals)
@@ -9897,6 +12163,8 @@ fn durable_host_fixture(
     let provider = InMemoryDataProvider::new(ControllerId::new("controller:data").unwrap());
     let request = HostHpoSearchRequest {
         parameter_bindings: BTreeMap::new(),
+        phase_trial_budgets: Vec::new(),
+        progressive_pruning: false,
         target_node: NodeId::new("model:pls").unwrap(),
         trial_budget: 3,
         metric: RegressionMetricKind::Rmse,
@@ -9910,12 +12178,429 @@ fn durable_host_fixture(
     (plan, controllers, provider, request)
 }
 
+#[test]
+fn browser_hpo_worker_window_reduces_out_of_order_native_results() {
+    let (plan, controllers, _, mut request) = durable_host_fixture(false);
+    request.trial_budget = 2;
+    let options = HostHpoResumeOptions {
+        data_fingerprint: "browser-window-data".into(),
+        checkpoint: None,
+    };
+    let mut proposals = DurableHostProposals {
+        asked: Vec::new(),
+        told: Vec::new(),
+        failed: Vec::new(),
+    };
+    let window =
+        prepare_host_hpo_worker_window(&plan, &request, &options, &mut proposals, 2).unwrap();
+    assert_eq!(proposals.asked, vec![0, 1]);
+    assert_eq!(window.tasks.len(), 2);
+    let mut results = window
+        .tasks
+        .iter()
+        .map(|task| {
+            let provider = InMemoryDataProvider::new(ControllerId::new("controller:data").unwrap());
+            HostHpoWorkerResult::Complete {
+                evidence: evaluate_host_hpo_worker_task(task, &request, &controllers, &provider)
+                    .unwrap(),
+                data_fingerprint: options.data_fingerprint.clone(),
+                fold_evidence: Vec::new(),
+            }
+        })
+        .collect::<Vec<_>>();
+    results.reverse();
+    let mut tampered = results.clone();
+    if let HostHpoWorkerResult::Complete { evidence, .. } = &mut tampered[0] {
+        evidence.score += 1.0;
+    }
+    let mut progress = DurableHostProgress {
+        stop_after: usize::MAX,
+        checkpoints: Vec::new(),
+    };
+    assert!(complete_host_hpo_worker_window(
+        &plan,
+        &request,
+        &options,
+        window.clone(),
+        tampered,
+        &mut proposals,
+        &mut progress,
+    )
+    .unwrap_err()
+    .to_string()
+    .contains("scalar/fold scores differ"));
+    assert!(proposals.told.is_empty());
+    assert!(progress.checkpoints.is_empty());
+    let outcome = complete_host_hpo_worker_window(
+        &plan,
+        &request,
+        &options,
+        window,
+        results,
+        &mut proposals,
+        &mut progress,
+    )
+    .unwrap();
+    assert_eq!(outcome.status, HostHpoSearchStatus::Completed);
+    assert_eq!(proposals.told, vec![0, 1]);
+    assert_eq!(outcome.result.unwrap().selected_trial_index, 0);
+    assert_eq!(outcome.checkpoint.unwrap().trials.len(), 2);
+    assert_eq!(progress.checkpoints.len(), 2);
+}
+
+#[test]
+fn host_hpo_sequential_prepares_terminal_before_optimizer_tell() {
+    let (plan, controllers, provider, request) = durable_host_fixture(false);
+    let prepared = Arc::new(AtomicUsize::new(0));
+    struct Proposals {
+        prepared: Arc<AtomicUsize>,
+    }
+    impl HostHpoProposalSource for Proposals {
+        fn ask(&mut self, trial_index: u32) -> Result<Option<BTreeMap<String, serde_json::Value>>> {
+            Ok(Some(BTreeMap::from([(
+                "n_components".into(),
+                json!([1.0, 3.0, 2.0][trial_index as usize]),
+            )])))
+        }
+        fn tell(&mut self, trial_index: u32, _score: f64) -> Result<()> {
+            assert_eq!(
+                self.prepared.load(Ordering::SeqCst),
+                trial_index as usize + 1
+            );
+            Ok(())
+        }
+    }
+    struct Progress {
+        prepared: Arc<AtomicUsize>,
+        published: Vec<usize>,
+    }
+    impl HostHpoProgress for Progress {
+        fn prepare_terminal(
+            &mut self,
+            checkpoint: &HostHpoCheckpoint,
+            _status: HostHpoSearchStatus,
+        ) -> Result<()> {
+            checkpoint.verify_seal()?;
+            self.prepared
+                .store(checkpoint.trials.len(), Ordering::SeqCst);
+            Ok(())
+        }
+        fn checkpoint(
+            &mut self,
+            checkpoint: &HostHpoCheckpoint,
+            _status: HostHpoSearchStatus,
+        ) -> Result<bool> {
+            self.published.push(checkpoint.trials.len());
+            Ok(true)
+        }
+    }
+    let mut proposals = Proposals {
+        prepared: prepared.clone(),
+    };
+    let mut progress = Progress {
+        prepared,
+        published: Vec::new(),
+    };
+    let result = SequentialScheduler
+        .execute_resumable_host_hpo_search(
+            &plan,
+            &controllers,
+            &provider,
+            &request,
+            &mut proposals,
+            &HostHpoResumeOptions {
+                data_fingerprint: "sequential-prepare".into(),
+                checkpoint: None,
+            },
+            &mut progress,
+        )
+        .unwrap();
+    assert_eq!(result.status, HostHpoSearchStatus::Completed);
+    assert_eq!(progress.published, vec![0, 1, 2, 3]);
+}
+
 fn durable_proposals() -> DurableHostProposals {
     DurableHostProposals {
         asked: Vec::new(),
         told: Vec::new(),
         failed: Vec::new(),
     }
+}
+
+#[test]
+fn host_hpo_provider_factory_keeps_candidate_handles_isolated_across_resume() {
+    struct ObservedProvider {
+        trial_index: u32,
+        inner: InMemoryDataProvider,
+        dropped: Arc<Mutex<Vec<(u32, usize, usize)>>>,
+    }
+    impl RuntimeDataProvider for ObservedProvider {
+        fn materialize(&self, request: &DataMaterializationRequest) -> Result<HandleRef> {
+            self.inner.materialize(request)
+        }
+        fn make_view(&self, request: &DataViewRequest) -> Result<HandleRef> {
+            self.inner.make_view(request)
+        }
+    }
+    impl Drop for ObservedProvider {
+        fn drop(&mut self) {
+            self.dropped.lock().unwrap().push((
+                self.trial_index,
+                self.inner.handle_records().len(),
+                self.inner.view_records().len(),
+            ));
+        }
+    }
+    struct Factory(Arc<Mutex<Vec<(u32, usize, usize)>>>);
+    impl HostHpoCandidateProviderFactory for Factory {
+        fn create(&self, trial_index: u32) -> Result<Box<dyn RuntimeDataProvider + Send>> {
+            Ok(Box::new(ObservedProvider {
+                trial_index,
+                inner: InMemoryDataProvider::new(ControllerId::new("controller:data")?),
+                dropped: self.0.clone(),
+            }))
+        }
+    }
+    let (plan, controllers, provider, request) = durable_host_fixture(false);
+    let observations = Arc::new(Mutex::new(Vec::new()));
+    let factory = Factory(observations.clone());
+    let options = HostHpoResumeOptions {
+        data_fingerprint: "candidate-local-data".into(),
+        checkpoint: None,
+    };
+    let mut progress = DurableHostProgress {
+        stop_after: 1,
+        checkpoints: Vec::new(),
+    };
+    let mut proposals = durable_proposals();
+    let first = SequentialScheduler
+        .execute_resumable_host_hpo_search_with_provider_factory(
+            &plan,
+            &controllers,
+            &provider,
+            &factory,
+            &request,
+            &mut proposals,
+            &options,
+            &mut progress,
+        )
+        .unwrap();
+    assert_eq!(first.status, HostHpoSearchStatus::Cancelled);
+    assert_eq!(observations.lock().unwrap().len(), 1);
+    let resumed = SequentialScheduler
+        .execute_resumable_host_hpo_search_with_provider_factory(
+            &plan,
+            &controllers,
+            &provider,
+            &factory,
+            &request,
+            &mut proposals,
+            &HostHpoResumeOptions {
+                data_fingerprint: "candidate-local-data".into(),
+                checkpoint: first.checkpoint,
+            },
+            &mut DurableHostProgress {
+                stop_after: usize::MAX,
+                checkpoints: Vec::new(),
+            },
+        )
+        .unwrap();
+    assert_eq!(resumed.status, HostHpoSearchStatus::Completed);
+    assert_eq!(proposals.asked, vec![0, 1, 2]);
+    let observed = observations.lock().unwrap();
+    assert_eq!(
+        observed.iter().map(|entry| entry.0).collect::<Vec<_>>(),
+        vec![0, 1, 2]
+    );
+    assert!(observed.iter().all(|entry| entry.1 == 0 && entry.2 == 0));
+    assert!(provider.handle_records().is_empty());
+    assert!(provider.view_records().is_empty());
+}
+
+#[test]
+fn host_hpo_parallel_window_overlaps_candidates_and_tells_in_trial_order() {
+    struct ProviderFactory;
+    impl HostHpoCandidateProviderFactory for ProviderFactory {
+        fn create(&self, _trial_index: u32) -> Result<Box<dyn RuntimeDataProvider + Send>> {
+            Ok(Box::new(InMemoryDataProvider::new(ControllerId::new(
+                "controller:data",
+            )?)))
+        }
+    }
+    struct SlowModel {
+        inner: VariantScoringController,
+        active: Arc<AtomicUsize>,
+        maximum: Arc<AtomicUsize>,
+    }
+    impl RuntimeController for SlowModel {
+        fn controller_id(&self) -> &ControllerId {
+            self.inner.controller_id()
+        }
+        fn invoke(&self, task: &NodeTask) -> Result<NodeResult> {
+            let current = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+            self.maximum.fetch_max(current, Ordering::SeqCst);
+            std::thread::sleep(std::time::Duration::from_millis(25));
+            let result = self.inner.invoke(task);
+            self.active.fetch_sub(1, Ordering::SeqCst);
+            result
+        }
+    }
+    struct ControllerFactory {
+        active: Arc<AtomicUsize>,
+        maximum: Arc<AtomicUsize>,
+    }
+    impl HostHpoCandidateControllerFactory for ControllerFactory {
+        fn create(&self, _trial_index: u32) -> Result<RuntimeControllerRegistry> {
+            let mut registry = RuntimeControllerRegistry::new();
+            registry.register(Box::new(MockController {
+                id: ControllerId::new("controller:transform")?,
+                handle: 1,
+                emit_prediction: false,
+            }))?;
+            registry.register(Box::new(SlowModel {
+                inner: VariantScoringController {
+                    id: ControllerId::new("controller:model")?,
+                    handle: 2,
+                    emit_targets: true,
+                },
+                active: self.active.clone(),
+                maximum: self.maximum.clone(),
+            }))?;
+            Ok(registry)
+        }
+    }
+    struct OrderedProposals(Vec<String>);
+    impl HostHpoProposalSource for OrderedProposals {
+        fn ask(&mut self, index: u32) -> Result<Option<BTreeMap<String, serde_json::Value>>> {
+            self.0.push(format!("ask:{index}"));
+            Ok(Some(BTreeMap::from([(
+                "n_components".into(),
+                json!((index + 1) as f64),
+            )])))
+        }
+        fn tell(&mut self, index: u32, _score: f64) -> Result<()> {
+            self.0.push(format!("tell:{index}"));
+            Ok(())
+        }
+        fn report_intermediate(&mut self, index: u32, step: u32, _score: f64) -> Result<bool> {
+            self.0.push(format!("fold:{index}:{step}"));
+            Ok(index == 1 && step == 0)
+        }
+    }
+    let (plan, _controllers, _provider, request) = durable_host_fixture(false);
+    let active = Arc::new(AtomicUsize::new(0));
+    let maximum = Arc::new(AtomicUsize::new(0));
+    let controller_factory = ControllerFactory {
+        active,
+        maximum: maximum.clone(),
+    };
+    let mut proposals = OrderedProposals(Vec::new());
+    let result = SequentialScheduler
+        .execute_parallel_host_hpo_search_with_candidate_factories(
+            &plan,
+            &ProviderFactory,
+            &controller_factory,
+            &request,
+            &mut proposals,
+            2,
+        )
+        .unwrap();
+    assert!(
+        maximum.load(Ordering::SeqCst) >= 2,
+        "FIT_CV candidates did not overlap"
+    );
+    assert_eq!(
+        proposals.0,
+        vec!["ask:0", "ask:1", "tell:0", "tell:1", "ask:2", "tell:2"]
+    );
+    assert_eq!(result.trials.len(), 3);
+    assert_eq!(result.selected_trial_index, 0);
+
+    struct PreparedProgress {
+        prepared: Vec<usize>,
+        published: Vec<usize>,
+        cancel_after_first: bool,
+    }
+    impl HostHpoProgress for PreparedProgress {
+        fn prepare_terminal(
+            &mut self,
+            checkpoint: &HostHpoCheckpoint,
+            _status: HostHpoSearchStatus,
+        ) -> Result<()> {
+            self.prepared.push(checkpoint.trials.len());
+            Ok(())
+        }
+        fn checkpoint(
+            &mut self,
+            checkpoint: &HostHpoCheckpoint,
+            _status: HostHpoSearchStatus,
+        ) -> Result<bool> {
+            self.published.push(checkpoint.trials.len());
+            Ok(!(self.cancel_after_first && checkpoint.trials.len() == 1))
+        }
+    }
+    let mut pruning_request = request.clone();
+    pruning_request.progressive_pruning = true;
+    pruning_request.fold_score_reduction = Some(HostHpoFoldReduction::Mean);
+    let options = HostHpoResumeOptions {
+        data_fingerprint: "parallel-pruning-data".into(),
+        checkpoint: None,
+    };
+    let mut progress = PreparedProgress {
+        prepared: Vec::new(),
+        published: Vec::new(),
+        cancel_after_first: true,
+    };
+    let mut proposals = OrderedProposals(Vec::new());
+    let first = SequentialScheduler
+        .execute_resumable_parallel_host_hpo_search_with_candidate_factories(
+            &plan,
+            &ProviderFactory,
+            &controller_factory,
+            &pruning_request,
+            &mut proposals,
+            2,
+            &options,
+            &mut progress,
+        )
+        .unwrap();
+    assert_eq!(first.status, HostHpoSearchStatus::Cancelled);
+    assert_eq!(first.checkpoint.as_ref().unwrap().trials.len(), 2);
+    assert_eq!(progress.prepared, vec![1, 2]);
+    assert_eq!(progress.published, vec![0, 1, 2, 2]);
+    assert_eq!(first.result.as_ref().unwrap().pruned_trials.len(), 1);
+    assert!(proposals.0.contains(&"fold:0:0".to_string()));
+    assert!(proposals.0.contains(&"fold:1:0".to_string()));
+    assert_eq!(
+        proposals
+            .0
+            .iter()
+            .filter(|event| *event == "fold:1:1")
+            .count(),
+        0
+    );
+    let resumed = SequentialScheduler
+        .execute_resumable_parallel_host_hpo_search_with_candidate_factories(
+            &plan,
+            &ProviderFactory,
+            &controller_factory,
+            &pruning_request,
+            &mut proposals,
+            2,
+            &HostHpoResumeOptions {
+                data_fingerprint: "parallel-pruning-data".into(),
+                checkpoint: first.checkpoint,
+            },
+            &mut PreparedProgress {
+                prepared: Vec::new(),
+                published: Vec::new(),
+                cancel_after_first: false,
+            },
+        )
+        .unwrap();
+    assert_eq!(resumed.status, HostHpoSearchStatus::Completed);
+    assert_eq!(resumed.checkpoint.unwrap().trials.len(), 3);
+    assert!(maximum.load(Ordering::SeqCst) >= 2);
 }
 
 #[test]
@@ -10779,6 +13464,7 @@ impl RuntimeController for MultiPortVariantScoringController {
             .unwrap_or_else(|| "nofold".to_string());
         Ok(NodeResult {
             schema_version: None,
+            classification_probabilities: Vec::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([
                 ("pred".to_string(), output.clone()),
@@ -11513,6 +14199,128 @@ fn fit_view_spec_drops_excluded_samples_while_validation_keeps_them() {
 }
 
 #[test]
+fn refit_fit_view_attests_augmented_resubstitution_opt_in() {
+    let node_id = NodeId::new("node:model").unwrap();
+    let mut binding = data_binding(&node_id);
+    let fold_set = three_fold_stress_set();
+    let scope = PhaseScope {
+        phase: Phase::Refit,
+        variant_id: None,
+        variant: None,
+        fold_id: None,
+        seed_root: None,
+    };
+    let excluded = BTreeSet::new();
+    let default_view = data_view_for_partition(
+        &binding,
+        Some(&fold_set),
+        &scope,
+        DataRequestPartition::FullTrain,
+        None,
+        DataViewRole::Fit,
+        &excluded,
+    )
+    .unwrap();
+    assert_eq!(
+        default_view.extra["include_augmented_refit_predictions"],
+        false
+    );
+
+    binding.view_policy.include_augmented_refit_predictions = true;
+    let opted_view = data_view_for_partition(
+        &binding,
+        Some(&fold_set),
+        &scope,
+        DataRequestPartition::FullTrain,
+        None,
+        DataViewRole::Fit,
+        &excluded,
+    )
+    .unwrap();
+    assert!(opted_view.include_augmented);
+    assert_eq!(
+        opted_view.extra["include_augmented_refit_predictions"],
+        true
+    );
+    assert_eq!(opted_view.sample_ids, default_view.sample_ids);
+}
+
+#[test]
+fn cv_augmented_train_predictions_are_fold_declared_and_never_oof() {
+    let node_id = NodeId::new("node:model").unwrap();
+    let mut binding = data_binding(&node_id);
+    let fold_id = FoldId::new("fold:0").unwrap();
+    let origin = SampleId::new("s1").unwrap();
+    let child = SampleId::new("child:fold0").unwrap();
+    let other_fold_child = SampleId::new("child:fold1").unwrap();
+    binding.view_policy.include_augmented_cv_train_predictions = true;
+    binding
+        .view_policy
+        .augmented_cv_train_prediction_ids_by_fold
+        .insert(fold_id.clone(), vec![child.clone()]);
+    let scope = PhaseScope {
+        phase: Phase::FitCv,
+        variant_id: None,
+        variant: None,
+        fold_id: Some(fold_id.clone()),
+        seed_root: None,
+    };
+    let view = data_view_for_partition(
+        &binding,
+        Some(&three_fold_stress_set()),
+        &scope,
+        DataRequestPartition::FoldTrain,
+        None,
+        DataViewRole::Fit,
+        &BTreeSet::new(),
+    )
+    .unwrap();
+    assert_eq!(
+        view.extra["augmented_cv_train_prediction_ids"],
+        json!(["child:fold0"])
+    );
+    let mut base =
+        crate::relation::SampleRelation::new(ObservationId::new("s1").unwrap(), origin.clone());
+    base.origin_sample_id = None;
+    let make_child = |id: &SampleId| {
+        let mut relation = crate::relation::SampleRelation::new(
+            ObservationId::new(id.as_str()).unwrap(),
+            origin.clone(),
+        );
+        relation.origin_sample_id = Some(origin.clone());
+        relation.is_augmented = true;
+        relation
+    };
+    let relations = crate::relation::SampleRelationSet {
+        records: vec![base, make_child(&child), make_child(&other_fold_child)],
+    };
+    validate_cv_augmented_train_prediction_view(&view, &relations).unwrap();
+
+    let mut task = fit_influence_validation_task(FitInfluenceTask::default());
+    task.fold_id = Some(fold_id.clone());
+    task.data_views.insert("data:x".to_string(), view);
+    let mut prediction = PredictionBlock {
+        prediction_id: None,
+        producer_node: task.node_plan.node_id.clone(),
+        producer_port: Some("prediction".to_string()),
+        partition: PredictionPartition::Train,
+        fold_id: Some(fold_id),
+        sample_ids: vec![origin, child],
+        values: vec![vec![1.0], vec![1.1]],
+        target_names: vec!["y".to_string()],
+    };
+    validate_prediction_scope(&prediction, &task).unwrap();
+    prediction.sample_ids.push(other_fold_child);
+    prediction.values.push(vec![1.2]);
+    assert!(validate_prediction_scope(&prediction, &task)
+        .unwrap_err()
+        .to_string()
+        .contains("outside its fold-train data view"));
+    prediction.partition = PredictionPartition::TrainPool;
+    assert!(validate_prediction_scope(&prediction, &task).is_err());
+}
+
+#[test]
 fn data_view_extra_carries_source_index_metadata() {
     let node_id = NodeId::new("node:model").unwrap();
     let mut binding = data_binding(&node_id);
@@ -11549,6 +14357,49 @@ fn data_view_extra_carries_source_index_metadata() {
         view.extra.get(SOURCE_INDEX_METADATA_KEY),
         Some(&json!({"nir": 0, "chem": 1}))
     );
+}
+
+#[test]
+fn feature_axes_are_validated_and_carried_to_source_views() {
+    let node_id = NodeId::new("node:model").unwrap();
+    let mut binding = data_binding(&node_id);
+    binding.source_ids = vec!["nir".to_string(), "chem".to_string()];
+    binding.metadata.insert(
+        crate::data::FEATURE_AXES_METADATA_KEY.to_string(),
+        json!({"nir": ["1000", "1100"], "chem": ["a", "b", "c"]}),
+    );
+    binding.validate().unwrap();
+    let scope = PhaseScope {
+        phase: Phase::Predict,
+        variant_id: None,
+        variant: None,
+        fold_id: None,
+        seed_root: None,
+    };
+    let view = data_view_for_partition(
+        &binding,
+        None,
+        &scope,
+        DataRequestPartition::Predict,
+        None,
+        DataViewRole::NonFit,
+        &BTreeSet::new(),
+    )
+    .unwrap();
+    assert_eq!(
+        view.extra.get(crate::data::FEATURE_AXES_METADATA_KEY),
+        Some(&json!({"nir": ["1000", "1100"], "chem": ["a", "b", "c"]})),
+    );
+    binding.metadata.insert(
+        crate::data::FEATURE_AXES_METADATA_KEY.to_string(),
+        json!({"nir": ["1000", "1100"]}),
+    );
+    binding.validate().unwrap();
+    binding.metadata.insert(
+        crate::data::FEATURE_AXES_METADATA_KEY.to_string(),
+        json!({"unknown": ["1000", "1100"]}),
+    );
+    assert!(binding.validate().is_err());
 }
 
 #[test]
@@ -11933,6 +14784,7 @@ impl RuntimeController for BranchScopeRecordingController {
         };
         Ok(NodeResult {
             schema_version: None,
+            classification_probabilities: Vec::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([
                 ("pred".to_string(), prediction_output.clone()),
@@ -12031,6 +14883,7 @@ impl RuntimeController for OverlapEmittingController {
         };
         Ok(NodeResult {
             schema_version: None,
+            classification_probabilities: Vec::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([
                 ("pred".to_string(), prediction_output.clone()),
@@ -12672,6 +15525,7 @@ impl RuntimeController for SilentBranchController {
         };
         Ok(NodeResult {
             schema_version: None,
+            classification_probabilities: Vec::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([
                 ("oof".to_string(), output.clone()),
@@ -12837,6 +15691,7 @@ impl RuntimeController for ScoringBranchController {
             .unwrap_or_else(|| "base".to_string());
         Ok(NodeResult {
             schema_version: None,
+            classification_probabilities: Vec::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([
                 ("pred".to_string(), prediction_output.clone()),
@@ -13056,7 +15911,7 @@ fn concat_merge_producer_is_scored_per_fold_and_cross_fold() {
                 && report
                     .fold_id
                     .as_ref()
-                    .is_some_and(|fold| fold.as_str() != "avg")
+                    .is_some_and(|fold| !matches!(fold.as_str(), "avg" | "w_avg"))
         })
         .collect();
     assert_eq!(
@@ -13575,6 +16430,7 @@ impl RuntimeController for FusionBranchController {
             };
         Ok(NodeResult {
             schema_version: None,
+            classification_probabilities: Vec::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([
                 ("pred".to_string(), prediction_output.clone()),
@@ -14027,6 +16883,7 @@ impl RuntimeController for ProbaBranchController {
         };
         Ok(NodeResult {
             schema_version: None,
+            classification_probabilities: Vec::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([
                 ("pred".to_string(), prediction_output.clone()),
@@ -14288,6 +17145,7 @@ impl RuntimeController for OffFoldScoringController {
             .unwrap_or_else(|| "base".to_string());
         Ok(NodeResult {
             schema_version: None,
+            classification_probabilities: Vec::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([
                 ("pred".to_string(), prediction_output.clone()),
@@ -14633,6 +17491,7 @@ impl RuntimeController for OffFoldDuplicationController {
         };
         Ok(NodeResult {
             schema_version: None,
+            classification_probabilities: Vec::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([
                 ("pred".to_string(), prediction_output.clone()),
@@ -15119,6 +17978,7 @@ impl RuntimeController for DuplicateSampleBranchController {
         };
         Ok(NodeResult {
             schema_version: None,
+            classification_probabilities: Vec::new(),
             node_id: node_id.clone(),
             outputs: BTreeMap::from([
                 ("pred".to_string(), prediction_output.clone()),
@@ -15255,6 +18115,7 @@ impl RuntimeController for StackingOffFoldController {
         };
         Ok(NodeResult {
             schema_version: None,
+            classification_probabilities: Vec::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([(
                 "pred".to_string(),
@@ -15355,6 +18216,171 @@ fn stacking_meta_node_receives_base_test_predictions_in_refit() {
             .count(),
         1,
         "the meta-node ran in REFIT and accepted the off-fold test input"
+    );
+}
+
+#[test]
+fn stacking_best_fold_refit_reads_selected_cv_test_block() {
+    let mut plan = build_execution_plan(
+        "plan:stack.best.fold",
+        oof_edge_graph(),
+        oof_edge_campaign(),
+        &oof_edge_manifests(BTreeSet::from([Phase::FitCv, Phase::Refit])),
+    )
+    .unwrap();
+    let meta = plan
+        .graph_plan
+        .graph
+        .nodes
+        .iter_mut()
+        .find(|node| node.id.as_str() == "model:meta")
+        .unwrap();
+    meta.metadata
+        .insert("stacking_test_aggregation".to_string(), json!("best"));
+    meta.metadata
+        .insert("stacking_test_metric".to_string(), json!("rmse"));
+    let mut ctx = RunContext::new(RunId::new("run:stack.best.fold").unwrap(), Some(11));
+    for (fold, value, rmse) in [("fold:0", 0.4, 4.0), ("fold:1", 0.2, 2.0)] {
+        ctx.prediction_store
+            .append(PredictionBlock {
+                prediction_id: None,
+                producer_node: NodeId::new("model:base").unwrap(),
+                producer_port: None,
+                partition: PredictionPartition::Test,
+                fold_id: Some(FoldId::new(fold).unwrap()),
+                sample_ids: vec![SampleId::new("test:0").unwrap()],
+                values: vec![vec![value]],
+                target_names: vec!["y".to_string()],
+            })
+            .unwrap();
+        ctx.score_collector.push(
+            serde_json::from_value(json!({
+                "producer_node": "model:base", "partition": "validation", "fold_id": fold,
+                "level": "sample", "row_count": 1, "target_width": 1,
+                "metrics": {"rmse": rmse}
+            }))
+            .unwrap(),
+        );
+    }
+    ctx.prediction_store
+        .append(PredictionBlock {
+            prediction_id: None,
+            producer_node: NodeId::new("model:base").unwrap(),
+            producer_port: None,
+            partition: PredictionPartition::Test,
+            fold_id: None,
+            sample_ids: vec![SampleId::new("test:0").unwrap()],
+            values: vec![vec![0.9]],
+            target_names: vec!["y".to_string()],
+        })
+        .unwrap();
+    let edge = &plan.graph_plan.graph.edges[0];
+    let input = collect_off_fold_prediction_input(
+        &plan,
+        edge,
+        &ctx,
+        &PhaseScope {
+            phase: Phase::Refit,
+            variant_id: None,
+            variant: None,
+            fold_id: None,
+            seed_root: None,
+        },
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(input.spec.values, vec![vec![0.2]]);
+    assert_eq!(input.spec.fold_id, None);
+    plan.graph_plan
+        .graph
+        .nodes
+        .iter_mut()
+        .find(|node| node.id.as_str() == "model:meta")
+        .unwrap()
+        .metadata
+        .insert("stacking_test_aggregation".to_string(), json!("weighted"));
+    let weighted = collect_off_fold_prediction_input(
+        &plan,
+        &plan.graph_plan.graph.edges[0],
+        &ctx,
+        &PhaseScope {
+            phase: Phase::Refit,
+            variant_id: None,
+            variant: None,
+            fold_id: None,
+            seed_root: None,
+        },
+    )
+    .unwrap()
+    .unwrap();
+    assert!(
+        (weighted.spec.values[0][0] - (0.4 / 4.0 + 0.2 / 2.0) / (1.0 / 4.0 + 1.0 / 2.0)).abs()
+            < 1e-9,
+        "weighted feature was {}",
+        weighted.spec.values[0][0]
+    );
+}
+
+#[test]
+fn stacking_cv_test_input_selects_only_current_fold_and_never_validation() {
+    let plan = build_execution_plan(
+        "plan:stack.cv.fold.test",
+        oof_edge_graph(),
+        oof_edge_campaign(),
+        &oof_edge_manifests(BTreeSet::from([Phase::FitCv])),
+    )
+    .unwrap();
+    let mut ctx = RunContext::new(RunId::new("run:stack.cv.fold.test").unwrap(), Some(11));
+    for (fold, partition, value) in [
+        ("fold:0", PredictionPartition::Test, 0.2),
+        ("fold:1", PredictionPartition::Test, 0.8),
+        ("fold:0", PredictionPartition::Validation, 99.0),
+    ] {
+        ctx.prediction_store
+            .append(PredictionBlock {
+                prediction_id: None,
+                producer_node: NodeId::new("model:base").unwrap(),
+                producer_port: None,
+                partition,
+                fold_id: Some(FoldId::new(fold).unwrap()),
+                sample_ids: vec![SampleId::new("external:test").unwrap()],
+                values: vec![vec![value]],
+                target_names: vec!["y".to_string()],
+            })
+            .unwrap();
+    }
+    let input = collect_cv_fold_test_prediction_input(
+        &plan,
+        &plan.graph_plan.graph.edges[0],
+        &ctx,
+        &PhaseScope {
+            phase: Phase::FitCv,
+            variant_id: None,
+            variant: None,
+            fold_id: Some(FoldId::new("fold:1").unwrap()),
+            seed_root: None,
+        },
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(input.spec.partition, PredictionPartition::Test);
+    assert_eq!(input.spec.fold_id, Some(FoldId::new("fold:1").unwrap()));
+    assert_eq!(input.spec.values, vec![vec![0.8]]);
+    assert_ne!(
+        input.handle.handle,
+        deterministic_oof_handle(
+            &plan,
+            &plan.graph_plan.graph.edges[0],
+            &ctx,
+            &PhaseScope {
+                phase: Phase::FitCv,
+                variant_id: None,
+                variant: None,
+                fold_id: Some(FoldId::new("fold:1").unwrap()),
+                seed_root: None,
+            },
+        )
+        .unwrap(),
     );
 }
 
@@ -15527,6 +18553,7 @@ impl RuntimeController for OperatorScoringController {
             .unwrap_or_else(|| "nofold".to_string());
         Ok(NodeResult {
             schema_version: None,
+            classification_probabilities: Vec::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([("oof".to_string(), output)]),
             predictions,
@@ -15934,7 +18961,7 @@ fn select_best_operator_variant_runs_both_pruned_candidates_and_picks_winner() {
     let controllers = operator_select_controllers();
     let run_id = RunId::new("run:operator.select").unwrap();
 
-    let selected = select_best_operator_variant_by_cv(
+    let selected = select_best_operator_variant_outcome_by_cv(
         &plan,
         &model,
         &run_id,
@@ -15956,10 +18983,19 @@ fn select_best_operator_variant_runs_both_pruned_candidates_and_picks_winner() {
     )
     .unwrap();
 
-    let selection = selected.expect("operator scoring is on (targets emitted)");
+    let outcome = selected.expect("operator scoring is on (targets emitted)");
+    let ranking = &outcome.decision.ranked_candidates;
+    assert_eq!(ranking.len(), 2);
+    assert_eq!(ranking[0].rank, 1);
+    assert_eq!(ranking[1].rank, 2);
+    let selection = outcome.selection;
     // The winner is choice0 (RMSE 0) — recover its variant id from the model's enumeration.
     let (winner_variant, _, _) = operator_variant_for_choice(&model, "choice0");
     assert_eq!(selection.selected_variant_id, winner_variant.variant_id);
+    assert_eq!(
+        ranking[0].candidate_id,
+        winner_variant.variant_id.to_string()
+    );
 
     // Both choices' Validation reports are present and tagged with their own variant ids.
     let scored: BTreeSet<VariantId> = selection
@@ -16327,11 +19363,11 @@ fn select_best_operator_variant_is_leakage_safe_inactive_choice_writes_no_valida
 }
 
 #[test]
-fn select_best_operator_variant_from_models_rejects_multiple_generators() {
+fn select_best_operator_variant_from_models_enumerates_multiple_generators() {
     use crate::metrics::RegressionMetricKind;
 
-    // (6) Multiple operator generators are rejected for this phase (flat single operator generator
-    // scope), consistent with the Phase-3 nested rejection.
+    // Independent operator generators form a Cartesian product. No host targets
+    // means SELECT is off, so the run keeps its default variant.
     let (plan, model) = operator_select_union();
     let mut second = model.clone();
     second.generator_id = NodeId::new("generator:other").unwrap();
@@ -16339,7 +19375,11 @@ fn select_best_operator_variant_from_models_rejects_multiple_generators() {
     let models = vec![model, second];
     let run_id = RunId::new("run:operator.multi").unwrap();
 
-    let error = select_best_operator_variant_from_models(
+    let variants = enumerate_operator_variants(&models, Some(7)).unwrap();
+    assert_eq!(variants.len(), 4);
+    assert!(variants.iter().all(|variant| variant.choices.len() == 2));
+
+    let selected = select_best_operator_variant_from_models(
         &plan,
         &models,
         &run_id,
@@ -16347,12 +19387,8 @@ fn select_best_operator_variant_from_models_rejects_multiple_generators() {
         RegressionMetricKind::Rmse,
         |_plan, _ctx| Ok(()),
     )
-    .unwrap_err()
-    .to_string();
-    assert!(
-        error.contains("does not support 2 operator generators"),
-        "multiple operator generators must be rejected: {error}"
-    );
+    .unwrap();
+    assert!(selected.is_none());
 
     // An empty model slice is a no-op (no operator generator to SELECT): returns Ok(None).
     let none = select_best_operator_variant_from_models(
@@ -16365,4 +19401,265 @@ fn select_best_operator_variant_from_models_rejects_multiple_generators() {
     )
     .unwrap();
     assert!(none.is_none());
+}
+
+#[test]
+fn multi_operator_select_pools_oof_rows_with_branch_scoped_ids() {
+    let (_, mut left) = operator_select_union();
+    let mut right = left.clone();
+    right.generator_id = NodeId::new("generator:right").unwrap();
+    right.dimension.name = "generator:right.operators".to_string();
+    left.active_nodes.insert(
+        "choice0".into(),
+        BTreeSet::from([NodeId::new("model:left").unwrap()]),
+    );
+    right.active_nodes.insert(
+        "choice0".into(),
+        BTreeSet::from([NodeId::new("model:right").unwrap()]),
+    );
+    let models = [left, right];
+    let variant = enumerate_operator_variants(&models, Some(7))
+        .unwrap()
+        .into_iter()
+        .find(|variant| {
+            variant
+                .choices
+                .values()
+                .all(|choice| choice.label == "choice0")
+        })
+        .unwrap();
+    let average = |producer: &str, predictions: Vec<f64>| {
+        let units = (0..predictions.len())
+            .map(|index| PredictionUnitId::Sample(SampleId::new(format!("same:{index}")).unwrap()))
+            .collect::<Vec<_>>();
+        OofAverageBlock {
+            predictions: AggregatedPredictionBlock {
+                prediction_id: None,
+                producer_node: NodeId::new(producer).unwrap(),
+                producer_port: None,
+                partition: PredictionPartition::Validation,
+                fold_id: Some(FoldId::new("avg").unwrap()),
+                level: PredictionLevel::Sample,
+                unit_ids: units.clone(),
+                values: predictions.into_iter().map(|value| vec![value]).collect(),
+                target_names: Vec::new(),
+            },
+            y_true: RegressionTargetBlock {
+                level: PredictionLevel::Sample,
+                unit_ids: units.clone(),
+                values: vec![vec![0.0]; units.len()],
+                validity_masks: None,
+                target_names: Vec::new(),
+            },
+        }
+    };
+    let left_average = average("model:left", vec![0.0]);
+    let right_average = average("model:right", vec![2.0, 2.0, 2.0]);
+    let mut left_weighted = left_average.clone();
+    left_weighted.predictions.fold_id = Some(FoldId::new("w_avg").unwrap());
+    let mut right_weighted = right_average.clone();
+    right_weighted.predictions.fold_id = Some(FoldId::new("w_avg").unwrap());
+    let score = pooled_operator_candidate_score(
+        &variant,
+        &models,
+        &[left_average, right_average, left_weighted, right_weighted],
+        RegressionMetricKind::Rmse,
+    )
+    .unwrap();
+    assert!((score.metrics["rmse"] - 3.0_f64.sqrt()).abs() < 1e-12);
+    assert_eq!(score.metadata["row_count"], 4);
+    assert_eq!(score.metadata["operator_branch_count"], 2);
+}
+
+#[test]
+fn multi_operator_select_scores_each_pruned_combination_and_refits_winner() {
+    let (base, left) = operator_select_union();
+    let mut graph = base.graph_plan.graph.clone();
+    let template = graph
+        .nodes
+        .iter()
+        .find(|node| node.id.as_str() == "model:choice0__pls")
+        .unwrap()
+        .clone();
+    let prefix_edge = graph
+        .edges
+        .iter()
+        .find(|edge| {
+            edge.source.node_id.as_str() == "filter:y_outlier" && edge.target.port_name == "x"
+        })
+        .unwrap()
+        .clone();
+    for id in ["model:right0", "model:right1"] {
+        let mut node = template.clone();
+        node.id = NodeId::new(id).unwrap();
+        graph.nodes.push(node);
+        let mut edge = prefix_edge.clone();
+        edge.target.node_id = NodeId::new(id).unwrap();
+        graph.edges.push(edge);
+    }
+    let plan = build_execution_plan(
+        "plan:multi.operator.select",
+        graph,
+        base.campaign.clone(),
+        &operator_select_manifests(),
+    )
+    .unwrap();
+    let right = OperatorVariantModel {
+        generator_id: NodeId::new("generator:right").unwrap(),
+        dimension: GenerationDimension {
+            name: "generator:right.operators".into(),
+            choices: ["right0", "right1"]
+                .into_iter()
+                .map(|label| GenerationChoice {
+                    label: label.into(),
+                    value: json!(label),
+                    param_overrides: Vec::new(),
+                    active_subsequence: Some(label.into()),
+                })
+                .collect(),
+        },
+        active_nodes: BTreeMap::from([
+            (
+                "right0".into(),
+                BTreeSet::from([NodeId::new("model:right0").unwrap()]),
+            ),
+            (
+                "right1".into(),
+                BTreeSet::from([NodeId::new("model:right1").unwrap()]),
+            ),
+        ]),
+        variant_labels: BTreeMap::new(),
+    };
+    let models = [left, right];
+    let run_id = RunId::new("run:multi.operator.select").unwrap();
+    let mut seen = BTreeSet::new();
+    let selection = select_best_operator_variant_from_models(
+        &plan,
+        &models,
+        &run_id,
+        Some(7),
+        RegressionMetricKind::Rmse,
+        |pruned, ctx| {
+            let active_left = ["model:choice0__pls", "model:choice1__ridge"]
+                .into_iter()
+                .filter(|id| pruned.node_plans.contains_key(&NodeId::new(*id).unwrap()))
+                .collect::<Vec<_>>();
+            let active_right = ["model:right0", "model:right1"]
+                .into_iter()
+                .filter(|id| pruned.node_plans.contains_key(&NodeId::new(*id).unwrap()))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                active_left.len(),
+                1,
+                "inactive left choice leaked into candidate"
+            );
+            assert_eq!(
+                active_right.len(),
+                1,
+                "inactive right choice leaked into candidate"
+            );
+            assert!(!pruned
+                .node_plans
+                .contains_key(&NodeId::new("merge:gen").unwrap()));
+            seen.insert((active_left[0].to_string(), active_right[0].to_string()));
+            for (branch_index, (producer, offset, count)) in [
+                (
+                    active_left[0],
+                    if active_left[0].contains("choice0") {
+                        1.0
+                    } else {
+                        0.0
+                    },
+                    1,
+                ),
+                (
+                    active_right[0],
+                    if active_right[0].ends_with('0') {
+                        0.0
+                    } else {
+                        2.0
+                    },
+                    3,
+                ),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let unit_ids = (0..count)
+                    .map(|i| {
+                        PredictionUnitId::Sample(SampleId::new(format!("shared:{i}")).unwrap())
+                    })
+                    .collect::<Vec<_>>();
+                let block = AggregatedPredictionBlock {
+                    prediction_id: None,
+                    producer_node: NodeId::new(producer).unwrap(),
+                    producer_port: None,
+                    partition: PredictionPartition::Validation,
+                    fold_id: Some(FoldId::new("avg").unwrap()),
+                    level: PredictionLevel::Sample,
+                    unit_ids: unit_ids.clone(),
+                    values: vec![vec![offset]; count],
+                    target_names: Vec::new(),
+                };
+                let truth = RegressionTargetBlock {
+                    level: PredictionLevel::Sample,
+                    unit_ids,
+                    values: vec![vec![0.0]; count],
+                    validity_masks: None,
+                    target_names: Vec::new(),
+                };
+                let report = score_regression_aggregated_block(
+                    &block,
+                    &truth,
+                    &[RegressionMetricKind::Rmse],
+                )?;
+                assert_eq!(branch_index, ctx.oof_average_blocks.len());
+                ctx.score_collector.push(report);
+                ctx.oof_average_blocks.push(OofAverageBlock {
+                    predictions: block,
+                    y_true: truth,
+                });
+            }
+            Ok(())
+        },
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        seen.len(),
+        4,
+        "every Cartesian candidate must run exactly once"
+    );
+    let variants = enumerate_operator_variants(&models, Some(7)).unwrap();
+    let winner = variants
+        .iter()
+        .find(|variant| {
+            variant.choices["generator:preproc_model.operators"].label == "choice1"
+                && variant.choices["generator:right.operators"].label == "right0"
+        })
+        .unwrap();
+    assert_eq!(selection.selected_variant_id, winner.variant_id);
+    assert_eq!(selection.validation_reports.len(), 8);
+    assert_eq!(selection.variant_validation_predictions.len(), 4);
+    for captured in &selection.variant_validation_predictions {
+        assert_eq!(
+            captured.oof_averages.len(),
+            2,
+            "both independent branch producers retain their OOF arrays"
+        );
+        assert_ne!(
+            captured.oof_averages[0].predictions.producer_node,
+            captured.oof_averages[1].predictions.producer_node
+        );
+    }
+    let refit = pruned_plan_for_operator_models(&plan, &models, winner).unwrap();
+    assert!(refit
+        .node_plans
+        .contains_key(&NodeId::new("model:choice1__ridge").unwrap()));
+    assert!(refit
+        .node_plans
+        .contains_key(&NodeId::new("model:right0").unwrap()));
+    assert!(!refit
+        .node_plans
+        .contains_key(&NodeId::new("model:right1").unwrap()));
 }

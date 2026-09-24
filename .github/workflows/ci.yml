@@ -176,6 +176,11 @@ jobs:
         env:
           RUSTFLAGS: --cfg dag_ml_workspace_contract_fixtures
         run: cargo test --workspace
+      - name: Native CV to REFIT to PREDICT JSON outcome
+        run: |
+          cargo build -p dag-ml-cli
+          python scripts/smoke_cv_refit_replay_output.py target/debug/dag-ml-cli
+          python scripts/smoke_persisted_bundle_replay.py target/debug/dag-ml-cli
       - name: All core contracts with downstream JSON feature unification
         run: cargo test --locked --manifest-path crates/dag-ml-core/Cargo.toml --features serde_json/preserve_order
       - name: Terminal PREDICT V2 in-process gate
@@ -399,7 +404,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: r-lib/actions/setup-r@v2
       - name: Install R dependencies
-        run: Rscript -e 'install.packages("jsonlite", repos = "https://cloud.r-project.org")'
+        run: Rscript -e 'install.packages(c("jsonlite", "digest"), repos = "https://cloud.r-project.org")'
       - name: Build DAG-ML C ABI
         run: cargo build -p dag-ml-capi --release
       - name: Build R source package
@@ -420,6 +425,12 @@ jobs:
           fi
         env:
           DAGML_NATIVE_LIBRARY: ${{ github.workspace }}/target/release/libdag_ml_capi.so
+      - name: Check R HPO JSONL adapter
+        run: DAGML_REQUIRE_HPO_R=1 python scripts/test_hpo_language_adapters.py
+      - name: Check R optimizer through native parallel HPO and resume
+        run: DAGML_REQUIRE_HPO_R=1 cargo test -p dag-ml-cli host_hpo_cli_runs_parallel_pruning_and_resumes_native_checkpoint
+      - name: Fit R Ridge on native folds through parallel HPO and resume
+        run: DAGML_REQUIRE_HPO_R=1 cargo test -p dag-ml-cli --test r_hpo_ridge
 
   matlab-octave-bindings:
     name: MATLAB/Octave bindings
@@ -440,6 +451,20 @@ jobs:
         run: octave --no-gui --quiet --eval "addpath('bindings/matlab/tests'); local_implementation_registry"
         env:
           DAGML_NATIVE_LIBRARY: ${{ github.workspace }}/target/release/libdag_ml_capi.so
+      - name: Test Octave HPO CLI wrapper and JSONL adapter
+        run: |
+          octave --no-gui --quiet --eval "addpath('bindings/matlab'); addpath('bindings/matlab/tests'); host_hpo_search"
+          DAGML_REQUIRE_HPO_MATLAB=1 python scripts/test_hpo_language_adapters.py
+      - name: Check Octave optimizer through native parallel HPO and resume
+        run: DAGML_REQUIRE_HPO_MATLAB=1 cargo test -p dag-ml-cli host_hpo_cli_runs_parallel_pruning_and_resumes_native_checkpoint
+      - name: Fit Octave Ridge on native folds and replay its MAT artifact
+        run: DAGML_REQUIRE_HPO_OCTAVE=1 cargo test -p dag-ml-cli --test octave_hpo_ridge
+      - name: Test Octave initial REFIT and PREDICT wrappers
+        run: octave --no-gui --quiet --eval "addpath('bindings/matlab'); addpath('bindings/matlab/tests'); initial_full_refit"
+      - name: Test Octave CV to REFIT to PREDICT wrapper
+        run: octave --no-gui --quiet --eval "addpath('bindings/matlab'); addpath('bindings/matlab/tests'); cv_refit_predict"
+      - name: Test Octave persisted bundle replay wrapper
+        run: octave --no-gui --quiet --eval "addpath('bindings/matlab'); addpath('bindings/matlab/tests'); replay_bundle"
 
   wasm-bindings:
     name: WASM bindings Node ${{ matrix.node-version }}
@@ -476,6 +501,11 @@ jobs:
           node scripts/smoke_wasm_web_bindings.mjs "$out_dir"
           (cd crates/dag-ml-wasm && wasm-pack pack --pkg-dir pkg-web .)
           node scripts/smoke_wasm_tarball_metadata.mjs "$out_dir"
+      - name: Chrome Web Worker parallel HPO and resume
+        if: matrix.node-version == '22'
+        run: |
+          google-chrome --version
+          node scripts/smoke_wasm_browser_hpo.mjs "$PWD/crates/dag-ml-wasm/pkg-web"
       - name: Cross-repo browser integration smoke
         run: |
           dag_ml_out="$PWD/crates/dag-ml-wasm/pkg-web"

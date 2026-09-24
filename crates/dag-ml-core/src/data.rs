@@ -31,6 +31,9 @@ pub const DATA_PLAN_SCHEMA_VERSION: u32 = 1;
 pub const DATA_PLAN_SCHEMA_ID: &str =
     "https://github.com/GBeurier/dag-ml/schemas/data_plan.v1.schema.json";
 pub const SOURCE_INDEX_METADATA_KEY: &str = "source_index";
+/// Source-local feature coordinates supplied by a data provider.  The runtime
+/// carries them to every fit/predict view without interpreting their units.
+pub const FEATURE_AXES_METADATA_KEY: &str = "feature_axes";
 
 fn default_external_data_plan_envelope_schema_version() -> u32 {
     EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION_V1
@@ -50,6 +53,8 @@ pub enum DataRequestPartition {
     FoldTrain,
     FoldValidation,
     FullTrain,
+    /// Explicit opt-in fit scope including training and held-out observations.
+    AllObservations,
     Predict,
 }
 
@@ -1214,8 +1219,19 @@ pub struct DataViewPolicy {
     pub fit_partition: DataRequestPartition,
     #[serde(default = "default_predict_partition")]
     pub predict_partition: DataRequestPartition,
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub include_augmented_train: bool,
+    /// Opt in to REFIT resubstitution predictions over augmented children as
+    /// well as their base origins. The fit view must include those children.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub include_augmented_refit_predictions: bool,
+    /// Opt in to FIT_CV in-sample predictions for exactly these augmented
+    /// observation IDs per fold. They remain report-only, never OOF inputs.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub include_augmented_cv_train_predictions: bool,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub augmented_cv_train_prediction_ids_by_fold:
+        BTreeMap<crate::ids::FoldId, Vec<crate::ids::SampleId>>,
     #[serde(default)]
     pub include_augmented_validation: bool,
     #[serde(default)]
@@ -1232,6 +1248,9 @@ impl Default for DataViewPolicy {
             fit_partition: DataRequestPartition::FoldTrain,
             predict_partition: DataRequestPartition::FoldValidation,
             include_augmented_train: true,
+            include_augmented_refit_predictions: false,
+            include_augmented_cv_train_predictions: false,
+            augmented_cv_train_prediction_ids_by_fold: BTreeMap::new(),
             include_augmented_validation: false,
             include_excluded: false,
             require_sample_ids: true,
@@ -1242,11 +1261,40 @@ impl Default for DataViewPolicy {
 
 impl DataViewPolicy {
     pub const ALLOW_FIT_CV_FULL_TRAIN_VIEW: &'static str = "allow_fit_cv_full_train_view";
+    pub const ALLOW_FIT_CV_ALL_OBSERVATIONS_VIEW: &'static str =
+        "allow_fit_cv_all_observations_view";
     pub const ALLOW_FIT_CV_VALIDATION_VIEW: &'static str = "allow_fit_cv_validation_view";
     pub const ALLOW_AUGMENTED_VALIDATION_VIEW: &'static str = "allow_augmented_validation_view";
     pub const ALLOW_EXCLUDED_ROWS: &'static str = "allow_excluded_rows";
 
     pub fn validate(&self) -> Result<()> {
+        if self.include_augmented_refit_predictions && !self.include_augmented_train {
+            return Err(DagMlError::CampaignValidation(
+                "include_augmented_refit_predictions requires include_augmented_train=true"
+                    .to_string(),
+            ));
+        }
+        if self.include_augmented_cv_train_predictions && !self.include_augmented_train {
+            return Err(DagMlError::CampaignValidation(
+                "include_augmented_cv_train_predictions requires include_augmented_train=true"
+                    .to_string(),
+            ));
+        }
+        if !self.include_augmented_cv_train_predictions
+            && !self.augmented_cv_train_prediction_ids_by_fold.is_empty()
+        {
+            return Err(DagMlError::CampaignValidation(
+                "augmented CV train prediction IDs require include_augmented_cv_train_predictions=true"
+                    .to_string(),
+            ));
+        }
+        for ids in self.augmented_cv_train_prediction_ids_by_fold.values() {
+            if ids.len() != ids.iter().collect::<BTreeSet<_>>().len() {
+                return Err(DagMlError::CampaignValidation(
+                    "augmented CV train prediction IDs contain duplicates".to_string(),
+                ));
+            }
+        }
         for unsafe_flag in &self.unsafe_flags {
             if unsafe_flag.trim().is_empty() {
                 return Err(DagMlError::CampaignValidation(
@@ -1260,6 +1308,10 @@ impl DataViewPolicy {
                 if self
                     .unsafe_flags
                     .contains(Self::ALLOW_FIT_CV_FULL_TRAIN_VIEW) => {}
+            DataRequestPartition::AllObservations
+                if self
+                    .unsafe_flags
+                    .contains(Self::ALLOW_FIT_CV_ALL_OBSERVATIONS_VIEW) => {}
             DataRequestPartition::FoldValidation
                 if self
                     .unsafe_flags
@@ -1267,6 +1319,11 @@ impl DataViewPolicy {
             DataRequestPartition::FullTrain => {
                 return Err(DagMlError::CampaignValidation(
                     "data view policy fit_partition=full_train would leak validation rows during FIT_CV; add explicit unsafe flag allow_fit_cv_full_train_view".to_string(),
+                ));
+            }
+            DataRequestPartition::AllObservations => {
+                return Err(DagMlError::CampaignValidation(
+                    "data view policy fit_partition=all_observations would include held-out observations during FIT_CV; add explicit unsafe flag allow_fit_cv_all_observations_view".to_string(),
                 ));
             }
             DataRequestPartition::FoldValidation => {
@@ -1282,7 +1339,9 @@ impl DataViewPolicy {
         }
         match self.predict_partition {
             DataRequestPartition::FoldValidation | DataRequestPartition::Predict => {}
-            DataRequestPartition::FoldTrain | DataRequestPartition::FullTrain => {
+            DataRequestPartition::FoldTrain
+            | DataRequestPartition::FullTrain
+            | DataRequestPartition::AllObservations => {
                 return Err(DagMlError::CampaignValidation(format!(
                     "data view policy predict_partition={:?} is not valid for validation/predict views",
                     self.predict_partition
@@ -1317,6 +1376,10 @@ fn default_predict_partition() -> DataRequestPartition {
 
 fn default_true() -> bool {
     true
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1414,6 +1477,41 @@ impl DataBinding {
             self.metadata.get(SOURCE_INDEX_METADATA_KEY),
             &self.source_ids,
         )?;
+        if let Some(value) = self.metadata.get(FEATURE_AXES_METADATA_KEY) {
+            let axes = value.as_object().ok_or_else(|| {
+                DagMlError::CampaignValidation(
+                    "data binding metadata.feature_axes must map source ids to coordinate arrays"
+                        .to_string(),
+                )
+            })?;
+            if axes.is_empty() {
+                return Err(DagMlError::CampaignValidation(
+                    "data binding metadata.feature_axes must declare at least one source"
+                        .to_string(),
+                ));
+            }
+            for (source_id, values) in axes {
+                if !self.source_ids.contains(source_id) {
+                    return Err(DagMlError::CampaignValidation(format!(
+                        "data binding metadata.feature_axes declares unknown source `{source_id}`"
+                    )));
+                }
+                let coordinates = values.as_array()
+                    .filter(|coordinates| !coordinates.is_empty())
+                    .ok_or_else(|| DagMlError::CampaignValidation(format!(
+                        "data binding metadata.feature_axes has no coordinates for source `{source_id}`"
+                    )))?;
+                if coordinates.iter().any(|coordinate| {
+                    coordinate
+                        .as_str()
+                        .is_none_or(|value| value.trim().is_empty())
+                }) {
+                    return Err(DagMlError::CampaignValidation(format!(
+                        "data binding metadata.feature_axes for source `{source_id}` must contain non-empty strings"
+                    )));
+                }
+            }
+        }
         Ok(())
     }
 
@@ -1524,7 +1622,8 @@ struct PredictCohortFingerprintInput<'a> {
     target_content_fingerprint: Option<&'a str>,
 }
 
-/// Closed, PREDICT-only relation authority introduced by envelope V2.
+/// Closed relation authority introduced by envelope V2. An external-test cohort may also be
+/// read through a non-fit FIT_CV companion view to score each fold estimator.
 ///
 /// It is never a supplement to `coordinator_relations`: CV, OOF, SELECT and
 /// training influence continue to consume only the latter. The explicit
@@ -1545,8 +1644,32 @@ pub struct PredictCohort {
     pub cohort_fingerprint: String,
 }
 
+/// Host input for a fresh PREDICT cohort; DAG-ML derives its IDs and TCV1 hashes.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PredictCohortConstructionRequest {
+    pub role: PredictCohortRole,
+    pub relations: SampleRelationSet,
+    pub target_names: Vec<String>,
+    pub data_content_fingerprint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_content_fingerprint: Option<String>,
+}
+
+impl PredictCohortConstructionRequest {
+    pub fn derive(self) -> Result<PredictCohort> {
+        PredictCohort::from_relations(
+            self.role,
+            self.relations,
+            self.target_names,
+            self.data_content_fingerprint,
+            self.target_content_fingerprint,
+        )
+    }
+}
+
 impl PredictCohort {
-    /// Build the closed PREDICT-only authority from its authoritative relation
+    /// Build the closed cohort authority from its authoritative relation
     /// records.
     ///
     /// Producers must use this constructor instead of reimplementing the
@@ -1991,6 +2114,82 @@ impl InMemoryDataProvider {
     }
 }
 
+/// An attested, explicitly ordered training universe for a single REFIT phase.
+///
+/// The CLI and language bindings share this provider so a no-splitter run never
+/// relies on relation serialization order or includes an external test cohort.
+pub struct ExplicitPhaseDataProvider {
+    inner: InMemoryDataProvider,
+    envelope: ExternalDataPlanEnvelope,
+    training_sample_ids: Option<Vec<SampleId>>,
+}
+
+impl ExplicitPhaseDataProvider {
+    pub fn new(
+        owner_controller: ControllerId,
+        envelope: ExternalDataPlanEnvelope,
+        training_sample_ids: Option<Vec<SampleId>>,
+    ) -> Result<Self> {
+        envelope.validate()?;
+        if let Some(ids) = &training_sample_ids {
+            let relations = envelope.coordinator_relations.as_ref().ok_or_else(|| {
+                DagMlError::RuntimeValidation("REFIT requires attested training relations".into())
+            })?;
+            let expected = relations
+                .records
+                .iter()
+                .map(|record| record.sample_id.clone())
+                .collect::<BTreeSet<_>>();
+            let supplied = ids.iter().cloned().collect::<BTreeSet<_>>();
+            if ids.is_empty() || supplied.len() != ids.len() || supplied != expected {
+                return Err(DagMlError::RuntimeValidation(
+                    "training_sample_ids must be an exact unique ordering of the attested training universe".into(),
+                ));
+            }
+        }
+        let inner = InMemoryDataProvider::with_envelope(owner_controller, envelope.clone())?;
+        Ok(Self {
+            inner,
+            envelope,
+            training_sample_ids,
+        })
+    }
+}
+
+impl RuntimeDataProvider for ExplicitPhaseDataProvider {
+    fn materialize(&self, request: &DataMaterializationRequest) -> Result<HandleRef> {
+        self.inner.materialize(request)
+    }
+
+    fn make_view(&self, request: &DataViewRequest) -> Result<HandleRef> {
+        self.inner.make_view(request)
+    }
+
+    fn coordinator_relations(&self, binding: &DataBinding) -> Result<Option<SampleRelationSet>> {
+        self.inner.coordinator_relations(binding)
+    }
+
+    fn predict_cohort(&self, binding: &DataBinding, phase: Phase) -> Result<Option<PredictCohort>> {
+        self.inner.predict_cohort(binding, phase)
+    }
+
+    fn cv_test_cohort(&self, binding: &DataBinding) -> Result<Option<PredictCohort>> {
+        self.inner.cv_test_cohort(binding)
+    }
+
+    fn refit_sample_ids(&self, binding: &DataBinding) -> Result<Option<Vec<SampleId>>> {
+        binding.validate_envelope(&self.envelope)?;
+        Ok(self.training_sample_ids.clone())
+    }
+
+    fn training_data_identity(
+        &self,
+        binding: &DataBinding,
+    ) -> Result<Option<crate::training::TrainingDataIdentity>> {
+        self.inner.training_data_identity(binding)
+    }
+}
+
 impl RuntimeDataProvider for InMemoryDataProvider {
     fn materialize(&self, request: &DataMaterializationRequest) -> Result<HandleRef> {
         if request.node_id != request.binding.node_id {
@@ -2161,6 +2360,25 @@ impl RuntimeDataProvider for InMemoryDataProvider {
             })?;
         binding.validate_envelope(envelope)?;
         Ok(envelope.predict_cohort.clone())
+    }
+
+    fn cv_test_cohort(&self, binding: &DataBinding) -> Result<Option<PredictCohort>> {
+        let envelope = self
+            .envelopes
+            .get(&DataEnvelopeKey::from_binding(binding))
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "no external data-plan envelope registered for binding `{}` on `{}`",
+                    binding.input_name, binding.node_id
+                ))
+            })?;
+        binding.validate_envelope(envelope)?;
+        match &envelope.predict_cohort {
+            Some(cohort) if cohort.role == PredictCohortRole::ExternalTest => {
+                Ok(Some(cohort.clone()))
+            }
+            _ => Ok(None),
+        }
     }
 }
 
@@ -2384,6 +2602,57 @@ mod tests {
             excluded_error.contains("include_excluded=true"),
             "unexpected excluded-row error: {excluded_error}"
         );
+    }
+
+    #[test]
+    fn partial_data_view_policy_preserves_default_augmented_train_scope() {
+        let policy: DataViewPolicy = serde_json::from_value(serde_json::json!({
+            "fit_partition": "all_observations",
+            "unsafe_flags": ["allow_fit_cv_all_observations_view"]
+        }))
+        .unwrap();
+        assert!(policy.include_augmented_train);
+        assert!(!policy.include_augmented_refit_predictions);
+        assert!(!policy.include_augmented_cv_train_predictions);
+        policy.validate().unwrap();
+    }
+
+    #[test]
+    fn augmented_cv_train_prediction_policy_requires_augmented_fit_scope_and_opt_in() {
+        let fold = crate::ids::FoldId::new("fold0").unwrap();
+        let child = crate::ids::SampleId::new("child0").unwrap();
+        let mut policy = DataViewPolicy::default();
+        policy
+            .augmented_cv_train_prediction_ids_by_fold
+            .insert(fold, vec![child]);
+        assert!(policy
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("require include_augmented_cv_train_predictions"));
+        policy.include_augmented_cv_train_predictions = true;
+        policy.validate().unwrap();
+        policy.include_augmented_train = false;
+        assert!(policy
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("requires include_augmented_train=true"));
+    }
+
+    #[test]
+    fn augmented_refit_prediction_policy_requires_augmented_fit_scope() {
+        let mut policy = DataViewPolicy {
+            include_augmented_refit_predictions: true,
+            ..DataViewPolicy::default()
+        };
+        policy.validate().unwrap();
+        policy.include_augmented_train = false;
+        assert!(policy
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("include_augmented_refit_predictions requires include_augmented_train=true"));
     }
 
     #[test]

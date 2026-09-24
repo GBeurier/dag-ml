@@ -413,6 +413,12 @@ impl RuntimeController for TrainingController {
                 .first()
                 .expect("FIT_CV prediction controller emits Validation")
                 .clone();
+            let train_sample_ids = task
+                .data_views
+                .get("data:x")
+                .and_then(|view| view.sample_ids.clone())
+                .expect("FIT_CV train block uses its attested fold-train view");
+            let train_values = vec![vec![value]; train_sample_ids.len()];
             predictions.extend([
                 PredictionBlock {
                     prediction_id: Some(format!(
@@ -421,15 +427,8 @@ impl RuntimeController for TrainingController {
                         task.fold_id.as_ref().map(FoldId::as_str).unwrap_or("full")
                     )),
                     partition: PredictionPartition::Train,
-                    ..validation.clone()
-                },
-                PredictionBlock {
-                    prediction_id: Some(format!(
-                        "prediction:{}:FIT_CV:test:{}",
-                        task.node_plan.node_id,
-                        task.fold_id.as_ref().map(FoldId::as_str).unwrap_or("full")
-                    )),
-                    partition: PredictionPartition::Test,
+                    sample_ids: train_sample_ids,
+                    values: train_values,
                     ..validation.clone()
                 },
                 PredictionBlock {
@@ -505,6 +504,7 @@ impl RuntimeController for TrainingController {
         let output_port = if is_model { "oof" } else { "x_out" };
         Ok(NodeResult {
             schema_version: None,
+            classification_probabilities: Vec::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([(
                 output_port.to_string(),
@@ -1744,6 +1744,46 @@ fn native_training_refit_and_no_refit_are_deterministic_and_auditable() {
         outcome.execution_bundle_fingerprint().unwrap()
     );
     assert_eq!(outcome.refit.status, TrainingRefitStatus::Completed);
+    assert!(!outcome.oof_averages.is_empty());
+    assert!(outcome.oof_averages.iter().any(|average| average
+        .predictions
+        .fold_id
+        .as_ref()
+        .unwrap()
+        .as_str()
+        == "avg"));
+    assert!(outcome.oof_averages.iter().any(|average| average
+        .predictions
+        .fold_id
+        .as_ref()
+        .unwrap()
+        .as_str()
+        == "w_avg"));
+    for average in &outcome.oof_averages {
+        assert_eq!(
+            average.predictions.partition,
+            PredictionPartition::Validation
+        );
+        assert!(matches!(
+            average.predictions.fold_id.as_ref().unwrap().as_str(),
+            "avg" | "w_avg"
+        ));
+        assert_eq!(average.predictions.unit_ids, average.y_true.unit_ids);
+        assert_eq!(
+            average.predictions.values.len(),
+            average.y_true.values.len()
+        );
+    }
+    let json = serde_json::to_string(&outcome).unwrap();
+    assert_eq!(TrainingOutcome::from_json(&json).unwrap(), outcome);
+    let mut forged_average = outcome.clone();
+    forged_average.oof_averages[0].predictions.values[0][0] += 1.0;
+    resign_outcome(&mut forged_average);
+    assert!(forged_average
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("OOF average values disagree with selected score report"));
     // A completed refit whose closure supports PREDICT (but not EXPLAIN) and whose
     // only state-retaining node (model:base) has its retained artifact advertises
     // exactly [PREDICT] and never re-advertises REFIT.
@@ -1880,6 +1920,26 @@ fn native_methods_hpo_runs_inside_training_and_refits_the_selected_pls_once() {
         .selected_variant_id
         .as_str()
         .starts_with("hpo:trial:"));
+    assert!(!outcome.oof_averages.is_empty());
+    for average in &outcome.oof_averages {
+        assert_eq!(
+            outcome
+                .score_set
+                .reports
+                .iter()
+                .filter(|report| {
+                    report.variant_id.as_ref() == Some(&outcome.selected_variant_id)
+                        && report.producer_node == average.predictions.producer_node
+                        && report.producer_port == average.predictions.producer_port
+                        && report.partition == average.predictions.partition
+                        && report.fold_id == average.predictions.fold_id
+                        && report.level == average.predictions.level
+                })
+                .count(),
+            1,
+            "every retained HPO OOF block needs exactly one terminal score",
+        );
+    }
     let native_oof_rmse = outcome
         .score_set
         .reports
@@ -4259,7 +4319,7 @@ fn cv_ensemble_excludes_non_validation_fit_cv_blocks_and_refit_stays_final() {
             .predictions
             .iter()
             .all(|block| block.partition == PredictionPartition::Validation),
-        "Train/Test/Final FIT_CV blocks must not enter a cv_ensemble output"
+        "Train/Final FIT_CV blocks must not enter a cv_ensemble output"
     );
     assert!(
         !cv_output.aggregated_predictions.is_empty()
@@ -5565,6 +5625,115 @@ fn d8_loaded_predictor_replays_predict_without_source_training_outcome() {
         .validate_against_package(loaded.package(), &explain_request)
         .unwrap();
     assert!(state.count(Phase::Explain, "model:base") > 0);
+}
+
+#[test]
+fn portable_package_replays_all_named_outputs_and_only_explicit_selection() {
+    let mut fixture = fixture(true, false);
+    add_model_probability_port(&mut fixture);
+    fixture.request.options.outputs[0].output_id = "output:source_0".to_string();
+    let mut second_output = fixture.request.options.outputs[0].clone();
+    second_output.output_id = "output:source_1".to_string();
+    second_output.port_name = Some("probability".to_string());
+    fixture.request.options.outputs.push(second_output);
+    fixture.request.options.selection_output_id = "output:source_0".to_string();
+    rebuild(&mut fixture);
+
+    let state = Arc::new(CallState::default());
+    *state.emit_explicit_model_ports.lock().unwrap() = true;
+    let mut store = InMemoryArtifactStore::new();
+    let source = run(&fixture, state.clone(), &provider(&fixture), &mut store).unwrap();
+    let package = source
+        .to_portable_predictor_package(
+            "predictor:package.independent_outputs",
+            FittedArtifactMode::AllowHostSidecar,
+            ArtifactLoadMode::HostSidecar,
+        )
+        .unwrap();
+    let binding_ids = ["output:source_0", "output:source_1"];
+    assert_eq!(
+        package
+            .output_bindings
+            .iter()
+            .map(|binding| binding.binding_id.as_str())
+            .collect::<Vec<_>>(),
+        binding_ids
+    );
+    for binding_id in binding_ids {
+        assert_eq!(
+            package
+                .select_output(binding_id)
+                .unwrap()
+                .output_binding
+                .binding_id,
+            binding_id
+        );
+    }
+    assert!(package.select_output("source_0").is_err());
+
+    let loaded = package
+        .load_with(|record| {
+            store
+                .get(&record.artifact.id)
+                .map(|handle| handle.handle.clone())
+                .ok_or_else(|| {
+                    DagMlError::RuntimeValidation("missing sidecar artifact".to_string())
+                })
+        })
+        .unwrap();
+    let envelopes = replay_envelopes_with_relation(&source, &"e".repeat(64));
+    let controllers = controllers(&fixture, state, true);
+    let request = replay_request(&source, Phase::Predict);
+    let replay = execute_loaded_predictor_replay(LoadedPredictorReplayInput {
+        predictor: &loaded,
+        request: &request,
+        outcome_id: "replay:independent_outputs.all".to_string(),
+        run_id: RunId::new("run:independent_outputs.all").unwrap(),
+        controllers: &controllers,
+        data_provider: &provider(&fixture),
+        data_envelopes: &envelopes,
+        warnings: Vec::new(),
+        diagnostics: BTreeMap::new(),
+    })
+    .unwrap();
+    replay
+        .validate_against_package(loaded.package(), &request)
+        .unwrap();
+    assert_eq!(replay.outputs.len(), 2);
+    assert_eq!(replay.outputs[0].binding.binding_id, binding_ids[0]);
+    assert_eq!(replay.outputs[1].binding.binding_id, binding_ids[1]);
+    assert_eq!(
+        replay.outputs[0].predictions[0].sample_ids,
+        replay.outputs[1].predictions[0].sample_ids
+    );
+    assert_ne!(
+        replay.outputs[0].predictions[0].values,
+        replay.outputs[1].predictions[0].values
+    );
+
+    let mut selected = request.clone();
+    selected.output_binding_ids = vec![binding_ids[1].to_string()];
+    selected.request_fingerprint = selected.compute_fingerprint().unwrap();
+    let selected_replay = execute_loaded_predictor_replay(LoadedPredictorReplayInput {
+        predictor: &loaded,
+        request: &selected,
+        outcome_id: "replay:independent_outputs.selected".to_string(),
+        run_id: RunId::new("run:independent_outputs.selected").unwrap(),
+        controllers: &controllers,
+        data_provider: &provider(&fixture),
+        data_envelopes: &envelopes,
+        warnings: Vec::new(),
+        diagnostics: BTreeMap::new(),
+    })
+    .unwrap();
+    selected_replay
+        .validate_against_package(loaded.package(), &selected)
+        .unwrap();
+    assert_eq!(selected_replay.outputs.len(), 1);
+    assert_eq!(
+        selected_replay.outputs[0].binding.binding_id,
+        binding_ids[1]
+    );
 }
 
 #[test]

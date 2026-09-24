@@ -228,11 +228,54 @@ typedef struct DagMlControllerVTable {
     DagMlStatusCode (*describe)(void *user_data, DagMlHandle op, DagMlOwnedBytes *out_json);
     DagMlStatusCode (*fit)(void *user_data, DagMlHandle op, DagMlHandle data, DagMlBytesView context_json, DagMlHandle *out_fitted);
     DagMlStatusCode (*predict)(void *user_data, DagMlHandle fitted, DagMlHandle data, ArrowArray **out_arrow_array, ArrowSchema **out_arrow_schema);
+    /* Initial full-refit Raw artifacts use the same callback with the
+     * PortableArtifactBridgeTask/Result V1 JSON protocol; see
+     * docs/contracts/initial-full-refit-v1.md. No vtable layout change. */
     DagMlStatusCode (*invoke)(void *user_data, DagMlBytesView task_json, DagMlOwnedBytes *out_result_json);
     void (*release_bytes)(void *user_data, DagMlOwnedBytes bytes);
     void (*release)(void *user_data, DagMlHandle handle);
     void (*destroy)(void *user_data);
 } DagMlControllerVTable;
+
+/* Native non-durable host HPO. Proposal callbacks run on the caller thread;
+ * each FIT_CV candidate receives independent candidate state. The host owns
+ * user_data until dagml_host_hpo_search_json returns. create_candidate must
+ * allocate one state per trial; destroy_candidate is called exactly once for
+ * each successful creation after that trial's controller tasks finish.
+ * A null ask output pointer with length zero means proposal exhaustion.
+ * phase_index=-1 denotes an unphased search. Callback implementations must
+ * not unwind across this C boundary. */
+#ifndef DAG_ML_HOST_HPO_CALLBACKS_ABI_VERSION
+#define DAG_ML_HOST_HPO_CALLBACKS_ABI_VERSION 1u
+#endif
+typedef struct DagMlHostHpoCallbacks {
+    uint32_t abi_version;
+    void *user_data;
+    DagMlStatusCode (*ask)(void *user_data, uint32_t trial_index, int32_t phase_index, DagMlOwnedBytes *out_params_json);
+    DagMlStatusCode (*tell)(void *user_data, uint32_t trial_index, double score);
+    DagMlStatusCode (*fail)(void *user_data, uint32_t trial_index, DagMlBytesView error);
+    void (*release_proposal_bytes)(void *user_data, DagMlOwnedBytes bytes);
+    DagMlStatusCode (*create_candidate)(void *user_data, uint32_t trial_index, void **out_candidate_state);
+    DagMlStatusCode (*invoke_candidate)(void *candidate_state, DagMlBytesView task_json, DagMlOwnedBytes *out_result_json);
+    void (*release_candidate_bytes)(void *candidate_state, DagMlOwnedBytes bytes);
+    void (*destroy_candidate)(void *candidate_state);
+} DagMlHostHpoCallbacks;
+
+/* V2 feedback callbacks run only on the HPO coordinator thread. The callback
+ * receives one JSON event (`report_intermediate`, `pruned`, `prepare_terminal`,
+ * or `checkpoint`) and returns one owned JSON reply. A pruning reply contains
+ * `{"prune": bool}`; all other replies require `{"ok": true}`. A checkpoint
+ * reply may also contain `{"continue": false}`. Release every reply through
+ * release_bytes. The host must persist prepared/terminal optimizer state. */
+#ifndef DAG_ML_HOST_HPO_FEEDBACK_ABI_VERSION
+#define DAG_ML_HOST_HPO_FEEDBACK_ABI_VERSION 1u
+#endif
+typedef struct DagMlHostHpoFeedbackCallbacks {
+    uint32_t abi_version;
+    void *user_data;
+    DagMlStatusCode (*invoke)(void *user_data, DagMlBytesView event_json, DagMlOwnedBytes *out_reply_json);
+    void (*release_bytes)(void *user_data, DagMlOwnedBytes bytes);
+} DagMlHostHpoFeedbackCallbacks;
 
 #ifndef DAG_ML_DATA_PROVIDER_VTABLE_ABI_VERSION
 #define DAG_ML_DATA_PROVIDER_VTABLE_ABI_VERSION 2u
@@ -524,11 +567,72 @@ DagMlStatusCode dagml_execution_plan_validate_json(
     const uint8_t *plan_ptr,
     size_t plan_len,
     DagMlString *error_out);
+/* Same canonical plan/manifests/envelope/request JSON as the Rust scheduler.
+ * max_parallel_trials=1 runs sequentially; values >1 evaluate real concurrent
+ * windows. Pruning and durable checkpoints are not supported in ABI v1. */
+DagMlStatusCode dagml_host_hpo_search_json(
+    const uint8_t *plan_ptr, size_t plan_len,
+    const uint8_t *trusted_controllers_ptr, size_t trusted_controllers_len,
+    const uint8_t *envelope_ptr, size_t envelope_len,
+    const uint8_t *request_ptr, size_t request_len,
+    DagMlHostHpoCallbacks callbacks, uint32_t max_parallel_trials,
+    DagMlOwnedBytes *out_json, DagMlString *error_out);
+/* Durable/pruning variant. Null resume_checkpoint_ptr plus zero length starts
+ * a new study. The returned JSON is HostHpoSearchOutcome, including status and
+ * a sealed native checkpoint. The host must pair that checkpoint with its own
+ * optimizer state and recover interrupted candidates before the next call. */
+DagMlStatusCode dagml_host_hpo_search_json_v2(
+    const uint8_t *plan_ptr, size_t plan_len,
+    const uint8_t *trusted_controllers_ptr, size_t trusted_controllers_len,
+    const uint8_t *envelope_ptr, size_t envelope_len,
+    const uint8_t *request_ptr, size_t request_len,
+    const uint8_t *resume_checkpoint_ptr, size_t resume_checkpoint_len,
+    DagMlHostHpoCallbacks callbacks, DagMlHostHpoFeedbackCallbacks feedback,
+    uint32_t max_parallel_trials, DagMlOwnedBytes *out_json, DagMlString *error_out);
+/* Core-owned recovery of a prepared terminal and interrupted candidate
+ * proposals. Null prepared_ptr plus zero length means no prepared terminal;
+ * interrupted_ptr must contain a JSON array, possibly empty. */
+DagMlStatusCode dagml_host_hpo_checkpoint_recover_json(
+    const uint8_t *checkpoint_ptr, size_t checkpoint_len,
+    const uint8_t *prepared_ptr, size_t prepared_len,
+    const uint8_t *interrupted_ptr, size_t interrupted_len,
+    DagMlOwnedBytes *out_json, DagMlString *error_out);
 DagMlStatusCode dagml_selection_policy_contract_json(DagMlOwnedBytes *out_json, DagMlString *error_out);
 DagMlStatusCode dagml_selection_policy_validate_json(const uint8_t *json_ptr, size_t json_len, DagMlString *error_out);
 DagMlStatusCode dagml_selection_decision_contract_json(DagMlOwnedBytes *out_json, DagMlString *error_out);
 DagMlStatusCode dagml_selection_decision_validate_json(const uint8_t *json_ptr, size_t json_len, DagMlString *error_out);
 DagMlStatusCode dagml_select_candidate_json(const uint8_t *policy_ptr, size_t policy_len, const uint8_t *candidates_ptr, size_t candidates_len, DagMlOwnedBytes *out_json, DagMlString *error_out);
+DagMlStatusCode dagml_select_portable_output_json(const uint8_t *package_ptr, size_t package_len, DagMlBytesView binding_id, DagMlOwnedBytes *out_json, DagMlString *error_out);
+DagMlStatusCode dagml_select_stacking_producers_json(const uint8_t *request_ptr, size_t request_len, DagMlOwnedBytes *out_json, DagMlString *error_out);
+DagMlStatusCode dagml_select_stacking_fold_json(const uint8_t *request_ptr, size_t request_len, DagMlOwnedBytes *out_json, DagMlString *error_out);
+DagMlStatusCode dagml_stacking_fold_weights_json(const uint8_t *request_ptr, size_t request_len, DagMlOwnedBytes *out_json, DagMlString *error_out);
+DagMlStatusCode dagml_initial_full_refit_package_validate_json(const uint8_t *package_ptr, size_t package_len, DagMlString *error_out);
+/* cohort_request_json is a PredictCohortConstructionRequest; the core derives
+ * the signed cohort and rejects mismatched relation/target/fingerprint data. */
+DagMlStatusCode dagml_initial_full_refit_predict_envelope_json(const uint8_t *package_ptr, size_t package_len, const uint8_t *cohort_request_ptr, size_t cohort_request_len, DagMlOwnedBytes *out_json, DagMlString *error_out);
+typedef struct DagMlInitialFullRefitExecuteRequest {
+    DagMlBytesView plan_json;
+    DagMlBytesView envelope_json;
+    DagMlBytesView trusted_controllers_json;
+    DagMlBytesView training_sample_ids_json;
+    DagMlBytesView package_id;
+    DagMlBytesView run_id;
+    uint64_t root_seed;
+    const DagMlControllerBinding *controller_bindings;
+    size_t controller_binding_count;
+} DagMlInitialFullRefitExecuteRequest;
+typedef struct DagMlInitialFullRefitPredictRequest {
+    DagMlBytesView package_json;
+    DagMlBytesView envelope_json;
+    DagMlBytesView output_ids_json;
+    DagMlBytesView artifact_handles_json;
+    DagMlBytesView run_id;
+    const DagMlControllerBinding *controller_bindings;
+    size_t controller_binding_count;
+} DagMlInitialFullRefitPredictRequest;
+DagMlStatusCode dagml_initial_full_refit_execute_json(const DagMlInitialFullRefitExecuteRequest *request, DagMlOwnedBytes *out_json, DagMlString *error_out);
+DagMlStatusCode dagml_initial_full_refit_predict_json(const DagMlInitialFullRefitPredictRequest *request, DagMlOwnedBytes *out_json, DagMlString *error_out);
+DagMlStatusCode dagml_align_named_source_rows_json(const uint8_t *request_ptr, size_t request_len, DagMlOwnedBytes *out_json, DagMlString *error_out);
 DagMlStatusCode dagml_select_candidate_groups_json(const uint8_t *policy_ptr, size_t policy_len, const uint8_t *candidates_ptr, size_t candidates_len, const uint8_t *groups_ptr, size_t groups_len, DagMlOwnedBytes *out_json, DagMlString *error_out);
 DagMlStatusCode dagml_score_regression_prediction_block_json(const uint8_t *predictions_ptr, size_t predictions_len, const uint8_t *targets_ptr, size_t targets_len, const uint8_t *metrics_ptr, size_t metrics_len, DagMlOwnedBytes *out_json, DagMlString *error_out);
 DagMlStatusCode dagml_score_regression_aggregated_block_json(const uint8_t *predictions_ptr, size_t predictions_len, const uint8_t *targets_ptr, size_t targets_len, const uint8_t *metrics_ptr, size_t metrics_len, DagMlOwnedBytes *out_json, DagMlString *error_out);

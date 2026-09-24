@@ -8,22 +8,24 @@ use pyo3::create_exception;
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyType};
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::de::DeserializeOwned;
 
 mod in_process;
 mod local_implementation;
 mod training;
 
 use dag_ml_core::{
-    build_archive_v2_native_portable_payloads, build_archive_v3_native_refit_payloads,
-    build_conformal_presentation_v1, build_execution_plan, compile_pipeline_dsl,
-    compile_pipeline_dsl_with_generation,
+    align_named_source_rows, build_archive_v2_native_portable_payloads,
+    build_archive_v3_native_refit_payloads, build_conformal_presentation_v1, build_execution_plan,
+    compile_pipeline_dsl, compile_pipeline_dsl_with_generation,
     compile_pipeline_dsl_with_generation_and_controller_registry, fan_out_data_aware_branches,
     fold_set_fingerprint, operator_variant_canonical_value, operator_variant_label_from_steps_json,
-    parse_pipeline_dsl_json, CacheNamespace, CampaignSpec, ControllerManifest, ControllerRegistry,
-    DagMlError as CoreDagMlError, ExecutionBundle, ExecutionPlan, ExternalDataPlanEnvelope,
-    FoldSet, GraphSpec, HostControllerSpec, ParameterProjection, PortablePredictorPackage,
-    PortableRefitPackageV3, PredictCohort, PredictCohortRole, SampleRelationSet,
+    parse_pipeline_dsl_json, select_candidate, CacheNamespace, CampaignSpec, CandidateScore,
+    ControllerManifest, ControllerRegistry, DagMlError as CoreDagMlError, ExecutionBundle,
+    ExecutionPlan, ExternalDataPlanEnvelope, FoldSet, GraphSpec, HostControllerSpec,
+    NamedSourceAlignmentRequest, ParameterProjection, PortablePredictorPackage,
+    PortableRefitPackageV3, PredictCohortConstructionRequest, SampleRelationSet, SelectionPolicy,
+    StackingFoldSelectionRequest, StackingProducerSelectionRequest,
     TrainingContractProjection, TrainingOutcome, TrainingReplayOutcome, TrainingReplayRequest,
     TrainingRequest, EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION_V2,
 };
@@ -201,22 +203,6 @@ fn sample_relation_set_fingerprint_json(json: &str) -> PyResult<String> {
     relations.fingerprint().map_err(py_core_error)
 }
 
-/// Host input for a closed PREDICT cohort.
-///
-/// The host supplies only its authoritative relation records and content
-/// identities. DAG-ML derives all cohort identity lists and fingerprints, so
-/// Python, IO, or another language cannot reproduce a subtly different hash.
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct PredictCohortConstructionRequest {
-    role: PredictCohortRole,
-    relations: SampleRelationSet,
-    target_names: Vec<String>,
-    data_content_fingerprint: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    target_content_fingerprint: Option<String>,
-}
-
 /// Attach a fully derived V2 PREDICT cohort to a host-supplied envelope.
 ///
 /// This is the only supported Python producer path for a V2 `predict_cohort`:
@@ -241,14 +227,7 @@ fn attach_predict_cohort_to_envelope_json(
             CoreDagMlError::CampaignValidation,
         )
         .map_err(py_core_error)?;
-    let cohort = PredictCohort::from_relations(
-        request.role,
-        request.relations,
-        request.target_names,
-        request.data_content_fingerprint,
-        request.target_content_fingerprint,
-    )
-    .map_err(py_core_error)?;
+    let cohort = request.derive().map_err(py_core_error)?;
     envelope.schema_version = EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION_V2;
     envelope.predict_cohort = Some(cohort);
     envelope.validate().map_err(py_core_error)?;
@@ -366,8 +345,55 @@ fn validate_portable_predictor_package_json(json: &str) -> PyResult<()> {
 }
 
 #[pyfunction]
+fn select_portable_output_json(package_json: &str, binding_id: &str) -> PyResult<String> {
+    let package = PortablePredictorPackage::from_json(package_json).map_err(py_core_error)?;
+    let selected = package.select_output(binding_id).map_err(py_core_error)?;
+    serde_json::to_string(&selected).map_err(py_serde_error)
+}
+
+#[pyfunction]
+fn select_stacking_producers_json(request_json: &str) -> PyResult<String> {
+    let request: StackingProducerSelectionRequest =
+        serde_json::from_str(request_json).map_err(py_serde_error)?;
+    let selected = request.selected_producer_nodes().map_err(py_core_error)?;
+    serde_json::to_string(&selected).map_err(py_serde_error)
+}
+
+#[pyfunction]
+fn select_stacking_fold_json(request_json: &str) -> PyResult<String> {
+    let request: StackingFoldSelectionRequest =
+        serde_json::from_str(request_json).map_err(py_serde_error)?;
+    let selected = request.selected_fold_id().map_err(py_core_error)?;
+    serde_json::to_string(&selected).map_err(py_serde_error)
+}
+
+#[pyfunction]
+fn stacking_fold_weights_json(request_json: &str) -> PyResult<String> {
+    let request: StackingFoldSelectionRequest =
+        serde_json::from_str(request_json).map_err(py_serde_error)?;
+    let weights = request.normalized_weights().map_err(py_core_error)?;
+    serde_json::to_string(&weights).map_err(py_serde_error)
+}
+
+/// Plan feature-row permutations in the core without copying host feature buffers.
+#[pyfunction]
+fn align_named_source_rows_json(request_json: &str) -> PyResult<String> {
+    let request: NamedSourceAlignmentRequest =
+        serde_json::from_str(request_json).map_err(py_serde_error)?;
+    let alignment = align_named_source_rows(&request).map_err(py_core_error)?;
+    serde_json::to_string(&alignment).map_err(py_serde_error)
+}
+
+#[pyfunction]
 fn validate_portable_refit_package_v3_json(json: &str) -> PyResult<()> {
     PortableRefitPackageV3::from_json(json)
+        .map(|_| ())
+        .map_err(py_core_error)
+}
+
+#[pyfunction]
+fn validate_initial_full_refit_package_json(json: &str) -> PyResult<()> {
+    dag_ml_core::InitialFullRefitPackage::from_json(json)
         .map(|_| ())
         .map_err(py_core_error)
 }
@@ -437,6 +463,15 @@ fn fan_out_data_aware_branches_json(dsl_json: &str, envelope_json: &str) -> PyRe
         serde_json::from_str(envelope_json).map_err(py_serde_error)?;
     let expanded = fan_out_data_aware_branches(&spec, &envelope).map_err(py_core_error)?;
     serde_json::to_string(&expanded).map_err(py_serde_error)
+}
+
+#[pyfunction]
+fn select_candidate_json(policy_json: &str, candidates_json: &str) -> PyResult<String> {
+    let policy: SelectionPolicy = serde_json::from_str(policy_json).map_err(py_serde_error)?;
+    let candidates: Vec<CandidateScore> =
+        serde_json::from_str(candidates_json).map_err(py_serde_error)?;
+    let decision = select_candidate(&policy, &candidates).map_err(py_core_error)?;
+    serde_json::to_string(&decision).map_err(py_serde_error)
 }
 
 #[pyfunction]
@@ -558,8 +593,17 @@ fn _dag_ml(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
         validate_portable_predictor_package_json,
         module
     )?)?;
+    module.add_function(wrap_pyfunction!(select_portable_output_json, module)?)?;
+    module.add_function(wrap_pyfunction!(select_stacking_producers_json, module)?)?;
+    module.add_function(wrap_pyfunction!(select_stacking_fold_json, module)?)?;
+    module.add_function(wrap_pyfunction!(stacking_fold_weights_json, module)?)?;
+    module.add_function(wrap_pyfunction!(align_named_source_rows_json, module)?)?;
     module.add_function(wrap_pyfunction!(
         validate_portable_refit_package_v3_json,
+        module
+    )?)?;
+    module.add_function(wrap_pyfunction!(
+        validate_initial_full_refit_package_json,
         module
     )?)?;
     module.add_function(wrap_pyfunction!(validate_training_outcome_json, module)?)?;
@@ -583,6 +627,7 @@ fn _dag_ml(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
         module
     )?)?;
     module.add_function(wrap_pyfunction!(fan_out_data_aware_branches_json, module)?)?;
+    module.add_function(wrap_pyfunction!(select_candidate_json, module)?)?;
     module.add_function(wrap_pyfunction!(build_execution_plan_json, module)?)?;
     module.add_function(wrap_pyfunction!(canonical_operator_variant_label, module)?)?;
     module.add_function(wrap_pyfunction!(
@@ -597,9 +642,17 @@ fn _dag_ml(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
         in_process::execute_phase_in_process,
         module
     )?)?;
+    module.add_function(wrap_pyfunction!(
+        in_process::replay_initial_full_refit_in_process,
+        module
+    )?)?;
     module.add_function(wrap_pyfunction!(in_process::execute_data_provider, module)?)?;
     module.add_function(wrap_pyfunction!(
         in_process::run_host_hpo_search_in_process,
+        module
+    )?)?;
+    module.add_function(wrap_pyfunction!(
+        in_process::recover_host_hpo_checkpoint_json,
         module
     )?)?;
     module.add_function(wrap_pyfunction!(
@@ -735,7 +788,9 @@ fn contract_manifest() -> serde_json::Value {
             "validate_parameter_projection_json",
             "validate_cache_namespace_json",
             "validate_portable_predictor_package_json",
+            "align_named_source_rows_json",
             "validate_portable_refit_package_v3_json",
+            "validate_initial_full_refit_package_json",
             "validate_training_outcome_json",
             "validate_training_replay_request_json",
             "validate_training_replay_outcome_json",
@@ -749,6 +804,7 @@ fn contract_manifest() -> serde_json::Value {
             "canonical_operator_variant_value_json",
             "run_cv_refit_in_process",
             "execute_phase_in_process",
+            "replay_initial_full_refit_in_process",
             "execute_data_provider",
             "run_cv_refit_in_process_with_training_losses",
             "run_cv_refit_predict_in_process",
@@ -875,6 +931,21 @@ fn py_core_error(error: CoreDagMlError) -> PyErr {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_named_source_alignment_exposes_row_permutations() {
+        let request = r#"{"sample_ids":["s1","s2"],"required_source_ids":["source_0","source_1"],"sources":[{"source_id":"source_1","sample_ids":["s1","s2"]},{"source_id":"source_0","sample_ids":["s2","s1"]}]}"#;
+        let aligned: serde_json::Value =
+            serde_json::from_str(&align_named_source_rows_json(request).unwrap()).unwrap();
+        assert_eq!(
+            aligned["sources"][0]["row_indices"],
+            serde_json::json!([1, 0])
+        );
+        assert_eq!(
+            aligned["sources"][1]["row_indices"],
+            serde_json::json!([0, 1])
+        );
+    }
 
     #[test]
     fn fingerprint_and_signing_helpers_reject_duplicate_json_keys() {
@@ -1247,6 +1318,7 @@ mod tests {
                 "validate_parameter_projection_json",
                 "validate_cache_namespace_json",
                 "validate_portable_predictor_package_json",
+                "align_named_source_rows_json",
                 "validate_training_outcome_json",
                 "execute_training_json",
                 "execute_methods_training_json",

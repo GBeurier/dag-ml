@@ -10708,8 +10708,8 @@ def validate_process_adapter_frame_schema(schema: Any, label: str) -> None:
 
     one_of = schema.get("oneOf")
     require(
-        isinstance(one_of, list) and len(one_of) == 6,
-        f"{label} process-adapter frame must declare six concrete frame variants",
+        isinstance(one_of, list) and len(one_of) == 8,
+        f"{label} process-adapter frame must declare eight concrete frame variants",
     )
     defs = schema.get("$defs")
     require(
@@ -10725,6 +10725,10 @@ def validate_process_adapter_frame_schema(schema: Any, label: str) -> None:
         "node_result",
         "init_frame",
         "task_frame",
+        "portable_artifact_task",
+        "portable_artifact_request_frame",
+        "portable_artifact_result",
+        "portable_artifact_response_frame",
         "close_frame",
         "ack_frame",
         "result_frame",
@@ -10755,9 +10759,11 @@ def validate_process_adapter_frame_schema(schema: Any, label: str) -> None:
             {"type", "schema_version", "controller_id", "worker_index", "worker_count"},
         ),
         "task_frame": ("task", {"type", "schema_version", "task"}),
+        "portable_artifact_request_frame": ("portable_artifact", {"type", "schema_version", "task"}),
         "close_frame": ("close", {"type", "schema_version"}),
         "ack_frame": ("ack", {"type", "schema_version", "status"}),
         "result_frame": ("result", {"type", "schema_version", "result"}),
+        "portable_artifact_response_frame": ("portable_artifact", {"type", "schema_version", "result"}),
         "error_frame": ("error", {"type", "schema_version", "error"}),
     }
     for definition_name, (frame_type, required_fields) in expected_frame_defs.items():

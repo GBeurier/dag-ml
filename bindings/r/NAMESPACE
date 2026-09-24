@@ -1,3 +1,8 @@
 useDynLib(dagml, .registration = TRUE, .fixes = "C_")
 export(dagml_execute_execution_plan_phase)
+export(dagml_cv_refit_predict)
+export(dagml_host_hpo_search)
+export(dagml_initial_full_refit)
+export(dagml_initial_full_refit_predict)
+export(dagml_replay_bundle)
 export(dagml_local_implementation_registry)
