@@ -11,7 +11,7 @@ end
 parser = inputParser;
 addParameter(parser, 'cli', 'dag-ml-cli');
 addParameter(parser, 'output', '');
-addParameter(parser, 'persistent', false);
+addParameter(parser, 'persistentMode', false);
 addParameter(parser, 'processWorkers', 1);
 addParameter(parser, 'processTimeoutMs', 30000);
 addParameter(parser, 'processRetries', 0);
@@ -23,6 +23,11 @@ addParameter(parser, 'scheduler', 'sequential');
 addParameter(parser, 'schedulerWorkers', 1);
 addParameter(parser, 'cpuThreads', 1);
 addParameter(parser, 'gpuDevices', {});
+for index = 1:2:numel(varargin)
+    if strcmpi(varargin{index}, 'persistent')
+        varargin{index} = 'persistentMode';
+    end
+end
 parse(parser, varargin{:});
 options = parser.Results;
 inputs = {'--dsl', requiredFile(dsl, 'dsl'), ...
@@ -73,7 +78,7 @@ cli = scalarText(options.cli, 'CLI');
 workers = integerOption(options.processWorkers, 'processWorkers', 1);
 timeout = integerOption(options.processTimeoutMs, 'processTimeoutMs', 1);
 retries = integerOption(options.processRetries, 'processRetries', 0);
-if ~islogical(options.persistent) || ~isscalar(options.persistent)
+if ~islogical(options.persistentMode) || ~isscalar(options.persistentMode)
     error('dagml:InitialRefit:Option', 'persistent must be a logical scalar.');
 end
 temporaryOutput = isempty(options.output);
@@ -86,7 +91,7 @@ end
 cliArgs = [{cli, command}, inputs, extras, ...
     {'--process-workers', workers, '--process-timeout-ms', timeout, ...
     '--process-retries', retries, '--output', output}];
-if options.persistent
+if options.persistentMode
     cliArgs{end + 1} = '--persistent';
 end
 quoted = cellfun(@shellQuote, cliArgs, 'UniformOutput', false);
