@@ -5266,6 +5266,16 @@ fn cli_enforces_process_timeouts_and_restarts_persistent_workers() {
         std::process::id(),
         unique_suffix()
     ));
+    let one_shot_unbounded_marker_dir = std::env::temp_dir().join(format!(
+        "dag_ml_cli_flaky_one_shot_unbounded_{}_{}",
+        std::process::id(),
+        unique_suffix()
+    ));
+    let unbounded_marker_dir = std::env::temp_dir().join(format!(
+        "dag_ml_cli_flaky_unbounded_{}_{}",
+        std::process::id(),
+        unique_suffix()
+    ));
     let error_no_retry_marker_dir = std::env::temp_dir().join(format!(
         "dag_ml_cli_flaky_error_no_retry_{}_{}",
         std::process::id(),
@@ -5487,8 +5497,10 @@ fn cli_enforces_process_timeouts_and_restarts_persistent_workers() {
         one_shot_timeout_stderr
     );
 
-    let invalid_timeout = Command::new(cli())
+    let unbounded_timeout = Command::new(cli())
         .current_dir(&root)
+        .env("DAG_ML_FLAKY_MARKER_DIR", &unbounded_marker_dir)
+        .env("DAG_ML_FLAKY_SLEEP_SECONDS", "0.2")
         .args([
             "run-process-campaign",
             "--graph",
@@ -5500,33 +5512,58 @@ fn cli_enforces_process_timeouts_and_restarts_persistent_workers() {
             "--envelope",
             "examples/fixtures/data/coordinator_data_plan_envelope_sample12.json",
             "--adapter",
-            "examples/adapters/python_process_controller.py",
+            "examples/adapters/flaky_process_controller.py",
             "--persistent",
             "--process-timeout-ms",
             "0",
             "--plan-id",
-            "plan:cli.process.invalid-timeout",
+            "plan:cli.process.unbounded-timeout",
             "--run-id",
-            "run:cli.process.invalid-timeout",
+            "run:cli.process.unbounded-timeout",
         ])
         .output()
-        .expect("failed to run process campaign with invalid timeout");
+        .expect("failed to run process campaign with unbounded timeout");
     assert!(
-        !invalid_timeout.status.success(),
-        "invalid process timeout unexpectedly succeeded: {}",
-        String::from_utf8_lossy(&invalid_timeout.stdout)
+        unbounded_timeout.status.success(),
+        "unbounded process timeout failed: {}",
+        String::from_utf8_lossy(&unbounded_timeout.stderr)
     );
+
+    let one_shot_unbounded = Command::new(cli())
+        .current_dir(&root)
+        .env("DAG_ML_FLAKY_MARKER_DIR", &one_shot_unbounded_marker_dir)
+        .env("DAG_ML_FLAKY_SLEEP_SECONDS", "0.2")
+        .args([
+            "run-process-campaign",
+            "--graph",
+            "examples/minimal_graph.json",
+            "--campaign",
+            "examples/campaign_oof_generation.json",
+            "--controllers",
+            "examples/controller_manifests.json",
+            "--envelope",
+            "examples/fixtures/data/coordinator_data_plan_envelope_sample12.json",
+            "--adapter",
+            "examples/adapters/flaky_process_controller.py",
+            "--plan-id",
+            "plan:cli.process.one-shot-unbounded",
+            "--run-id",
+            "run:cli.process.one-shot-unbounded",
+        ])
+        .output()
+        .expect("failed to run one-shot process campaign with default timeout");
     assert!(
-        String::from_utf8_lossy(&invalid_timeout.stderr)
-            .contains("--process-timeout-ms must be at least 1"),
-        "unexpected invalid timeout error: {}",
-        String::from_utf8_lossy(&invalid_timeout.stderr)
+        one_shot_unbounded.status.success(),
+        "one-shot process campaign with unbounded default failed: {}",
+        String::from_utf8_lossy(&one_shot_unbounded.stderr)
     );
 
     let _ = std::fs::remove_dir_all(timeout_marker_dir);
     let _ = std::fs::remove_dir_all(retry_marker_dir);
     let _ = std::fs::remove_dir_all(retry_lifecycle_dir);
     let _ = std::fs::remove_dir_all(one_shot_timeout_marker_dir);
+    let _ = std::fs::remove_dir_all(one_shot_unbounded_marker_dir);
+    let _ = std::fs::remove_dir_all(unbounded_marker_dir);
     let _ = std::fs::remove_dir_all(error_no_retry_marker_dir);
     let _ = std::fs::remove_dir_all(error_retry_marker_dir);
 }
