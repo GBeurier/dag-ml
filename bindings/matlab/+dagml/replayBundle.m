@@ -40,7 +40,7 @@ end
 if ~islogical(options.persistent) || ~isscalar(options.persistent)
     error('dagml:ReplayBundle:Option', 'persistent must be a logical scalar.');
 end
-arguments = {scalarText(options.cli, 'CLI'), 'run-process-replay', ...
+cliArgs = {scalarText(options.cli, 'CLI'), 'run-process-replay', ...
     '--graph', requiredFile(graph, 'graph'), ...
     '--campaign', requiredFile(campaign, 'campaign'), ...
     '--controllers', requiredFile(controllers, 'controllers'), ...
@@ -63,24 +63,24 @@ for index = 1:numel(keys)
         error('dagml:ReplayBundle:Envelopes', 'envelope keys cannot contain =.');
     end
     path = requiredFile(envelopes(keys{index}), 'envelope');
-    arguments(end + 1:end + 2) = {'--envelope', [key, '=', path]};
+    cliArgs(end + 1:end + 2) = {'--envelope', [key, '=', path]};
 end
 if ~isempty(options.predictionCachePayload)
-    arguments(end + 1:end + 2) = ...
+    cliArgs(end + 1:end + 2) = ...
         {'--prediction-cache-payload', ...
         requiredFile(options.predictionCachePayload, 'prediction cache payload')};
 end
 if ~isempty(options.predictionCacheStore)
-    arguments(end + 1:end + 2) = ...
+    cliArgs(end + 1:end + 2) = ...
         {'--prediction-cache-store', ...
         requiredFile(options.predictionCacheStore, 'prediction cache store')};
 end
 if ~isempty(options.scoreOutput)
-    arguments(end + 1:end + 2) = ...
+    cliArgs(end + 1:end + 2) = ...
         {'--score-output', scalarText(options.scoreOutput, 'score output')};
 end
 if options.persistent
-    arguments{end + 1} = '--persistent';
+    cliArgs{end + 1} = '--persistent';
 end
 temporaryOutput = isempty(options.output);
 if temporaryOutput
@@ -89,8 +89,8 @@ if temporaryOutput
 else
     output = scalarText(options.output, 'output');
 end
-arguments(end + 1:end + 2) = {'--output', output};
-quoted = cellfun(@shellQuote, arguments, 'UniformOutput', false);
+cliArgs(end + 1:end + 2) = {'--output', output};
+quoted = cellfun(@shellQuote, cliArgs, 'UniformOutput', false);
 [status, message] = system(strjoin(quoted, ' '));
 if status ~= 0
     error('dagml:ReplayBundle:CLI', ...
