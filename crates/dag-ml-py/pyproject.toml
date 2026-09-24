@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "dag-ml"
-version = "0.3.26"
+version = "0.3.27"
 description = "Python bindings for DAG-ML JSON contracts."
 readme = "README.md"
 requires-python = ">=3.11"
