@@ -3189,6 +3189,41 @@ struct CapturedRefitBundle {
     effective_plan: Option<dag_ml_core::ExecutionPlan>,
 }
 
+fn capture_raw_refit_payloads(
+    bundle: &mut ExecutionBundle,
+    controllers: &RuntimeControllerRegistry,
+) -> Result<()> {
+    // The host still owns fitted model objects. Its portable bridge detaches
+    // only RAW bytes, once, after REFIT and before bundle validation/replay.
+    for record in &bundle.refit_artifacts {
+        if record.artifact.backend != Some(dag_ml_core::ArtifactBackend::Raw) {
+            continue;
+        }
+        let controller = controllers.get(&record.controller_id).with_context(|| {
+            format!(
+                "raw REFIT artifact `{}` has no registered controller `{}`",
+                record.artifact.id, record.controller_id
+            )
+        })?;
+        let payload = controller
+            .export_artifact_payload(&record.artifact.id)?
+            .with_context(|| {
+                format!(
+                    "controller `{}` did not export raw REFIT artifact `{}`",
+                    record.controller_id, record.artifact.id
+                )
+            })?;
+        if bundle
+            .raw_artifact_payloads
+            .insert(record.artifact.id.clone(), payload)
+            .is_some()
+        {
+            bail!("duplicate raw REFIT artifact `{}`", record.artifact.id);
+        }
+    }
+    Ok(())
+}
+
 fn selected_refit_variant(
     plan: &dag_ml_core::ExecutionPlan,
     variant_id: Option<String>,
@@ -3246,6 +3281,7 @@ fn build_bundle_from_captured_refit(
         artifact_store.refit_artifacts(),
     )
     .with_context(|| "failed to build execution bundle from refit artifacts")?;
+    capture_raw_refit_payloads(&mut bundle, input.runtime_controllers)?;
     bundle.metadata.insert(
         "refit_result_count".to_string(),
         serde_json::json!(results.len()),
@@ -3254,6 +3290,7 @@ fn build_bundle_from_captured_refit(
         "refit_lineage_count".to_string(),
         serde_json::json!(ctx.lineage.len()),
     );
+    bundle.validate_against_plan(input.plan)?;
     let refit_result_count = results.len();
     Ok(CapturedRefitBundle {
         bundle,
@@ -3632,6 +3669,9 @@ fn build_bundle_from_cv_with_refit_count(
         prediction_caches,
     )
     .with_context(|| "failed to build execution bundle from CV+refit artifacts")?;
+    // The regular CV+REFIT path must detach bytes just like initial full
+    // REFIT, or its RAW refs would have no portable payload at replay time.
+    capture_raw_refit_payloads(&mut bundle, input.runtime_controllers)?;
     // Native scores collected during FIT_CV + REFIT (present only when the controller emitted
     // regression_targets) — plus the cross-fold OOF average (cv_best_score) — persisted in the
     // bundle for cross-language read-back. The non-selected variants' VALIDATION (OOF) reports
@@ -7048,6 +7088,7 @@ mod tests {
     struct OperatorScoringCliController {
         id: ControllerId,
         offsets: BTreeMap<NodeId, f64>,
+        raw_payload: bool,
     }
 
     impl OperatorScoringCliController {
@@ -7063,6 +7104,13 @@ mod tests {
     impl RuntimeController for OperatorScoringCliController {
         fn controller_id(&self) -> &ControllerId {
             &self.id
+        }
+
+        fn export_artifact_payload(
+            &self,
+            _artifact_id: &ArtifactId,
+        ) -> dag_ml_core::Result<Option<Vec<u8>>> {
+            Ok(self.raw_payload.then(|| b"portable-raw".to_vec()))
         }
 
         fn invoke(&self, task: &NodeTask) -> dag_ml_core::Result<NodeResult> {
@@ -7138,10 +7186,15 @@ mod tests {
                     id: ArtifactId::new(format!("artifact:{}:refit", task.node_plan.node_id))?,
                     kind: "mock_model".to_string(),
                     controller_id: self.id.clone(),
-                    backend: None,
-                    uri: None,
-                    content_fingerprint: None,
-                    size_bytes: Some(128),
+                    backend: self
+                        .raw_payload
+                        .then_some(dag_ml_core::ArtifactBackend::Raw),
+                    uri: self.raw_payload.then(|| "raw/model.bin".to_string()),
+                    content_fingerprint: self.raw_payload.then(|| {
+                        "c37345962db7887dfc00c9a8b834e44905648af9f3ff0f4a4800783876f4c2f7"
+                            .to_string()
+                    }),
+                    size_bytes: Some(if self.raw_payload { 12 } else { 128 }),
                     plugin: None,
                     plugin_version: None,
                     abi_major: None,
@@ -7369,6 +7422,10 @@ mod tests {
     }
 
     fn operator_select_cli_controllers() -> RuntimeControllerRegistry {
+        operator_select_cli_controllers_with_raw(false)
+    }
+
+    fn operator_select_cli_controllers_with_raw(raw_payload: bool) -> RuntimeControllerRegistry {
         let mut registry = RuntimeControllerRegistry::new();
         registry
             .register(Box::new(CliMockController {
@@ -7389,6 +7446,7 @@ mod tests {
                     (NodeId::new("model:choice0__pls").unwrap(), 0.0),
                     (NodeId::new("model:choice1__ridge").unwrap(), 1.0),
                 ]),
+                raw_payload,
             }))
             .unwrap();
         registry
@@ -7782,6 +7840,47 @@ mod tests {
         )
         .expect("no-variant replay against the union plan must succeed");
         assert!(!replay_results.is_empty());
+    }
+
+    #[test]
+    fn cv_and_refit_capture_detach_raw_artifact_bytes() {
+        let plan = simple_no_variant_plan();
+        let data_provider =
+            InMemoryDataProvider::new(ControllerId::new("controller:data.provider").unwrap());
+        let controllers = operator_select_cli_controllers_with_raw(true);
+        let scheduler = SchedulerConfig::new(CliScheduler::Sequential, 1).unwrap();
+        for cv in [false, true] {
+            let input = CapturedRefitBundleInput {
+                plan: &plan,
+                data_provider: &data_provider,
+                runtime_controllers: &controllers,
+                bundle_id: format!("bundle:cli.raw.capture:{cv}"),
+                variant_id: None,
+                selections: BTreeMap::new(),
+                run_id: format!("run:cli.raw.capture:{cv}"),
+                root_seed: 7,
+                scheduler,
+                selection_metric: RegressionMetricKind::Rmse,
+                operator_variant_models: Vec::new(),
+                resource_limits: None,
+            };
+            let captured = if cv {
+                build_bundle_from_cv_then_captured_refit(input)
+            } else {
+                build_bundle_from_captured_refit(input)
+            }
+            .expect("raw REFIT payload capture must succeed");
+            assert_eq!(captured.bundle.refit_artifacts.len(), 1);
+            let id = &captured.bundle.refit_artifacts[0].artifact.id;
+            assert_eq!(
+                captured.bundle.raw_artifact_payloads.get(id),
+                Some(&b"portable-raw".to_vec())
+            );
+            captured.bundle.validate_against_plan(&plan).unwrap();
+            let mut tampered = captured.bundle.clone();
+            tampered.raw_artifact_payloads.get_mut(id).unwrap().push(0);
+            assert!(tampered.validate_against_plan(&plan).is_err());
+        }
     }
 
     #[test]
