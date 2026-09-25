@@ -1,18 +1,48 @@
 # Binding R : parité nirs4all et portabilité interlangage
 
-> Réaudit au 24–25 septembre 2026. Ce document décrit les sources présentes
+> Réaudit au 24–25 septembre 2026, mis à jour après la décision d'extraire le
+> paquet R du core. Ce document décrit les sources présentes
 > dans le workspace, pas une promesse de release. Les niveaux « supporté »,
 > « conformance », « expérimental » et « backlog » gardent le sens défini dans
 > [Supported surface](SUPPORTED.md).
 
 ## Résumé décisionnel
 
+**Décision de propriété au 25 septembre 2026.** Le paquet R public doit
+s'appeler `nirs4all` et être construit depuis `GBeurier/nirs4all-r`. L'ancien
+`nirs4all-core/bindings/r` est en cours de retrait dans un worktree isolé ;
+ses fixtures JSON/YAML de référence restent sous
+`nirs4all-core/tests/parity/fixtures` et sont copiées avec empreinte vérifiée
+dans le produit R. Les bindings Python, JS/WASM et MATLAB du Core ne sont pas
+retirés dans cette étape. Les parties ci-dessous qui décrivent Core comme
+propriétaire du paquet R doivent être lues comme **état historique antérieur
+au transfert**, et non comme cible de publication.
+
+### Niveaux de portabilité demandés et priorité de cette livraison
+
+| Niveau | Contrat visé | Statut / gate nécessaire |
+|---|---|---|
+| 1 — recette native | Le même JSON/YAML désigne des opérations n4m et des primitives DAG-ML/Data par identifiants sémantiques ; chaque hôte les résout vers son binding, avec refus explicite des nœuds inconnus. | **Cible immédiate R.** Les quatre exemples KS/SNV/SG/PLS passent déjà dans le lecteur R ; l'ensemble du catalogue n4m, les générateurs comme `_cartesian_` et les graphes DAG arbitraires ne passent pas encore. |
+| 2 — état natif entraîné | Une archive de pipeline n4m/DAG-ML restitue son état pour PREDICT et conserve une recette/lineage permettant un nouveau FIT dans un autre hôte. | **Cible immédiate R.** N4MM brut est importable/exportable entre Python et R ; le RDS du produit R et les sidecars DAG ne sont pas interlangages. Il reste à raccorder un lecteur d'Archive V2/V3 validé par Rust, les états de prétraitement, identités, manifeste et recette de réentraînement, puis à prouver Python→R et R→Python en processus neufs. |
+| 3 — poids PyTorch | Inférence R à partir de poids entraînés en Python, sous architecture, dtypes et opérateurs explicitement qualifiés ; WASM à étudier. | Différé, sauf chemin déjà vérifiable. Un RDS `torch` R n'est pas ce contrat. |
+| 4 — alias de recettes ML | Traduire par exemple sklearn Random Forest en `ranger` pour **réentraîner** depuis JSON/YAML, avec différences sémantiques enregistrées ; aucun transfert du binaire appris. | Différé ; dictionnaire limité et versionné possible ensuite. |
+| 5 — ONNX | Inférence commune pour les opérateurs et runtimes effectivement couverts, sans supposer la reprise d'entraînement. | Description seulement à ce stade. |
+| 6 — pipeline mixte | DAG-ML coordonne les nœuds exécutés dans leurs langages ; les bindings assurent le marshalling typé et l'attestation. | Description seulement à ce stade. |
+
+Les niveaux ne sont pas interchangeables : un fichier de recette réentraînable
+ne rend pas ses poids portables ; N4MM transporte un modèle natif mais pas à lui
+seul le graphe, les folds, les données ni les états de toutes les transformations.
+Pour cette livraison, ne publier la revendication « niveaux 1–2 complets »
+qu'une fois les gates ci-dessus verts, y compris les erreurs de paramètres,
+les données alignées et le replay hors du processus d'entraînement.
+
 Les briques d'un nirs4all R existent, mais elles ne forment pas encore un
 produit équivalent au nirs4all Python :
 
-- `nirs4all-core` publie déjà un package R nommé `nirs4all`. C'est aujourd'hui
-  la façade agrégée correcte, mais son runner est limité à
-  Kennard–Stone/SNV/Savitzky–Golay/PLS et réorchestre ce cas directement en R ;
+- `nirs4all-r` est désormais le produit R nommé `nirs4all`. Il possède les
+  contrôleurs R, le chemin DAG-ML sur matrices et formats, les prétraitements
+  n4m ajustés sur le train et le lecteur JSON/YAML portable. Son lecteur ne
+  couvre encore que KS/SNV/SG/PLS et son RDS n'est pas interlangage ;
 - `dagml` expose désormais en R un registre local de pertes/métriques, une
   phase planifiée, HPO par processus, CV→refit→predict, refit initial sans CV
   et replay de bundle. Ces chemins pilotent le CLI natif avec des fichiers JSON
@@ -40,9 +70,9 @@ La trajectoire recommandée est donc :
 4. transporter les modèles n4m par leurs octets N4MM ; pour les autres moteurs,
    séparer strictement recette réentraînable, inférence portable et artefact
    hôte opaque ;
-5. développer le dépôt produit local `nirs4all-r` pour les contrôleurs et
-   l'expérience utilisateur R, tout en gardant Core comme façade portable
-   basse. La propriété du nom R public `nirs4all` doit être migrée une seule fois.
+5. achever la migration du nom R public vers `nirs4all-r`, retirer la
+   distribution R de Core et garder temporairement ses autres bindings et
+   les fixtures partagées, sans introduire un second paquet R `nirs4allcore`.
 
 ## 1. Périmètre et définitions de la parité
 
@@ -82,7 +112,7 @@ les compositions ; la preuve doit combiner :
 | Lecture et assemblage | `nirs4all-formats`, `nirs4all-io` | Décodage des formats, construction du dataset et émission du contrat Data. |
 | Méthodes NIRS | `nirs4all-methods` | Calculs n4m, états de modèles et sérialisation N4MM/N4MOPT. |
 | Contrôleurs R | binding/package R | Adaptation de `prospectr`, `mdatools`, `ranger`, `glmnet`, `xgboost`, `torch`, `keras3`, etc. |
-| Façade portable | `nirs4all-core` | Agrégation, verrou de versions, découverte des capacités, API publique mince et gates interlangages. |
+| Agrégat portable (transition) | `nirs4all-core` | Rust agrège les contrats natifs, verrouille les versions et porte les gates interlangages. Les bindings Python/JS-WASM/MATLAB y restent provisoirement ; le produit R et sa publication n'y résident plus. |
 | Produit Python | `nirs4all` | Contrôleurs Python et expérience Python ; oracle temporaire de migration. |
 
 Cette répartition suit la directive d'architecture de DAG-ML : les binaires de
@@ -102,7 +132,7 @@ Python et les autres bindings.
 | `n4m` R 1.0.21 | Substantiel | PLS et variantes, sélection, diagnostics, SNV, SG, Kennard–Stone, formule/S3 ; N4MM `raw()` ajouté et testé localement. | N4MOPT et couverture catalogue/pipelines non qualifiés ; N4MM non raccordé aux bundles DAG-ML. |
 | `nirs4allformats` R 0.2.10 (branche `fix/r-flat-dataset-identity`) | Avancé | Lecture native, probe, records, dataset, parcours, bytes et sidecars. `nirs4all-r` convertit son dataset homogène en matrice/target/IDs/axe pour fit local et campagne DAG native. La branche ajoute au dataset plat l'axe `kind`, la provenance par enregistrement et le refus des mélanges d'unités/types. | Ce chemin passe par un sidecar RDS et un adaptateur process, pas encore par des data bindings/provider DAG-ML natifs. La branche s'installe depuis un checkout propre avec Cargo ; le tarball CRAN autoportant reste à revalider. |
 | `nirs4allio` R 0.2.0 | Partiel | `nio_to_spec`, `nio_infer`, `nio_load`, validation et résumé assemblé. | `nio_load()` retourne une synthèse structurelle sans les matrices ; l'émission `dag-ml-data` reste côté Rust/CLI. |
-| `nirs4all` R 0.3.30 dans Core | Façade bornée | Registre des six domaines, parsing JSON/YAML, runner KS/SNV/SG/PLS validé sur un oracle Python. | Pas un exécuteur DAG-ML général, pas de prédiction depuis modèle sérialisé, pas de contrôleurs R généraux. |
+| `nirs4all` R 0.4.0.9003 dans `nirs4all-r` | Produit R en développement | Contrôleurs PLS, ridge n4m, `lm`, `ranger`, `glmnet`, `torch` CPU ; matrice et formats ; CV/OOF/refit mono-nœud via DAG-ML ; lecture JSON/YAML, corpus d'exécution partagé et accesseurs vers les paquets amont. | Pas encore d'Archive V2/V3 interlangage, de tous les nœuds n4m, de graphe DAG arbitraire ni de runtime R-universe complet. |
 | Adaptateurs `prospectr`/`mdatools` | Conformance | Quelques transforms, PCA, PLS et PLS-DA via protocole processus. | Données synthétiques dans les smokes, couverture réduite, persistance et états ajustés incomplets. |
 
 ### 3.2 Écart entre les bindings DAG-ML Python et R
@@ -201,14 +231,16 @@ verrouille six domaines (`formats`, `io`, `datasets`, `methods`, `dag_ml`,
 les contrats d'artefacts, la release et les tests de parité interlangages. Elle
 n'est ni un septième moteur numérique ni un second ordonnanceur.
 
-Son package R est déjà nommé `nirs4all`. Il déclare les packages amont
-`nirs4allformats`, `nirs4allio`, `nirs4alldatasets`, `n4m`, `dagml` et
-`dagmldata` comme dépendances suggérées et les atteint paresseusement. Ce choix
-fait de Core le point d'entrée naturel pour un premier nirs4all R portable.
+Historiquement, Core distribuait aussi un paquet R nommé `nirs4all`. Cette
+distribution est transférée vers `nirs4all-r` ; la branche de retrait supprime
+le binding R et son workflow du Core, mais conserve les fixtures et oracles
+communs. Python, JS/WASM et MATLAB restent dans Core pour ce cycle, conformément
+au transfert progressif convenu entre agents.
 
 ### 4.2 La limite du runner R actuel
 
-`nirs4all_run_portable_pipeline()` parse une liste/JSON/YAML puis réalise en R :
+L'ancien `nirs4all_run_portable_pipeline()` de Core parse une liste/JSON/YAML
+puis réalise en R :
 
 1. un split optionnel Kennard–Stone ;
 2. SNV et/ou Savitzky–Golay ;
@@ -222,24 +254,26 @@ seconde orchestration que l'architecture interdit. Il existe aussi un écart
 entre la description du package (« aucune logique pipeline réimplémentée ») et
 ce runner manuel.
 
-La cible est de conserver la signature publique si elle est utile, mais de la
-faire déléguer à `dagml`/`dagmldata` et aux contrôleurs. Une fois le nouveau
-chemin qualifié, l'implémentation R manuelle doit être dépréciée puis retirée.
+La signature de compatibilité est reprise dans `nirs4all-r` et traduit ces
+quatre cas vers les prétraitements et le PLS du produit. Étendre cette boucle
+manuelle aux branches/HPO serait une erreur : ces décisions doivent passer par
+les contrats et l'ordonnanceur natifs de DAG-ML. L'ancien runner Core disparaît
+avec le paquet R qu'il hébergeait.
 
 ### 4.3 Rôle cible de Core
 
-Core doit rester :
+Core doit rester, à terme, l'agrégat Rust et les contrats portables avant
+bindings. Pendant le transfert par étapes, il conserve ses distributions
+Python/JS/MATLAB existantes. En particulier, il garde :
 
-- la façade R de découverte, installation et composition ;
-- le verrou compatible des versions amont ;
+- le verrou compatible des versions amont pour ses propres artefacts ;
 - le lieu des profils portables et des déclarations honnêtes de capacité ;
-- le gate d'intégration qui vérifie qu'un pipeline réellement exécuté par les
-  amonts reproduit l'oracle ;
-- éventuellement l'API ergonomique `pipeline()`, `run()`, `predict()` et
-  `load()` si ces fonctions ne contiennent que traduction et délégation.
+- le gate d'intégration et les fixtures JSON/YAML temporaires qui vérifient
+  qu'un pipeline réellement exécuté par les amonts reproduit l'oracle.
 
-Core ne doit pas contenir : kernels, split/CV, scoring, sélection, stockage de
-prédictions, implémentation d'un modèle ou adaptateur substantiel de framework.
+La façade ergonomique R (`pipeline()`, `run()`, `predict()`, `load()`) appartient
+à `nirs4all-r`. Core ne doit pas contenir kernels, split/CV, scoring,
+sélection, stockage de prédictions ni adaptateur substantiel de framework.
 
 ## 5. Ce qui manque pour la parité Python
 
@@ -543,8 +577,8 @@ des paramètres internes au nœud modèle : les graphes à branches, HPO adaptat
 prédiction sur cohorte externe ne sont pas encore exposés. La demande d'une API
 R de bout en bout, de contrôleurs `ranger`/`parsnip`/`mlr3`/`torch` et d'une
 cadence CRAN indépendante atteint désormais le seuil où ces composants ne
-doivent pas entrer dans Core. `nirs4all-core/bindings/r` reste une façade
-portable pendant la transition ; le runner manuel ne doit pas être généralisé.
+doivent pas entrer dans Core. `nirs4all-core/bindings/r` est retiré dans une
+branche de transfert isolée ; le runner manuel ne doit pas être généralisé.
 La logique d'exécution reste dans `dagml`, les données dans `dagmldata`/
 `nirs4allio` et les calculs portables dans `n4m`.
 
@@ -558,18 +592,15 @@ explicitement recherchées par le produit :
 - les dépendances et la cadence CRAN ne peuvent plus suivre la release Core ;
 - l'équipe R a un ownership et une roadmap indépendants.
 
-La solution propre est de **migrer**, et non dupliquer, le package
-public `nirs4all` vers le dépôt `nirs4all-r` lorsque les premiers contrôleurs
-R réels et l'API de façade sont qualifiés. Le dépôt Core peut alors ne plus
-publier de package R de haut niveau, ou publier un éventuel package technique
-`nirs4allcore` si une façade basse est réellement nécessaire. Cette décision
-est un changement de gouvernance et de nommage à versionner explicitement.
+La solution retenue est de **migrer**, et non dupliquer, le package public
+`nirs4all` vers `nirs4all-r`. Le Core cesse de publier un paquet R. Aucun
+`nirs4allcore` R séparé n'est prévu : il recréerait la redondance que le
+transfert cherche à éliminer.
 
 Publier simultanément deux dépôts avec un package nommé `nirs4all` est exclu.
-Un dépôt `nirs4all-r` peut être créé comme développement non publié pendant la
-transition, mais le `packages.json` R-universe et les métadonnées CRAN ne
-doivent changer de propriétaire qu'une fois le nouveau package testé. Le nom
-alternatif `nirs4allR` éviterait la collision mais fragmenterait l'API.
+Le dépôt `nirs4all-r` existe. `packages.json` de R-universe et les métadonnées
+CRAN ne doivent changer de propriétaire qu'une fois le nouveau package testé
+et l'ancien workflow Core désactivé. Le nom public reste exactement `nirs4all`.
 
 Les packages bas niveau (`dagml`, `dagmldata`, `n4m`, `nirs4allio`,
 `nirs4allformats`) restent dans leurs dépôts propriétaires dans tous les cas.
