@@ -724,8 +724,10 @@ test, pas l'état après le transfert. Au 25 septembre 2026, la PR Core
 [#14](https://github.com/GBeurier/nirs4all-core/pull/14) est fusionnée après
 neuf contrôles verts ; le paquet R `0.4.0.9003` a passé localement les tests
 stricts Formats/DAG et `R CMD check --as-cran --no-manual` (0 erreur, 1 warning
-incoming), avec deux `Suggests` absents non forcés. Les accès amont et le
-corpus d'exécution JSON/YAML partagé sont repris dans `nirs4all-r`.
+incoming). Le contrôle a d'abord été lancé avec deux `Suggests` absents,
+puis répété avec `dagmldata` et `nirs4alldatasets` installés depuis R-universe,
+sans désactiver la vérification des `Suggests`. Les accès amont et le corpus
+d'exécution JSON/YAML partagé sont repris dans `nirs4all-r`.
 
 La publication du produit `nirs4all` R n'est donc **pas encore qualifiée de
 fonctionnellement complète**. En outre,
