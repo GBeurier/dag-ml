@@ -38,8 +38,11 @@ ni WASM. L'ABI C DAG-ML sait maintenant exporter un `PortablePredictorPackage`
 signé depuis un résultat d'entraînement natif (PR
 [DAG-ML #106](https://github.com/GBeurier/dag-ml/pull/106), matrice CI complète
 verte), mais le produit R ne l'a pas encore raccordé à la recharge de ses
-artefacts Methods. R-universe sert encore 0.4.0.9025 au dernier contrôle ;
-ne pas confondre les PR, le tarball local et une publication effective.
+artefacts Methods. R-universe publie maintenant 0.4.0.9030 depuis le commit R
+`00ad6d6` : source et huit jobs binaires Linux/Windows/macOS/WASM verts,
+installation source et prédiction vérifiées dans une bibliothèque R neuve.
+Cette preuve de distribution ne vaut pas contrôle CRAN multi-OS du tarball
+local exact.
 
 ### Niveaux de portabilité demandés et priorité de cette livraison
 
@@ -206,7 +209,7 @@ Python et les autres bindings.
 | `n4m` R 1.0.21 | Substantiel | PLS et variantes, sélection, diagnostics, SNV, SG, Kennard–Stone, formule/S3 ; N4MM `raw()` ajouté et testé localement. | N4MOPT et couverture catalogue/pipelines non qualifiés ; N4MM non raccordé aux bundles DAG-ML. |
 | `nirs4allformats` R 0.2.10 (branche `fix/r-flat-dataset-identity`) | Avancé | Lecture native, probe, records, dataset, parcours, bytes et sidecars. `nirs4all-r` convertit son dataset homogène en matrice/target/IDs/axe pour fit local et campagne DAG native. La branche ajoute au dataset plat l'axe `kind`, la provenance par enregistrement et le refus des mélanges d'unités/types. | Ce chemin passe par un sidecar RDS et un adaptateur process, pas encore par des data bindings/provider DAG-ML natifs. La branche s'installe depuis un checkout propre avec Cargo ; le tarball CRAN autoportant reste à revalider. |
 | `nirs4allio` R 0.2.0 | Partiel | `nio_to_spec`, `nio_infer`, `nio_load`, validation et résumé assemblé. | `nio_load()` retourne une synthèse structurelle sans les matrices ; l'émission `dag-ml-data` reste côté Rust/CLI. |
-| `nirs4all` R dans `nirs4all-r` | R-universe sert 0.4.0.9025 ; source 0.4.0.9030 contrôlée localement, publication à vérifier | Régression et classification n4m/PLS, `lm`, `ranger`, `glmnet`, `parsnip`, `mlr3`, `torch` CPU selon le contrôleur ; données matrices et `nirs4all-formats` ; CV/OOF/refit DAG-ML avec groupes, variantes et branches bornées ; recettes JSON/YAML n4m et alias R explicites ; enveloppes N4MM v1 PLS et v2 sparse PLS-DA avec réentraînement R↔Python sur les profils qualifiés. | Pas encore d'Archive V2/V3 interlangage générale, de tous les nœuds n4m ni de graphe DAG arbitraire. Les nouveaux alias ne sont pas qualifiés dans Core/WASM ; les modèles ML/DL R restent des sidecars RDS. |
+| `nirs4all` R dans `nirs4all-r` | R-universe publie 0.4.0.9030 depuis `00ad6d6` ; source et huit builds multi-plateformes verts | Régression et classification n4m/PLS, `lm`, `ranger`, `glmnet`, `parsnip`, `mlr3`, `torch` CPU selon le contrôleur ; données matrices et `nirs4all-formats` ; CV/OOF/refit DAG-ML avec groupes, variantes et branches bornées ; recettes JSON/YAML n4m et alias R explicites ; enveloppes N4MM v1 PLS et v2 sparse PLS-DA avec réentraînement R↔Python sur les profils qualifiés. | Pas encore d'Archive V2/V3 interlangage générale, de tous les nœuds n4m ni de graphe DAG arbitraire. Les nouveaux alias ne sont pas qualifiés dans Core/WASM ; les modèles ML/DL R restent des sidecars RDS. |
 | Adaptateurs `prospectr`/`mdatools` | Conformance | Quelques transforms, PCA, PLS et PLS-DA via protocole processus. | Données synthétiques dans les smokes, couverture réduite, persistance et états ajustés incomplets. |
 
 ### 3.2 Écart entre les bindings DAG-ML Python et R
@@ -912,12 +915,16 @@ Les niveaux 3 à 6 (poids torch, alias sklearn↔R, ONNX, nœuds multilangages)
 restent des descriptions, sans promesse de conversion binaire.
 
 Le paquet public R s'appelle `nirs4all` et son dépôt est `nirs4all-r` ;
-`nirs4all-core` n'en publie plus un doublon. Au dernier contrôle de l'API
-R-universe, la version distribuée est **0.4.0.9025** depuis `ab6e594`, avec
-`n4m` R **1.0.21.9003**, statut source `success` et binaires Linux, macOS,
-Windows et WASM construits. Ce constat n'inclut pas 0.4.0.9026/9027. Ne pas assimiler la
-fusion GitHub ni un contrôle Linux du tarball à une publication R-universe
-ou à une qualification CRAN multi-plateforme.
+`nirs4all-core` n'en publie plus un doublon. L'API R-universe confirme la
+version **0.4.0.9030** depuis `00ad6d669d609f44f8d188c4696ef5f5826cfece`,
+avec `n4m` R **1.0.21.9003** et statut source `success`. Le run public
+[36197321555](https://github.com/r-universe/gbeurier/actions/runs/36197321555)
+a construit la source et huit binaires Linux/Windows/macOS/WASM ; une
+installation source dans une bibliothèque R Linux vierge a passé les prédictions
+PLS/SNV et sparse PLS-DA/SNV ainsi que le réimport de son enveloppe entraînée.
+La publication R-universe ne qualifie ni l'Archive V2/V3 interlangage ni la
+soumission CRAN : `n4m` est hors CRAN et le tarball local exact n'a pas passé
+les contrôles R-devel Windows/macOS requis pour cette soumission.
 
 ## 12. Sources de l'audit
 
