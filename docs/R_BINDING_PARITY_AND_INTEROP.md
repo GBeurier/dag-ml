@@ -840,6 +840,58 @@ de résoudre ce point avant de soumettre `nirs4all`. Les textes définitifs des
 formulaires devront être préparés sur les tarballs finaux, dans l'ordre de
 soumission de leurs dépendances.
 
+### Mise à jour du portage natif R/Python — 25 septembre 2026
+
+Les PR [nirs4all Python #145](https://github.com/GBeurier/nirs4all/pull/145)
+et [nirs4all R #23](https://github.com/GBeurier/nirs4all-r/pull/23) sont
+fusionnées. Le niveau 1 s'étend aux recettes JSON/YAML avec `n4m.LSNV`,
+`n4m.RNV`, `n4m.AreaNormalization`, `n4m.Detrend`, `n4m.MSC`, `n4m.EMSC`,
+`n4m.PLS` et branches de features. Les tests exécutent les recettes exportées
+par R dans le parseur complet `nirs4all` Python puis comparent les prédictions
+de validation avec R, y compris pour MSC/EMSC ajustés exclusivement sur les
+lignes d'entraînement. Le SNV non défaut reste refusé à l'export : Core/WASM
+accepte son identifiant mais ignore encore ses paramètres. Les autres nouveaux
+alias ne sont pas qualifiés dans Core/WASM ; ce niveau 1 élargi est donc
+**R↔Python**, pas encore tous langages.
+
+Les PR [nirs4all R #24](https://github.com/GBeurier/nirs4all-r/pull/24)
+et [nirs4all Python #146](https://github.com/GBeurier/nirs4all/pull/146)
+introduisent une enveloppe entraînée **bornée à PLS n4m** : recette portable,
+références MSC/EMSC ajustées, N4MM, empreintes SHA-256 du manifeste et du
+payload. Un test local en deux processus compare, dans les deux sens
+R→Python et Python→R, les prédictions hors entraînement des profils PLS seul,
+prétraitements sans état, MSC→EMSC, SNV→SG embarqué et branche MSC/EMSC ; le
+réentraînement Python depuis la recette donne les mêmes sorties à `1e-8`.
+Le binding Python Methods courant emploie les accesseurs natifs de référence ;
+le wheel PyPI 1.0.21, qui ne les expose pas encore, emploie une reconstruction
+bornée de la moyenne des colonnes d'entraînement suivie d'un fit n4m sur cette
+seule référence. Les deux chemins passent les tests interlangages ; aucun ne
+réajuste l'état sur les lignes de validation.
+Les tamper tests rejettent un manifeste ou N4MM modifié sans empreinte mise à
+jour, un état non fini, une recette incohérente et un ordre de features
+différent. Les 362 tests Python ciblés (configuration, steps et nouvelle API)
+passent. Le tarball exact `nirs4all` R 0.4.0.9026 passe le contrôle
+`R CMD check --as-cran --no-manual` sur Linux/R 4.6.0 avec zéro erreur et
+l'avertissement CRAN-incoming attendu ; tests DAG/Formats/Python stricts et
+torch CPU activés. **Les deux PR de développement ne sont pas encore fusionnées
+ni publiées sur R-universe ; ce check n'est pas un contrôle CRAN multi-OS.**
+
+Cette enveloppe n'est pas un `PortablePredictorPackage`/Archive V2/V3 de
+DAG-ML : elle ne transporte ni identités des échantillons, ni folds, OOF,
+sélection, lineage, preuve de refit ou artefacts de contrôleurs R/Python
+natifs. Elle n'établit donc pas le niveau 2 général demandé pour tous les
+pipelines n4m. L'étape suivante est de faire porter l'état appris de chaque
+nœud n4m par le contrat d'artefacts natifs DAG-ML, avec les mêmes validations
+de graphe et d'identité que N4MM, puis de qualifier le rejeu R/Python/WASM.
+Les niveaux 3 à 6 (poids torch, alias sklearn↔R, ONNX, nœuds multilangages)
+restent des descriptions, sans promesse de conversion binaire.
+
+Le paquet public R s'appelle `nirs4all` et son dépôt est `nirs4all-r` ;
+`nirs4all-core` n'en publie plus un doublon. Au dernier contrôle de l'API
+R-universe, la version distribuée restait 0.4.0.9018. Ne pas assimiler la
+fusion GitHub ni un contrôle Linux du tarball à une publication R-universe
+ou à une qualification CRAN multi-plateforme.
+
 ## 12. Sources de l'audit
 
 Snapshot local inspecté :
