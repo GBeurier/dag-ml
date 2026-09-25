@@ -730,6 +730,9 @@ incoming). Le contrôle a d'abord été lancé avec deux `Suggests` absents,
 puis répété avec `dagmldata` et `nirs4alldatasets` installés depuis R-universe,
 sans désactiver la vérification des `Suggests`. Les accès amont et le corpus
 d'exécution JSON/YAML partagé sont repris dans `nirs4all-r`.
+Les PR [Methods #26](https://github.com/GBeurier/nirs4all-methods/pull/26)
+(44 contrôles applicables verts) et [produit R #1](https://github.com/GBeurier/nirs4all-r/pull/1)
+sont fusionnées ; le registre R-universe suit maintenant leurs branches `main`.
 L'export R de recettes porte désormais des alias natifs `n4m.*` plutôt que
 des noms de classes sklearn ; la PR Core fusionnée
 [#15](https://github.com/GBeurier/nirs4all-core/pull/15) les ajoute aux lecteurs
@@ -742,7 +745,7 @@ le tarball `dagml` ne fournit ni le CLI ni la bibliothèque C ABI qu'exercent
 ses tests R : le check vert ci-dessus les prend dans le build Rust local. Il
 faut un mode d'installation autoportant ou une dépendance système explicitement
 distribuée avant d'annoncer un package R-universe/CRAN installable hors de ce
-workspace. Le dépôt R-universe pointe désormais sur `GBeurier/nirs4all-r` et
+workspace. Le dépôt R-universe pointe désormais sur `GBeurier/nirs4all-r` `main` et
 inclut `dagml`, mais le rebuild externe doit encore être constaté : lors du
 contrôle, l'API servait encore la version `0.3.31` issue de Core. Une entrée
 dans le registre n'est pas une preuve de parité de niveaux 1–2.
