@@ -90,6 +90,12 @@ status code before parsing a payload.
   Rust owns scheduling and validation;
 - replay-request validation can optionally include an OOF prediction-cache
   payload set, which is required for OOF-dependent `REFIT` replay;
+- `dagml_training_execute` retains a live outcome and controller/artifact handles;
+  `dagml_training_result_portable_predictor_package_json` exports its signed,
+  core-validated predictor package with explicit fitted-artifact and load modes.
+  This bridge does not serialize host model bytes: `host_sidecar` artifacts still
+  require the owning host's artifact store, while `native_portable` is accepted
+  only when the artifact contract actually qualifies;
 - mock replay execution helper that returns a JSON summary while exercising
   Rust-side data handle materialization, data view creation and artifact handle
   materialization;

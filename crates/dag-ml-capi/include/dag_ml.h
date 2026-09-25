@@ -672,6 +672,12 @@ DagMlStatusCode dagml_training_execute(const DagMlTrainingExecuteRequest *reques
 /* Serialize the outcome owned by result into fresh bytes (release with
  * dagml_owned_bytes_free). NULL result yields INVALID_ARGUMENT. */
 DagMlStatusCode dagml_training_result_outcome_json(const DagMlTrainingResult *result, DagMlOwnedBytes *out_json, DagMlString *error_out);
+/* Export a signed, core-validated PortablePredictorPackage JSON from a live
+ * result. Modes: fitted_artifact_mode = portable_required|allow_host_sidecar;
+ * artifact_load_mode = native_portable|host_sidecar. Host-sidecar model bytes
+ * are not included; their controller-owned artifact store remains external.
+ * Release returned bytes with dagml_owned_bytes_free. */
+DagMlStatusCode dagml_training_result_portable_predictor_package_json(const DagMlTrainingResult *result, DagMlBytesView package_id, DagMlBytesView fitted_artifact_mode, DagMlBytesView artifact_load_mode, DagMlOwnedBytes *out_json, DagMlString *error_out);
 /* Execute attached PREDICT/EXPLAIN replay from a live result into fresh
  * TrainingReplayOutcome JSON bytes (release with dagml_owned_bytes_free). NULL
  * result/request yields INVALID_ARGUMENT. */
