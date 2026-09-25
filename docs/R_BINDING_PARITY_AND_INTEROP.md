@@ -602,8 +602,10 @@ des paramètres internes au nœud modèle : les graphes à branches, HPO adaptat
 prédiction sur cohorte externe ne sont pas encore exposés. La demande d'une API
 R de bout en bout, de contrôleurs `ranger`/`parsnip`/`mlr3`/`torch` et d'une
 cadence CRAN indépendante atteint désormais le seuil où ces composants ne
-doivent pas entrer dans Core. `nirs4all-core/bindings/r` est retiré dans une
-branche de transfert isolée ; le runner manuel ne doit pas être généralisé.
+doivent pas entrer dans Core. `nirs4all-core/bindings/r` a été retiré de
+`main` par la PR [#14](https://github.com/GBeurier/nirs4all-core/pull/14),
+avec les fixtures communes conservées ; le runner manuel ne doit pas être
+généralisé.
 La logique d'exécution reste dans `dagml`, les données dans `dagmldata`/
 `nirs4allio` et les calculs portables dans `n4m`.
 
@@ -623,9 +625,11 @@ La solution retenue est de **migrer**, et non dupliquer, le package public
 transfert cherche à éliminer.
 
 Publier simultanément deux dépôts avec un package nommé `nirs4all` est exclu.
-Le dépôt `nirs4all-r` existe. `packages.json` de R-universe et les métadonnées
-CRAN ne doivent changer de propriétaire qu'une fois le nouveau package testé
-et l'ancien workflow Core désactivé. Le nom public reste exactement `nirs4all`.
+Le dépôt `nirs4all-r` existe ; après la fusion de la PR #14,
+`packages.json` de R-universe pointe maintenant sur sa branche de
+développement. Le rebuild externe n'est pas encore une preuve de publication
+effective ; les métadonnées CRAN attendent les gates scientifiques et de
+dépendances. Le nom public reste exactement `nirs4all`.
 
 Les packages bas niveau (`dagml`, `dagmldata`, `n4m`, `nirs4allio`,
 `nirs4allformats`) restent dans leurs dépôts propriétaires dans tous les cas.
@@ -714,16 +718,25 @@ Une release ne doit annoncer la parité R que si les gates suivants passent :
 | `dag-ml-cli` + opérateur R Ridge | Test `r_hpo_ridge` réussi : folds, HPO parallèle, reprise, sidecar et replay. | Pas un contrôleur `ranger`, `torch` ou Methods général. |
 | `R CMD check` de `nirs4all` Core | 0 erreur, 0 warning, 0 NOTE après retrait de la notice `LICENSE` redondante, avec `Suggests` manquants non forcés. | Check CRAN complet avec toutes dépendances et plateformes non effectué. |
 
-La publication du produit `nirs4all` R n'est donc **pas qualifiée**. En outre,
+Les lignes ci-dessus sont des jalons historiques : leurs mentions de Core
+comme propriétaire R ou de `dagml` absent de R-universe décrivent leur date de
+test, pas l'état après le transfert. Au 25 septembre 2026, la PR Core
+[#14](https://github.com/GBeurier/nirs4all-core/pull/14) est fusionnée après
+neuf contrôles verts ; le paquet R `0.4.0.9003` a passé localement les tests
+stricts Formats/DAG et `R CMD check --as-cran --no-manual` (0 erreur, 1 warning
+incoming), avec deux `Suggests` absents non forcés. Les accès amont et le
+corpus d'exécution JSON/YAML partagé sont repris dans `nirs4all-r`.
+
+La publication du produit `nirs4all` R n'est donc **pas encore qualifiée de
+fonctionnellement complète**. En outre,
 le tarball `dagml` ne fournit ni le CLI ni la bibliothèque C ABI qu'exercent
 ses tests R : le check vert ci-dessus les prend dans le build Rust local. Il
 faut un mode d'installation autoportant ou une dépendance système explicitement
 distribuée avant d'annoncer un package R-universe/CRAN installable hors de ce
-workspace. Le dépôt R-universe listait `nirs4all` depuis Core mais omettait
-`dagml`, pourtant suggéré par Core. L'entrée a été ajoutée localement, sans
-push. R-universe construirait de toute façon les révisions GitHub publiées,
-pas les correctifs non poussés du workspace. Une
-mise en ligne immédiate annoncerait une parité qui n'existe pas.
+workspace. Le dépôt R-universe pointe désormais sur `GBeurier/nirs4all-r` et
+inclut `dagml`, mais le rebuild externe doit encore être constaté : lors du
+contrôle, l'API servait encore la version `0.3.31` issue de Core. Une entrée
+dans le registre n'est pas une preuve de parité de niveaux 1–2.
 
 Pour CRAN, un tarball source est soumis **par package**, dans l'ordre des
 dépendances ; une archive composite de tous les tarballs n'est qu'un kit de
@@ -732,8 +745,12 @@ les tarballs source autoportants, leurs SHA-256, les versions/commits, les
 licences, le journal `R CMD check --as-cran` par plateforme, les résultats de
 parité, les commentaires au mainteneur et la déclaration des dépendances non
 présentes sur CRAN. Aucun texte ne doit prétendre à un check vert non exécuté.
-Voir le [dossier de soumission R](R_CRAN_SUBMISSION_READINESS.md) pour les
-textes de formulaires et les bloqueurs précis.
+`n4m` reste une dépendance forte hors CRAN/Bioconductor ; la
+[politique CRAN](https://stat.ethz.ch/CRAN/web/packages/policies.html) impose
+de résoudre ce point avant de soumettre `nirs4all`. Voir la
+[note de préparation du produit R](https://github.com/GBeurier/nirs4all-r/blob/feat/r-preprocessing-parity/docs/CRAN_READINESS.md)
+pour les gates actuels ; les textes définitifs des formulaires seront préparés
+sur les tarballs finaux.
 
 ## 12. Sources de l'audit
 
