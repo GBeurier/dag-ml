@@ -11,12 +11,12 @@
     },
     {
       "path": "crates/dag-ml-capi/include/dag_ml.h",
-      "sha256": "c55afaee59d8d3761d2c37b6a517b027e0e3901a5cb4f913edf8967f5ee4255c",
+      "sha256": "48462d983fa06cabfe95a932a0e08d4414aee8d7edf777e864d659b957193cd2",
       "kind": "c_abi_header"
     },
     {
       "path": "crates/dag-ml-capi/src/lib.rs",
-      "sha256": "76642bd04683f0a738fba01a1b341d72bd68496a64a185bee8318c5102595e2a",
+      "sha256": "f50d8d266ba4dcad7c569da69cb27387ed789891605e8aca15befb408718b4d3",
       "kind": "c_training_binding"
     },
     {
@@ -26,7 +26,7 @@
     },
     {
       "path": "crates/dag-ml-capi/tests/training_execute.rs",
-      "sha256": "a846c1071c136e3b86b09e6442ac988cb1ddc9ae7ce3d5d0bea6316378e4a1be",
+      "sha256": "421e7a4383314eb2b4dc14d55d51744227601e79fe7fd939643abba484d5710b",
       "kind": "c_training_test"
     },
     {
@@ -251,7 +251,7 @@
     },
     {
       "path": "docs/contracts/abi_snapshot.v1.json",
-      "sha256": "669cbbd9a4bf9f8f869afbd4ec88afd0074cbfda938d7eebe1d9b40183809e94",
+      "sha256": "daabae06d5000f00fdd593e5b774e762bcf85c74124e051eb8e6b98b527a13d6",
       "kind": "c_abi_snapshot"
     },
     {
@@ -599,5 +599,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "ae774b2b69f554d33dfdbd892a1fda9df12eef1ddccd72b38f1e1bb578ab08be"
+  "pack_checksum": "1909e5f33e86d7ff6d745b8d513adbc6277b888f0cd0ce2876ae911270e29d3d"
 }
