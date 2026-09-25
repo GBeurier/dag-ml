@@ -382,6 +382,25 @@ PLS`. N4MM n'est donc ni un graphe DAG-ML général, ni une archive nirs4all
 complète. Il faut conserver le graphe, le schéma de données, les décisions,
 scores et empreintes dans l'archive DAG-ML/Core.
 
+Pour le niveau 2 R, la voie de production proposée est un **pont natif possédé
+par `nirs4all-r`** vers les fonctions Rust d'Archive V2/V3 de Core : validation
+de l'archive et de l'inventaire *avant* extraction, lecture des descripteurs et
+payloads, écriture atomique, puis exécution Methods/DAG-ML sans rappel Python.
+L'interface R ne doit exposer que des objets R typés et des erreurs stables ;
+elle ne doit pas recopier le validateur ZIP/JSON en R, ni réintroduire un paquet
+public `nirs4allcore` concurrent. Un CLI natif peut servir de banc de
+conformance provisoire, mais pas de dépendance implicite d'un paquet CRAN.
+Le choix `.Call`/C ABI et la distribution des sources Rust vendoriées doivent
+être qualifiés séparément sur Linux, macOS et Windows avant soumission CRAN.
+
+L'archive doit distinguer explicitement **PREDICT** (graphe, états ajustés,
+N4MM, ordre et identité des features, ABI, empreintes) et **RETRAIN** (recette,
+paramètres, seeds et provenance des données, avec nouvel identifiant de run).
+Les prédictions d'une archive importée doivent être comparées en processus
+neuf dans les deux sens Python↔R ; un simple aller-retour RDS ou N4MM isolé ne
+suffit pas. Chaque opérateur n4m sans sérialisation d'état qualifiée doit être
+refusé à l'export de niveau 2 plutôt que silencieusement recalculé.
+
 Pour généraliser les pipelines n4m, chaque nœud doit être sérialisé selon sa
 nature : descripteur seul pour un opérateur réellement stateless, payload
 versionné d'état pour un transform ajusté, N4MM pour un modèle supporté. Une
