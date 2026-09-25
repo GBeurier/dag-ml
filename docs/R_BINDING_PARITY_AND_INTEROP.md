@@ -40,6 +40,19 @@ Pour cette livraison, ne publier la revendication « niveaux 1–2 complets »
 qu'une fois les gates ci-dessus verts, y compris les erreurs de paramètres,
 les données alignées et le replay hors du processus d'entraînement.
 
+**Actualisation R 0.4.0.9021.** Le produit R expose aussi
+`nirs4all_sparse_pls_da()`, ajusté par le noyau n4m. Sur des échantillons
+jamais vus, les scores et les classes concordent à `1e-10` avec le binding
+Python `SparsePLSDAClassifier`. Le contrôleur passe CV/OOF/refit/inférence
+DAG-ML avec contrôle de chaque fold et relecture de son état RDS. R lit et
+émet une recette JSON/YAML `n4m.SparsePLSDA` ; **cet alias n'est pas encore
+qualifié dans les parseurs Python/Core/WASM**. Sa softmax n'est qu'une
+normalisation non calibrée des scores pour le contrat probabiliste DAG, pas une
+probabilité native n4m. Son modèle entraîné est un sidecar RDS, non N4MM :
+il ne complète donc pas le niveau 2. Le tarball 0.4.0.9021 a passé le check
+Linux/R 4.6.0 avec 0 erreur et 1 avertissement CRAN-incoming, `Suggests`
+absents non forcés ; le test ciblé Python+DAG a passé en mode strict.
+
 Les briques d'un nirs4all R existent, mais elles ne forment pas encore un
 produit équivalent au nirs4all Python :
 
@@ -770,7 +783,7 @@ workspace. Le dépôt R-universe pointe désormais sur `GBeurier/nirs4all-r`
 réussi sur Linux, Windows, macOS et WASM ; ses tarballs sources publics et
 `n4m` 1.0.21.9002 se sont installés dans une bibliothèque R vierge, puis un
 pipeline SNV→SG→PLS y a ajusté et prédit. Cela démontre l'installation
-publique de **cette version**, pas la publication de 0.4.0.9020 ni la parité
+publique de **cette version**, pas la publication de 0.4.0.9021 ni la parité
 complète des niveaux 1–2. Le tarball `dagml` 0.3.27 public s'installe et a
 servi au test du classifieur `torch`, mais le CLI provenait encore du build
 local ; le correctif de test R-universe de `dagml` fusionné doit encore être
