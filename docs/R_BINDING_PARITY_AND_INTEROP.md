@@ -22,7 +22,7 @@ au transfert**, et non comme cible de publication.
 
 | Niveau | Contrat visé | Statut / gate nécessaire |
 |---|---|---|
-| 1 — recette native | Le même JSON/YAML désigne des opérations n4m et des primitives DAG-ML/Data par identifiants sémantiques ; chaque hôte les résout vers son binding, avec refus explicite des nœuds inconnus. | **Cible immédiate R.** Les quatre exemples KS/SNV/SG/PLS passent déjà dans le lecteur R ; l'ensemble du catalogue n4m, les générateurs comme `_cartesian_` et les graphes DAG arbitraires ne passent pas encore. |
+| 1 — recette native | Le même JSON/YAML désigne des opérations n4m et des primitives DAG-ML/Data par identifiants sémantiques ; chaque hôte les résout vers son binding, avec refus explicite des nœuds inconnus. | **Partiel.** Les quatre exemples KS/SNV/SG/PLS passent dans le lecteur R. `nirs4all-r` 0.4.0.9004 exporte JSON/YAML pour SNV/SG/PLS avec les identifiants `n4m.*` ; la PR Core #15 les reconnaît dans les parseurs Python/Rust/JS/MATLAB, et un corpus positif commun les teste. L'ensemble du catalogue n4m, les générateurs comme `_cartesian_` et les graphes DAG arbitraires ne passent pas encore. |
 | 2 — état natif entraîné | Une archive de pipeline n4m/DAG-ML restitue son état pour PREDICT et conserve une recette/lineage permettant un nouveau FIT dans un autre hôte. | **Cible immédiate R.** N4MM brut est importable/exportable entre Python et R ; le RDS du produit R et les sidecars DAG ne sont pas interlangages. Il reste à raccorder un lecteur d'Archive V2/V3 validé par Rust, les états de prétraitement, identités, manifeste et recette de réentraînement, puis à prouver Python→R et R→Python en processus neufs. |
 | 3 — poids PyTorch | Inférence R à partir de poids entraînés en Python, sous architecture, dtypes et opérateurs explicitement qualifiés ; WASM à étudier. | Différé, sauf chemin déjà vérifiable. Un RDS `torch` R n'est pas ce contrat. |
 | 4 — alias de recettes ML | Traduire par exemple sklearn Random Forest en `ranger` pour **réentraîner** depuis JSON/YAML, avec différences sémantiques enregistrées ; aucun transfert du binaire appris. | Différé ; dictionnaire limité et versionné possible ensuite. |
@@ -132,7 +132,7 @@ Python et les autres bindings.
 | `n4m` R 1.0.21 | Substantiel | PLS et variantes, sélection, diagnostics, SNV, SG, Kennard–Stone, formule/S3 ; N4MM `raw()` ajouté et testé localement. | N4MOPT et couverture catalogue/pipelines non qualifiés ; N4MM non raccordé aux bundles DAG-ML. |
 | `nirs4allformats` R 0.2.10 (branche `fix/r-flat-dataset-identity`) | Avancé | Lecture native, probe, records, dataset, parcours, bytes et sidecars. `nirs4all-r` convertit son dataset homogène en matrice/target/IDs/axe pour fit local et campagne DAG native. La branche ajoute au dataset plat l'axe `kind`, la provenance par enregistrement et le refus des mélanges d'unités/types. | Ce chemin passe par un sidecar RDS et un adaptateur process, pas encore par des data bindings/provider DAG-ML natifs. La branche s'installe depuis un checkout propre avec Cargo ; le tarball CRAN autoportant reste à revalider. |
 | `nirs4allio` R 0.2.0 | Partiel | `nio_to_spec`, `nio_infer`, `nio_load`, validation et résumé assemblé. | `nio_load()` retourne une synthèse structurelle sans les matrices ; l'émission `dag-ml-data` reste côté Rust/CLI. |
-| `nirs4all` R 0.4.0.9003 dans `nirs4all-r` | Produit R en développement | Contrôleurs PLS, ridge n4m, `lm`, `ranger`, `glmnet`, `torch` CPU ; matrice et formats ; CV/OOF/refit mono-nœud via DAG-ML ; lecture JSON/YAML, corpus d'exécution partagé et accesseurs vers les paquets amont. | Pas encore d'Archive V2/V3 interlangage, de tous les nœuds n4m, de graphe DAG arbitraire ni de runtime R-universe complet. |
+| `nirs4all` R 0.4.0.9004 dans `nirs4all-r` | Produit R en développement | Contrôleurs PLS, ridge n4m, `lm`, `ranger`, `glmnet`, `torch` CPU ; matrice et formats ; CV/OOF/refit mono-nœud via DAG-ML ; lecture et export de recettes JSON/YAML pour le profil n4m qualifié, corpus d'exécution partagé et accesseurs vers les paquets amont. | Pas encore d'Archive V2/V3 interlangage, de tous les nœuds n4m, de graphe DAG arbitraire ni de runtime R-universe complet. |
 | Adaptateurs `prospectr`/`mdatools` | Conformance | Quelques transforms, PCA, PLS et PLS-DA via protocole processus. | Données synthétiques dans les smokes, couverture réduite, persistance et états ajustés incomplets. |
 
 ### 3.2 Écart entre les bindings DAG-ML Python et R
@@ -722,12 +722,17 @@ Les lignes ci-dessus sont des jalons historiques : leurs mentions de Core
 comme propriétaire R ou de `dagml` absent de R-universe décrivent leur date de
 test, pas l'état après le transfert. Au 25 septembre 2026, la PR Core
 [#14](https://github.com/GBeurier/nirs4all-core/pull/14) est fusionnée après
-neuf contrôles verts ; le paquet R `0.4.0.9003` a passé localement les tests
+neuf contrôles verts ; le paquet R `0.4.0.9004` a passé localement les tests
 stricts Formats/DAG et `R CMD check --as-cran --no-manual` (0 erreur, 1 warning
 incoming). Le contrôle a d'abord été lancé avec deux `Suggests` absents,
 puis répété avec `dagmldata` et `nirs4alldatasets` installés depuis R-universe,
 sans désactiver la vérification des `Suggests`. Les accès amont et le corpus
 d'exécution JSON/YAML partagé sont repris dans `nirs4all-r`.
+L'export R de recettes porte désormais des alias natifs `n4m.*` plutôt que
+des noms de classes sklearn ; la PR Core
+[#15](https://github.com/GBeurier/nirs4all-core/pull/15) les ajoute aux lecteurs
+Python, Rust, JS/WASM et MATLAB. Ce test ne prouve pas la reprise de l'état
+entraîné ni la compréhension de ces alias par le produit Python complet.
 
 La publication du produit `nirs4all` R n'est donc **pas encore qualifiée de
 fonctionnellement complète**. En outre,
