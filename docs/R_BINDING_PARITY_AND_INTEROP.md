@@ -1,3 +1,7 @@
+---
+orphan: true
+---
+
 # Binding R : parité nirs4all et portabilité interlangage
 
 > Réaudit au 24–25 septembre 2026, mis à jour après la décision d'extraire le
