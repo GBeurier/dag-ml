@@ -49,9 +49,11 @@ DAG-ML avec contrôle de chaque fold et relecture de son état RDS. R lit et
 qualifié dans les parseurs Python/Core/WASM**. Sa softmax n'est qu'une
 normalisation non calibrée des scores pour le contrat probabiliste DAG, pas une
 probabilité native n4m. Son modèle entraîné est un sidecar RDS, non N4MM :
-il ne complète donc pas le niveau 2. Le tarball 0.4.0.9021 a passé le check
-Linux/R 4.6.0 avec 0 erreur et 1 avertissement CRAN-incoming, `Suggests`
-absents non forcés ; le test ciblé Python+DAG a passé en mode strict.
+il ne complète donc pas le niveau 2. Le tarball 0.4.0.9021 issu de
+`nirs4all-r` `aa41e6a` a passé le check Linux/R 4.6.0 avec 0 erreur et
+1 avertissement CRAN-incoming, **tous les `Suggests` installés**, l'oracle
+Python n4m et la parité DAG stricte activés. Son SHA-256 est
+`51cdffa7c5da68b4743c8f6fd33afbdfb69f0b41dc2869d2fc15c808347d65ff`.
 
 Les briques d'un nirs4all R existent, mais elles ne forment pas encore un
 produit équivalent au nirs4all Python :
