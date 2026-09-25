@@ -22,7 +22,7 @@ au transfert**, et non comme cible de publication.
 
 | Niveau | Contrat visé | Statut / gate nécessaire |
 |---|---|---|
-| 1 — recette native | Le même JSON/YAML désigne des opérations n4m et des primitives DAG-ML/Data par identifiants sémantiques ; chaque hôte les résout vers son binding, avec refus explicite des nœuds inconnus. | **Partiel.** Les quatre exemples KS/SNV/SG/PLS passent dans le lecteur R. `nirs4all-r` 0.4.0.9004 exporte JSON/YAML pour SNV/SG/PLS avec les identifiants `n4m.*` ; la PR Core #15 les reconnaît dans les parseurs Python/Rust/JS/MATLAB, et un corpus positif commun les teste. L'ensemble du catalogue n4m, les générateurs comme `_cartesian_` et les graphes DAG arbitraires ne passent pas encore. |
+| 1 — recette native | Le même JSON/YAML désigne des opérations n4m et des primitives DAG-ML/Data par identifiants sémantiques ; chaque hôte les résout vers son binding, avec refus explicite des nœuds inconnus. | **Partiel.** Les quatre exemples KS/SNV/SG/PLS passent dans le lecteur R. `nirs4all-r` 0.4.0.9004 exporte JSON/YAML pour SNV/SG/PLS avec les identifiants `n4m.*` ; Core #15, fusionné après neuf contrôles verts, les reconnaît dans les parseurs Python/Rust/JS/MATLAB, et un corpus positif commun les teste. L'ensemble du catalogue n4m, les générateurs comme `_cartesian_` et les graphes DAG arbitraires ne passent pas encore. |
 | 2 — état natif entraîné | Une archive de pipeline n4m/DAG-ML restitue son état pour PREDICT et conserve une recette/lineage permettant un nouveau FIT dans un autre hôte. | **Cible immédiate R.** N4MM brut est importable/exportable entre Python et R ; le RDS du produit R et les sidecars DAG ne sont pas interlangages. Il reste à raccorder un lecteur d'Archive V2/V3 validé par Rust, les états de prétraitement, identités, manifeste et recette de réentraînement, puis à prouver Python→R et R→Python en processus neufs. |
 | 3 — poids PyTorch | Inférence R à partir de poids entraînés en Python, sous architecture, dtypes et opérateurs explicitement qualifiés ; WASM à étudier. | Différé, sauf chemin déjà vérifiable. Un RDS `torch` R n'est pas ce contrat. |
 | 4 — alias de recettes ML | Traduire par exemple sklearn Random Forest en `ranger` pour **réentraîner** depuis JSON/YAML, avec différences sémantiques enregistrées ; aucun transfert du binaire appris. | Différé ; dictionnaire limité et versionné possible ensuite. |
@@ -729,7 +729,7 @@ puis répété avec `dagmldata` et `nirs4alldatasets` installés depuis R-univer
 sans désactiver la vérification des `Suggests`. Les accès amont et le corpus
 d'exécution JSON/YAML partagé sont repris dans `nirs4all-r`.
 L'export R de recettes porte désormais des alias natifs `n4m.*` plutôt que
-des noms de classes sklearn ; la PR Core
+des noms de classes sklearn ; la PR Core fusionnée
 [#15](https://github.com/GBeurier/nirs4all-core/pull/15) les ajoute aux lecteurs
 Python, Rust, JS/WASM et MATLAB. Ce test ne prouve pas la reprise de l'état
 entraîné ni la compréhension de ces alias par le produit Python complet.
