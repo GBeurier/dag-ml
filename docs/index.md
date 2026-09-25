@@ -20,7 +20,6 @@ wire nirs4all directly.
 | Map aggregation across `dag-ml-data` | [Aggregation interop](AGGREGATION_INTEROP.md) |
 | Run release performance probes | [Performance probes](PERFORMANCE.md) |
 | Map nirs4all parity capabilities | [Capability matrix](CAPABILITY_MATRIX.md) |
-| Review the R product and cross-language portability | [R binding audit](R_BINDING_PARITY_AND_INTEROP.md) |
 | Inspect shared contracts | [Contract manifests](contracts/README.md) |
 | Use native training/fine-tuning contracts | [Training contracts](TRAINING_CONTRACTS.md) |
 | Review public training replay syntax and migration | [Training replay contracts](TRAINING_REPLAY_CONTRACTS.md) |
@@ -70,8 +69,7 @@ Curated DOI-pinned NIRS dataset catalog (n4a-datasets).
 :::
 :::{grid-item-card} nirs4all-core
 :link: https://nirs4all-core.readthedocs.io/en/latest/
-Portable aggregate with remaining Python, WASM and MATLAB/Octave bindings; the
-public R product is owned by `nirs4all-r`.
+Canonical portable aggregate distribution (Rust, Python, R, WASM, MATLAB/Octave).
 :::
 ::::
 
@@ -138,5 +136,4 @@ migration-nirs4all/WORKING_STRATEGY
 migration-nirs4all/PARITY_AND_PERF_HARNESS
 migration-nirs4all/TARGET_RESPONSIBILITY_SPLIT
 migration-nirs4all/NATIVE_PERSISTENCE_LAYER_REPORT
-R_BINDING_PARITY_AND_INTEROP
 ```
