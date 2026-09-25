@@ -187,7 +187,7 @@ Python et les autres bindings.
 | `n4m` R 1.0.21 | Substantiel | PLS et variantes, sélection, diagnostics, SNV, SG, Kennard–Stone, formule/S3 ; N4MM `raw()` ajouté et testé localement. | N4MOPT et couverture catalogue/pipelines non qualifiés ; N4MM non raccordé aux bundles DAG-ML. |
 | `nirs4allformats` R 0.2.10 (branche `fix/r-flat-dataset-identity`) | Avancé | Lecture native, probe, records, dataset, parcours, bytes et sidecars. `nirs4all-r` convertit son dataset homogène en matrice/target/IDs/axe pour fit local et campagne DAG native. La branche ajoute au dataset plat l'axe `kind`, la provenance par enregistrement et le refus des mélanges d'unités/types. | Ce chemin passe par un sidecar RDS et un adaptateur process, pas encore par des data bindings/provider DAG-ML natifs. La branche s'installe depuis un checkout propre avec Cargo ; le tarball CRAN autoportant reste à revalider. |
 | `nirs4allio` R 0.2.0 | Partiel | `nio_to_spec`, `nio_infer`, `nio_load`, validation et résumé assemblé. | `nio_load()` retourne une synthèse structurelle sans les matrices ; l'émission `dag-ml-data` reste côté Rust/CLI. |
-| `nirs4all` R dans `nirs4all-r` | Produit R publié à 0.4.0.9025 ; 0.4.0.9026 en PR | Régression n4m/PLS, `lm`, `ranger`, `glmnet`, `parsnip`, `mlr3`, `torch` CPU ; classification `ranger`, `parsnip`, `mlr3` et `torch` CPU avec facteurs et probabilités ; données matrices et formats avec cibles numériques ou catégorielles explicites ; CV/OOF/refit DAG-ML avec groupes, variantes, chaînes de nœuds n4m et concaténation bornée de branches ; recettes JSON/YAML n4m R↔Python et expansion `_or_`/`_cartesian_` bornée ; N4MM PLS, SNV→SG→SIMPLS et prédicteur affine. L'enveloppe entraînée PLS avec états MSC/EMSC et réentraînement interlangage est testée sur la branche 0.4.0.9026. | Pas encore d'Archive V2/V3 interlangage, de tous les nœuds n4m ni de graphe DAG arbitraire. Les nouveaux alias de recette ne sont pas qualifiés dans Core/WASM ; l'enveloppe entraînée PLS n'est pas encore publiée sur R-universe. Les modèles ML/DL R restent des sidecars RDS. |
+| `nirs4all` R dans `nirs4all-r` | Produit R publié à 0.4.0.9025 ; 0.4.0.9027 fusionné, publication à vérifier | Régression n4m/PLS, `lm`, `ranger`, `glmnet`, `parsnip`, `mlr3`, `torch` CPU ; classification `ranger`, `parsnip`, `mlr3` et `torch` CPU avec facteurs et probabilités ; données matrices et formats avec cibles numériques ou catégorielles explicites ; CV/OOF/refit DAG-ML avec groupes, variantes, chaînes de nœuds n4m et concaténation bornée de branches ; recettes JSON/YAML n4m R↔Python et expansion `_or_`/`_cartesian_` bornée ; N4MM PLS, SNV→SG→SIMPLS et prédicteur affine. L'enveloppe PLS entraîne, prédit et se réentraîne dans les deux hôtes avec états MSC/EMSC. | Pas encore d'Archive V2/V3 interlangage, de tous les nœuds n4m ni de graphe DAG arbitraire. Les nouveaux alias de recette ne sont pas qualifiés dans Core/WASM ; l'enveloppe entraînée PLS n'est pas encore confirmée sur R-universe. Les modèles ML/DL R restent des sidecars RDS. |
 | Adaptateurs `prospectr`/`mdatools` | Conformance | Quelques transforms, PCA, PLS et PLS-DA via protocole processus. | Données synthétiques dans les smokes, couverture réduite, persistance et états ajustés incomplets. |
 
 ### 3.2 Écart entre les bindings DAG-ML Python et R
@@ -856,7 +856,7 @@ alias ne sont pas qualifiés dans Core/WASM ; ce niveau 1 élargi est donc
 
 Les PR [nirs4all R #24](https://github.com/GBeurier/nirs4all-r/pull/24)
 et [nirs4all Python #146](https://github.com/GBeurier/nirs4all/pull/146)
-introduisent une enveloppe entraînée **bornée à PLS n4m** : recette portable,
+sont fusionnées. Elles introduisent une enveloppe entraînée **bornée à PLS n4m** : recette portable,
 références MSC/EMSC ajustées, N4MM, empreintes SHA-256 du manifeste et du
 payload. Un test local en deux processus compare, dans les deux sens
 R→Python et Python→R, les prédictions hors entraînement des profils PLS seul,
@@ -873,8 +873,14 @@ différent. Les 362 tests Python ciblés (configuration, steps et nouvelle API)
 passent. Le tarball exact `nirs4all` R 0.4.0.9026 passe le contrôle
 `R CMD check --as-cran --no-manual` sur Linux/R 4.6.0 avec zéro erreur et
 l'avertissement CRAN-incoming attendu ; tests DAG/Formats/Python stricts et
-torch CPU activés. **Les deux PR de développement ne sont pas encore fusionnées
-ni publiées sur R-universe ; ce check n'est pas un contrôle CRAN multi-OS.**
+torch CPU activés. La CI complète de la PR Python #146 est verte. La PR
+[nirs4all R #25](https://github.com/GBeurier/nirs4all-r/pull/25), également
+fusionnée, route les huit prédicteurs affines MethodResult par `n4m_predict`
+et ajoute `nirs4all_retrain()` ; le test R réentraîne aussi chaque recette
+PLS importée d'un bundle Python. Son tarball exact 0.4.0.9027 a passé le
+même contrôle Linux strict (0 erreur, avertissement CRAN-incoming attendu).
+**Ni 0.4.0.9026 ni 0.4.0.9027 ne sont encore confirmées sur R-universe ;
+ces checks ne sont pas des contrôles CRAN multi-OS.**
 
 Cette enveloppe n'est pas un `PortablePredictorPackage`/Archive V2/V3 de
 DAG-ML : elle ne transporte ni identités des échantillons, ni folds, OOF,
@@ -890,7 +896,7 @@ Le paquet public R s'appelle `nirs4all` et son dépôt est `nirs4all-r` ;
 `nirs4all-core` n'en publie plus un doublon. Au dernier contrôle de l'API
 R-universe, la version distribuée est **0.4.0.9025** depuis `ab6e594`, avec
 `n4m` R **1.0.21.9003**, statut source `success` et binaires Linux, macOS,
-Windows et WASM construits. Ce constat n'inclut pas 0.4.0.9026. Ne pas assimiler la
+Windows et WASM construits. Ce constat n'inclut pas 0.4.0.9026/9027. Ne pas assimiler la
 fusion GitHub ni un contrôle Linux du tarball à une publication R-universe
 ou à une qualification CRAN multi-plateforme.
 
