@@ -39,11 +39,12 @@ use dag_ml_core::{
     SELECTION_POLICY_SCHEMA_VERSION,
 };
 use dag_ml_core::{
-    execute_attached_training_replay, execute_training, parse_typed_json,
+    execute_attached_training_replay, execute_training, parse_typed_json, ArtifactLoadMode,
     AttachedTrainingReplayInput, BundleId, DataBinding, EnvelopeAttestedRuntimeDataProvider,
-    InitialFullRefitPackage, PredictCohortConstructionRequest, SampleRelationSet,
-    StackingFoldSelectionRequest, StackingProducerSelectionRequest, TrainingExecutionInput,
-    TrainingInfluenceManifest, TrainingOutcome, TrainingReplayRequest, TrainingRequest,
+    FittedArtifactMode, InitialFullRefitPackage, PredictCohortConstructionRequest,
+    SampleRelationSet, StackingFoldSelectionRequest, StackingProducerSelectionRequest,
+    TrainingExecutionInput, TrainingInfluenceManifest, TrainingOutcome, TrainingReplayRequest,
+    TrainingRequest,
 };
 use serde::{de::DeserializeOwned, Serialize};
 
@@ -3828,6 +3829,87 @@ pub unsafe extern "C" fn dagml_training_result_outcome_json(
             set_error(
                 error_out,
                 "panic while reading native training outcome JSON",
+            );
+            DagMlStatusCode::PANIC
+        }
+    }
+}
+
+/// Export a signed predictor package from the live training outcome. The mode
+/// strings are `portable_required`/`allow_host_sidecar` and
+/// `native_portable`/`host_sidecar`, respectively. The core validates the
+/// package before any bytes are returned; this does not export host artifact
+/// payloads, which must be supplied by the owning controller/sidecar.
+///
+/// # Safety
+/// `result` must be a live training result; byte views and output pointers
+/// must be valid or null according to the ordinary C ABI rules.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_training_result_portable_predictor_package_json(
+    result: *const DagMlTrainingResult,
+    package_id: DagMlBytesView,
+    fitted_artifact_mode: DagMlBytesView,
+    artifact_load_mode: DagMlBytesView,
+    out_json: *mut DagMlOwnedBytes,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        clear_error(error_out);
+        clear_owned_bytes(out_json);
+        if result.is_null() {
+            set_error(error_out, "training result pointer is null");
+            return DagMlStatusCode::INVALID_ARGUMENT;
+        }
+        let package_id = match parse_utf8_view(package_id, error_out, "package id") {
+            Ok(value) => value,
+            Err(status) => return status,
+        };
+        let fitted_mode =
+            match parse_utf8_view(fitted_artifact_mode, error_out, "fitted artifact mode") {
+                Ok(value) => match value.as_str() {
+                    "portable_required" => FittedArtifactMode::PortableRequired,
+                    "allow_host_sidecar" => FittedArtifactMode::AllowHostSidecar,
+                    _ => {
+                        set_error(
+                            error_out,
+                            format!("unsupported fitted artifact mode `{value}`"),
+                        );
+                        return DagMlStatusCode::VALIDATION_ERROR;
+                    }
+                },
+                Err(status) => return status,
+            };
+        let load_mode = match parse_utf8_view(artifact_load_mode, error_out, "artifact load mode") {
+            Ok(value) => match value.as_str() {
+                "native_portable" => ArtifactLoadMode::NativePortable,
+                "host_sidecar" => ArtifactLoadMode::HostSidecar,
+                _ => {
+                    set_error(
+                        error_out,
+                        format!("unsupported artifact load mode `{value}`"),
+                    );
+                    return DagMlStatusCode::VALIDATION_ERROR;
+                }
+            },
+            Err(status) => return status,
+        };
+        let package = match (*result).outcome.to_portable_predictor_package(
+            package_id,
+            fitted_mode,
+            load_mode,
+        ) {
+            Ok(package) => package,
+            Err(error) => return validation_error(error_out, error),
+        };
+        write_owned_json(out_json, error_out, &package)
+    })) {
+        Ok(status) => status,
+        Err(_) => {
+            clear_error(error_out);
+            clear_owned_bytes(out_json);
+            set_error(
+                error_out,
+                "panic while exporting native training predictor package",
             );
             DagMlStatusCode::PANIC
         }

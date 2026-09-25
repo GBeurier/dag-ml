@@ -18,11 +18,12 @@ use std::sync::{Arc, Mutex};
 
 use dag_ml_capi::{
     dagml_owned_bytes_free, dagml_string_free, dagml_training_execute, dagml_training_result_free,
-    dagml_training_result_outcome_json, dagml_training_result_replay, DagMlBytesView,
-    DagMlControllerBinding, DagMlControllerVTable, DagMlDataVTable, DagMlHandle, DagMlOwnedBytes,
-    DagMlStatusCode, DagMlString, DagMlTrainingExecuteRequest, DagMlTrainingReplayRequest,
-    DagMlTrainingResult, DAG_ML_CONTROLLER_VTABLE_BORROWED_ABI_VERSION,
-    DAG_ML_CONTROLLER_VTABLE_OWNED_ABI_VERSION, DAG_ML_DATA_PROVIDER_VTABLE_ABI_VERSION,
+    dagml_training_result_outcome_json, dagml_training_result_portable_predictor_package_json,
+    dagml_training_result_replay, DagMlBytesView, DagMlControllerBinding, DagMlControllerVTable,
+    DagMlDataVTable, DagMlHandle, DagMlOwnedBytes, DagMlStatusCode, DagMlString,
+    DagMlTrainingExecuteRequest, DagMlTrainingReplayRequest, DagMlTrainingResult,
+    DAG_ML_CONTROLLER_VTABLE_BORROWED_ABI_VERSION, DAG_ML_CONTROLLER_VTABLE_OWNED_ABI_VERSION,
+    DAG_ML_DATA_PROVIDER_VTABLE_ABI_VERSION,
 };
 use dag_ml_core::*;
 
@@ -906,6 +907,71 @@ fn training_execute_end_to_end_success_keeps_handles_alive_until_free() {
     assert_eq!(outcome.execution_bundle.refit_artifacts.len(), 1);
     unsafe { dagml_owned_bytes_free(outcome_json) };
 
+    // The C host gets the same signed package export as the Python binding.
+    let mut package_json = DagMlOwnedBytes::default();
+    let mut package_error = DagMlString::default();
+    let package_id = b"package:c.native";
+    let fitted_mode = b"allow_host_sidecar";
+    let load_mode = b"host_sidecar";
+    let package_status = unsafe {
+        dagml_training_result_portable_predictor_package_json(
+            result,
+            DagMlBytesView {
+                ptr: package_id.as_ptr(),
+                len: package_id.len(),
+            },
+            DagMlBytesView {
+                ptr: fitted_mode.as_ptr(),
+                len: fitted_mode.len(),
+            },
+            DagMlBytesView {
+                ptr: load_mode.as_ptr(),
+                len: load_mode.len(),
+            },
+            &mut package_json,
+            &mut package_error,
+        )
+    };
+    assert_eq!(package_status, DagMlStatusCode::OK, "{}", unsafe {
+        error_text(&package_error)
+    });
+    let package_bytes = unsafe { slice::from_raw_parts(package_json.ptr, package_json.len) };
+    let package = PortablePredictorPackage::from_json(std::str::from_utf8(package_bytes).unwrap())
+        .expect("signed C ABI package round-trips");
+    package.validate().unwrap();
+    assert_eq!(package.package_id, "package:c.native");
+    assert_eq!(
+        package.artifact_bindings[0].load_mode,
+        ArtifactLoadMode::HostSidecar
+    );
+    unsafe { dagml_owned_bytes_free(package_json) };
+
+    // A host artifact cannot be mislabeled as a native portable binary.
+    let mut rejected = DagMlOwnedBytes::default();
+    let mut rejection = DagMlString::default();
+    let rejected_status = unsafe {
+        dagml_training_result_portable_predictor_package_json(
+            result,
+            DagMlBytesView {
+                ptr: package_id.as_ptr(),
+                len: package_id.len(),
+            },
+            DagMlBytesView {
+                ptr: fitted_mode.as_ptr(),
+                len: fitted_mode.len(),
+            },
+            DagMlBytesView {
+                ptr: b"native_portable".as_ptr(),
+                len: b"native_portable".len(),
+            },
+            &mut rejected,
+            &mut rejection,
+        )
+    };
+    assert_eq!(rejected_status, DagMlStatusCode::VALIDATION_ERROR);
+    assert!(rejected.ptr.is_null());
+    unsafe { dagml_string_free(rejection) };
+
     // Freeing releases the model controller's tracked handles and then destroys
     // both owned controller user_data exactly once.
     unsafe { dagml_training_result_free(result) };
@@ -1094,6 +1160,30 @@ fn training_result_free_and_getter_handle_null() {
         unsafe { dagml_training_result_outcome_json(std::ptr::null(), &mut out, &mut error) };
     assert_eq!(status, DagMlStatusCode::INVALID_ARGUMENT);
     assert!(out.ptr.is_null());
+    unsafe { dagml_string_free(error) };
+    let mut package_error = DagMlString::default();
+    let status = unsafe {
+        dagml_training_result_portable_predictor_package_json(
+            std::ptr::null(),
+            DagMlBytesView {
+                ptr: b"package:test".as_ptr(),
+                len: b"package:test".len(),
+            },
+            DagMlBytesView {
+                ptr: b"allow_host_sidecar".as_ptr(),
+                len: b"allow_host_sidecar".len(),
+            },
+            DagMlBytesView {
+                ptr: b"host_sidecar".as_ptr(),
+                len: b"host_sidecar".len(),
+            },
+            &mut out,
+            &mut package_error,
+        )
+    };
+    assert_eq!(status, DagMlStatusCode::INVALID_ARGUMENT);
+    assert!(out.ptr.is_null());
+    unsafe { dagml_string_free(package_error) };
 }
 
 #[test]
