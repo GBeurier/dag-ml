@@ -400,6 +400,12 @@ Les prédictions d'une archive importée doivent être comparées en processus
 neuf dans les deux sens Python↔R ; un simple aller-retour RDS ou N4MM isolé ne
 suffit pas. Chaque opérateur n4m sans sérialisation d'état qualifiée doit être
 refusé à l'export de niveau 2 plutôt que silencieusement recalculé.
+En particulier, le dispatcher R `n4m_method()` renvoie des tableaux
+`MethodResult` pour 33 familles de modèles, et non le handle sérialisable
+accepté par `n4m_model_export()` ; ces familles ne gagnent donc pas la
+portabilité de niveau 2 du seul fait qu'elles sont calculables en R. Leur
+qualification exige un codec d'état n4m stable et un test de prédiction
+Python↔R par famille, ou une interdiction explicite d'export entraîné.
 
 Pour généraliser les pipelines n4m, chaque nœud doit être sérialisé selon sa
 nature : descripteur seul pour un opérateur réellement stateless, payload
