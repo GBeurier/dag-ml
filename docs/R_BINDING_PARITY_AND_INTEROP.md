@@ -79,6 +79,18 @@ a été ajustée ou de **re-FIT** sans recette séparée. Les alias de ces huit
 méthodes ne sont pas encore inscrits dans le profil JSON/YAML commun, et le
 pipeline entraîné complet n'est pas encore un Archive V2/V3 interlangage.
 
+**Actualisation R 0.4.0.9024 (en validation).** Le chemin CV→refit du CLI
+DAG-ML détache maintenant les payloads `raw` fournis par les contrôleurs dans
+le bundle avant sa validation et son rejeu ; le chemin refit sans CV suit le
+même contrat. L'adaptateur `nirs4all-r` utilise ce pont uniquement quand le
+modèle n4m et tous ses prétraitements sont contenus dans N4MM : PLS seul,
+SNV→SG→PLS embarqué et prédicteur affine sans prétraitement externe. Les
+autres contrôleurs et transforms gardent les sidecars RDS. Un bundle natif
+copié sans son workdir a été prédit dans un processus R neuf, et ses octets
+ont été prédits par Python ; le contrôle SHA-256 et le rejet d'octets modifiés
+sont exercés. Ce bundle n'embarque toujours pas à lui seul la recette complète
+ni le plan Archive V2/V3 requis pour refaire FIT ailleurs : niveau 2 partiel.
+
 Les briques d'un nirs4all R existent, mais elles ne forment pas encore un
 produit équivalent au nirs4all Python :
 
