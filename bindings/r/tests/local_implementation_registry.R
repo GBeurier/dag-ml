@@ -27,6 +27,21 @@ registry$register_metric(fixture$metric_reference, bias_metric)
 stopifnot(registry$size() == 2L)
 stopifnot(length(registry$descriptors()) == 2L)
 
+native_path <- Sys.getenv("DAGML_NATIVE_LIBRARY", unset = "")
+if (!nzchar(native_path)) {
+  # The CRAN/R-universe R-only package does not ship the C ABI library.
+  # Assert fail-closed behavior here; CI supplies an explicit native path
+  # and exercises all invocation/attestation cases below.
+  error <- tryCatch(
+    registry$invoke_training_loss(
+      fixture$task_json$FIT_CV, target = c(2, 4), prediction = c(5, 3)
+    ),
+    error = identity
+  )
+  stopifnot(inherits(error, "error"),
+            grepl("DAGML_NATIVE_LIBRARY", conditionMessage(error)),
+            calls == 0L)
+} else {
 for (phase in c("FIT_CV", "REFIT")) {
   invocation <- registry$invoke_training_loss(
     fixture$task_json[[phase]],
@@ -251,3 +266,4 @@ stopifnot(identical(removed_metric, bias_metric), registry$size() == 0L)
 registry$register_metric(fixture$metric_reference, bias_metric)
 registry$clear()
 stopifnot(registry$size() == 0L)
+}
