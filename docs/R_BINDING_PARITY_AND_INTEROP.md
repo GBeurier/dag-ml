@@ -27,7 +27,7 @@ au transfert**, et non comme cible de publication.
 | Niveau | Contrat visé | Statut / gate nécessaire |
 |---|---|---|
 | 1 — recette native | Le même JSON/YAML désigne des opérations n4m et des primitives DAG-ML/Data par identifiants sémantiques ; chaque hôte les résout vers son binding, avec refus explicite des nœuds inconnus. | **Partiel.** Les quatre exemples KS/SNV/SG/PLS passent dans le lecteur R. `nirs4all-r` 0.4.0.9019 exporte JSON/YAML pour le profil plat SNV/SG/PLS avec les identifiants `n4m.*`, reconstruit les branches `branch`→`merge: features` de Python et développe `_or_`/`_cartesian_` puis les variantes DAG. Son lecteur accepte aussi `n4m.LSNV`, `n4m.RNV`, `n4m.AreaNormalization`, `n4m.Detrend`, `n4m.MSC` et `n4m.EMSC`, avec parité numérique Python n4m testée, mais **leur export interlangage n'est pas encore qualifié**. Core #15 reconnaît seulement le premier profil SNV/SG/PLS dans les parseurs Python/Rust/JS/MATLAB. Le catalogue n4m complet, les modificateurs de générateurs et les graphes DAG arbitraires ne passent pas encore. |
-| 2 — état natif entraîné | Une archive de pipeline n4m/DAG-ML restitue son état pour PREDICT et conserve une recette/lineage permettant un nouveau FIT dans un autre hôte. | **Partiel, deux profils natifs exacts.** `nirs4all` R 0.4.0.9019 échange le PLS seul en N4MM format 1 et `n4m` R 1.0.21.9002 produit/inspecte N4MM format 2 avec SNV→SG embarqué. L'état est importé contre une recette JSON/YAML séparée ; solveur, composantes, largeur et prétraitement embarqué sont vérifiés. Des processus Python distincts prouvent R→Python et Python→R à `1e-10` dans les deux profils. Le RDS et les sidecars DAG ne sont pas interlangages. Il reste à raccorder l'Archive V2/V3 validée par Rust, identités/manifestes/lineage et recette de réentraînement, puis à élargir les profils/familles. |
+| 2 — état natif entraîné | Une archive de pipeline n4m/DAG-ML restitue son état pour PREDICT et conserve une recette/lineage permettant un nouveau FIT dans un autre hôte. | **Partiel.** PLS seul : N4MM format 1 ; SNV→SG→PLS embarqué : format 2, avec prédiction R↔Python. `n4m` R 1.0.21.9003 ajoute le prédicteur affine N4MM format 1, consommable dans les deux sens pour huit régressions MethodResult sans prétraitement externe. Ses octets ne certifient ni la méthode d'ajustement ni ses hyperparamètres. Le RDS et les sidecars DAG ne sont pas interlangages. Il reste à raccorder l'Archive V2/V3 validée par Rust, identités/manifestes/lineage et recette de réentraînement, puis à élargir les profils/familles. |
 | 3 — poids PyTorch | Inférence R à partir de poids entraînés en Python, sous architecture, dtypes et opérateurs explicitement qualifiés ; WASM à étudier. | Différé, sauf chemin déjà vérifiable. Un RDS `torch` R n'est pas ce contrat. |
 | 4 — alias de recettes ML | Traduire par exemple sklearn Random Forest en `ranger` pour **réentraîner** depuis JSON/YAML, avec différences sémantiques enregistrées ; aucun transfert du binaire appris. | Différé ; dictionnaire limité et versionné possible ensuite. |
 | 5 — ONNX | Inférence commune pour les opérateurs et runtimes effectivement couverts, sans supposer la reprise d'entraînement. | Description seulement à ce stade. |
@@ -67,6 +67,17 @@ a passé `R CMD check --as-cran --no-manual` Linux/R 4.6.0 avec tous les
 `Suggests` : 0 erreur, 1 avertissement CRAN-incoming. L'alias n'est toujours
 pas qualifié dans les lecteurs Python/Core/WASM, et l'état appris reste RDS ;
 ce progrès ne clôt ni le niveau 1 global ni le niveau 2.
+
+**Actualisation R 0.4.0.9023.** Le binding `n4m` R 1.0.21.9003 expose l'import
+du prédicteur affine par l'ABI commune. `nirs4all-r` sérialise désormais les
+huit régressions MethodResult sous forme d'octets N4MM, vérifie le descripteur
+à l'import et refuse l'export nu d'un pipeline dont le prétraitement serait
+exécuté seulement en R. Les tests R↔Python vérifient des prédictions hors de
+l'échantillon d'ajustement et le rejeu après sauvegarde RDS. Le binaire
+permet **PREDICT**, pas de récupérer les composantes, de prouver quelle méthode
+a été ajustée ou de **re-FIT** sans recette séparée. Les alias de ces huit
+méthodes ne sont pas encore inscrits dans le profil JSON/YAML commun, et le
+pipeline entraîné complet n'est pas encore un Archive V2/V3 interlangage.
 
 Les briques d'un nirs4all R existent, mais elles ne forment pas encore un
 produit équivalent au nirs4all Python :
