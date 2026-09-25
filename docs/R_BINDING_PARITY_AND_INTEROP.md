@@ -40,6 +40,34 @@ Pour cette livraison, ne publier la revendication « niveaux 1–2 complets »
 qu'une fois les gates ci-dessus verts, y compris les erreurs de paramètres,
 les données alignées et le replay hors du processus d'entraînement.
 
+**Actualisation R 0.4.0.9021.** Le produit R expose aussi
+`nirs4all_sparse_pls_da()`, ajusté par le noyau n4m. Sur des échantillons
+jamais vus, les scores et les classes concordent à `1e-10` avec le binding
+Python `SparsePLSDAClassifier`. Le contrôleur passe CV/OOF/refit/inférence
+DAG-ML avec contrôle de chaque fold et relecture de son état RDS. R lit et
+émet une recette JSON/YAML `n4m.SparsePLSDA` ; **cet alias n'est pas encore
+qualifié dans les parseurs Python/Core/WASM**. Sa softmax n'est qu'une
+normalisation non calibrée des scores pour le contrat probabiliste DAG, pas une
+probabilité native n4m. Son modèle entraîné est un sidecar RDS, non N4MM :
+il ne complète donc pas le niveau 2. Le tarball 0.4.0.9021 issu de
+`nirs4all-r` `aa41e6a` a passé le check Linux/R 4.6.0 avec 0 erreur et
+1 avertissement CRAN-incoming, **tous les `Suggests` installés**, l'oracle
+Python n4m et la parité DAG stricte activés. Son SHA-256 est
+`51cdffa7c5da68b4743c8f6fd33afbdfb69f0b41dc2869d2fc15c808347d65ff`.
+
+**Actualisation R 0.4.0.9022.** Le lecteur R peut désormais *exécuter* une
+recette JSON/YAML `n4m.SparsePLSDA` sur des labels facteurs, chaînes ou codes
+numériques. Il conserve le type des codes, évalue une plage de composantes par
+accuracy, et accepte un jeu catégoriel `nirs4all-formats`. Un processus Python
+n4m distinct obtient exactement les mêmes labels pour SNV→sparse PLS-DA ; le
+holdout Kennard–Stone et le chemin DAG strict sont testés. Le tarball issu de
+`nirs4all-r` `f199749`, SHA-256
+`10a94ad79899e28a4e8ae1cfeaee10441fc21b68f717d91c34c57ea8c9f6be5a`,
+a passé `R CMD check --as-cran --no-manual` Linux/R 4.6.0 avec tous les
+`Suggests` : 0 erreur, 1 avertissement CRAN-incoming. L'alias n'est toujours
+pas qualifié dans les lecteurs Python/Core/WASM, et l'état appris reste RDS ;
+ce progrès ne clôt ni le niveau 1 global ni le niveau 2.
+
 Les briques d'un nirs4all R existent, mais elles ne forment pas encore un
 produit équivalent au nirs4all Python :
 
@@ -770,7 +798,7 @@ workspace. Le dépôt R-universe pointe désormais sur `GBeurier/nirs4all-r`
 réussi sur Linux, Windows, macOS et WASM ; ses tarballs sources publics et
 `n4m` 1.0.21.9002 se sont installés dans une bibliothèque R vierge, puis un
 pipeline SNV→SG→PLS y a ajusté et prédit. Cela démontre l'installation
-publique de **cette version**, pas la publication de 0.4.0.9020 ni la parité
+publique de **cette version**, pas la publication de 0.4.0.9022 ni la parité
 complète des niveaux 1–2. Le tarball `dagml` 0.3.27 public s'installe et a
 servi au test du classifieur `torch`, mais le CLI provenait encore du build
 local ; le correctif de test R-universe de `dagml` fusionné doit encore être
