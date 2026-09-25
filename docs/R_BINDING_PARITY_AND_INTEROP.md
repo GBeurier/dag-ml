@@ -888,7 +888,9 @@ restent des descriptions, sans promesse de conversion binaire.
 
 Le paquet public R s'appelle `nirs4all` et son dépôt est `nirs4all-r` ;
 `nirs4all-core` n'en publie plus un doublon. Au dernier contrôle de l'API
-R-universe, la version distribuée restait 0.4.0.9018. Ne pas assimiler la
+R-universe, la version distribuée est **0.4.0.9025** depuis `ab6e594`, avec
+`n4m` R **1.0.21.9003**, statut source `success` et binaires Linux, macOS,
+Windows et WASM construits. Ce constat n'inclut pas 0.4.0.9026. Ne pas assimiler la
 fusion GitHub ni un contrôle Linux du tarball à une publication R-universe
 ou à une qualification CRAN multi-plateforme.
 
