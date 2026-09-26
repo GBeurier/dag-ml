@@ -46,9 +46,11 @@ L'archive de travail CRAN rassemble 86 sources vérifiées et les textes de
 formulaire, sans prétendre que la soumission CRAN est déjà admissible.
 La [PR Python #148](https://github.com/GBeurier/nirs4all/pull/148) et les PR
 Methods [#31](https://github.com/GBeurier/nirs4all-methods/pull/31) et
-[#33](https://github.com/GBeurier/nirs4all-methods/pull/33) sont fusionnées,
-CI vertes ; [Core #20](https://github.com/GBeurier/nirs4all-core/pull/20)
-est encore en qualification. R-universe servait toujours publiquement
+[#33](https://github.com/GBeurier/nirs4all-methods/pull/33) ainsi que
+[Core #20](https://github.com/GBeurier/nirs4all-core/pull/20) sont fusionnées,
+CI vertes. Core #20 qualifie la recette GroupSparsePLS JSON/YAML et le rejeu
+WASM des coefficients, pas l'import d'une archive entraînée R/Python.
+R-universe servait toujours publiquement
 `n4m` 1.0.21.9003 et `nirs4all` 0.4.0.9030 au dernier contrôle ; ne pas
 annoncer `9031` comme publié avant contrôle du dépôt et de son `RemoteSha`.
 
