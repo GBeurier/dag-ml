@@ -22,37 +22,48 @@ retirés dans cette étape. Les parties ci-dessous qui décrivent Core comme
 propriétaire du paquet R doivent être lues comme **état historique antérieur
 au transfert**, et non comme cible de publication.
 
-**État du lot du 26 septembre, vérifié localement mais pas encore publié en R.**
-La PR [R #30](https://github.com/GBeurier/nirs4all-r/pull/30) au commit
-`85e87d4` expose **16 régressions n4m pilotables localement** par le contrôleur
-de méthodes : 14 ont une recette affine commune Python/R/WASM ; DI-PLS et
-GroupSparsePLS restent des contrôleurs locaux R, sans recette de fit
-interlangage qualifiée. Le R exécute JSON/YAML, CV/OOF/refit DAG et les
-profils bornés de l'enveloppe entraînée v5. Les transferts R↔Python de MB-PLS
-ont été comparés à un oracle Methods hors apprentissage à `1e-10`. Le lot
-ajoute aussi XGBoost optionnel en régression/classification, DI-PLS à cohorte
-cible explicite, GroupSparsePLS avec affectation de groupes validée et un
-graphe composé `SPA → branches MSC/SNV → concat → SNV → PLS`. GroupSparsePLS
-applique un rétrécissement des coefficients **après** SIMPLS ; il ne revendique
-pas la méthode d'optimisation latente `sgPLS::gPLS`.
+**État courant du 26 septembre, publication R-universe partiellement validée.**
+Methods [#34](https://github.com/GBeurier/nirs4all-methods/pull/34) et
+[#35](https://github.com/GBeurier/nirs4all-methods/pull/35) sont fusionnées
+sur `main` `15e89789` : ABI C 2.10, `n4m` R 1.0.21.9005 et correctif du lien
+Windows `r_pipeline.o`. L'[API publique n4m](https://gbeurier.r-universe.dev/api/packages/n4m)
+donne ce même `RemoteSha` et cinq contrôles Windows `OK` (devel arm64/x86_64,
+oldrel x86_64, release arm64/x86_64). La [PR R #30](https://github.com/GBeurier/nirs4all-r/pull/30)
+est fusionnée sur `main` `962977fc` ; l'[API publique R](https://gbeurier.r-universe.dev/api/packages/nirs4all)
+sert désormais 0.4.0.9031 depuis ce `RemoteSha`. Ses contrôles source,
+Linux, Windows et WASM sont `OK`, mais les deux contrôles macOS arm64 sont
+`ERROR` sur un oracle d'ensemble : **la distribution multi-OS reste ouverte**.
+La [PR Python #149](https://github.com/GBeurier/nirs4all/pull/149) est encore
+ouverte et sa CI n'est pas verte (13 contrôles réussis, un job `tests` en
+échec au dernier relevé) ; ses résultats locaux ne valent pas intégration.
 
-Le tarball exact `nirs4all_0.4.0.9031.tar.gz` de `85e87d4`, SHA-256
-`0265d641384ce352f98dd934cdbe8fd22951804a0fc349818625c3fc44ae7193`,
-a passé `R CMD check --as-cran --no-manual` sous Linux/R 4.6 avec DAG strict,
-formats, Python n4m, torch et XGBoost activés : **0 erreur, 0 avertissement,
-1 note** liée à la version de développement. Il exige `n4m >= 1.0.21.9004`
-afin de refuser un ancien moteur où la pénalité GroupSparse était sans effet.
-L'archive de travail CRAN rassemble 86 sources vérifiées et les textes de
-formulaire, sans prétendre que la soumission CRAN est déjà admissible.
-La [PR Python #148](https://github.com/GBeurier/nirs4all/pull/148) et les PR
+Le tarball R v6 exact du commit source `a704fc87` (avant le merge sans
+changement source), SHA-256
+`ba058238ba0a0e111dc2ab437c380857fc5090d8f4ae69a603fc61a604462068`,
+a passé `R CMD check --as-cran --no-manual` sous Linux/R 4.6 avec tous les
+`Suggests` : **0 erreur, 1 avertissement CRAN incoming, 0 note**. Le tarball
+Methods exact de `15e89789`, SHA-256
+`d75abd803d2d9562856fe3938e4809c79171c7e97611b728cedaf298bd66c056`,
+passe le même contrôle avec 0 erreur, 0 avertissement et 2 notes de contexte.
+Le workbench CRAN local `nirs4all-r-cran-workbench-n4mp-v6-15e89789-a704fc87-2026-09-26.tar.gz`
+(hors dépôt DAG-ML) assemble 116 sources vérifiées, mais devra être rafraîchi
+après le correctif macOS ; ce n'est **ni une soumission ni une acceptation
+CRAN**. `n4m` reste une
+dépendance forte hors des dépôts CRAN/Bioconductor.
+
+Le lot R conserve les contrôleurs n4m, JSON/YAML, CV/OOF/refit DAG et les
+profils bornés des enveloppes entraînées, désormais avec N4MP v6 pour les
+chaînes linéaires qualifiées. Les transferts R↔Python de MB-PLS ont été
+comparés à un oracle Methods hors apprentissage à `1e-10`. DI-PLS utilise
+une cohorte cible explicite ; GroupSparsePLS valide l'affectation de groupes
+et rétrécit les coefficients **après** SIMPLS, sans revendiquer l'optimisation
+latente `sgPLS::gPLS`. La recette Python v6 et ses assertions de
+réentraînement restent soumises à la CI de #149. La [PR Python #148](https://github.com/GBeurier/nirs4all/pull/148),
 Methods [#31](https://github.com/GBeurier/nirs4all-methods/pull/31) et
-[#33](https://github.com/GBeurier/nirs4all-methods/pull/33) ainsi que
-[Core #20](https://github.com/GBeurier/nirs4all-core/pull/20) sont fusionnées,
-CI vertes. Core #20 qualifie la recette GroupSparsePLS JSON/YAML et le rejeu
-WASM des coefficients, pas l'import d'une archive entraînée R/Python.
-R-universe servait toujours publiquement
-`n4m` 1.0.21.9003 et `nirs4all` 0.4.0.9030 au dernier contrôle ; ne pas
-annoncer `9031` comme publié avant contrôle du dépôt et de son `RemoteSha`.
+[#33](https://github.com/GBeurier/nirs4all-methods/pull/33), ainsi que
+[Core #20](https://github.com/GBeurier/nirs4all-core/pull/20), sont fusionnées.
+Core #20 qualifie la recette GroupSparsePLS JSON/YAML et le rejeu WASM des
+coefficients, pas l'import d'une archive entraînée R/Python.
 
 Cette couverture n'est **pas** « 14 méthodes n4m utilisables au total » : le
 dispatcher R n4m expose 37 noms de fit/production, dont certains ne sont pas
@@ -68,10 +79,11 @@ Un pont ABI DAG-ML V2/V3 assemblant des payloads natifs signés a
 interlangage n'en découle encore**. Les jalons détaillés suivants conservent
 leur chronologie et ne doivent pas remplacer cet état courant.
 
-### Inventaire des interfaces n4m (lot ABI 2.10.0 fusionné, produit R en validation)
+### Inventaire des interfaces n4m (ABI 2.10.0 fusionné, distribution R en validation)
 
 Le lot Methods fusionné sur `main` par [PR #34](https://github.com/GBeurier/nirs4all-methods/pull/34)
-(`79a39d47`, ABI C 2.10.0, paquet R `1.0.21.9005`) factorise le chemin
+et corrigé par [#35](https://github.com/GBeurier/nirs4all-methods/pull/35)
+(`15e89789`, ABI C 2.10.0, paquet R `1.0.21.9005`) factorise le chemin
 prédictif et la sérialisation des
 prétraitements **dans C++**. Les façades
 sklearn, S3 et JS/WASM adaptent les formes d'appel et la gestion de vie ; elles
@@ -79,10 +91,10 @@ ne refont pas la prédiction affine. Les comptes ci-dessous décrivent des
 **interfaces qui se recouvrent**, et ne doivent pas être additionnés pour
 obtenir un nombre de méthodes distinctes.
 
-La première construction publique de ce lot a réussi sous Linux mais échoué
-sur Windows : `Makevars.win` omettait `r_pipeline.o`. Le correctif
-[Methods #35](https://github.com/GBeurier/nirs4all-methods/pull/35)
-(`15e89789`) est fusionné ; la reconstruction multi-OS est encore en cours.
+La première construction publique a échoué sous Windows car `Makevars.win`
+omettait `r_pipeline.o`. Après #35, le paquet R-universe n4m 9005 publie
+`RemoteSha=15e89789` et ses cinq jobs Windows sont `OK`. Cela ne convertit
+pas les artefacts R spécifiques à l'hôte en états portables.
 
 | Contrat | Couverture vérifiée | Limite importante |
 | --- | ---: | --- |
@@ -152,20 +164,22 @@ comptes de parité numérique ou de portabilité entraînée.
 Les 16 affines qualifiées sont Ridge, RidgePLS, RobustPLS, CPPLS,
 SparseSIMPLS, ECR, ContinuumRegression, MIRPLS, FusedSparsePLS, BaggingPLS,
 BoostingPLS, RandomSubspacePLS, N-PLS, MB-PLS, DI-PLS et GroupSparsePLS.
-La façade R candidate des prétraitements expose le même pipeline C pour ses
+La façade R des prétraitements expose le même pipeline C pour ses
 15 codes opérationnels et refuse explicitement les quatre autres. Son état
 ajusté a maintenant un export/import N4MP versionné ; les 15 opérateurs et des
 chaînes mixtes passent des roundtrips natifs, et Python/R échangent les mêmes
 octets sur des jeux tenus à l'écart. Cela qualifie la **brique linéaire de
-prétraitement**, pas encore tous les pipelines entraînés du produit. Un
-Le candidat [nirs4all R #30](https://github.com/GBeurier/nirs4all-r/pull/30)
-(`a704fc87`, tarball exact contrôlé à 0 erreur, 1 avertissement CRAN incoming,
-0 note) ajoute une enveloppe v6 N4MP+N4MM sur des chaînes
+prétraitement**, pas encore tous les pipelines entraînés du produit.
+La [PR nirs4all R #30](https://github.com/GBeurier/nirs4all-r/pull/30),
+fusionnée sur `main` `962977fc` (source `a704fc87`, tarball exact contrôlé à
+0 erreur, 1 avertissement CRAN incoming, 0 note), ajoute une enveloppe v6
+N4MP+N4MM sur des chaînes
 linéaires sémantiquement qualifiées (SNV par défaut, MSC, detrend et SavGol
 borné), avec contrôle du plan C natif contre la recette au chargement ; la
 lecture [produit Python #149](https://github.com/GBeurier/nirs4all/pull/149)
-passe des tests bidirectionnels R↔Python. Les contrôles de publication du produit
-restent en cours. Les anciens
+possède des tests bidirectionnels R↔Python locaux ; la PR reste ouverte avec
+un échec CI. Les contrôles de publication R restent incomplets à cause
+de l'oracle d'ensemble macOS. Les anciens
 profils entraînés bornés restent inchangés. En particulier,
 le `EMSC` du pipeline C (référence, intercept et polynômes sur l'axe normalisé)
 ne reproduit pas l'EMSC historique autonome (sans intercept, puissances de
@@ -456,10 +470,10 @@ Python et les autres bindings.
 |---|---|---|---|
 | `dagml` R 0.3.26 | Intermédiaire | Registre loss/metric, phase planifiée, HPO, CV→refit→predict, refit initial et replay de bundle via CLI/adaptateur. | Entrées/sorties par fichiers JSON/processus, pas de frontend R ni de contrôleur Methods complet sur données réelles. |
 | `dagmldata` R 0.2.11 | Réel mais bas niveau | Provider en mémoire, materialize/view/release, identités, cibles, features, collation. | JSON-in/JSON-out ; pas encore intégré au parcours public `nirs4all` R ni optimisé comme chemin de matrices volumineuses. |
-| `n4m` R 1.0.21.9003 (source locale de validation) | Substantiel | PLS et variantes, sélection, diagnostics, SNV, SG, Kennard–Stone, formule/S3 et prédicteur N4MM affine. La façade générique expose aussi des MethodResult et sélecteurs spécialisés. | Un accès bas niveau ne qualifie pas chaque méthode dans les recettes, le CV, les états entraînés et le replay ; N4MOPT et couverture complète du catalogue restent ouverts. |
+| `n4m` R 1.0.21.9005 (Methods ABI 2.10, `main` `15e89789`) | Publié sur R-universe ; 5/5 jobs Windows `OK` | PLS et variantes, sélection, diagnostics, formule/S3, conversion affine N4MM et 15 opérateurs de prétraitement avec état N4MP natif. | Un accès bas niveau ne qualifie pas chaque méthode en recette, CV et replay ; les états R arbitraires et le catalogue complet ne sont pas portables. |
 | `nirs4allformats` R 0.2.10 (branche `fix/r-flat-dataset-identity`) | Avancé | Lecture native, probe, records, dataset, parcours, bytes et sidecars. `nirs4all-r` convertit son dataset homogène en matrice/target/IDs/axe pour fit local et campagne DAG native. La branche ajoute au dataset plat l'axe `kind`, la provenance par enregistrement et le refus des mélanges d'unités/types. | Ce chemin passe par un sidecar RDS et un adaptateur process, pas encore par des data bindings/provider DAG-ML natifs. La branche s'installe depuis un checkout propre avec Cargo ; le tarball CRAN autoportant reste à revalider. |
 | `nirs4allio` R 0.2.0 | Partiel | `nio_to_spec`, `nio_infer`, `nio_load`, validation et résumé assemblé. | `nio_load()` retourne une synthèse structurelle sans les matrices ; l'émission `dag-ml-data` reste côté Rust/CLI. |
-| `nirs4all` R dans `nirs4all-r` | Dernière publication R-universe vérifiée : 0.4.0.9030 depuis `00ad6d6` ; 0.4.0.9031 reste candidat local | Régression et classification n4m/PLS, `lm`, `ranger`, `glmnet`, `parsnip`, `mlr3`, `xgboost` optionnel et `torch` CPU selon le contrôleur ; données matrices et `nirs4all-formats` ; CV/OOF/refit DAG-ML avec groupes, variantes et branches bornées ; recettes JSON/YAML n4m et alias R explicites ; enveloppes N4MM v1 PLS, v2 sparse PLS-DA, v3 PLS+SPA, v4 PLS+sélecteurs natifs et v5 affine déclaré avec réentraînement R↔Python sur les profils qualifiés. Le candidat ajoute quatorze régressions affines et les 25 sélecteurs natifs comme étapes R train-only et recettes communes Python/R/WASM bornées. | Pas encore d'Archive V2/V3 DAG-ML interlangage générale ni de graphe DAG arbitraire. Le vrai binaire WASM a passé les oracles PLS et MB-PLS, pas toutes les combinaisons ; les modèles ML/DL R restent des sidecars RDS. |
+| `nirs4all` R dans `nirs4all-r` | 0.4.0.9031 publié sur R-universe depuis `main` `962977fc` ; Linux/Windows/WASM `OK`, deux checks macOS arm64 `ERROR` | Régression/classification et contrôleurs R optionnels, CV/OOF/refit DAG-ML, recettes JSON/YAML, enveloppes entraînées bornées N4MM v1–v5 et N4MP+N4MM v6 pour les chaînes linéaires qualifiées. | Oracle d'ensemble macOS à corriger ; Python #149 ouverte avec un job CI en échec. Pas d'Archive V2/V3 DAG-ML interlangage générale ni de graphe arbitraire ; les modèles ML/DL R restent des sidecars RDS. |
 | Adaptateurs `prospectr`/`mdatools` | Conformance | Quelques transforms, PCA, PLS et PLS-DA via protocole processus. | Données synthétiques dans les smokes, couverture réduite, persistance et états ajustés incomplets. |
 
 ### 3.2 Écart entre les bindings DAG-ML Python et R
@@ -1208,16 +1222,18 @@ Les niveaux 3 à 6 (poids torch, alias sklearn↔R, ONNX, nœuds multilangages)
 restent des descriptions, sans promesse de conversion binaire.
 
 Le paquet public R s'appelle `nirs4all` et son dépôt est `nirs4all-r` ;
-`nirs4all-core` n'en publie plus un doublon. L'API R-universe confirme la
-version **0.4.0.9030** depuis `00ad6d669d609f44f8d188c4696ef5f5826cfece`,
-avec `n4m` R **1.0.21.9003** et statut source `success`. Le run public
+`nirs4all-core` n'en publie plus un doublon. Au contrôle public du
+26 septembre, R-universe sert **0.4.0.9031** depuis `962977fc` et `n4m`
+**1.0.21.9005** depuis `15e89789`. Leurs sources sont publiées ; les cinq
+jobs Windows n4m sont `OK`. Pour `nirs4all`, source, Linux, Windows et WASM
+sont `OK`, mais les deux checks macOS arm64 sont `ERROR` sur l'oracle
+d'ensemble : ne pas annoncer la parité de distribution multi-OS. Le run
 [36197321555](https://github.com/r-universe/gbeurier/actions/runs/36197321555)
-a construit la source et huit binaires Linux/Windows/macOS/WASM ; une
-installation source dans une bibliothèque R Linux vierge a passé les prédictions
-PLS/SNV et sparse PLS-DA/SNV ainsi que le réimport de son enveloppe entraînée.
-La publication R-universe ne qualifie ni l'Archive V2/V3 interlangage ni la
-soumission CRAN : `n4m` est hors CRAN et le tarball local exact n'a pas passé
-les contrôles R-devel Windows/macOS requis pour cette soumission.
+et son installation Linux de 0.4.0.9030 constituent seulement un jalon
+historique. La publication R-universe ne qualifie ni l'Archive V2/V3
+interlangage ni la soumission CRAN : `n4m` reste hors CRAN, le produit R a
+un avertissement incoming et le workbench local de 116 sources doit être
+rafraîchi après le correctif macOS.
 
 ## 12. Sources de l'audit
 
