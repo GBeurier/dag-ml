@@ -286,6 +286,15 @@ notamment :
 - diagnostics, monitoring, PRESS approximé et règle one-SE ;
 - AOM/POP, SNV, Savitzky–Golay et Kennard–Stone.
 
+Un audit local plus récent du dispatcher C/R distingue **64 noms** réellement
+dispatchés : 37 productions de modèles, 25 sélecteurs de variables et deux
+diagnostics. Ce compte ne désigne ni 64 prédicteurs sur données inédites ni
+64 recettes portables. Le commentaire du dispatcher qui annonce 24 sélecteurs
+est en retard sur ses branches C ; les tests du candidat R parcourent les 25.
+Les wrappers Python de sélection ne partagent pas tous les mêmes défauts que
+le dispatcher C ; une future recette `n4m.Selector` doit appeler celui-ci
+directement et comparer les indices classés sur les mêmes données.
+
 Cette liste ne prouve pas que tout le catalogue n4m est utilisable dans un DAG
 R. Le catalogue couvre aussi preprocessing, augmentation, splitters, filters,
 utilities, models, selection, diagnostics et AOM/POP. Certains appels passent
