@@ -251,7 +251,7 @@
     },
     {
       "path": "docs/contracts/abi_snapshot.v1.json",
-      "sha256": "daabae06d5000f00fdd593e5b774e762bcf85c74124e051eb8e6b98b527a13d6",
+      "sha256": "5a79f375b4fef6d24da69da30bc4b35e4739530eced00da3499e54f3ca5697fb",
       "kind": "c_abi_snapshot"
     },
     {
@@ -599,5 +599,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "0fdd2977768d022412273957fdc6601f5c95fffa84bf520eed9590c9d333db55"
+  "pack_checksum": "e38cf656a84c220d63da28c76be9b6fcbb7a7e32203b6bd53c4768187e37b5ba"
 }
