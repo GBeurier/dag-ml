@@ -52,28 +52,35 @@ observations hors entraînement. Le sélecteur supervisé `n4m.SPA` s'ajoute aux
 recettes JSON/YAML R et Python : son état est ajusté sur le train uniquement,
 la projection conserve l'ordre spectral d'entrée dans les deux langages, et
 les indices, matrices transformées, prédictions PLS et OOF fold par fold ont
-été comparés. Le tarball R **local** 0.4.0.9031 (SHA-256
-`636dd7b45eae3fb1f318b576cdb5b19516e6eca8d527ccbbed47d3ca56610b57`)
-a passé `R CMD check --as-cran --no-manual` sur Linux/R 4.6.0 avec statut
-`OK` ; seul le contrôle *CRAN incoming* a été désactivé faute d'accès réseau.
+été comparés. Le candidat ajoute aussi `nirs4all_n4m_selector()` pour les 25
+sélecteurs du dispatcher Methods : fits natifs, état RDS et OOF/REFIT DAG
+ont été testés localement, sans constituer une parité de recette Python/WASM.
+L'enveloppe entraînée v3, bornée à PLS et SPA externe, transfère les indices
+natifs classés en base zéro ; SPA direct, SPA→MSC et branche SPA+SNV passent
+R→Python et Python→R pour prédiction et réentraînement en processus distincts.
+Le tarball R **local** 0.4.0.9031 (SHA-256
+`c34c4abca06b065557b69131b0646642f2d838c922a9d3c8685118bafccdae34`)
+a passé `R CMD check --as-cran --no-manual` sur Linux/R 4.6.0 : zéro erreur,
+zéro avertissement et deux notes (version de développement, horloge distante
+non vérifiable ; seule la vérification *incoming remote* était désactivée).
 La version publique R-universe reste 0.4.0.9030. Cette validation n'étend
 pas à elle seule le niveau 1/2 à WASM ni à tout le catalogue Methods.
 
-Un correctif Core/WASM **local, non publié** sauvegarde l'état n4m MSC appris
-sur le train et le restaure pour PREDICT au lieu de réajuster sur le nouveau
-lot. Les tests JS avec moteur simulé et les types passent ; l'artefact
-Methods/WASM disponible localement est antérieur aux sources actuelles, donc
-aucune parité numérique WASM n'est attestée. Le parseur Core/WASM n'accepte
-encore aucun des huit modèles affines ni SPA, même si Methods/WASM expose les
-premiers à bas niveau. Les défauts numériques et solveurs de certaines têtes
-restent à harmoniser avant toute revendication trilingue.
+Des correctifs Core/WASM **locaux, non publiés** sauvegardent l'état MSC appris
+sur le train et le restaurent pour PREDICT, et acceptent les huit alias affines
+ainsi que SPA en recette/rejeu. Methods JS lit les indices SPA `int64` sans
+réduction de précision et son shim harmonise les défauts des huit régressions.
+Les tests JS avec moteur simulé, les oracles C natifs pour les régressions et
+les types passent ; l'artefact Methods/WASM disponible localement est antérieur
+aux sources actuelles et `emcc` manque. **Aucune parité numérique WASM n'est
+donc attestée** pour ces nouveaux profils.
 
 ### Niveaux de portabilité demandés et priorité de cette livraison
 
 | Niveau | Contrat visé | Statut / gate nécessaire |
 |---|---|---|
 | 1 — recette native | Le même JSON/YAML désigne des opérations n4m et des primitives DAG-ML/Data par identifiants sémantiques ; chaque hôte les résout vers son binding, avec refus explicite des nœuds inconnus. | **Partiel.** R importe/exporte les profils n4m bornés : SNV/SG/PLS, plusieurs prétraitements dont MSC/EMSC, branches `branch`→`merge: features`, variantes `_or_`/`_cartesian_` et `n4m.SparsePLSDA`. Les comparaisons R↔Python portent sur les profils exécutés explicitement ; aucun test ne qualifie le catalogue n4m entier ni tous les nœuds dans Core/JS/WASM. Les alias `r.*` restent propres à R, sans traduction sklearn. |
-| 2 — état natif entraîné | Une archive de pipeline n4m/DAG-ML restitue son état pour PREDICT et conserve une recette/lineage permettant un nouveau FIT dans un autre hôte. | **Partiel.** R↔Python échange une enveloppe n4m bornée : v1 PLS et v2 sparse PLS-DA, avec N4MM, états MSC/EMSC, prédiction et nouveau fit ; les profils PLS embarqué SNV→SG et branches MSC/EMSC sont aussi qualifiés. Les huit régressions affines MethodResult possèdent un N4MM interlangage mais pas une enveloppe entraînée générale. Le descripteur affine n'atteste pas méthode ni hyperparamètres. RDS et sidecars DAG ne sont pas interlangages. L'ABI C DAG-ML exporte un package signé, mais le produit R doit encore raccorder l'exécution, le transport Methods et la recharge ; identités, folds, OOF et lineage restent hors de l'enveloppe n4m. |
+| 2 — état natif entraîné | Une archive de pipeline n4m/DAG-ML restitue son état pour PREDICT et conserve une recette/lineage permettant un nouveau FIT dans un autre hôte. | **Partiel.** R↔Python échange une enveloppe n4m bornée : v1 PLS, v2 sparse PLS-DA et v3 PLS+SPA, avec N4MM, états MSC/EMSC/sélection SPA, prédiction et nouveau fit sur les profils qualifiés. Les huit régressions affines MethodResult possèdent un N4MM interlangage mais pas une enveloppe entraînée générale. Le descripteur affine n'atteste pas méthode ni hyperparamètres. RDS et sidecars DAG ne sont pas interlangages. L'ABI C DAG-ML exporte un package signé, mais le produit R doit encore raccorder l'exécution, le transport Methods et la recharge ; identités, folds, OOF et lineage restent hors de l'enveloppe n4m. |
 | 3 — poids PyTorch | Inférence R à partir de poids entraînés en Python, sous architecture, dtypes et opérateurs explicitement qualifiés ; WASM à étudier. | Différé, sauf chemin déjà vérifiable. Un RDS `torch` R n'est pas ce contrat. |
 | 4 — alias de recettes ML | Traduire par exemple sklearn Random Forest en `ranger` pour **réentraîner** depuis JSON/YAML, avec différences sémantiques enregistrées ; aucun transfert du binaire appris. | Différé ; dictionnaire limité et versionné possible ensuite. |
 | 5 — ONNX | Inférence commune pour les opérateurs et runtimes effectivement couverts, sans supposer la reprise d'entraînement. | Description seulement à ce stade. |
@@ -233,7 +240,7 @@ Python et les autres bindings.
 | `n4m` R 1.0.21.9003 (source locale de validation) | Substantiel | PLS et variantes, sélection, diagnostics, SNV, SG, Kennard–Stone, formule/S3 et prédicteur N4MM affine. La façade générique expose aussi des MethodResult et sélecteurs spécialisés. | Un accès bas niveau ne qualifie pas chaque méthode dans les recettes, le CV, les états entraînés et le replay ; N4MOPT et couverture complète du catalogue restent ouverts. |
 | `nirs4allformats` R 0.2.10 (branche `fix/r-flat-dataset-identity`) | Avancé | Lecture native, probe, records, dataset, parcours, bytes et sidecars. `nirs4all-r` convertit son dataset homogène en matrice/target/IDs/axe pour fit local et campagne DAG native. La branche ajoute au dataset plat l'axe `kind`, la provenance par enregistrement et le refus des mélanges d'unités/types. | Ce chemin passe par un sidecar RDS et un adaptateur process, pas encore par des data bindings/provider DAG-ML natifs. La branche s'installe depuis un checkout propre avec Cargo ; le tarball CRAN autoportant reste à revalider. |
 | `nirs4allio` R 0.2.0 | Partiel | `nio_to_spec`, `nio_infer`, `nio_load`, validation et résumé assemblé. | `nio_load()` retourne une synthèse structurelle sans les matrices ; l'émission `dag-ml-data` reste côté Rust/CLI. |
-| `nirs4all` R dans `nirs4all-r` | R-universe publie 0.4.0.9030 depuis `00ad6d6` ; 0.4.0.9031 reste candidat local | Régression et classification n4m/PLS, `lm`, `ranger`, `glmnet`, `parsnip`, `mlr3`, `torch` CPU selon le contrôleur ; données matrices et `nirs4all-formats` ; CV/OOF/refit DAG-ML avec groupes, variantes et branches bornées ; recettes JSON/YAML n4m et alias R explicites ; enveloppes N4MM v1 PLS et v2 sparse PLS-DA avec réentraînement R↔Python sur les profils qualifiés. Le candidat ajoute huit régressions affines et SPA train-only qualifié R↔Python. | Pas encore d'Archive V2/V3 interlangage générale, de tous les nœuds n4m ni de graphe DAG arbitraire. Les nouveaux alias ne sont pas qualifiés dans Core/WASM ; les modèles ML/DL R restent des sidecars RDS. |
+| `nirs4all` R dans `nirs4all-r` | R-universe publie 0.4.0.9030 depuis `00ad6d6` ; 0.4.0.9031 reste candidat local | Régression et classification n4m/PLS, `lm`, `ranger`, `glmnet`, `parsnip`, `mlr3`, `torch` CPU selon le contrôleur ; données matrices et `nirs4all-formats` ; CV/OOF/refit DAG-ML avec groupes, variantes et branches bornées ; recettes JSON/YAML n4m et alias R explicites ; enveloppes N4MM v1 PLS, v2 sparse PLS-DA et v3 PLS+SPA avec réentraînement R↔Python sur les profils qualifiés. Le candidat ajoute huit régressions affines et les 25 sélecteurs natifs comme étapes R train-only. | Pas encore d'Archive V2/V3 interlangage générale, de recette commune pour les 25 sélecteurs, ni de graphe DAG arbitraire. Les nouveaux alias ont un parseur WASM local mais ne sont pas qualifiés numériquement dans un binaire WASM récent ; les modèles ML/DL R restent des sidecars RDS. |
 | Adaptateurs `prospectr`/`mdatools` | Conformance | Quelques transforms, PCA, PLS et PLS-DA via protocole processus. | Données synthétiques dans les smokes, couverture réduite, persistance et états ajustés incomplets. |
 
 ### 3.2 Écart entre les bindings DAG-ML Python et R
