@@ -22,37 +22,46 @@ retirés dans cette étape. Les parties ci-dessous qui décrivent Core comme
 propriétaire du paquet R doivent être lues comme **état historique antérieur
 au transfert**, et non comme cible de publication.
 
-**État courant de la candidate locale du 26 septembre (non publiée).**
-`nirs4all-r` ajoute MB-PLS avec blocs déclarés aux treize régressions affines
-déjà qualifiées : **14 alias affines** ont désormais des recettes communes
-Python/R/WASM. Le R exécute JSON et YAML, CV/OOF/refit DAG et l'enveloppe
-entraînée v5 ; un artefact réellement exporté en R prédit et réentraîne en
-Python, et l'export Python a été importé/réentraîné en R. Les trois prédictions
-MB-PLS hors entraînement sont identiques à l'oracle Methods à `1e-10`.
-`nirs4all-methods` a été compilé de nouveau avec Emscripten : la suite JS
-passe sur le vrai binaire, y compris MB-PLS à blocs multiples ; la façade
-Core/WASM rejoue cette recette sur le même oracle et passe aussi l'oracle PLS
-Python existant. Les suites locales ciblées donnent 663 tests Python Methods
-réussis (6 ignorés) et 112 tests de portabilité Python `nirs4all` réussis.
-Le produit R ajoute aussi un contrôleur XGBoost optionnel régression et
-classification, testé avec le paquet XGBoost réel, RDS et DAG CV/OOF/refit ;
-le tarball exact de la branche intégrée (SHA-256
-`f90f56cc4165d73da0a01edbd1789743dfa30b3dac9aac76bc5f57184c948802`)
-a passé `R CMD check --as-cran --no-manual` sous Linux/R 4.6.0 : 0 erreur,
-0 avertissement, 1 note de version de développement ; seuls les contrôles
-distants *incoming remote* du sandbox étaient désactivés. R-universe sert
-encore publiquement 0.4.0.9030 au dernier contrôle ; aucune candidate 9031
-n'est annoncée comme publiée.
+**État du lot du 26 septembre, vérifié localement mais pas encore publié en R.**
+La PR [R #30](https://github.com/GBeurier/nirs4all-r/pull/30) au commit
+`85e87d4` expose **16 régressions n4m pilotables localement** par le contrôleur
+de méthodes : 14 ont une recette affine commune Python/R/WASM ; DI-PLS et
+GroupSparsePLS restent des contrôleurs locaux R, sans recette de fit
+interlangage qualifiée. Le R exécute JSON/YAML, CV/OOF/refit DAG et les
+profils bornés de l'enveloppe entraînée v5. Les transferts R↔Python de MB-PLS
+ont été comparés à un oracle Methods hors apprentissage à `1e-10`. Le lot
+ajoute aussi XGBoost optionnel en régression/classification, DI-PLS à cohorte
+cible explicite, GroupSparsePLS avec affectation de groupes validée et un
+graphe composé `SPA → branches MSC/SNV → concat → SNV → PLS`. GroupSparsePLS
+applique un rétrécissement des coefficients **après** SIMPLS ; il ne revendique
+pas la méthode d'optimisation latente `sgPLS::gPLS`.
+
+Le tarball exact `nirs4all_0.4.0.9031.tar.gz` de `85e87d4`, SHA-256
+`0265d641384ce352f98dd934cdbe8fd22951804a0fc349818625c3fc44ae7193`,
+a passé `R CMD check --as-cran --no-manual` sous Linux/R 4.6 avec DAG strict,
+formats, Python n4m, torch et XGBoost activés : **0 erreur, 0 avertissement,
+1 note** liée à la version de développement. Il exige `n4m >= 1.0.21.9004`
+afin de refuser un ancien moteur où la pénalité GroupSparse était sans effet.
+L'archive de travail CRAN rassemble 86 sources vérifiées et les textes de
+formulaire, sans prétendre que la soumission CRAN est déjà admissible.
+La [PR Python #148](https://github.com/GBeurier/nirs4all/pull/148) et les PR
+Methods [#31](https://github.com/GBeurier/nirs4all-methods/pull/31) et
+[#33](https://github.com/GBeurier/nirs4all-methods/pull/33) sont fusionnées,
+CI vertes ; [Core #20](https://github.com/GBeurier/nirs4all-core/pull/20)
+est encore en qualification. R-universe servait toujours publiquement
+`n4m` 1.0.21.9003 et `nirs4all` 0.4.0.9030 au dernier contrôle ; ne pas
+annoncer `9031` comme publié avant contrôle du dépôt et de son `RemoteSha`.
 
 Cette couverture n'est **pas** « 14 méthodes n4m utilisables au total » : le
 dispatcher R n4m expose 37 noms de fit/production, dont certains ne sont pas
 des prédicteurs X→y réutilisables, et les bindings Python fournissent une
 surface locale sklearn/TransformerMixin plus large. Les 14 mesurent le
 contrat strict de recette commune et de replay affine qualifié, non la
-capacité locale de n4m. Sept branches restantes à état potentiellement
-prédictif nécessitent encore un contrat spécialisé ou des entrées supplémentaires
-(DI-PLS, WeightedPLS, O2PLS, GroupSparsePLS, MissingAwareNIPALS, PLS-GLM,
-PLS-Cox). Un pont ABI DAG-ML V2/V3 assemblant des payloads natifs signés a
+capacité locale de n4m. Sept branches à état potentiellement prédictif
+nécessitent encore un contrat de **portabilité** spécialisé ou des entrées
+supplémentaires (DI-PLS, WeightedPLS, O2PLS, GroupSparsePLS,
+MissingAwareNIPALS, PLS-GLM, PLS-Cox), même lorsque leur fit local existe.
+Un pont ABI DAG-ML V2/V3 assemblant des payloads natifs signés a
 été validé localement, mais **aucun adaptateur R ni roundtrip ZIP Core V2/V3
 interlangage n'en découle encore**. Les jalons détaillés suivants conservent
 leur chronologie et ne doivent pas remplacer cet état courant.
@@ -80,8 +89,8 @@ installation source et prédiction vérifiées dans une bibliothèque R neuve.
 Cette preuve de distribution ne vaut pas contrôle CRAN multi-OS du tarball
 local exact.
 
-**Jalon local du 26 septembre, non publié (candidat R 0.4.0.9031).** Les PR
-Python #148 et R #30 restent ouvertes : huit recettes de régression affine
+**Jalon antérieur du 26 septembre (candidat R 0.4.0.9031).** À ce stade,
+les PR Python #148 et R #30 étaient encore ouvertes : huit recettes de régression affine
 `n4m.{Ridge,RidgePLS,RobustPLS,CPPLS,SparseSIMPLS,ECR,ContinuumRegression,MIRPLS}`
 sont exécutées dans les deux hôtes et comparées à un oracle n4m sur des
 observations hors entraînement. Le sélecteur supervisé `n4m.SPA` s'ajoute aux
@@ -100,7 +109,7 @@ Cela ne qualifie pas l'exécution WASM réelle.
 L'enveloppe entraînée v3, bornée à PLS et SPA externe, transfère les indices
 natifs classés en base zéro ; SPA direct, SPA→MSC et branche SPA+SNV passent
 R→Python et Python→R pour prédiction et réentraînement en processus distincts.
-Le tarball R **local final de ce lot** 0.4.0.9031 (SHA-256
+Le tarball R **local de ce sous-lot historique** 0.4.0.9031 (SHA-256
 `85853d8ab8a4c4c31cb26139afae33d0bde414a0983dec3efa5a446c3ad9032d`)
 a passé `R CMD check --as-cran --no-manual` sur Linux/R 4.6.0 : zéro erreur,
 zéro avertissement et une note sur la version de développement ; les
