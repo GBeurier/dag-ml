@@ -11,12 +11,12 @@
     },
     {
       "path": "crates/dag-ml-capi/include/dag_ml.h",
-      "sha256": "c55afaee59d8d3761d2c37b6a517b027e0e3901a5cb4f913edf8967f5ee4255c",
+      "sha256": "9330e42c97d193b940d021b7a82a11d5a0800c8cededd758966582872395f181",
       "kind": "c_abi_header"
     },
     {
       "path": "crates/dag-ml-capi/src/lib.rs",
-      "sha256": "76642bd04683f0a738fba01a1b341d72bd68496a64a185bee8318c5102595e2a",
+      "sha256": "57cadbd6b216afd48ea994d9eccc1c50c9af59269b3daf691bf8d872ff5e847f",
       "kind": "c_training_binding"
     },
     {
@@ -186,7 +186,7 @@
     },
     {
       "path": "crates/dag-ml-core/tests/training_runtime_operation.rs",
-      "sha256": "49b7ccf175847c7cac09d38f72ecf22913215330eae2598e45a0c4bd21ca9374",
+      "sha256": "f9e1e5ef5a00ec0ccbbc3d64775a09d07ea8858a1db6635a84c0de6006803091",
       "kind": "native_integration_test"
     },
     {
@@ -599,5 +599,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "3b2d2b4b0597a8477994e68f325055f8a4e29e5b437a7754515a4cf36e45cddf"
+  "pack_checksum": "226f2d1207f7232a0b65179c6e49f7629d38fd12cfbdf257e6dabfc4deb4df15"
 }

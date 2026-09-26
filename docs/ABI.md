@@ -147,6 +147,15 @@ status code before parsing a payload.
 The vtables are intentionally small in this scaffold. They establish shape,
 ownership and naming before full execution is implemented.
 
+`dagml_archive_v2_native_portable_payloads_json` and
+`dagml_archive_v3_native_refit_payloads_json` expose the existing strict
+DAG-ML archive-member builders to C ABI hosts. They accept complete signed
+DAG-ML contracts and return JSON containing `manifest` plus `members`, where
+each member is an array of raw bytes. The host must pass those exact bytes to
+the nirs4all-core archive writer; these calls perform no ZIP IO, artifact
+conversion, replay, or training. A Package V2 built from host-sidecar artifacts
+is refused by the V2 builder. V3 requires a real target-bound refit package.
+
 `DagMlStatusCode` is a fixed `uint32_t` ABI value rather than a C/Rust enum
 boundary type. Unknown host status codes are treated as runtime validation
 errors instead of being decoded as Rust enum discriminants.

@@ -6,6 +6,7 @@ use std::slice;
 use std::sync::Mutex;
 
 use dag_ml_core::{
+    build_archive_v2_native_portable_payloads, build_archive_v3_native_refit_payloads,
     build_execution_plan, build_openlineage_run_event, build_research_provenance_export,
     compile_pipeline_dsl, compile_pipeline_dsl_with_generation,
     compile_pipeline_dsl_with_generation_and_controller_registry, parse_pipeline_dsl_json,
@@ -41,9 +42,10 @@ use dag_ml_core::{
 use dag_ml_core::{
     execute_attached_training_replay, execute_training, parse_typed_json,
     AttachedTrainingReplayInput, BundleId, DataBinding, EnvelopeAttestedRuntimeDataProvider,
-    InitialFullRefitPackage, PredictCohortConstructionRequest, SampleRelationSet,
-    StackingFoldSelectionRequest, StackingProducerSelectionRequest, TrainingExecutionInput,
-    TrainingInfluenceManifest, TrainingOutcome, TrainingReplayRequest, TrainingRequest,
+    InitialFullRefitPackage, PortableRefitPackageV3, PredictCohortConstructionRequest,
+    SampleRelationSet, StackingFoldSelectionRequest, StackingProducerSelectionRequest,
+    TrainingExecutionInput, TrainingInfluenceManifest, TrainingOutcome, TrainingReplayRequest,
+    TrainingRequest,
 };
 use serde::{de::DeserializeOwned, Serialize};
 
@@ -1960,6 +1962,104 @@ pub unsafe extern "C" fn dagml_select_portable_output_json(
     };
     match package.select_output(&binding_id) {
         Ok(selected) => write_owned_json(out_json, error_out, &selected),
+        Err(error) => validation_error(error_out, error),
+    }
+}
+
+/// Assemble the exact DAG-ML Archive V2 manifest and members for a Core writer.
+/// The JSON result has `manifest` and `members` keys; member byte vectors are
+/// JSON arrays, matching the Python binding. This function performs no ZIP IO.
+///
+/// # Safety
+/// Input pointers address their declared lengths. Release output with
+/// `dagml_owned_bytes_free` and errors with `dagml_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_archive_v2_native_portable_payloads_json(
+    archive_id: DagMlBytesView,
+    outcome_ptr: *const u8,
+    outcome_len: usize,
+    package_ptr: *const u8,
+    package_len: usize,
+    out_json: *mut DagMlOwnedBytes,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    clear_error(error_out);
+    clear_owned_bytes(out_json);
+    let archive_id = match parse_utf8_view(archive_id, error_out, "archive id") {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    let outcome = match parse_external_contract_ptr(
+        outcome_ptr,
+        outcome_len,
+        error_out,
+        "training outcome",
+        TrainingOutcome::from_json,
+    ) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    let package = match parse_external_contract_ptr(
+        package_ptr,
+        package_len,
+        error_out,
+        "portable predictor package",
+        PortablePredictorPackage::from_json,
+    ) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    match build_archive_v2_native_portable_payloads(archive_id, &outcome, &package) {
+        Ok(payloads) => write_owned_json(
+            out_json,
+            error_out,
+            &serde_json::json!({
+                "manifest": payloads.manifest,
+                "members": payloads.members,
+            }),
+        ),
+        Err(error) => validation_error(error_out, error),
+    }
+}
+
+/// Assemble the exact DAG-ML Archive V3 full-refit manifest and members.
+///
+/// # Safety
+/// Input pointers address their declared lengths. Release output with
+/// `dagml_owned_bytes_free` and errors with `dagml_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn dagml_archive_v3_native_refit_payloads_json(
+    archive_id: DagMlBytesView,
+    package_ptr: *const u8,
+    package_len: usize,
+    out_json: *mut DagMlOwnedBytes,
+    error_out: *mut DagMlString,
+) -> DagMlStatusCode {
+    clear_error(error_out);
+    clear_owned_bytes(out_json);
+    let archive_id = match parse_utf8_view(archive_id, error_out, "archive id") {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    let package = match parse_external_contract_ptr(
+        package_ptr,
+        package_len,
+        error_out,
+        "portable refit package V3",
+        PortableRefitPackageV3::from_json,
+    ) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    match build_archive_v3_native_refit_payloads(archive_id, &package) {
+        Ok(payloads) => write_owned_json(
+            out_json,
+            error_out,
+            &serde_json::json!({
+                "manifest": payloads.manifest,
+                "members": payloads.members,
+            }),
+        ),
         Err(error) => validation_error(error_out, error),
     }
 }
@@ -9267,6 +9367,46 @@ mod tests {
         assert_eq!(status, DagMlStatusCode::VALIDATION_ERROR);
         assert!(out.ptr.is_null());
         assert!(error_message(&error).contains("no output binding"));
+        unsafe { dagml_string_free(error) };
+    }
+
+    #[test]
+    fn archive_builders_refuse_legacy_or_unsigned_inputs_over_abi() {
+        let legacy_package = include_bytes!(
+            "../../../examples/fixtures/training/portable_predictor_package.v1.json"
+        );
+        let legacy_outcome =
+            include_bytes!("../../../examples/fixtures/training/training_outcome_refit.v1.json");
+        let mut out = DagMlOwnedBytes::default();
+        let mut error = DagMlString::default();
+        let status = unsafe {
+            dagml_archive_v2_native_portable_payloads_json(
+                bytes_view(b"archive:legacy"),
+                legacy_outcome.as_ptr(),
+                legacy_outcome.len(),
+                legacy_package.as_ptr(),
+                legacy_package.len(),
+                &mut out,
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlStatusCode::VALIDATION_ERROR);
+        assert!(out.ptr.is_null());
+        unsafe { dagml_string_free(error) };
+
+        let unsigned_refit = br#"{"schema_version":3}"#;
+        let mut error = DagMlString::default();
+        let status = unsafe {
+            dagml_archive_v3_native_refit_payloads_json(
+                bytes_view(b"archive:unsigned"),
+                unsigned_refit.as_ptr(),
+                unsigned_refit.len(),
+                &mut out,
+                &mut error,
+            )
+        };
+        assert_eq!(status, DagMlStatusCode::VALIDATION_ERROR);
+        assert!(out.ptr.is_null());
         unsafe { dagml_string_free(error) };
     }
 
