@@ -955,9 +955,9 @@ dependencies = [
 
 [[package]]
 name = "n4m"
-version = "0.1.4"
+version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ef0abf168fd77728174a7293f7ed03cf41fe6c57fb52d58b137b62b7331b5efe"
+checksum = "1d67948614913c3448f1a5b4739aa0cb131a8b0acec8fe1d6d1556892a955e89"
 dependencies = [
  "cc",
  "libloading",
