@@ -3069,6 +3069,19 @@ fn native_methods_pipeline_v2_round_trips_archive_member_into_fresh_predict() {
     let archive =
         build_archive_v2_native_portable_payloads("archive:methods.pipeline-v2", &source, &package)
             .expect("pipeline Package V2 closes Archive V2");
+    if let Some(directory) = std::env::var_os("DAGML_ARCHIVE_CAPI_FIXTURES_DIR") {
+        let directory = PathBuf::from(directory);
+        std::fs::write(
+            directory.join("outcome_v2.json"),
+            serde_json::to_vec(&source).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            directory.join("package_v2.json"),
+            serde_json::to_vec(&package).unwrap(),
+        )
+        .unwrap();
+    }
     assert_eq!(
         archive.manifest["payloads"]["methods"]["n4mm"][0]["format_version"],
         serde_json::json!(2)
@@ -3273,6 +3286,13 @@ fn native_methods_full_refit_executes_on_a_fresh_attested_cohort() {
     let archive_v3 =
         build_archive_v3_native_refit_payloads("archive:methods.full-refit.child", &refit_package)
             .expect("DAG-ML assembles the exact Archive V3 refit closure");
+    if let Some(directory) = std::env::var_os("DAGML_ARCHIVE_CAPI_FIXTURES_DIR") {
+        std::fs::write(
+            PathBuf::from(directory).join("package_v3.json"),
+            serde_json::to_vec(&refit_package).unwrap(),
+        )
+        .unwrap();
+    }
     assert_eq!(
         archive_v3.manifest["schema_version"],
         serde_json::json!(3),
