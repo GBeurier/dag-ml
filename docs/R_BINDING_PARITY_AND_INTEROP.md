@@ -68,6 +68,35 @@ Un pont ABI DAG-ML V2/V3 assemblant des payloads natifs signés a
 interlangage n'en découle encore**. Les jalons détaillés suivants conservent
 leur chronologie et ne doivent pas remplacer cet état courant.
 
+### Inventaire des interfaces n4m (candidat local postérieur, non publié)
+
+Le lot Methods local `ec27e5fe` (ABI C 2.9.0, paquet R candidat
+`1.0.21.9005`) factorise le chemin prédictif **dans C++**. Les façades
+sklearn, S3 et JS/WASM adaptent les formes d'appel et la gestion de vie ; elles
+ne refont pas la prédiction affine. Les comptes ci-dessous décrivent des
+**interfaces qui se recouvrent**, et ne doivent pas être additionnés pour
+obtenir un nombre de méthodes distinctes.
+
+| Contrat | Couverture vérifiée | Limite importante |
+| --- | ---: | --- |
+| `n4m_model_fit` / `predict` / `transform` / N4MM | 8 codes d'algorithme de fit admis | 3 autres codes de l'enum empruntent d'autres routes ou sont refusés ici ; un N4MM affine importé est `predict`-only. |
+| Dispatcher `n4m_method` R / `MethodResult` C | 37 branches de fit/production, 25 sélecteurs, 2 diagnostics | Une branche de fit n'est pas nécessairement un prédicteur réutilisable. |
+| `n4m_model_from_method_result` C++/C ABI | 16 régressions affines marquées, testées hors apprentissage et sérialisables en N4MM | Capacité explicite, dimensions/valeurs contrôlées ; ne sérialise pas l'algorithme de réentraînement. |
+| `n4m_operator_kind_t` / pipeline C générique | 19 codes déclarés, 15 avec `fit/transform` pipeline | Finite Difference, Whittaker, FCK et Gaussian ont d'autres entrées natives, pas ce pipeline. |
+| Façade `pls4all.sklearn` Python | 69 classes exportées : 39 estimateurs/classifieurs, 28 sélecteurs, 2 transformeurs de transfert | Une partie des 39 reste limitée au train ou suit un contrat non affine ; ce n'est pas 69 méthodes portables. |
+| Façade n4m-R | 7 constructeurs S3 par formule et un adaptateur matriciel commun pour les 16 affines | Les formules WeightedPLS/PLS-GLM non marquées gardent leur prédiction historique. |
+
+Les 16 affines qualifiées sont Ridge, RidgePLS, RobustPLS, CPPLS,
+SparseSIMPLS, ECR, ContinuumRegression, MIRPLS, FusedSparsePLS, BaggingPLS,
+BoostingPLS, RandomSubspacePLS, N-PLS, MB-PLS, DI-PLS et GroupSparsePLS.
+La façade R candidate des prétraitements expose le même pipeline C pour ses
+15 codes opérationnels et refuse explicitement les quatre autres. Son état
+ajusté est un handle local : **aucun export/import générique de cet état
+n'existe encore dans l'ABI**, donc elle ne satisfait pas à elle seule le
+niveau 2 entraîné interlangage. Les profils entraînés bornés déjà listés plus
+haut restent la seule couverture prouvée ; il faut un format versionné de
+l'état des opérateurs et des tests de roundtrip par famille pour l'étendre.
+
 **Actualisation du 25 septembre, R 0.4.0.9030 (PR [R #29](https://github.com/GBeurier/nirs4all-r/pull/29), [Python #147](https://github.com/GBeurier/nirs4all/pull/147)).**
 Le paquet R couvre désormais les contrôleurs `ranger`, `glmnet`, `parsnip`,
 `mlr3` et `torch` CPU en régression ou classification selon le contrôleur,
