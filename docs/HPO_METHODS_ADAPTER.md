@@ -135,19 +135,23 @@ controller; there is no `PATH`, current-directory, sibling-checkout, or
 legacy fallback.
 
 The local integration helper activates the published feature and that
-compiler-only test selector. It uses the candidate source commit
-`f192515ea475dcefcae4bc2e807d0f0d79161dd9` to build the explicit runtime file,
-but resolves the Rust binding from crates.io. Build that checkout and invoke
+compiler-only test selector. It uses the Methods v1.1.0 source commit
+`9a157fbd07877bf57cce58b9cc31587f0a6571d7` (ABI 2.13) to build the explicit
+runtime file, but resolves the Rust binding from crates.io. The generic
+estimator tests read `parity/fixtures/estimator_roles_n4me.json` from that
+checkout (`N4M_ESTIMATOR_ROLES_FIXTURE`, defaulting to
+`external/nirs4all-methods`). Build that checkout and invoke
 the helper from the workspace root:
 
 ```bash
-METHODS_SHA=f192515ea475dcefcae4bc2e807d0f0d79161dd9
+METHODS_SHA=9a157fbd07877bf57cce58b9cc31587f0a6571d7
 git -C /absolute/path/to/nirs4all-methods fetch --depth=1 origin "$METHODS_SHA"
 git -C /absolute/path/to/nirs4all-methods checkout --detach "$METHODS_SHA"
 make -C /absolute/path/to/nirs4all-methods build PRESET=dev-release
 
 N4M_LIBRARY_PATH=/absolute/path/to/nirs4all-methods/build/dev-release/cpp/src/libn4m.so \
 LD_LIBRARY_PATH=/absolute/path/to/nirs4all-methods/build/dev-release/cpp/src${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} \
+N4M_ESTIMATOR_ROLES_FIXTURE=/absolute/path/to/nirs4all-methods/parity/fixtures/estimator_roles_n4me.json \
 dag-ml/scripts/test_methods_optimizer_local.sh
 ```
 
