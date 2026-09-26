@@ -603,6 +603,11 @@ DagMlStatusCode dagml_selection_decision_contract_json(DagMlOwnedBytes *out_json
 DagMlStatusCode dagml_selection_decision_validate_json(const uint8_t *json_ptr, size_t json_len, DagMlString *error_out);
 DagMlStatusCode dagml_select_candidate_json(const uint8_t *policy_ptr, size_t policy_len, const uint8_t *candidates_ptr, size_t candidates_len, DagMlOwnedBytes *out_json, DagMlString *error_out);
 DagMlStatusCode dagml_select_portable_output_json(const uint8_t *package_ptr, size_t package_len, DagMlBytesView binding_id, DagMlOwnedBytes *out_json, DagMlString *error_out);
+/* Exact native Archive V2/V3 manifest and member assembly for a Core ZIP writer.
+ * Output JSON has manifest and members; each member is an array of raw bytes.
+ * These calls do no archive IO or host artifact conversion. */
+DagMlStatusCode dagml_archive_v2_native_portable_payloads_json(DagMlBytesView archive_id, const uint8_t *outcome_ptr, size_t outcome_len, const uint8_t *package_ptr, size_t package_len, DagMlOwnedBytes *out_json, DagMlString *error_out);
+DagMlStatusCode dagml_archive_v3_native_refit_payloads_json(DagMlBytesView archive_id, const uint8_t *package_ptr, size_t package_len, DagMlOwnedBytes *out_json, DagMlString *error_out);
 DagMlStatusCode dagml_select_stacking_producers_json(const uint8_t *request_ptr, size_t request_len, DagMlOwnedBytes *out_json, DagMlString *error_out);
 DagMlStatusCode dagml_select_stacking_fold_json(const uint8_t *request_ptr, size_t request_len, DagMlOwnedBytes *out_json, DagMlString *error_out);
 DagMlStatusCode dagml_stacking_fold_weights_json(const uint8_t *request_ptr, size_t request_len, DagMlOwnedBytes *out_json, DagMlString *error_out);
