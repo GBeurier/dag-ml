@@ -44,6 +44,30 @@ installation source et prédiction vérifiées dans une bibliothèque R neuve.
 Cette preuve de distribution ne vaut pas contrôle CRAN multi-OS du tarball
 local exact.
 
+**Jalon local du 26 septembre, non publié (candidat R 0.4.0.9031).** Les PR
+Python #148 et R #30 restent ouvertes : huit recettes de régression affine
+`n4m.{Ridge,RidgePLS,RobustPLS,CPPLS,SparseSIMPLS,ECR,ContinuumRegression,MIRPLS}`
+sont exécutées dans les deux hôtes et comparées à un oracle n4m sur des
+observations hors entraînement. Le sélecteur supervisé `n4m.SPA` s'ajoute aux
+recettes JSON/YAML R et Python : son état est ajusté sur le train uniquement,
+la projection conserve l'ordre spectral d'entrée dans les deux langages, et
+les indices, matrices transformées, prédictions PLS et OOF fold par fold ont
+été comparés. Le tarball R **local** 0.4.0.9031 (SHA-256
+`636dd7b45eae3fb1f318b576cdb5b19516e6eca8d527ccbbed47d3ca56610b57`)
+a passé `R CMD check --as-cran --no-manual` sur Linux/R 4.6.0 avec statut
+`OK` ; seul le contrôle *CRAN incoming* a été désactivé faute d'accès réseau.
+La version publique R-universe reste 0.4.0.9030. Cette validation n'étend
+pas à elle seule le niveau 1/2 à WASM ni à tout le catalogue Methods.
+
+Un correctif Core/WASM **local, non publié** sauvegarde l'état n4m MSC appris
+sur le train et le restaure pour PREDICT au lieu de réajuster sur le nouveau
+lot. Les tests JS avec moteur simulé et les types passent ; l'artefact
+Methods/WASM disponible localement est antérieur aux sources actuelles, donc
+aucune parité numérique WASM n'est attestée. Le parseur Core/WASM n'accepte
+encore aucun des huit modèles affines ni SPA, même si Methods/WASM expose les
+premiers à bas niveau. Les défauts numériques et solveurs de certaines têtes
+restent à harmoniser avant toute revendication trilingue.
+
 ### Niveaux de portabilité demandés et priorité de cette livraison
 
 | Niveau | Contrat visé | Statut / gate nécessaire |
