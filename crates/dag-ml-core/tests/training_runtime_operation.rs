@@ -484,6 +484,7 @@ impl RuntimeController for TrainingController {
                 abi_major: None,
                 abi_min_minor: None,
                 native_predictor_descriptor: None,
+                native_estimator_descriptor: None,
             }]
         } else {
             Vec::new()
@@ -5233,6 +5234,7 @@ fn identifiers_controllers_diagnostics_and_store_are_prevalidated() {
             abi_major: None,
             abi_min_minor: None,
             native_predictor_descriptor: None,
+            native_estimator_descriptor: None,
         },
         params_fingerprint: "a".repeat(64),
         training_loss_fingerprint: None,

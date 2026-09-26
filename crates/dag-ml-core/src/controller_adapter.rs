@@ -122,9 +122,14 @@ pub struct ManifestKindTemplate {
 ///
 /// Kinds that the current vertical slice binds (`transform`, `y_transform`,
 /// `model`, `prediction_join`) get the exact template the nirs4all bridge hand
-/// authors today; any other kind gets a conservative, always-valid generic
-/// template (training-capable, fold-scoped, no ports) that a host refines with
-/// [`HostControllerSpec`] overrides.
+/// authors today. The train-only data operators get their own templates:
+/// `exclude` (a sample filter fitted on `x` and an optional `y`, whose keep
+/// mask removes training rows from `x_out` and passes every non-training row
+/// through), `augmentation` (training rows only, pass-through otherwise) and
+/// `split` (a PLAN-phase fold producer over the training cohort). Any other
+/// kind gets a conservative, always-valid generic template (training-capable,
+/// fold-scoped, no ports) that a host refines with [`HostControllerSpec`]
+/// overrides.
 pub fn manifest_kind_template(kind: &NodeKind) -> ManifestKindTemplate {
     let training_phases = || BTreeSet::from([Phase::FitCv, Phase::Refit, Phase::Predict]);
     match kind {
@@ -195,6 +200,57 @@ pub fn manifest_kind_template(kind: &NodeKind) -> ManifestKindTemplate {
             output_ports: vec![opaque_port(
                 "oof",
                 PortKind::Prediction,
+                PortCardinality::One,
+            )],
+        },
+        NodeKind::Exclude => ManifestKindTemplate {
+            supported_phases: training_phases(),
+            fit_scope: ControllerFitScope::FoldTrain,
+            capabilities: shape_changing_capabilities(),
+            input_ports: vec![
+                represented_port("x", PortKind::Data, REPRESENTATION_TABULAR_NUMERIC),
+                optional_port(represented_port(
+                    "y",
+                    PortKind::Target,
+                    REPRESENTATION_TARGET_NUMERIC,
+                )),
+            ],
+            output_ports: vec![represented_port(
+                "x_out",
+                PortKind::Data,
+                REPRESENTATION_TABULAR_NUMERIC,
+            )],
+        },
+        NodeKind::Augmentation => ManifestKindTemplate {
+            supported_phases: training_phases(),
+            fit_scope: ControllerFitScope::FoldTrain,
+            capabilities: shape_changing_capabilities(),
+            input_ports: vec![represented_port(
+                "x",
+                PortKind::Data,
+                REPRESENTATION_TABULAR_NUMERIC,
+            )],
+            output_ports: vec![represented_port(
+                "x_out",
+                PortKind::Data,
+                REPRESENTATION_TABULAR_NUMERIC,
+            )],
+        },
+        NodeKind::Split => ManifestKindTemplate {
+            supported_phases: BTreeSet::from([Phase::Plan]),
+            fit_scope: ControllerFitScope::Stateless,
+            capabilities: stateless_compute_capabilities(),
+            input_ports: vec![
+                represented_port("x", PortKind::Data, REPRESENTATION_TABULAR_NUMERIC),
+                optional_port(represented_port(
+                    "y",
+                    PortKind::Target,
+                    REPRESENTATION_TARGET_NUMERIC,
+                )),
+            ],
+            output_ports: vec![opaque_port(
+                "folds",
+                PortKind::Control,
                 PortCardinality::One,
             )],
         },
@@ -363,6 +419,19 @@ fn stateless_compute_capabilities() -> BTreeSet<ControllerCapability> {
     let mut capabilities = base_capabilities();
     capabilities.insert(ControllerCapability::UsesCoreRng);
     capabilities
+}
+
+fn shape_changing_capabilities() -> BTreeSet<ControllerCapability> {
+    let mut capabilities = stateless_compute_capabilities();
+    capabilities.insert(ControllerCapability::ShapeChanging);
+    capabilities
+}
+
+fn optional_port(port: PortSpec) -> PortSpec {
+    PortSpec {
+        cardinality: PortCardinality::Optional,
+        ..port
+    }
 }
 
 fn represented_port(name: &str, kind: PortKind, representation: &str) -> PortSpec {
@@ -720,6 +789,58 @@ mod tests {
                 .controller_id
                 .as_str(),
             "controller:nirs4all.model"
+        );
+    }
+
+    /// Train-only data operators: exclude and augmentation pass inference rows
+    /// through and change the training row set; split is a PLAN-time producer.
+    #[test]
+    fn train_only_data_operator_templates_declare_their_ports() {
+        let derive = |kind: NodeKind| {
+            HostControllerSpec::new("controller:host.data", VERSION, kind)
+                .derive()
+                .expect("train-only template derives")
+        };
+        let exclude = derive(NodeKind::Exclude);
+        assert_eq!(
+            exclude.input_ports,
+            vec![
+                represented_port("x", PortKind::Data, REPRESENTATION_TABULAR_NUMERIC),
+                optional_port(represented_port(
+                    "y",
+                    PortKind::Target,
+                    REPRESENTATION_TARGET_NUMERIC
+                )),
+            ]
+        );
+        assert_eq!(
+            exclude.output_ports,
+            vec![represented_port(
+                "x_out",
+                PortKind::Data,
+                REPRESENTATION_TABULAR_NUMERIC
+            )]
+        );
+        assert!(exclude
+            .capabilities
+            .contains(&ControllerCapability::ShapeChanging));
+        assert!(exclude.model_input_spec().unwrap().unwrap().ports[1].optional);
+
+        let augmentation = derive(NodeKind::Augmentation);
+        assert_eq!(augmentation.fit_scope, ControllerFitScope::FoldTrain);
+        assert_eq!(augmentation.output_ports, exclude.output_ports);
+
+        let split = derive(NodeKind::Split);
+        assert_eq!(split.supported_phases, BTreeSet::from([Phase::Plan]));
+        assert_eq!(split.fit_scope, ControllerFitScope::Stateless);
+        assert_eq!(split.input_ports, exclude.input_ports);
+        assert_eq!(
+            split.output_ports,
+            vec![opaque_port(
+                "folds",
+                PortKind::Control,
+                PortCardinality::One
+            )]
         );
     }
 

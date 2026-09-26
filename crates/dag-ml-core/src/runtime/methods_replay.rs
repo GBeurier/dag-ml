@@ -16,6 +16,12 @@ use crate::hpo::{
     METHODS_RIDGE_CONTROLLER_ID,
 };
 #[cfg(feature = "methods-optimizer")]
+use crate::methods_estimator::{
+    register_methods_estimator_controllers, METHODS_ESTIMATOR_EXECUTABLE_ROLES,
+};
+#[cfg(feature = "methods-optimizer")]
+use crate::n4m_roles::N4mRole;
+#[cfg(feature = "methods-optimizer")]
 use crate::replay::{
     execute_loaded_portable_refit_replay_v3, execute_loaded_predictor_replay,
     LoadedPortableRefitReplayInputV3, LoadedPredictorReplayInput, PortableRefitReplayOutcomeV3,
@@ -97,7 +103,12 @@ pub fn execute_loaded_methods_predictor_replay(
         .effective_plan
         .node_plans
         .values()
-        .any(|node| node.controller_id != pls_controller && node.controller_id != ridge_controller)
+        .any(|node| {
+            node.controller_id != pls_controller
+                && node.controller_id != ridge_controller
+                && N4mRole::from_controller_id(node.controller_id.as_str())
+                    .is_none_or(|role| !METHODS_ESTIMATOR_EXECUTABLE_ROLES.contains(&role))
+        })
     {
         return Err(DagMlError::RuntimeValidation(
             "callback-free Methods package replay requires every executable node to use a registered native Methods controller"
@@ -110,7 +121,8 @@ pub fn execute_loaded_methods_predictor_replay(
     )?;
     let mut controllers = RuntimeControllerRegistry::new();
     controllers.register(Box::new(MethodsPlsController::new(input.runtime.clone())))?;
-    controllers.register(Box::new(MethodsRidgeController::new(input.runtime)))?;
+    controllers.register(Box::new(MethodsRidgeController::new(input.runtime.clone())))?;
+    register_methods_estimator_controllers(&mut controllers, input.runtime)?;
     let predictor = LoadedPredictor::new(input.package.clone(), BTreeMap::new())?;
     execute_loaded_predictor_replay(LoadedPredictorReplayInput {
         predictor: &predictor,
@@ -148,7 +160,8 @@ pub fn execute_loaded_methods_portable_refit_replay_v3(
     )?;
     let mut controllers = input.supplemental_controllers;
     controllers.register(Box::new(MethodsPlsController::new(input.runtime.clone())))?;
-    controllers.register(Box::new(MethodsRidgeController::new(input.runtime)))?;
+    controllers.register(Box::new(MethodsRidgeController::new(input.runtime.clone())))?;
+    register_methods_estimator_controllers(&mut controllers, input.runtime)?;
     for node in input.package.outcome.effective_plan.node_plans.values() {
         if controllers.get(&node.controller_id).is_none() {
             return Err(DagMlError::RuntimeValidation(format!(

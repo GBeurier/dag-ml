@@ -1,0 +1,1825 @@
+//! Generic native controller for n4m role estimators (Methods ABI 2.13).
+//!
+//! One [`MethodsEstimatorController`] serves each executable role of the n4m
+//! manifest (see [`crate::n4m_roles`]). A node names its method with the
+//! reserved `method_id` parameter; every other parameter is typed by the
+//! native manifest and checked by libn4m. Fitting, transforms, masks and
+//! predictions all run through `n4m::roles::Estimator`; fitted states leave
+//! the process only as N4ME bytes owned by the exporting controller.
+//!
+//! The role controllers of one registration share an invocation-local
+//! feature store: a transform or sample-filter output is a `Data` handle whose
+//! identity-keyed rows stay inside this store, so a chain such as
+//! `exclude -> transform -> model` runs natively without a host callback.
+//! Sample filters and their masks apply to training rows only.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+
+use n4m::roles::{
+    self, Estimator, FitInput, FitInputs, InputRequirement, MethodInfo, MethodKind, ParamType,
+    ParamValue, Params,
+};
+use n4m::{Context, MatrixRef};
+use sha2::{Digest, Sha256};
+
+use crate::controller_adapter::HostControllerSpec;
+use crate::hpo::{
+    MethodsPlsController, MethodsRuntime, METHODS_ABI_MAJOR, METHODS_N4ME_MIN_ABI_MINOR,
+};
+use crate::n4m_roles::{n4m_host_controller_specs, N4mRole};
+use crate::runtime::{
+    refit_artifact_input_key, ArtifactBackend, ArtifactMaterializationRequest, ArtifactRef,
+    HandleKind, HandleRef, LineageRecord, MethodsPlsDataset, MethodsPlsMatrix,
+    NativeEstimatorDescriptorV1, NodeResult, NodeTask, PredictionBlock, PredictionPartition,
+    RegressionTargetBlock, RuntimeController, RuntimeControllerRegistry, RuntimeDataProvider,
+    NATIVE_ESTIMATOR_ARTIFACT_KIND, NATIVE_ESTIMATOR_DESCRIPTOR_SCHEMA_VERSION_V1,
+    NATIVE_ESTIMATOR_DESCRIPTOR_TYPE_V1, NATIVE_ESTIMATOR_FORMAT_N4ME,
+};
+use crate::{
+    ArtifactId, ControllerId, DagMlError, LineageId, Phase, PredictionLevel, PredictionUnitId,
+    Result,
+};
+
+/// Reserved node parameter naming the native method.
+pub const METHODS_ESTIMATOR_METHOD_PARAM: &str = "method_id";
+/// Reserved node parameter carrying explicit, lineage-recorded unsafe opt-ins.
+pub const METHODS_ESTIMATOR_UNSAFE_FLAGS_PARAM: &str = "unsafe_flags";
+/// Opt-in allowing an N4ME artifact to embed training rows (kernel/local
+/// methods). Without it such methods are refused before any fit.
+pub const METHODS_ESTIMATOR_ALLOW_TRAINING_ROWS: &str = "allow_training_rows_in_artifact";
+
+/// Roles executed natively. Classifiers, splitters and augmenters are derived
+/// as controller specs but have no native execution path yet.
+pub const METHODS_ESTIMATOR_EXECUTABLE_ROLES: [N4mRole; 4] = [
+    N4mRole::Transformer,
+    N4mRole::Selector,
+    N4mRole::Regressor,
+    N4mRole::SampleFilter,
+];
+
+const CAPABILITY_NAMES: [(u64, &str); 10] = [
+    (roles::CAP_TRANSFORM, "transform"),
+    (roles::CAP_PREDICT, "predict"),
+    (roles::CAP_PREDICT_PROBA, "predict_proba"),
+    (roles::CAP_DECISION_FUNCTION, "decision_function"),
+    (roles::CAP_PREDICT_LABELS, "predict_labels"),
+    (roles::CAP_SELECTED_INDICES, "selected_indices"),
+    (roles::CAP_APPLY_MASK, "apply_mask"),
+    (roles::CAP_SERIALIZABLE, "serializable"),
+    (roles::CAP_AFFINE, "affine"),
+    (roles::CAP_RETAINS_TRAINING_ROWS, "retains_training_rows"),
+];
+
+const ROLE_BITS: [(u32, N4mRole); 8] = [
+    (roles::ROLE_TRANSFORMER, N4mRole::Transformer),
+    (roles::ROLE_REGRESSOR, N4mRole::Regressor),
+    (roles::ROLE_CLASSIFIER, N4mRole::Classifier),
+    (roles::ROLE_SELECTOR, N4mRole::Selector),
+    (roles::ROLE_SAMPLE_FILTER, N4mRole::SampleFilter),
+    (roles::ROLE_SPLITTER, N4mRole::Splitter),
+    (roles::ROLE_AUGMENTER, N4mRole::Augmenter),
+    (roles::ROLE_GENERIC, N4mRole::Generic),
+];
+
+fn native_error(operation: &str, error: n4m::Error) -> DagMlError {
+    DagMlError::RuntimeValidation(format!(
+        "native Methods estimator {operation} failed: {error}"
+    ))
+}
+
+fn lock_poisoned(what: &str) -> DagMlError {
+    DagMlError::RuntimeValidation(format!("native Methods estimator {what} lock poisoned"))
+}
+
+fn method_roles(info: &MethodInfo) -> Vec<N4mRole> {
+    ROLE_BITS
+        .iter()
+        .filter(|(bit, _)| info.roles & bit != 0)
+        .map(|(_, role)| *role)
+        .collect()
+}
+
+fn capability_names(capabilities: u64) -> Vec<String> {
+    let mut names = CAPABILITY_NAMES
+        .iter()
+        .filter(|(bit, _)| capabilities & bit != 0)
+        .map(|(_, name)| name.to_string())
+        .collect::<Vec<_>>();
+    names.sort();
+    names
+}
+
+/// Controller specs for the methods of the configured libn4m, derived from its
+/// live manifest.
+pub fn methods_estimator_host_controller_specs(
+    _runtime: &MethodsRuntime,
+) -> Result<Vec<HostControllerSpec>> {
+    let manifest = roles::manifest_json().map_err(|error| native_error("manifest", error))?;
+    n4m_host_controller_specs(&manifest)
+}
+
+/// Register one controller per executable role, all sharing one feature store.
+pub fn register_methods_estimator_controllers(
+    registry: &mut RuntimeControllerRegistry,
+    runtime: MethodsRuntime,
+) -> Result<()> {
+    let shared = Arc::new(SharedState::default());
+    for role in METHODS_ESTIMATOR_EXECUTABLE_ROLES {
+        registry.register(Box::new(MethodsEstimatorController {
+            id: ControllerId::new(role.controller_id().expect("executable roles have ids"))?,
+            role,
+            runtime: runtime.clone(),
+            shared: Arc::clone(&shared),
+        }))?;
+    }
+    Ok(())
+}
+
+/// Inspect complete N4ME bytes and derive their descriptor. The method id and
+/// capabilities come from the imported native state, the roles from the
+/// native manifest of that method.
+pub fn inspect_methods_native_estimator_descriptor_v1(
+    owner_controller: &ControllerId,
+    payload: &[u8],
+) -> Result<NativeEstimatorDescriptorV1> {
+    let context = Context::new().map_err(|error| native_error("context_create", error))?;
+    let estimator = Estimator::from_n4me(&context, payload)
+        .map_err(|error| native_error("import_n4me", error))?;
+    let method_id = estimator
+        .method_id()
+        .map_err(|error| native_error("method_id", error))?;
+    let capabilities = estimator
+        .capabilities()
+        .map_err(|error| native_error("capabilities", error))?;
+    let info =
+        roles::method_info(&method_id).map_err(|error| native_error("method_info", error))?;
+    let mut descriptor = NativeEstimatorDescriptorV1 {
+        descriptor_type: NATIVE_ESTIMATOR_DESCRIPTOR_TYPE_V1.to_string(),
+        schema_version: NATIVE_ESTIMATOR_DESCRIPTOR_SCHEMA_VERSION_V1,
+        artifact_sha256: format!("{:x}", Sha256::digest(payload)),
+        owner_controller: owner_controller.clone(),
+        format: NATIVE_ESTIMATOR_FORMAT_N4ME.to_string(),
+        method_id,
+        roles: method_roles(&info),
+        capabilities: capability_names(capabilities),
+        descriptor_fingerprint: String::new(),
+    };
+    descriptor.descriptor_fingerprint = descriptor.compute_fingerprint()?;
+    descriptor.validate()?;
+    Ok(descriptor)
+}
+
+/// Identity-keyed rows produced by one node: the rows it fits on and, when
+/// the scheduler supplied one, the separately selected prediction rows.
+struct FeatureSet {
+    fit: MethodsPlsDataset,
+    prediction: Option<MethodsPlsDataset>,
+}
+
+#[derive(Default)]
+struct SharedState {
+    next_handle: AtomicU64,
+    features: Mutex<BTreeMap<u64, Arc<FeatureSet>>>,
+    exported: Mutex<BTreeMap<ArtifactId, Vec<u8>>>,
+    hydrated: Mutex<BTreeMap<u64, Vec<u8>>>,
+}
+
+/// Resolved method of one node task.
+struct NodeMethod {
+    method_id: String,
+    info: MethodInfo,
+    params: Vec<(String, ParamValue)>,
+    allow_training_rows: bool,
+}
+
+impl NodeMethod {
+    fn from_task(task: &NodeTask, role: N4mRole) -> Result<Self> {
+        let node_id = &task.node_plan.node_id;
+        let invalid = |reason: String| {
+            DagMlError::RuntimeValidation(format!(
+                "native Methods estimator node `{node_id}` {reason}"
+            ))
+        };
+        let params = &task.node_plan.params;
+        let method_id = params
+            .get(METHODS_ESTIMATOR_METHOD_PARAM)
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                invalid(format!(
+                    "requires a string `{METHODS_ESTIMATOR_METHOD_PARAM}` parameter"
+                ))
+            })?
+            .to_string();
+        let info = roles::method_info(&method_id)
+            .map_err(|error| invalid(format!("names an unknown method: {error}")))?;
+        if info.kind != MethodKind::Estimator || !method_roles(&info).contains(&role) {
+            return Err(invalid(format!(
+                "method `{method_id}` is not a {} estimator",
+                role.as_str()
+            )));
+        }
+        let mut allow_training_rows = false;
+        if let Some(flags) = params.get(METHODS_ESTIMATOR_UNSAFE_FLAGS_PARAM) {
+            for flag in flags.as_array().ok_or_else(|| {
+                invalid(format!(
+                    "`{METHODS_ESTIMATOR_UNSAFE_FLAGS_PARAM}` must be an array"
+                ))
+            })? {
+                match flag.as_str() {
+                    Some(METHODS_ESTIMATOR_ALLOW_TRAINING_ROWS) => allow_training_rows = true,
+                    _ => return Err(invalid(format!("has unknown unsafe flag {flag}"))),
+                }
+            }
+        }
+        if info.capabilities & roles::CAP_RETAINS_TRAINING_ROWS != 0 && !allow_training_rows {
+            return Err(invalid(format!(
+                "method `{method_id}` retains training rows in its fitted state; set `{METHODS_ESTIMATOR_UNSAFE_FLAGS_PARAM}: [\"{METHODS_ESTIMATOR_ALLOW_TRAINING_ROWS}\"]` to allow it"
+            )));
+        }
+        let mut typed = Vec::new();
+        for (name, value) in params {
+            if name == METHODS_ESTIMATOR_METHOD_PARAM
+                || name == METHODS_ESTIMATOR_UNSAFE_FLAGS_PARAM
+            {
+                continue;
+            }
+            let param = info
+                .params
+                .iter()
+                .find(|param| &param.name == name)
+                .ok_or_else(|| {
+                    invalid(format!("sets unknown parameter `{name}` of `{method_id}`"))
+                })?;
+            let value = param_value(param.param_type, value).ok_or_else(|| {
+                invalid(format!(
+                    "parameter `{name}` is not a {:?} value",
+                    param.param_type
+                ))
+            })?;
+            typed.push((name.clone(), value));
+        }
+        Ok(Self {
+            method_id,
+            info,
+            params: typed,
+            allow_training_rows,
+        })
+    }
+
+    fn uses(&self, input: FitInput) -> bool {
+        self.info.input(input) != InputRequirement::None
+    }
+
+    fn estimator(&self, context: &Context) -> Result<Estimator> {
+        let mut params = Params::new(context, &self.method_id)
+            .map_err(|error| native_error("params_create", error))?;
+        for (name, value) in &self.params {
+            params
+                .set(name, value)
+                .map_err(|error| native_error("params_set", error))?;
+        }
+        Estimator::new(context, &self.method_id, Some(&params))
+            .map_err(|error| native_error("create", error))
+    }
+
+    fn fit(&self, context: &Context, data: &MethodsPlsDataset) -> Result<Estimator> {
+        let mut estimator = self.estimator(context)?;
+        let x = matrix(&data.x)?;
+        let mut inputs = FitInputs::new(x);
+        if self.uses(FitInput::Y) {
+            if let Some(y) = &data.y {
+                inputs = inputs.y(matrix(y)?);
+            }
+        }
+        estimator
+            .fit(context, &inputs)
+            .map_err(|error| native_error("fit", error))?;
+        Ok(estimator)
+    }
+
+    /// Replay integrity: every explicit node parameter must equal the value
+    /// resolved inside the imported state.
+    fn check_imported(&self, context: &Context, estimator: &Estimator) -> Result<()> {
+        let imported_id = estimator
+            .method_id()
+            .map_err(|error| native_error("method_id", error))?;
+        let params = estimator
+            .params(context)
+            .map_err(|error| native_error("params", error))?;
+        let mut matches = imported_id == self.method_id;
+        for (name, value) in &self.params {
+            let ints = || params.int_values(name).ok();
+            let doubles = || params.double_values(name).ok();
+            matches &= match value {
+                ParamValue::Int(value) => ints() == Some(vec![*value]),
+                ParamValue::Bool(value) => ints() == Some(vec![i64::from(*value)]),
+                ParamValue::Enum(label) => {
+                    let choice = self
+                        .info
+                        .params
+                        .iter()
+                        .find(|param| &param.name == name)
+                        .and_then(|param| param.choices.iter().position(|choice| choice == label));
+                    choice.is_some_and(|index| ints() == Some(vec![index as i64]))
+                }
+                ParamValue::IntArray(values) => ints().as_ref() == Some(values),
+                ParamValue::Double(value) => doubles() == Some(vec![*value]),
+                ParamValue::DoubleArray(values) => doubles().as_ref() == Some(values),
+            };
+        }
+        if !matches {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "N4ME state does not match node method `{}` and its parameters",
+                self.method_id
+            )));
+        }
+        Ok(())
+    }
+}
+
+fn param_value(param_type: ParamType, value: &serde_json::Value) -> Option<ParamValue> {
+    let ints = || {
+        value
+            .as_array()?
+            .iter()
+            .map(serde_json::Value::as_i64)
+            .collect::<Option<Vec<_>>>()
+    };
+    let doubles = || {
+        value
+            .as_array()?
+            .iter()
+            .map(serde_json::Value::as_f64)
+            .collect::<Option<Vec<_>>>()
+    };
+    Some(match param_type {
+        ParamType::Int => ParamValue::Int(value.as_i64()?),
+        ParamType::Double => ParamValue::Double(value.as_f64()?),
+        ParamType::Bool => ParamValue::Bool(value.as_bool()?),
+        ParamType::Enum => ParamValue::Enum(value.as_str()?.to_string()),
+        ParamType::IntArray => ParamValue::IntArray(ints()?),
+        ParamType::DoubleArray => ParamValue::DoubleArray(doubles()?),
+    })
+}
+
+fn matrix(values: &MethodsPlsMatrix) -> Result<MatrixRef<'_>> {
+    MatrixRef::row_major(&values.values, values.rows, values.cols)
+        .map_err(|error| native_error("matrix_view", error))
+}
+
+fn owned(matrix: n4m::Matrix) -> MethodsPlsMatrix {
+    MethodsPlsMatrix {
+        values: matrix.data,
+        rows: matrix.rows,
+        cols: matrix.cols,
+    }
+}
+
+fn with_features(dataset: &MethodsPlsDataset, x: MethodsPlsMatrix) -> MethodsPlsDataset {
+    MethodsPlsDataset {
+        sample_ids: dataset.sample_ids.clone(),
+        x,
+        y: dataset.y.clone(),
+        target_names: dataset.target_names.clone(),
+    }
+}
+
+fn keep_rows(dataset: &MethodsPlsDataset, keep: &[bool]) -> MethodsPlsDataset {
+    let select = |matrix: &MethodsPlsMatrix| MethodsPlsMatrix {
+        values: matrix
+            .values
+            .chunks(matrix.cols)
+            .zip(keep)
+            .filter(|(_, keep)| **keep)
+            .flat_map(|(row, _)| row.iter().copied())
+            .collect(),
+        rows: keep.iter().filter(|keep| **keep).count(),
+        cols: matrix.cols,
+    };
+    MethodsPlsDataset {
+        sample_ids: dataset
+            .sample_ids
+            .iter()
+            .zip(keep)
+            .filter(|(_, keep)| **keep)
+            .map(|(sample_id, _)| sample_id.clone())
+            .collect(),
+        x: select(&dataset.x),
+        y: dataset.y.as_ref().map(select),
+        target_names: dataset.target_names.clone(),
+    }
+}
+
+/// Native controller for one n4m role; see the module documentation.
+pub struct MethodsEstimatorController {
+    id: ControllerId,
+    role: N4mRole,
+    runtime: MethodsRuntime,
+    shared: Arc<SharedState>,
+}
+
+impl MethodsEstimatorController {
+    pub fn role(&self) -> N4mRole {
+        self.role
+    }
+
+    fn handle(&self, kind: HandleKind) -> HandleRef {
+        HandleRef {
+            handle: self.shared.next_handle.fetch_add(1, Ordering::SeqCst) + 1,
+            kind,
+            owner_controller: self.id.clone(),
+        }
+    }
+
+    fn input_features(
+        &self,
+        task: &NodeTask,
+        provider: &dyn RuntimeDataProvider,
+    ) -> Result<Arc<FeatureSet>> {
+        if task
+            .node_plan
+            .data_bindings
+            .iter()
+            .any(|binding| binding.input_name == "x")
+        {
+            let request = MethodsPlsController::request(task, provider, "x")?;
+            provider.preflight_methods_pls(&request)?;
+            let data = provider.methods_pls_data(&request)?;
+            data.validate_for(&request)?;
+            return Ok(Arc::new(FeatureSet {
+                fit: data.fit,
+                prediction: data.prediction,
+            }));
+        }
+        let node_id = &task.node_plan.node_id;
+        let handle = task
+            .input_handles
+            .get("data:x")
+            .filter(|handle| {
+                handle.kind == HandleKind::Data
+                    && N4mRole::from_controller_id(handle.owner_controller.as_str()).is_some()
+            })
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "native Methods estimator node `{node_id}` requires a data binding or an upstream n4m data output on `x`"
+                ))
+            })?;
+        let features = self
+            .shared
+            .features
+            .lock()
+            .map_err(|_| lock_poisoned("feature store"))?
+            .get(&handle.handle)
+            .cloned()
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "native Methods estimator node `{node_id}` input handle {} is not in this registration's feature store",
+                    handle.handle
+                ))
+            })?;
+        let fit_view_ids = task
+            .data_views
+            .get("data:x")
+            .and_then(|view| view.sample_ids.as_ref())
+            .map(|ids| ids.iter().collect::<BTreeSet<_>>());
+        if fit_view_ids
+            .is_some_and(|ids| !features.fit.sample_ids.iter().all(|id| ids.contains(id)))
+        {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "native Methods estimator node `{node_id}` received fit rows outside its scheduler-selected view"
+            )));
+        }
+        let validation_ids = task
+            .data_views
+            .get("data:x:validation")
+            .and_then(|view| view.sample_ids.as_ref());
+        if task.phase == Phase::FitCv
+            && features.prediction.as_ref().map(|rows| &rows.sample_ids) != validation_ids
+        {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "native Methods estimator node `{node_id}` validation rows do not match its scheduler-selected view"
+            )));
+        }
+        Ok(features)
+    }
+
+    fn emit_features(&self, features: Arc<FeatureSet>) -> Result<HandleRef> {
+        let handle = self.handle(HandleKind::Data);
+        self.shared
+            .features
+            .lock()
+            .map_err(|_| lock_poisoned("feature store"))?
+            .insert(handle.handle, features);
+        Ok(handle)
+    }
+
+    fn refit_artifact(
+        &self,
+        task: &NodeTask,
+        context: &Context,
+        estimator: &Estimator,
+        method: &NodeMethod,
+    ) -> Result<(ArtifactRef, HandleRef)> {
+        let bytes = estimator
+            .to_n4me(context, method.allow_training_rows)
+            .map_err(|error| native_error("export_n4me", error))?;
+        let descriptor = inspect_methods_native_estimator_descriptor_v1(&self.id, &bytes)?;
+        let node_id = task.node_plan.node_id.as_str();
+        let id = ArtifactId::new(format!("artifact:n4m:{node_id}:refit"))?;
+        let artifact = ArtifactRef {
+            id: id.clone(),
+            kind: NATIVE_ESTIMATOR_ARTIFACT_KIND.to_string(),
+            controller_id: self.id.clone(),
+            backend: Some(ArtifactBackend::Raw),
+            uri: Some(format!("methods/{}.n4me", node_id.replace(':', "_"))),
+            content_fingerprint: Some(descriptor.artifact_sha256.clone()),
+            size_bytes: Some(bytes.len() as u64),
+            plugin: None,
+            plugin_version: None,
+            abi_major: Some(METHODS_ABI_MAJOR),
+            abi_min_minor: Some(METHODS_N4ME_MIN_ABI_MINOR),
+            native_predictor_descriptor: None,
+            native_estimator_descriptor: Some(descriptor),
+        };
+        artifact.validate()?;
+        self.shared
+            .exported
+            .lock()
+            .map_err(|_| lock_poisoned("N4ME export"))?
+            .insert(id, bytes);
+        Ok((artifact, self.handle(HandleKind::Model)))
+    }
+
+    /// The hydrated N4ME state of this node for PREDICT, consumed once.
+    fn hydrated_estimator(
+        &self,
+        task: &NodeTask,
+        context: &Context,
+        method: &NodeMethod,
+    ) -> Result<Estimator> {
+        let node_id = &task.node_plan.node_id;
+        let missing = |what: &str| {
+            DagMlError::RuntimeValidation(format!(
+                "native Methods estimator node `{node_id}` PREDICT requires {what}"
+            ))
+        };
+        let artifact = task
+            .artifact_inputs
+            .values()
+            .find(|input| {
+                input.controller_id == self.id
+                    && input.artifact.kind == NATIVE_ESTIMATOR_ARTIFACT_KIND
+            })
+            .ok_or_else(|| missing("its retained N4ME artifact reference"))?;
+        let handle = task
+            .input_handles
+            .get(&refit_artifact_input_key(&artifact.artifact.id))
+            .ok_or_else(|| missing("a hydrated N4ME handle"))?;
+        let bytes = self
+            .shared
+            .hydrated
+            .lock()
+            .map_err(|_| lock_poisoned("hydrated N4ME"))?
+            .remove(&handle.handle)
+            .ok_or_else(|| missing("N4ME bytes hydrated by this controller registration"))?;
+        let estimator = Estimator::from_n4me(context, &bytes)
+            .map_err(|error| native_error("import_n4me", error))?;
+        method.check_imported(context, &estimator)?;
+        Ok(estimator)
+    }
+
+    fn result(
+        &self,
+        task: &NodeTask,
+        method: &NodeMethod,
+        outputs: BTreeMap<String, HandleRef>,
+        predictions: Vec<PredictionBlock>,
+        regression_targets: Vec<RegressionTargetBlock>,
+        artifact: Option<(ArtifactRef, HandleRef)>,
+    ) -> Result<NodeResult> {
+        let (artifacts, artifact_handles) = artifact
+            .map(|(artifact, handle)| {
+                (
+                    vec![artifact.clone()],
+                    BTreeMap::from([(artifact.id, handle)]),
+                )
+            })
+            .unwrap_or_default();
+        let unsafe_flags = if method.allow_training_rows {
+            BTreeSet::from([METHODS_ESTIMATOR_ALLOW_TRAINING_ROWS.to_string()])
+        } else {
+            BTreeSet::new()
+        };
+        Ok(NodeResult {
+            schema_version: None,
+            classification_probabilities: Vec::new(),
+            node_id: task.node_plan.node_id.clone(),
+            outputs,
+            predictions,
+            observation_predictions: Vec::new(),
+            aggregated_predictions: Vec::new(),
+            explanations: Vec::new(),
+            shape_deltas: Vec::new(),
+            artifacts: artifacts.clone(),
+            artifact_handles,
+            fit_influence_diagnostics: Vec::new(),
+            regression_targets,
+            lineage: LineageRecord {
+                record_id: LineageId::new(format!(
+                    "lineage:n4m:{}:{}:{}:{}",
+                    task.node_plan.node_id,
+                    task.phase.as_str(),
+                    task.variant_id
+                        .as_ref()
+                        .map(|id| id.as_str())
+                        .unwrap_or("base"),
+                    task.fold_id
+                        .as_ref()
+                        .map(|id| id.as_str())
+                        .unwrap_or("full")
+                ))?,
+                run_id: task.run_id.clone(),
+                node_id: task.node_plan.node_id.clone(),
+                phase: task.phase,
+                controller_id: self.id.clone(),
+                controller_version: task.node_plan.controller_version.clone(),
+                variant_id: task.variant_id.clone(),
+                fold_id: task.fold_id.clone(),
+                branch_path: task.branch_path.clone(),
+                input_lineage: Vec::new(),
+                artifact_refs: artifacts,
+                params_fingerprint: task.node_plan.params_fingerprint.clone(),
+                data_model_shape_fingerprint: None,
+                aggregation_policy_fingerprint: None,
+                seed: task.seed,
+                unsafe_flags,
+                metrics: BTreeMap::new(),
+                loss_attestations: Vec::new(),
+                early_stopping_records: Vec::new(),
+            },
+        })
+    }
+
+    fn transform(
+        &self,
+        task: &NodeTask,
+        method: &NodeMethod,
+        features: &FeatureSet,
+    ) -> Result<NodeResult> {
+        let context = Context::new().map_err(|error| native_error("context_create", error))?;
+        let (estimator, artifact) = match task.phase {
+            Phase::FitCv | Phase::Refit => {
+                let estimator = method.fit(&context, &features.fit)?;
+                let artifact = (task.phase == Phase::Refit)
+                    .then(|| self.refit_artifact(task, &context, &estimator, method))
+                    .transpose()?;
+                (estimator, artifact)
+            }
+            Phase::Predict => (self.hydrated_estimator(task, &context, method)?, None),
+            phase => return Err(unsupported_phase(task, phase)),
+        };
+        let apply = |dataset: &MethodsPlsDataset| -> Result<MethodsPlsDataset> {
+            let transformed = estimator
+                .transform(&context, matrix(&dataset.x)?)
+                .map_err(|error| native_error("transform", error))?;
+            let output = with_features(dataset, owned(transformed));
+            output.validate("transform output", false)?;
+            Ok(output)
+        };
+        let output = Arc::new(FeatureSet {
+            fit: apply(&features.fit)?,
+            prediction: features.prediction.as_ref().map(apply).transpose()?,
+        });
+        let outputs = BTreeMap::from([("x_out".to_string(), self.emit_features(output)?)]);
+        self.result(task, method, outputs, Vec::new(), Vec::new(), artifact)
+    }
+
+    fn sample_filter(
+        &self,
+        task: &NodeTask,
+        method: &NodeMethod,
+        features: &Arc<FeatureSet>,
+    ) -> Result<NodeResult> {
+        let output = match task.phase {
+            Phase::FitCv | Phase::Refit => {
+                let context =
+                    Context::new().map_err(|error| native_error("context_create", error))?;
+                let estimator = method.fit(&context, &features.fit)?;
+                let y = if method.uses(FitInput::Y) {
+                    features.fit.y.as_ref().map(matrix).transpose()?
+                } else {
+                    None
+                };
+                let keep = estimator
+                    .apply_mask(&context, matrix(&features.fit.x)?, y)
+                    .map_err(|error| native_error("apply_mask", error))?;
+                if !keep.contains(&true) {
+                    return Err(DagMlError::RuntimeValidation(format!(
+                        "native Methods sample filter `{}` removed every training row",
+                        task.node_plan.node_id
+                    )));
+                }
+                Arc::new(FeatureSet {
+                    fit: keep_rows(&features.fit, &keep),
+                    prediction: features.prediction.clone(),
+                })
+            }
+            // Sample filters are train-only: inference rows pass unchanged.
+            Phase::Predict => Arc::clone(features),
+            phase => return Err(unsupported_phase(task, phase)),
+        };
+        let outputs = BTreeMap::from([("x_out".to_string(), self.emit_features(output)?)]);
+        self.result(task, method, outputs, Vec::new(), Vec::new(), None)
+    }
+
+    fn regress(
+        &self,
+        task: &NodeTask,
+        method: &NodeMethod,
+        features: &FeatureSet,
+    ) -> Result<NodeResult> {
+        let context = Context::new().map_err(|error| native_error("context_create", error))?;
+        let (estimator, artifact, rows, partition) = match task.phase {
+            Phase::FitCv | Phase::Refit => {
+                let estimator = method.fit(&context, &features.fit)?;
+                let artifact = (task.phase == Phase::Refit)
+                    .then(|| self.refit_artifact(task, &context, &estimator, method))
+                    .transpose()?;
+                let partition = match (task.phase, &features.prediction) {
+                    (Phase::FitCv, _) => PredictionPartition::Validation,
+                    // A REFIT prediction view is an explicitly held-out cohort;
+                    // without one the full-train output is a Final block.
+                    (_, Some(_)) => PredictionPartition::Test,
+                    (_, None) => PredictionPartition::Final,
+                };
+                let rows = features.prediction.as_ref().unwrap_or(&features.fit);
+                (estimator, artifact, rows, partition)
+            }
+            Phase::Predict => (
+                self.hydrated_estimator(task, &context, method)?,
+                None,
+                &features.fit,
+                PredictionPartition::Final,
+            ),
+            phase => return Err(unsupported_phase(task, phase)),
+        };
+        let predicted = estimator
+            .predict(&context, matrix(&rows.x)?)
+            .map_err(|error| native_error("predict", error))?;
+        if predicted.cols != rows.target_names.len() {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "native Methods regressor `{}` predicted {} targets for {} target names",
+                task.node_plan.node_id,
+                predicted.cols,
+                rows.target_names.len()
+            )));
+        }
+        let regression_targets = if task.phase == Phase::FitCv {
+            let targets = rows.y.as_ref().ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "native Methods regressor `{}` FIT_CV requires validation targets",
+                    task.node_plan.node_id
+                ))
+            })?;
+            vec![RegressionTargetBlock {
+                validity_masks: None,
+                level: PredictionLevel::Sample,
+                unit_ids: rows
+                    .sample_ids
+                    .iter()
+                    .cloned()
+                    .map(PredictionUnitId::Sample)
+                    .collect(),
+                values: targets
+                    .values
+                    .chunks(targets.cols)
+                    .map(<[f64]>::to_vec)
+                    .collect(),
+                target_names: rows.target_names.clone(),
+            }]
+        } else {
+            Vec::new()
+        };
+        let prediction = PredictionBlock {
+            prediction_id: Some(format!(
+                "n4m:{}:{}:{}",
+                task.node_plan.node_id,
+                task.phase.as_str(),
+                task.fold_id
+                    .as_ref()
+                    .map(|id| id.as_str())
+                    .unwrap_or("full")
+            )),
+            producer_node: task.node_plan.node_id.clone(),
+            producer_port: Some("oof".to_string()),
+            partition,
+            fold_id: (task.phase == Phase::FitCv)
+                .then(|| task.fold_id.clone())
+                .flatten(),
+            sample_ids: rows.sample_ids.clone(),
+            values: predicted
+                .data
+                .chunks(predicted.cols)
+                .map(<[f64]>::to_vec)
+                .collect(),
+            target_names: rows.target_names.clone(),
+        };
+        let outputs = BTreeMap::from([("oof".to_string(), self.handle(HandleKind::Prediction))]);
+        self.result(
+            task,
+            method,
+            outputs,
+            vec![prediction],
+            regression_targets,
+            artifact,
+        )
+    }
+}
+
+fn unsupported_phase(task: &NodeTask, phase: Phase) -> DagMlError {
+    DagMlError::RuntimeValidation(format!(
+        "native Methods estimator node `{}` does not run in {}",
+        task.node_plan.node_id,
+        phase.as_str()
+    ))
+}
+
+impl RuntimeController for MethodsEstimatorController {
+    fn controller_id(&self) -> &ControllerId {
+        &self.id
+    }
+
+    fn invoke(&self, task: &NodeTask) -> Result<NodeResult> {
+        Err(DagMlError::RuntimeValidation(format!(
+            "native Methods estimator node `{}` requires a RuntimeDataProvider numeric view",
+            task.node_plan.node_id
+        )))
+    }
+
+    fn invoke_with_data_provider(
+        &self,
+        task: &NodeTask,
+        provider: &dyn RuntimeDataProvider,
+    ) -> Result<NodeResult> {
+        if Some(&task.node_plan.kind) != self.role.node_kind().as_ref() {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "native Methods {} controller cannot serve {:?} node `{}`",
+                self.role.as_str(),
+                task.node_plan.kind,
+                task.node_plan.node_id
+            )));
+        }
+        let method = NodeMethod::from_task(task, self.role)?;
+        let features = self.input_features(task, provider)?;
+        match self.role {
+            N4mRole::Transformer | N4mRole::Selector => self.transform(task, &method, &features),
+            N4mRole::Regressor => self.regress(task, &method, &features),
+            N4mRole::SampleFilter => self.sample_filter(task, &method, &features),
+            role => Err(DagMlError::RuntimeValidation(format!(
+                "native Methods {} role has no native execution path",
+                role.as_str()
+            ))),
+        }
+    }
+
+    fn export_artifact_payload(&self, artifact_id: &ArtifactId) -> Result<Option<Vec<u8>>> {
+        Ok(self
+            .shared
+            .exported
+            .lock()
+            .map_err(|_| lock_poisoned("N4ME export"))?
+            .remove(artifact_id))
+    }
+
+    fn hydrate_artifact_payload(
+        &self,
+        request: &ArtifactMaterializationRequest,
+        payload: &[u8],
+    ) -> Result<HandleRef> {
+        let artifact = &request.artifact;
+        self.runtime.ensure_n4me_compatible(artifact)?;
+        if artifact.kind != NATIVE_ESTIMATOR_ARTIFACT_KIND
+            || artifact.backend != Some(ArtifactBackend::Raw)
+            || artifact.controller_id != self.id
+            || request.controller_id != self.id
+        {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "native Methods {} controller cannot hydrate artifact `{}`",
+                self.role.as_str(),
+                artifact.id
+            )));
+        }
+        if artifact.content_fingerprint.as_deref()
+            != Some(format!("{:x}", Sha256::digest(payload)).as_str())
+            || artifact.size_bytes != Some(payload.len() as u64)
+        {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "N4ME payload `{}` does not match its artifact reference",
+                artifact.id
+            )));
+        }
+        let inspected = inspect_methods_native_estimator_descriptor_v1(&self.id, payload)?;
+        if artifact.native_estimator_descriptor.as_ref() != Some(&inspected) {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "N4ME payload `{}` does not match its inspected estimator descriptor",
+                artifact.id
+            )));
+        }
+        let handle = self.handle(HandleKind::Model);
+        self.shared
+            .hydrated
+            .lock()
+            .map_err(|_| lock_poisoned("hydrated N4ME"))?
+            .insert(handle.handle, payload.to_vec());
+        Ok(handle)
+    }
+
+    fn release_hydrated_artifact_payload(&self, handle: &HandleRef) -> Result<()> {
+        if handle.kind != HandleKind::Model || handle.owner_controller != self.id {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "native Methods {} controller cannot release foreign handle {}",
+                self.role.as_str(),
+                handle.handle
+            )));
+        }
+        // PREDICT consumes its entry; rollback reaches this hook too, so an
+        // absent entry is not an ownership failure.
+        self.shared
+            .hydrated
+            .lock()
+            .map_err(|_| lock_poisoned("hydrated N4ME"))?
+            .remove(&handle.handle);
+        Ok(())
+    }
+}
+
+#[cfg(all(test, feature = "methods-optimizer-local"))]
+mod tests {
+    use std::path::PathBuf;
+    use std::sync::atomic::AtomicU64;
+
+    use serde_json::{json, Value};
+
+    use super::*;
+    use crate::bundle::{build_execution_bundle, ReplayPhaseRequest};
+    use crate::controller_adapter::derive_host_controller_registry;
+    use crate::data::{DataBinding, ExternalDataPlanEnvelope};
+    use crate::graph::GraphSpec;
+    use crate::plan::{build_execution_plan, CampaignSpec, ExecutionPlan};
+    use crate::runtime::{
+        BundleReplayExecution, DataMaterializationRequest, DataViewRequest, InMemoryArtifactStore,
+        MethodsPlsData, MethodsPlsDataRequest, RunContext, RuntimeArtifactStore,
+        SequentialScheduler,
+    };
+    use crate::training::TrainingDataIdentity;
+    use crate::{BundleId, NodeId, RunId, SampleId};
+
+    const ENVELOPE: &str =
+        include_str!("../tests/fixtures/package/data/coordinator_data_plan_envelope_sample12.json");
+    const SOURCE: &str = "exclude:outlier";
+
+    fn runtime() -> MethodsRuntime {
+        let library = std::env::var_os("N4M_LIBRARY_PATH")
+            .expect("native Methods estimator tests require N4M_LIBRARY_PATH");
+        MethodsRuntime::configure(library).unwrap()
+    }
+
+    /// Shared N4ME fixture written by the n4m Python binding.
+    fn fixture() -> Value {
+        let path = std::env::var_os("N4M_ESTIMATOR_ROLES_FIXTURE")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+                    "../../external/nirs4all-methods/parity/fixtures/estimator_roles_n4me.json",
+                )
+            });
+        serde_json::from_str(&std::fs::read_to_string(path).expect("n4m roles fixture")).unwrap()
+    }
+
+    fn rows(value: &Value) -> Vec<Vec<f64>> {
+        value
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| match row.as_array() {
+                Some(row) => row.iter().map(|v| v.as_f64().unwrap()).collect(),
+                None => vec![row.as_f64().unwrap()],
+            })
+            .collect()
+    }
+
+    fn base64(text: &str) -> Vec<u8> {
+        let value = |byte: u8| match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a' + 26,
+            b'0'..=b'9' => byte - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => panic!("invalid base64"),
+        };
+        let digits = text.bytes().filter(|byte| *byte != b'=').map(value);
+        let (mut out, mut buffer, mut bits) = (Vec::new(), 0u32, 0);
+        for digit in digits {
+            buffer = (buffer << 6) | u32::from(digit);
+            bits += 6;
+            if bits >= 8 {
+                bits -= 8;
+                out.push((buffer >> bits) as u8);
+            }
+        }
+        out
+    }
+
+    fn close(actual: &[f64], expected: &[f64], tolerance: f64, label: &str) {
+        assert_eq!(actual.len(), expected.len(), "{label}: length");
+        for (index, (a, e)) in actual.iter().zip(expected).enumerate() {
+            assert!(
+                (a - e).abs() <= tolerance * (1.0 + e.abs()),
+                "{label}[{index}]: {a} vs {e}"
+            );
+        }
+    }
+
+    fn sample(prefix: &str, index: usize) -> SampleId {
+        SampleId::new(format!("sample:{prefix}{index:02}")).unwrap()
+    }
+
+    /// Provider-owned numeric rows keyed by sample identity.
+    struct Provider {
+        train: BTreeMap<SampleId, (Vec<f64>, f64)>,
+        predict: Vec<(SampleId, Vec<f64>)>,
+        next: AtomicU64,
+    }
+
+    impl Provider {
+        fn new(x: &[Vec<f64>], y: &[f64], x_predict: &[Vec<f64>]) -> Self {
+            Self {
+                train: x
+                    .iter()
+                    .zip(y)
+                    .enumerate()
+                    .map(|(index, (row, y))| (sample("", index), (row.clone(), *y)))
+                    .collect(),
+                predict: x_predict
+                    .iter()
+                    .enumerate()
+                    .map(|(index, row)| (sample("p", index), row.clone()))
+                    .collect(),
+                next: AtomicU64::new(0),
+            }
+        }
+
+        fn handle(&self, kind: HandleKind) -> HandleRef {
+            HandleRef {
+                handle: self.next.fetch_add(1, Ordering::SeqCst) + 1,
+                kind,
+                owner_controller: ControllerId::new("controller:data.provider").unwrap(),
+            }
+        }
+
+        fn dataset(&self, ids: &[SampleId]) -> MethodsPlsDataset {
+            let rows = ids.iter().map(|id| &self.train[id]).collect::<Vec<_>>();
+            MethodsPlsDataset {
+                sample_ids: ids.to_vec(),
+                x: MethodsPlsMatrix {
+                    values: rows.iter().flat_map(|(x, _)| x.iter().copied()).collect(),
+                    rows: rows.len(),
+                    cols: rows[0].0.len(),
+                },
+                y: Some(MethodsPlsMatrix {
+                    values: rows.iter().map(|(_, y)| *y).collect(),
+                    rows: rows.len(),
+                    cols: 1,
+                }),
+                target_names: vec!["y".to_string()],
+            }
+        }
+    }
+
+    impl RuntimeDataProvider for Provider {
+        fn materialize(&self, _request: &DataMaterializationRequest) -> Result<HandleRef> {
+            Ok(self.handle(HandleKind::Data))
+        }
+
+        fn make_view(&self, _request: &DataViewRequest) -> Result<HandleRef> {
+            Ok(self.handle(HandleKind::DataView))
+        }
+
+        fn training_data_identity(
+            &self,
+            binding: &DataBinding,
+        ) -> Result<Option<TrainingDataIdentity>> {
+            let mut identity = TrainingDataIdentity {
+                requirement_key: crate::data::data_binding_requirement_key(
+                    &binding.node_id,
+                    &binding.input_name,
+                ),
+                schema_fingerprint: "a".repeat(64),
+                plan_fingerprint: "b".repeat(64),
+                relation_fingerprint: "c".repeat(64),
+                data_content_fingerprint: "d".repeat(64),
+                target_content_fingerprint: "e".repeat(64),
+                identity_fingerprint: String::new(),
+            };
+            identity.identity_fingerprint = identity.compute_fingerprint()?;
+            Ok(Some(identity))
+        }
+
+        fn methods_pls_capability(&self) -> Result<()> {
+            Ok(())
+        }
+
+        fn methods_pls_data(&self, request: &MethodsPlsDataRequest) -> Result<MethodsPlsData> {
+            if request.phase == Phase::Predict {
+                return Ok(MethodsPlsData {
+                    fit: MethodsPlsDataset {
+                        sample_ids: self.predict.iter().map(|(id, _)| id.clone()).collect(),
+                        x: MethodsPlsMatrix {
+                            values: self.predict.iter().flat_map(|(_, x)| x.clone()).collect(),
+                            rows: self.predict.len(),
+                            cols: self.predict[0].1.len(),
+                        },
+                        y: None,
+                        target_names: vec!["y".to_string()],
+                    },
+                    prediction: None,
+                });
+            }
+            Ok(MethodsPlsData {
+                fit: self.dataset(request.fit_view.sample_ids.as_ref().unwrap()),
+                prediction: request
+                    .prediction_view
+                    .as_ref()
+                    .map(|view| self.dataset(view.sample_ids.as_ref().unwrap())),
+            })
+        }
+    }
+
+    /// Replay store hydrating raw payloads through their owning controller.
+    struct HydratingStore<'a> {
+        controllers: &'a RuntimeControllerRegistry,
+        payloads: &'a BTreeMap<ArtifactId, Vec<u8>>,
+    }
+
+    impl RuntimeArtifactStore for HydratingStore<'_> {
+        fn materialize(&self, request: &ArtifactMaterializationRequest) -> Result<HandleRef> {
+            self.controllers
+                .get(&request.controller_id)
+                .unwrap()
+                .hydrate_artifact_payload(request, &self.payloads[&request.artifact.id])
+        }
+    }
+
+    fn envelope() -> ExternalDataPlanEnvelope {
+        serde_json::from_str(ENVELOPE).unwrap()
+    }
+
+    fn node(id: &str, kind: &str, method_id: &str, params: Value, output: Value) -> Value {
+        let mut all = json!({"method_id": method_id});
+        all.as_object_mut()
+            .unwrap()
+            .extend(params.as_object().unwrap().clone());
+        json!({
+            "id": id, "kind": kind, "operator": format!("n4m:{method_id}"), "params": all,
+            "ports": {
+                "inputs": [{"name": "x", "kind": "data", "representation": "tabular_numeric", "cardinality": "one", "description": ""}],
+                "outputs": [output]
+            },
+            "metadata": {}, "seed_label": null
+        })
+    }
+
+    fn data_edge(source: &str, target: &str) -> Value {
+        json!({
+            "source": {"node_id": source, "port_name": "x_out"},
+            "target": {"node_id": target, "port_name": "x"},
+            "contract": {"kind": "data", "representation": "tabular_numeric", "requires_oof": false, "requires_fold_alignment": true, "propagates_lineage": true}
+        })
+    }
+
+    /// Plan of `nodes` resolved through the controllers derived from the live
+    /// n4m manifest; the first node reads the attested data binding.
+    fn plan(nodes: Vec<Value>, edges: Vec<Value>, folds: usize, n_samples: usize) -> ExecutionPlan {
+        let runtime = runtime();
+        let registry = derive_host_controller_registry(
+            &methods_estimator_host_controller_specs(&runtime).unwrap(),
+        )
+        .unwrap();
+        let source = nodes[0]["id"].as_str().unwrap().to_string();
+        let graph: GraphSpec = serde_json::from_value(json!({
+            "id": "graph:n4m.roles", "interface": {"inputs": [], "outputs": []},
+            "nodes": nodes, "edges": edges, "search_space_fingerprint": null, "metadata": {}
+        }))
+        .unwrap();
+        let envelope = envelope();
+        let binding = json!({
+            "node_id": source, "input_name": "x", "request_id": "nir-to-tabular",
+            "schema_fingerprint": envelope.schema_fingerprint,
+            "plan_fingerprint": envelope.plan_fingerprint,
+            "relation_fingerprint": envelope.relation_fingerprint,
+            "output_representation": "tabular_numeric", "feature_set_id": "x",
+            "source_ids": ["nir"], "require_relations": false
+        });
+        let ids = (0..n_samples)
+            .map(|index| sample("", index))
+            .collect::<Vec<_>>();
+        let fold_size = n_samples / folds;
+        let fold_set = json!({
+            "id": "outer",
+            "sample_ids": ids,
+            "folds": (0..folds).map(|fold| {
+                let (validation, train): (Vec<_>, Vec<_>) = ids
+                    .iter()
+                    .enumerate()
+                    .partition(|(index, _)| index / fold_size == fold);
+                json!({
+                    "fold_id": format!("fold:{fold}"),
+                    "train_sample_ids": train.into_iter().map(|(_, id)| id).collect::<Vec<_>>(),
+                    "validation_sample_ids": validation.into_iter().map(|(_, id)| id).collect::<Vec<_>>(),
+                    "metadata": {}
+                })
+            }).collect::<Vec<_>>(),
+            "sample_groups": {}
+        });
+        let campaign: CampaignSpec = serde_json::from_value(json!({
+            "id": "campaign:n4m.roles", "root_seed": 7,
+            "split_invocation": {"id": "split:outer", "controller_id": null, "params": {}, "fold_set": fold_set},
+            "data_bindings": {source: [binding]}
+        }))
+        .unwrap();
+        build_execution_plan("plan:n4m.roles", graph, campaign, &registry).unwrap()
+    }
+
+    fn controllers() -> RuntimeControllerRegistry {
+        let mut registry = RuntimeControllerRegistry::new();
+        register_methods_estimator_controllers(&mut registry, runtime()).unwrap();
+        registry
+    }
+
+    /// PREDICT replay of `plan` from its REFIT records and raw N4ME payloads in
+    /// a fresh controller registration (a new process for the native states).
+    fn replay_predict(
+        plan: &ExecutionPlan,
+        records: Vec<crate::bundle::RefitArtifactRecord>,
+        payloads: BTreeMap<ArtifactId, Vec<u8>>,
+        provider: &Provider,
+    ) -> Vec<PredictionBlock> {
+        let mut bundle = build_execution_bundle(
+            BundleId::new("bundle:n4m.roles").unwrap(),
+            plan,
+            Some(plan.variants[0].variant_id.clone()),
+            BTreeMap::new(),
+            records,
+        )
+        .unwrap();
+        bundle.raw_artifact_payloads = payloads.clone();
+        let key = crate::data::data_binding_requirement_key(
+            &plan
+                .node_plans
+                .values()
+                .find(|node| !node.data_bindings.is_empty())
+                .unwrap()
+                .node_id,
+            "x",
+        );
+        let controllers = controllers();
+        let mut ctx = RunContext::new(RunId::new("run:n4m.roles.predict").unwrap(), Some(7));
+        SequentialScheduler
+            .execute_bundle_replay(
+                BundleReplayExecution {
+                    plan,
+                    bundle: &bundle,
+                    replay_request: &ReplayPhaseRequest {
+                        bundle_id: bundle.bundle_id.clone(),
+                        phase: Phase::Predict,
+                        data_envelope_keys: vec![key.clone()],
+                    },
+                    prediction_cache_store: None,
+                    controllers: &controllers,
+                    data_provider: provider,
+                    artifact_store: &HydratingStore {
+                        controllers: &controllers,
+                        payloads: &payloads,
+                    },
+                    data_envelopes: &BTreeMap::from([(key, envelope())]),
+                },
+                &mut ctx,
+            )
+            .unwrap();
+        ctx.prediction_store.blocks().to_vec()
+    }
+
+    /// Direct `n4m::roles` reference of the graph: outlier filter on the
+    /// training rows, SNV, then CPPLS; returns predictions for `predict_rows`.
+    struct Direct {
+        context: Context,
+        snv: Estimator,
+        cppls: Estimator,
+        kept: Vec<bool>,
+    }
+
+    impl Direct {
+        fn fit(x: &[Vec<f64>], y: &[f64]) -> Self {
+            let context = Context::new().unwrap();
+            let flat = x.concat();
+            let x_view = MatrixRef::row_major(&flat, x.len(), x[0].len()).unwrap();
+            let y_view = MatrixRef::row_major(y, y.len(), 1).unwrap();
+            let mut filter = Estimator::new(&context, "filters.y_outlier", None).unwrap();
+            filter
+                .fit(&context, &FitInputs::new(x_view).y(y_view))
+                .unwrap();
+            let kept = filter.apply_mask(&context, x_view, Some(y_view)).unwrap();
+            let x_kept = x
+                .iter()
+                .zip(&kept)
+                .filter(|(_, keep)| **keep)
+                .flat_map(|(row, _)| row.clone())
+                .collect::<Vec<_>>();
+            let y_kept = y
+                .iter()
+                .zip(&kept)
+                .filter(|(_, keep)| **keep)
+                .map(|(y, _)| *y)
+                .collect::<Vec<_>>();
+            let n = y_kept.len();
+            let x_kept_view = MatrixRef::row_major(&x_kept, n, x[0].len()).unwrap();
+            let y_kept_view = MatrixRef::row_major(&y_kept, n, 1).unwrap();
+            let mut snv = Estimator::new(&context, "preprocessing.scatter.snv", None).unwrap();
+            snv.fit(&context, &FitInputs::new(x_kept_view).y(y_kept_view))
+                .unwrap();
+            let x_snv = snv.transform(&context, x_kept_view).unwrap();
+            let mut params = Params::new(&context, "models.pls.cppls").unwrap();
+            params.set_int("n_components", 3).unwrap();
+            let mut cppls = Estimator::new(&context, "models.pls.cppls", Some(&params)).unwrap();
+            cppls
+                .fit(
+                    &context,
+                    &FitInputs::new(MatrixRef::row_major(&x_snv.data, n, x_snv.cols).unwrap())
+                        .y(y_kept_view),
+                )
+                .unwrap();
+            Self {
+                context,
+                snv,
+                cppls,
+                kept,
+            }
+        }
+
+        fn predict(&self, x: &[Vec<f64>]) -> Vec<f64> {
+            let flat = x.concat();
+            let x_view = MatrixRef::row_major(&flat, x.len(), x[0].len()).unwrap();
+            let x_snv = self.snv.transform(&self.context, x_view).unwrap();
+            self.cppls
+                .predict(
+                    &self.context,
+                    MatrixRef::row_major(&x_snv.data, x.len(), x_snv.cols).unwrap(),
+                )
+                .unwrap()
+                .data
+        }
+    }
+
+    fn block<'a>(
+        blocks: &'a [PredictionBlock],
+        partition: PredictionPartition,
+        fold: Option<&str>,
+    ) -> &'a PredictionBlock {
+        blocks
+            .iter()
+            .find(|block| {
+                block.producer_node.as_str() == "model:cppls"
+                    && block.partition == partition
+                    && block.fold_id.as_ref().map(|id| id.as_str()) == fold
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn live_manifest_derives_every_graph_role_and_registers_executable_roles() {
+        let runtime = runtime();
+        let specs = methods_estimator_host_controller_specs(&runtime).unwrap();
+        let registry = derive_host_controller_registry(&specs).unwrap();
+        for role in crate::n4m_roles::N4M_GRAPH_ROLES {
+            let manifest = registry
+                .get(&ControllerId::new(role.controller_id().unwrap()).unwrap())
+                .unwrap();
+            assert_eq!(Some(manifest.operator_kind.clone()), role.node_kind());
+            let native = roles::methods()
+                .unwrap()
+                .into_iter()
+                .filter(|info| method_roles(info).contains(&role))
+                .map(|info| format!("n4m:{}", info.method_id))
+                .collect::<BTreeSet<_>>();
+            assert_eq!(manifest.operator_selectors[0].refs, native);
+        }
+        let controllers = controllers();
+        for role in METHODS_ESTIMATOR_EXECUTABLE_ROLES {
+            assert!(controllers
+                .get(&ControllerId::new(role.controller_id().unwrap()).unwrap())
+                .is_some());
+        }
+    }
+
+    #[test]
+    fn exclude_snv_cppls_graph_matches_direct_roles_and_replays_n4me() {
+        let fixture = fixture();
+        let x = rows(&fixture["x_train"]);
+        let mut y = rows(&fixture["y_train"]).concat();
+        // One gross target outlier the IQR filter must drop from training.
+        y[5] = 1.0e3;
+        let x_predict = rows(&fixture["x_test"]);
+        let provider = Provider::new(&x, &y, &x_predict);
+        let plan = plan(
+            vec![
+                node(
+                    SOURCE,
+                    "exclude",
+                    "filters.y_outlier",
+                    json!({}),
+                    json!({"name": "x_out", "kind": "data", "representation": "tabular_numeric", "cardinality": "one", "description": ""}),
+                ),
+                node(
+                    "transform:snv",
+                    "transform",
+                    "preprocessing.scatter.snv",
+                    json!({}),
+                    json!({"name": "x_out", "kind": "data", "representation": "tabular_numeric", "cardinality": "one", "description": ""}),
+                ),
+                node(
+                    "model:cppls",
+                    "model",
+                    "models.pls.cppls",
+                    json!({"n_components": 3}),
+                    json!({"name": "oof", "kind": "prediction", "representation": null, "cardinality": "one", "description": ""}),
+                ),
+            ],
+            vec![
+                data_edge(SOURCE, "transform:snv"),
+                data_edge("transform:snv", "model:cppls"),
+            ],
+            3,
+            x.len(),
+        );
+        assert_eq!(
+            plan.node_plans[&NodeId::new(SOURCE).unwrap()]
+                .controller_id
+                .as_str(),
+            "controller:n4m.sample_filter"
+        );
+        let controllers = controllers();
+        let mut ctx = RunContext::new(RunId::new("run:n4m.roles").unwrap(), Some(7));
+        ctx.variant_id = Some(plan.variants[0].variant_id.clone());
+        SequentialScheduler
+            .execute_campaign_phase_with_data_provider(
+                &plan,
+                &controllers,
+                &provider,
+                &mut ctx,
+                Phase::FitCv,
+            )
+            .unwrap();
+        let fold_set = plan.fold_set.as_ref().unwrap();
+        let index = |id: &SampleId| {
+            id.as_str()
+                .trim_start_matches("sample:")
+                .parse::<usize>()
+                .unwrap()
+        };
+        for fold in &fold_set.folds {
+            let train = fold.train_sample_ids.iter().map(index).collect::<Vec<_>>();
+            let validation = fold
+                .validation_sample_ids
+                .iter()
+                .map(index)
+                .collect::<Vec<_>>();
+            let direct = Direct::fit(
+                &train.iter().map(|i| x[*i].clone()).collect::<Vec<_>>(),
+                &train.iter().map(|i| y[*i]).collect::<Vec<_>>(),
+            );
+            let actual = block(
+                ctx.prediction_store.blocks(),
+                PredictionPartition::Validation,
+                Some(fold.fold_id.as_str()),
+            );
+            assert_eq!(actual.sample_ids, fold.validation_sample_ids);
+            close(
+                &actual.values.concat(),
+                &direct.predict(&validation.iter().map(|i| x[*i].clone()).collect::<Vec<_>>()),
+                1e-9,
+                fold.fold_id.as_str(),
+            );
+        }
+
+        let mut store = InMemoryArtifactStore::new();
+        let mut refit = RunContext::new(RunId::new("run:n4m.roles.refit").unwrap(), Some(7));
+        refit.variant_id = Some(plan.variants[0].variant_id.clone());
+        SequentialScheduler
+            .execute_campaign_phase_with_data_provider_and_artifact_store(
+                &plan,
+                &controllers,
+                &provider,
+                &mut store,
+                &mut refit,
+                Phase::Refit,
+            )
+            .unwrap();
+        let direct = Direct::fit(&x, &y);
+        assert!(!direct.kept[5]);
+        let final_block = block(
+            refit.prediction_store.blocks(),
+            PredictionPartition::Final,
+            None,
+        );
+        let kept_ids = (0..x.len())
+            .filter(|i| direct.kept[*i])
+            .map(|i| sample("", i))
+            .collect::<Vec<_>>();
+        assert_eq!(final_block.sample_ids, kept_ids);
+        let kept_x = (0..x.len())
+            .filter(|i| direct.kept[*i])
+            .map(|i| x[i].clone())
+            .collect::<Vec<_>>();
+        close(
+            &final_block.values.concat(),
+            &direct.predict(&kept_x),
+            1e-9,
+            "refit",
+        );
+
+        let records = store.refit_artifacts();
+        assert_eq!(
+            records
+                .iter()
+                .map(|record| (record.node_id.as_str(), record.controller_id.as_str()))
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([
+                ("model:cppls", "controller:n4m.regressor"),
+                ("transform:snv", "controller:n4m.transformer"),
+            ])
+        );
+        let mut payloads = BTreeMap::new();
+        for record in &records {
+            let controller = controllers.get(&record.controller_id).unwrap();
+            let payload = controller
+                .export_artifact_payload(&record.artifact.id)
+                .unwrap()
+                .unwrap();
+            assert!(controller
+                .export_artifact_payload(&record.artifact.id)
+                .unwrap()
+                .is_none());
+            let descriptor = record
+                .artifact
+                .native_estimator_descriptor
+                .as_ref()
+                .unwrap();
+            assert_eq!(record.artifact.kind, NATIVE_ESTIMATOR_ARTIFACT_KIND);
+            assert_eq!(descriptor.format, "N4ME");
+            assert_eq!(
+                descriptor,
+                &inspect_methods_native_estimator_descriptor_v1(&record.controller_id, &payload)
+                    .unwrap()
+            );
+            payloads.insert(record.artifact.id.clone(), payload);
+        }
+        let cppls = records
+            .iter()
+            .find(|record| record.node_id.as_str() == "model:cppls")
+            .unwrap();
+        let descriptor = cppls.artifact.native_estimator_descriptor.as_ref().unwrap();
+        assert_eq!(descriptor.method_id, "models.pls.cppls");
+        assert_eq!(descriptor.roles, vec![N4mRole::Regressor]);
+        assert!(descriptor.capabilities.contains(&"predict".to_string()));
+        let context = Context::new().unwrap();
+        let reloaded = Estimator::from_n4me(&context, &payloads[&cppls.artifact.id]).unwrap();
+        let snv = records
+            .iter()
+            .find(|record| record.node_id.as_str() == "transform:snv")
+            .unwrap();
+        let snv_reloaded = Estimator::from_n4me(&context, &payloads[&snv.artifact.id]).unwrap();
+        let flat = x_predict.concat();
+        let x_snv = snv_reloaded
+            .transform(
+                &context,
+                MatrixRef::row_major(&flat, x_predict.len(), x_predict[0].len()).unwrap(),
+            )
+            .unwrap();
+        close(
+            &reloaded
+                .predict(
+                    &context,
+                    MatrixRef::row_major(&x_snv.data, x_predict.len(), x_snv.cols).unwrap(),
+                )
+                .unwrap()
+                .data,
+            &direct.predict(&x_predict),
+            1e-12,
+            "n4me round trip",
+        );
+
+        let predictions = replay_predict(&plan, records, payloads, &provider);
+        let predicted = block(&predictions, PredictionPartition::Final, None);
+        assert_eq!(
+            predicted.sample_ids,
+            (0..x_predict.len())
+                .map(|i| sample("p", i))
+                .collect::<Vec<_>>()
+        );
+        close(
+            &predicted.values.concat(),
+            &direct.predict(&x_predict),
+            1e-12,
+            "replayed predict",
+        );
+    }
+
+    /// PREDICT replay of the Python-written CPPLS N4ME (default parameters)
+    /// through a one-node plan whose node sets `params`.
+    fn python_cppls_replay(params: Value) -> (Vec<f64>, Vec<f64>) {
+        let fixture = fixture();
+        let case = fixture["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|case| case["method_id"] == "models.pls.cppls")
+            .unwrap();
+        assert!(case["params"].as_object().unwrap().is_empty());
+        let x = rows(&fixture["x_train"]);
+        let y = rows(&fixture["y_train"]).concat();
+        let provider = Provider::new(&x, &y, &rows(&fixture["x_test"]));
+        let plan = plan(
+            vec![node(
+                "model:cppls",
+                "model",
+                "models.pls.cppls",
+                params,
+                json!({"name": "oof", "kind": "prediction", "representation": null, "cardinality": "one", "description": ""}),
+            )],
+            Vec::new(),
+            3,
+            x.len(),
+        );
+        let node = &plan.node_plans[&NodeId::new("model:cppls").unwrap()];
+        let payload = base64(case["n4me_base64"].as_str().unwrap());
+        let descriptor =
+            inspect_methods_native_estimator_descriptor_v1(&node.controller_id, &payload).unwrap();
+        let artifact = ArtifactRef {
+            id: ArtifactId::new("artifact:n4m:model:cppls:python").unwrap(),
+            kind: NATIVE_ESTIMATOR_ARTIFACT_KIND.to_string(),
+            controller_id: node.controller_id.clone(),
+            backend: Some(ArtifactBackend::Raw),
+            uri: Some("methods/model_cppls.n4me".to_string()),
+            content_fingerprint: Some(descriptor.artifact_sha256.clone()),
+            size_bytes: Some(payload.len() as u64),
+            plugin: None,
+            plugin_version: None,
+            abi_major: Some(METHODS_ABI_MAJOR),
+            abi_min_minor: Some(METHODS_N4ME_MIN_ABI_MINOR),
+            native_predictor_descriptor: None,
+            native_estimator_descriptor: Some(descriptor),
+        };
+        let record = crate::bundle::RefitArtifactRecord {
+            node_id: node.node_id.clone(),
+            controller_id: node.controller_id.clone(),
+            artifact: artifact.clone(),
+            params_fingerprint: node.params_fingerprint.clone(),
+            training_loss_fingerprint: None,
+            data_requirement_keys: vec!["model:cppls.x".to_string()],
+            prediction_requirement_keys: Vec::new(),
+        };
+        let predictions = replay_predict(
+            &plan,
+            vec![record],
+            BTreeMap::from([(artifact.id, payload)]),
+            &provider,
+        );
+        (
+            block(&predictions, PredictionPartition::Final, None)
+                .values
+                .concat(),
+            rows(&case["predict"]).concat(),
+        )
+    }
+
+    #[test]
+    fn python_trained_n4me_replays_through_controller_predict() {
+        let (actual, expected) = python_cppls_replay(json!({}));
+        close(&actual, &expected, 1e-12, "python n4me");
+    }
+
+    #[test]
+    fn training_row_states_and_mismatched_replays_are_refused() {
+        let fixture = fixture();
+        let x = rows(&fixture["x_train"]);
+        let y = rows(&fixture["y_train"]).concat();
+        let provider = Provider::new(&x, &y, &rows(&fixture["x_test"]));
+        let output = json!({"name": "oof", "kind": "prediction", "representation": null, "cardinality": "one", "description": ""});
+        let kernel = |params| {
+            plan(
+                vec![node(
+                    "model:kernel",
+                    "model",
+                    "models.pls.kernel",
+                    params,
+                    output.clone(),
+                )],
+                Vec::new(),
+                3,
+                x.len(),
+            )
+        };
+        let run = |plan: &ExecutionPlan, phase| {
+            let mut ctx = RunContext::new(RunId::new("run:n4m.kernel").unwrap(), Some(7));
+            ctx.variant_id = Some(plan.variants[0].variant_id.clone());
+            let mut store = InMemoryArtifactStore::new();
+            SequentialScheduler
+                .execute_campaign_phase_with_data_provider_and_artifact_store(
+                    plan,
+                    &controllers(),
+                    &provider,
+                    &mut store,
+                    &mut ctx,
+                    phase,
+                )
+                .map(|_| (store, ctx))
+        };
+        let refused = run(&kernel(json!({})), Phase::FitCv)
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(
+            refused.contains(METHODS_ESTIMATOR_ALLOW_TRAINING_ROWS),
+            "{refused}"
+        );
+        let unknown = run(
+            &kernel(json!({"unsafe_flags": ["allow_everything"]})),
+            Phase::FitCv,
+        )
+        .err()
+        .unwrap()
+        .to_string();
+        assert!(unknown.contains("unknown unsafe flag"), "{unknown}");
+        let (store, ctx) = run(
+            &kernel(json!({"unsafe_flags": [METHODS_ESTIMATOR_ALLOW_TRAINING_ROWS]})),
+            Phase::Refit,
+        )
+        .unwrap();
+        assert_eq!(store.refit_artifacts().len(), 1);
+        assert!(ctx.lineage.records().any(|record| record
+            .unsafe_flags
+            .contains(METHODS_ESTIMATOR_ALLOW_TRAINING_ROWS)));
+
+        // The operator routes to the regressor controller; the node's method
+        // is only a transformer, which that controller refuses.
+        let mut transformer = node(
+            "model:cppls",
+            "model",
+            "models.pls.cppls",
+            json!({}),
+            output.clone(),
+        );
+        transformer["params"]["method_id"] = json!("preprocessing.scatter.snv");
+        let wrong_role = run(
+            &plan(vec![transformer], Vec::new(), 3, x.len()),
+            Phase::FitCv,
+        )
+        .err()
+        .unwrap()
+        .to_string();
+        assert!(
+            wrong_role.contains("is not a regressor estimator"),
+            "{wrong_role}"
+        );
+        let wrong_type = run(
+            &plan(
+                vec![node(
+                    "model:cppls",
+                    "model",
+                    "models.pls.cppls",
+                    json!({"n_components": "two"}),
+                    output.clone(),
+                )],
+                Vec::new(),
+                3,
+                x.len(),
+            ),
+            Phase::FitCv,
+        )
+        .err()
+        .unwrap()
+        .to_string();
+        assert!(wrong_type.contains("n_components"), "{wrong_type}");
+
+        let mismatch = std::panic::catch_unwind(|| python_cppls_replay(json!({"n_components": 3})))
+            .err()
+            .unwrap();
+        let message = mismatch
+            .downcast_ref::<String>()
+            .cloned()
+            .unwrap_or_default();
+        assert!(message.contains("does not match node method"), "{message}");
+    }
+}

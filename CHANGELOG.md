@@ -9,6 +9,20 @@ deprecations follow [ADR-14](docs/adr/ADR-14-deprecation-policy.md).
 
 ## [Unreleased]
 
+### Added
+
+- Derive one controller spec per n4m role from the native Methods manifest
+  (Rust, Python and WASM) and add manifest templates for `exclude`, `split` and
+  `augmentation` nodes.
+- Execute n4m transformer, selector, regressor and sample-filter estimators
+  natively through generic role controllers with portable N4ME artifacts and a
+  content-bound native estimator descriptor.
+
+### Changed
+
+- Require the `n4m` 0.2.0 binding (Methods ABI 2.13) for the
+  `methods-optimizer` feature.
+
 ## [0.3.27] - 2026-09-24
 
 ### Added

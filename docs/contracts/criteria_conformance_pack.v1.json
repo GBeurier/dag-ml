@@ -41,12 +41,12 @@
     },
     {
       "path": "bindings/r/tests/local_implementation_registry.R",
-      "sha256": "07374175b1e46f5245a6d98557c99c6521b7d05205ac5ceea4f4524cfbd5adf0",
+      "sha256": "e11d9317065390ecfb2039b7b2882cab9b59e3a98a897b74171b612e399fc3f8",
       "kind": "r_binding_test"
     },
     {
       "path": "crates/dag-ml-capi/include/dag_ml.h",
-      "sha256": "c55afaee59d8d3761d2c37b6a517b027e0e3901a5cb4f913edf8967f5ee4255c",
+      "sha256": "22c4cfa49adf7eb12f9985967b0ddb7429d6e61a764ec427e483f3e9b102fdb0",
       "kind": "c_abi_header"
     },
     {
@@ -61,17 +61,17 @@
     },
     {
       "path": "crates/dag-ml-cli/src/main.rs",
-      "sha256": "7854ab0054cdb6956c6a930a6530106cd0838ca0fec9ab21051ef46248882d5a",
+      "sha256": "aabb545ed232fd1069e9ddf970a1934c7bd45a7cab6eb748305d164e85c85815",
       "kind": "cli_validator"
     },
     {
       "path": "crates/dag-ml-cli/tests/cli_contracts.rs",
-      "sha256": "4c4aec225baea51fa47338570221d7de80234d20f1fe983de342788912b337c7",
+      "sha256": "fd33f30c6910641ba4cf420d7bd34a0d843661fa866d3b55338c23696b2469b2",
       "kind": "cli_test"
     },
     {
       "path": "crates/dag-ml-core/src/criteria.rs",
-      "sha256": "dd3ad390ed12e3081c4e00b7f9b4a13083eaa0e4dde0c86b4adae2d845eff7d4",
+      "sha256": "e7b34ed3e08f38697fd70b5b41264af7a63666e0893d6a8f3a879fc2c4da6800",
       "kind": "rust_contract"
     },
     {
@@ -81,27 +81,27 @@
     },
     {
       "path": "crates/dag-ml-core/src/metric_provider.rs",
-      "sha256": "cb274726ae984de4eacff06bb29f7ffa8aa276a470839e21f585dd1529717c27",
+      "sha256": "b73fc40774da78087bc008d83532a74eb7c5fffbbf6c017c051540816e2aa6fb",
       "kind": "rust_provider_contract"
     },
     {
       "path": "crates/dag-ml-core/src/metrics.rs",
-      "sha256": "215fe9dafbb70bc3cef5c378c0a3e41d703c20d7278c0049686abcb36ca14eff",
+      "sha256": "1020a7735385245b72104713a261455c0212da74b1254fccc65655c6384625ce",
       "kind": "native_metric_adapter"
     },
     {
       "path": "crates/dag-ml-core/src/runtime/artifact.rs",
-      "sha256": "07ddb83e2d7b9ad770262ce6de03055580fca6216b3381d875fcc2138b5ce9d6",
+      "sha256": "1c8e0161d7e97d785711c06ac0ead8ea85dd9553c2a9b00ae8e7aaaa6c14980c",
       "kind": "rust_lineage_contract"
     },
     {
       "path": "crates/dag-ml-py/python/dag_ml/__init__.py",
-      "sha256": "b376619625eeb5a03a97470090a994bda75d4577f3e7be30c1f651f654a083fa",
+      "sha256": "0016fcc90aa13c2e0097a17d27a16bdf6285f887b01eced03f21c4736c2c3f07",
       "kind": "python_facade"
     },
     {
       "path": "crates/dag-ml-py/python/dag_ml/__init__.pyi",
-      "sha256": "6358e734a4f1f366362526f92a13659a30564b8b7738969b4fa30501061cec9f",
+      "sha256": "1d678eaed3c3d832509808ebeda2755ff12a86a0e4d04ad801a389366934a776",
       "kind": "python_types"
     },
     {
@@ -121,7 +121,7 @@
     },
     {
       "path": "crates/dag-ml-wasm/src/lib.rs",
-      "sha256": "1eb8c4cb0251c6d7219e2b0ff202049a44dbc6cba24213a8c9ffb5dc05109493",
+      "sha256": "cde4d8baabbdc012a47106f9de36c7125a2331cb7d1cf9832f067c987a59e37f",
       "kind": "javascript_binding"
     },
     {
@@ -176,7 +176,7 @@
     },
     {
       "path": "docs/contracts/node_result.schema.json",
-      "sha256": "7ee89f5d44d9ca2f7a4cb7a4bf725d89c9081530bfd6255e5b58b47e73f0950d",
+      "sha256": "bbfd6d3fa75ddee594df2812246a750231e863ba090eb36fb1db71c015716231",
       "kind": "schema"
     },
     {
@@ -255,5 +255,5 @@
   "runtime_only_negative_cases": [
     "provider_result_non_finite"
   ],
-  "pack_checksum": "dfcd791278b68cd06e8d16f30cac6c9c0132a7abc8c74b010de4c09e28009012"
+  "pack_checksum": "46cc1d2b1d6928899c1b26cffb86b1338d5ac4905e8754273ddc1efee421a487"
 }

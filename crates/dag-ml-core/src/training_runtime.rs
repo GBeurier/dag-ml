@@ -2142,7 +2142,9 @@ pub fn execute_training(input: TrainingExecutionInput<'_>) -> Result<TrainingOut
     {
         execution_bundle.methods_hpo_resume_state = methods_hpo_resume_state.clone();
         for record in &execution_bundle.refit_artifacts {
-            if record.artifact.kind != "n4m_model" {
+            if record.artifact.kind != "n4m_model"
+                && record.artifact.kind != crate::runtime::NATIVE_ESTIMATOR_ARTIFACT_KIND
+            {
                 continue;
             }
             let controller = input
@@ -2150,7 +2152,7 @@ pub fn execute_training(input: TrainingExecutionInput<'_>) -> Result<TrainingOut
                 .get(&record.controller_id)
                 .ok_or_else(|| {
                     DagMlError::RuntimeValidation(format!(
-                        "missing controller `{}` for N4MM export",
+                        "missing controller `{}` for native Methods export",
                         record.controller_id
                     ))
                 })?;
@@ -2158,7 +2160,7 @@ pub fn execute_training(input: TrainingExecutionInput<'_>) -> Result<TrainingOut
                 .export_artifact_payload(&record.artifact.id)?
                 .ok_or_else(|| {
                     DagMlError::RuntimeValidation(format!(
-                        "Methods controller did not export durable N4MM payload `{}`",
+                        "Methods controller did not export durable native payload `{}`",
                         record.artifact.id
                     ))
                 })?;

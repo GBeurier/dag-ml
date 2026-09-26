@@ -168,6 +168,14 @@ fn derive_controller_manifest_list_json(host_controller_specs_json: &str) -> PyR
     serde_json::to_string(&manifests).map_err(py_serde_error)
 }
 
+/// One HostControllerSpec per graph role of an n4m method manifest
+/// (`n4m_method_manifest_json`).
+#[pyfunction]
+fn n4m_host_controller_specs_json(manifest_json: &str) -> PyResult<String> {
+    let specs = dag_ml_core::n4m_host_controller_specs(manifest_json).map_err(py_core_error)?;
+    serde_json::to_string(&specs).map_err(py_serde_error)
+}
+
 #[pyfunction]
 fn validate_pipeline_dsl_json(json: &str) -> PyResult<()> {
     let spec = parse_pipeline_dsl_json(json.as_bytes()).map_err(py_core_error)?;
@@ -557,6 +565,7 @@ fn _dag_ml(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
         derive_controller_manifest_list_json,
         module
     )?)?;
+    module.add_function(wrap_pyfunction!(n4m_host_controller_specs_json, module)?)?;
     module.add_function(wrap_pyfunction!(validate_pipeline_dsl_json, module)?)?;
     module.add_function(wrap_pyfunction!(validate_execution_plan_json, module)?)?;
     module.add_function(wrap_pyfunction!(validate_execution_bundle_json, module)?)?;
@@ -737,6 +746,7 @@ fn contract_manifest() -> serde_json::Value {
             "compile_pipeline_dsl_with_controller_registry",
             "derive_controller_manifest_from_host_spec",
             "derive_controller_manifest_registry_from_host_specs",
+            "derive_n4m_host_controller_specs",
             "build_execution_plan",
             "fold_set_fingerprint",
             "project_training_request",
@@ -773,6 +783,7 @@ fn contract_manifest() -> serde_json::Value {
             "validate_controller_manifest_list_json",
             "derive_controller_manifest_json",
             "derive_controller_manifest_list_json",
+            "n4m_host_controller_specs_json",
             "validate_pipeline_dsl_json",
             "validate_execution_plan_json",
             "validate_execution_bundle_json",
@@ -828,6 +839,7 @@ fn contract_manifest() -> serde_json::Value {
             "validate_controller_manifest_list_json",
             "derive_controller_manifest_json",
             "derive_controller_manifest_list_json",
+            "n4m_host_controller_specs_json",
             "validate_pipeline_dsl_json",
             "validate_execution_plan_json",
             "validate_execution_bundle_json",

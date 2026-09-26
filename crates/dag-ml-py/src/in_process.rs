@@ -2000,6 +2000,7 @@ mod tests {
                     abi_major: None,
                     abi_min_minor: None,
                     native_predictor_descriptor: None,
+                    native_estimator_descriptor: None,
                 },
                 params_fingerprint: "a".repeat(64),
                 training_loss_fingerprint: None,
@@ -2170,6 +2171,7 @@ mod tests {
                     abi_major: None,
                     abi_min_minor: None,
                     native_predictor_descriptor: None,
+                    native_estimator_descriptor: None,
                 }]
             } else {
                 Vec::new()
@@ -2836,6 +2838,7 @@ mod tests {
                     abi_major: None,
                     abi_min_minor: None,
                     native_predictor_descriptor: None,
+                    native_estimator_descriptor: None,
                 }]
             } else {
                 Vec::new()

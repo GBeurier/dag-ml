@@ -53,7 +53,7 @@ def test_ci_and_local_selector_use_the_published_dynamic_binding() -> None:
         (ROOT / "crates" / "dag-ml-core" / "Cargo.toml").read_text(encoding="utf-8")
     )
     dependency = primary["dependencies"]["n4m"]
-    assert dependency["version"] == "0.1.4"
+    assert dependency["version"] == "0.2.0"
     assert dependency["default-features"] is False
     assert dependency["features"] == ["dynamic"]
     assert "git" not in dependency

@@ -677,6 +677,12 @@
             { "$ref": "https://github.com/GBeurier/dag-ml/schemas/native_predictor_descriptor.v1.schema.json" },
             { "type": "null" }
           ]
+        },
+        "native_estimator_descriptor": {
+          "anyOf": [
+            { "$ref": "https://github.com/GBeurier/dag-ml/schemas/native_estimator_descriptor.v1.schema.json" },
+            { "type": "null" }
+          ]
         }
       }
     }
