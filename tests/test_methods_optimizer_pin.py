@@ -12,7 +12,7 @@ except ModuleNotFoundError:  # Python 3.10 in the current workspace.
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "test_methods_optimizer_local.sh"
-METHODS_RUNTIME_SOURCE_SHA = "f192515ea475dcefcae4bc2e807d0f0d79161dd9"
+METHODS_RUNTIME_SOURCE_SHA = "9a157fbd07877bf57cce58b9cc31587f0a6571d7"
 
 
 def _probe(library_path: str | None) -> subprocess.CompletedProcess[str]:
@@ -80,7 +80,7 @@ def test_ci_and_local_selector_use_the_published_dynamic_binding() -> None:
         "registry+https://github.com/rust-lang/crates.io-index"
     )
     assert locked_n4m[0]["checksum"] == (
-        "ef0abf168fd77728174a7293f7ed03cf41fe6c57fb52d58b137b62b7331b5efe"
+        "6fbc43698d7c0da4092f21672890fc369211b7f9451573406963436ce4be5e8a"
     )
 
     workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
