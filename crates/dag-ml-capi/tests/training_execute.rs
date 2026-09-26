@@ -165,6 +165,7 @@ impl RuntimeController for TrainingController {
                 abi_major: None,
                 abi_min_minor: None,
                 native_predictor_descriptor: None,
+                native_estimator_descriptor: None,
             }]
         } else {
             Vec::new()

@@ -70,7 +70,7 @@
     },
     {
       "path": "docs/contracts/execution_bundle.schema.json",
-      "sha256": "5c8feef04b38847bd5b5e1b6bf39d3a90629693fe01fb49a9f66d6b7ea9f6bc5",
+      "sha256": "e12d9394fac01fdfd7336b8f3823daa10b851bb72832ec5fe4c2c52850954105",
       "kind": "schema_dependency"
     },
     {
@@ -109,13 +109,18 @@
       "kind": "schema_dependency"
     },
     {
+      "path": "docs/contracts/native_estimator_descriptor.v1.schema.json",
+      "sha256": "b7c378e4a89693a1229f02a3f27d5ba60f28c25f7bd1e5ded3599f4768168d9c",
+      "kind": "schema_dependency"
+    },
+    {
       "path": "docs/contracts/native_predictor_descriptor.v1.schema.json",
       "sha256": "b29746645106a88d7e014ff7ad8df242a967f0b60c85df259094063dab329c1d",
       "kind": "schema_dependency"
     },
     {
       "path": "docs/contracts/node_result.schema.json",
-      "sha256": "060261a479fc8a96aa09b6c34ccee091a498a3709cce597109f2cece9a900784",
+      "sha256": "bbfd6d3fa75ddee594df2812246a750231e863ba090eb36fb1db71c015716231",
       "kind": "schema_dependency"
     },
     {
@@ -453,5 +458,5 @@
       ]
     }
   ],
-  "pack_checksum": "2f88872565fca289268510c31c78b3cd3365998d7e55c2f96edabacb1ad0a28b"
+  "pack_checksum": "5d6f0f8fb3e65f42c5acd1483020ff2ddfcb44299b9db4f09f66fec6fe207f37"
 }

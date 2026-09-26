@@ -14,8 +14,8 @@ and its trial state machine:
 - in-memory `N4MOPT` save/load through the official binding (not bundle persistence).
 
 The `dag-ml-core` crate exposes the opt-in public `methods-optimizer` Cargo
-feature through the published dynamic `n4m` 0.1.4 binding from Methods commit
-`48ad1e5a50844f68c2b99e93b02ad6a3b491c07b` (ABI 2.5). Default builds leave
+feature through the published dynamic `n4m` 0.2.0 binding (Methods ABI 2.13,
+generic estimator roles). Default builds leave
 that feature disabled and refuse HPO before an
 objective can be called, with the typed
 `HpoError::MethodsOptimizerFeatureDisabled`. The integration helper enables
@@ -32,6 +32,30 @@ The `nirs4all_archive_core = "=0.3.22"` development dependency is a registry
 baseline used only by the Archive V2 integration tests. It is not the Core
 selected by the release train and must not be presented as cross-source Core
 qualification; that qualification is owned by a separate integration harness.
+
+## Generic estimator roles
+
+`n4m_host_controller_specs` turns the native method manifest
+(`n4m_method_manifest_json`) into one `HostControllerSpec` per graph role:
+`controller:n4m.{transformer,selector,regressor,classifier,sample_filter,splitter,augmenter}`.
+Each spec selects its methods by the `n4m:<method_id>` operator reference; a
+multi-role method is listed once per role and resolves by node kind. The same
+derivation is exposed to Python (`dag_ml.n4m_host_controller_specs`) and WASM
+(`n4m_host_controller_specs_json`).
+
+With the `methods-optimizer` feature, `register_methods_estimator_controllers`
+registers the natively executed roles (transformer, selector, regressor,
+sample filter) as `MethodsEstimatorController`s sharing one invocation-local
+feature store, so `exclude -> transform -> model` chains run without a host
+callback. A node names its method with the reserved `method_id` parameter; all
+other parameters are typed by the native manifest. Sample filters act on
+training rows only and pass inference rows through. Refit states are raw
+`n4m_estimator` artifacts in format N4ME (ABI 2.13) with a
+`dagml.native_estimator_descriptor.v1` read back from the native state.
+Methods whose state retains training rows are refused unless the node sets
+`unsafe_flags: ["allow_training_rows_in_artifact"]`, which is recorded in the
+lineage. Classifier, splitter and augmenter roles are derived for planning but
+have no native execution path yet.
 
 ## Training-local runtime route
 
@@ -102,7 +126,7 @@ JSON-deserialized outcome replay in a new process/controller without retaining
 the refit controller's in-memory handles.
 
 The `dag-ml-core/Cargo.toml` manifest offers an opt-in `methods-optimizer`
-feature targeting the published dynamic `n4m` 0.1.4 binding. Local
+feature targeting the published dynamic `n4m` 0.2.0 binding. Local
 qualification builds the exact Methods runtime named above without patching
 the release dependency. Default builds and extracted crates do not link, load,
 or require a Methods checkout. A caller must explicitly configure an absolute

@@ -295,6 +295,89 @@ impl NativePredictorDescriptorV1 {
     }
 }
 
+pub const NATIVE_ESTIMATOR_DESCRIPTOR_TYPE_V1: &str = "dagml.native_estimator_descriptor.v1";
+pub const NATIVE_ESTIMATOR_DESCRIPTOR_SCHEMA_VERSION_V1: u32 = 1;
+pub const NATIVE_ESTIMATOR_FORMAT_N4ME: &str = "N4ME";
+pub const NATIVE_ESTIMATOR_ARTIFACT_KIND: &str = "n4m_estimator";
+
+/// Content-bound descriptor of one fitted native estimator state (N4ME).
+///
+/// `method_id`, `roles` and `capabilities` are read back from the native state
+/// by its owning controller, never supplied by a host. The fingerprint is TCV1
+/// over every field except itself.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeEstimatorDescriptorV1 {
+    pub descriptor_type: String,
+    pub schema_version: u32,
+    pub artifact_sha256: String,
+    pub owner_controller: ControllerId,
+    pub format: String,
+    pub method_id: String,
+    pub roles: Vec<crate::n4m_roles::N4mRole>,
+    /// Native capability names of the fitted state, sorted and unique.
+    pub capabilities: Vec<String>,
+    pub descriptor_fingerprint: String,
+}
+
+impl NativeEstimatorDescriptorV1 {
+    pub fn compute_fingerprint(&self) -> Result<String> {
+        let json = serde_json::to_string(self)?;
+        crate::canonical::parse_typed_json(&json)
+            .and_then(|value| value.fingerprint_without("descriptor_fingerprint"))
+            .map_err(|error| {
+                DagMlError::RuntimeValidation(format!(
+                    "native estimator descriptor is outside TCV1: {error}"
+                ))
+            })
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.descriptor_type != NATIVE_ESTIMATOR_DESCRIPTOR_TYPE_V1
+            || self.schema_version != NATIVE_ESTIMATOR_DESCRIPTOR_SCHEMA_VERSION_V1
+            || self.format != NATIVE_ESTIMATOR_FORMAT_N4ME
+        {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "unsupported native estimator descriptor `{}` schema_version {} format `{}`",
+                self.descriptor_type, self.schema_version, self.format
+            )));
+        }
+        validate_runtime_fingerprint("native estimator artifact", &self.artifact_sha256)?;
+        validate_runtime_fingerprint("native estimator descriptor", &self.descriptor_fingerprint)?;
+        if self.method_id.trim().is_empty() || self.method_id != self.method_id.trim() {
+            return Err(DagMlError::RuntimeValidation(
+                "native estimator descriptor has a blank method id".to_string(),
+            ));
+        }
+        let owner_role =
+            crate::n4m_roles::N4mRole::from_controller_id(self.owner_controller.as_str());
+        if !owner_role.is_some_and(|role| self.roles.contains(&role)) {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "native estimator `{}` with roles {:?} cannot be owned by `{}`",
+                self.method_id, self.roles, self.owner_controller
+            )));
+        }
+        if self.capabilities.is_empty()
+            || self.capabilities.windows(2).any(|pair| pair[0] >= pair[1])
+            || self
+                .capabilities
+                .iter()
+                .any(|capability| capability.trim().is_empty())
+        {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "native estimator `{}` capabilities must be sorted, unique and non-empty",
+                self.method_id
+            )));
+        }
+        if self.descriptor_fingerprint != self.compute_fingerprint()? {
+            return Err(DagMlError::RuntimeValidation(
+                "native estimator descriptor fingerprint does not match TCV1 content".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ArtifactRef {
     pub id: ArtifactId,
@@ -324,6 +407,10 @@ pub struct ArtifactRef {
     /// artifacts omit it; new native Methods writers always emit it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_predictor_descriptor: Option<NativePredictorDescriptorV1>,
+    /// Content-derived N4ME estimator metadata; present exactly on
+    /// `n4m_estimator` artifacts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_estimator_descriptor: Option<NativeEstimatorDescriptorV1>,
 }
 
 impl ArtifactRef {
@@ -362,6 +449,28 @@ impl ArtifactRef {
             {
                 return Err(DagMlError::RuntimeValidation(format!(
                     "artifact `{}` does not match its native predictor descriptor",
+                    self.id
+                )));
+            }
+        }
+        if (self.kind == NATIVE_ESTIMATOR_ARTIFACT_KIND)
+            != self.native_estimator_descriptor.is_some()
+        {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "artifact `{}` must carry a native estimator descriptor exactly when its kind is `{NATIVE_ESTIMATOR_ARTIFACT_KIND}`",
+                self.id
+            )));
+        }
+        if let Some(descriptor) = &self.native_estimator_descriptor {
+            descriptor.validate()?;
+            if descriptor.owner_controller != self.controller_id
+                || self.backend != Some(ArtifactBackend::Raw)
+                || self.native_predictor_descriptor.is_some()
+                || self.content_fingerprint.as_deref() != Some(descriptor.artifact_sha256.as_str())
+                || self.abi_major.is_none()
+            {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "artifact `{}` does not match its native estimator descriptor",
                     self.id
                 )));
             }

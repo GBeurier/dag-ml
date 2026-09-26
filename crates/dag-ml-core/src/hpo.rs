@@ -25,11 +25,12 @@ pub const N4MOPT_CHECKPOINT_SCHEMA_VERSION: u32 = 1;
 pub const N4MOPT_ARTIFACT_KIND: &str = "n4m_optimizer_checkpoint";
 pub const N4MOPT_FORMAT: &str = "N4MOPT";
 pub const METHODS_ABI_MAJOR: u32 = 2;
-pub const METHODS_RUNTIME_ABI_MINOR: u32 = 5;
+pub const METHODS_RUNTIME_ABI_MINOR: u32 = 13;
 pub const METHODS_PLS_N4MM_MIN_ABI_MINOR: u32 = 0;
 pub const METHODS_PIPELINE_N4MM_MIN_ABI_MINOR: u32 = 5;
 pub const METHODS_N4MOPT_MIN_ABI_MINOR: u32 = 2;
 pub const METHODS_IMPORTED_LINEAR_N4MM_MIN_ABI_MINOR: u32 = 3;
+pub const METHODS_N4ME_MIN_ABI_MINOR: u32 = 13;
 
 const fn methods_abi_major_default() -> u32 {
     METHODS_ABI_MAJOR
@@ -1183,7 +1184,7 @@ impl MethodsRuntime {
             reason: format!("cannot load libn4m `{}`: {error}", canonical.display()),
         })?;
         // The binding performs the authoritative dynamic-library negotiation.
-        // Its published interface is ABI 2.5, which is the capability DAG-ML
+        // Its published interface is ABI 2.13, which is the capability DAG-ML
         // may safely claim after this preflight succeeds.
         n4m::Context::new().map_err(|error| HpoError::RuntimeConfiguration {
             reason: format!(
@@ -1202,6 +1203,26 @@ impl MethodsRuntime {
 
     pub fn library_path(&self) -> &std::path::Path {
         &self.library_path
+    }
+
+    pub(crate) fn ensure_n4me_compatible(
+        &self,
+        artifact: &crate::runtime::ArtifactRef,
+    ) -> crate::Result<()> {
+        if artifact.abi_major != Some(METHODS_ABI_MAJOR)
+            || artifact.abi_min_minor != Some(METHODS_N4ME_MIN_ABI_MINOR)
+        {
+            return Err(crate::DagMlError::RuntimeValidation(format!(
+                "native Methods estimator artifact `{}` must declare ABI {}.{}",
+                artifact.id, METHODS_ABI_MAJOR, METHODS_N4ME_MIN_ABI_MINOR
+            )));
+        }
+        validate_methods_abi_compatibility(
+            self.abi_major,
+            self.abi_minor,
+            METHODS_ABI_MAJOR,
+            METHODS_N4ME_MIN_ABI_MINOR,
+        )
     }
 
     fn ensure_n4mm_compatible(&self, artifact: &crate::runtime::ArtifactRef) -> crate::Result<()> {
@@ -1609,7 +1630,7 @@ mod pls_controller {
             }
         }
 
-        fn request(
+        pub(crate) fn request(
             task: &NodeTask,
             provider: &dyn RuntimeDataProvider,
             data_port: &str,
@@ -2027,6 +2048,7 @@ mod pls_controller {
                                     },
                                 ),
                                 native_predictor_descriptor: Some(native_predictor_descriptor),
+                                native_estimator_descriptor: None,
                             },
                             handle,
                         ))
@@ -2642,6 +2664,7 @@ mod pls_controller {
                         abi_major: Some(METHODS_ABI_MAJOR),
                         abi_min_minor: Some(METHODS_IMPORTED_LINEAR_N4MM_MIN_ABI_MINOR),
                         native_predictor_descriptor: Some(native_predictor_descriptor),
+                        native_estimator_descriptor: None,
                     };
                     Self::result(
                         self,
@@ -2786,17 +2809,22 @@ pub fn register_methods_runtime_controllers(
     hpo_controller_id: crate::ControllerId,
     runtime: MethodsRuntime,
 ) -> crate::Result<()> {
-    let pls_controller_id = crate::ControllerId::new(METHODS_PLS_CONTROLLER_ID)
-        .expect("the fixed Methods PLS controller id is valid");
-    let ridge_controller_id = crate::ControllerId::new(METHODS_RIDGE_CONTROLLER_ID)
-        .expect("the fixed Methods Ridge controller id is valid");
-    if hpo_controller_id == pls_controller_id || hpo_controller_id == ridge_controller_id {
+    let native_controller_ids = [METHODS_PLS_CONTROLLER_ID, METHODS_RIDGE_CONTROLLER_ID]
+        .into_iter()
+        .chain(
+            crate::methods_estimator::METHODS_ESTIMATOR_EXECUTABLE_ROLES
+                .iter()
+                .filter_map(|role| role.controller_id()),
+        )
+        .map(|id| crate::ControllerId::new(id).expect("fixed Methods controller ids are valid"))
+        .collect::<Vec<_>>();
+    if native_controller_ids.contains(&hpo_controller_id) {
         return Err(crate::DagMlError::RuntimeValidation(
-            "Methods HPO controller id must differ from the Methods PLS and Ridge controller ids"
+            "Methods HPO controller id must differ from the native Methods model and estimator controller ids"
                 .to_string(),
         ));
     }
-    for controller_id in [&pls_controller_id, &ridge_controller_id, &hpo_controller_id] {
+    for controller_id in native_controller_ids.iter().chain([&hpo_controller_id]) {
         if registry.get(controller_id).is_some() {
             return Err(crate::DagMlError::RuntimeValidation(format!(
                 "duplicate runtime controller `{controller_id}`"
@@ -2807,9 +2835,9 @@ pub fn register_methods_runtime_controllers(
     registry.register(Box::new(MethodsRidgeController::new(runtime.clone())))?;
     registry.register(Box::new(MethodsHpoController::new(
         hpo_controller_id,
-        runtime,
+        runtime.clone(),
     )))?;
-    Ok(())
+    crate::methods_estimator::register_methods_estimator_controllers(registry, runtime)
 }
 
 #[cfg(feature = "methods-optimizer")]
@@ -3373,6 +3401,7 @@ mod tests {
             abi_major: abi_min_minor.map(|_| METHODS_ABI_MAJOR),
             abi_min_minor,
             native_predictor_descriptor: None,
+            native_estimator_descriptor: None,
         }
     }
 
@@ -3560,6 +3589,7 @@ mod tests {
                     inspect_methods_native_predictor_descriptor_v1(&controller_id, &payload)
                         .unwrap(),
                 ),
+                native_estimator_descriptor: None,
             },
             params_fingerprint: "params:methods-pls.release".to_string(),
             training_loss_fingerprint: None,
@@ -3738,6 +3768,7 @@ mod tests {
                     abi_major: Some(METHODS_ABI_MAJOR),
                     abi_min_minor: Some(abi_min_minor),
                     native_predictor_descriptor: Some(descriptor),
+                    native_estimator_descriptor: None,
                 },
                 params_fingerprint: "a".repeat(64),
                 training_loss_fingerprint: None,

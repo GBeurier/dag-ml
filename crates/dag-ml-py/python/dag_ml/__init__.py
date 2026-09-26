@@ -30,6 +30,7 @@ from ._dag_ml import (
     compile_pipeline_dsl_graph_json,
     derive_controller_manifest_json,
     derive_controller_manifest_list_json,
+    n4m_host_controller_specs_json,
     fan_out_data_aware_branches_json,
     fold_set_fingerprint_json,
     project_training_request_json,
@@ -188,6 +189,7 @@ _FACADE_EXPORTS = [
     "compile_pipeline_dsl_artifact_with_controllers",
     "derive_controller_manifest",
     "derive_controller_manifests",
+    "n4m_host_controller_specs",
     "fan_out_data_aware_branches",
     "build_execution_plan",
     "align_named_source_rows",
@@ -1129,6 +1131,11 @@ def derive_controller_manifests(host_controller_specs: Any) -> ControllerManifes
     )
 
 
+def n4m_host_controller_specs(n4m_manifest: Any) -> HostControllerSpecs:
+    """Derive one HostControllerSpec per graph role of an n4m method manifest."""
+    return HostControllerSpecs(n4m_host_controller_specs_json(_coerce_json(n4m_manifest)))
+
+
 def fan_out_data_aware_branches(dsl: Any, envelope: Any) -> PipelineDslSpec:
     """Expand an ``auto_separate`` separation-branch template into one branch per partition.
 
@@ -1897,6 +1904,8 @@ __all__ = [
     "stacking_fold_weights_json",
     "fold_set_fingerprint_json",
     "loss_execution_attestation",
+    "n4m_host_controller_specs",
+    "n4m_host_controller_specs_json",
     "project_training_request",
     "project_training_request_json",
     "read_native_results_v2",

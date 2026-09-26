@@ -26,8 +26,11 @@ pub mod hpo;
 pub mod ids;
 pub mod implementation_registry;
 pub mod initial_refit;
+#[cfg(feature = "methods-optimizer")]
+pub mod methods_estimator;
 pub mod metric_provider;
 pub mod metrics;
+pub mod n4m_roles;
 pub mod observability;
 pub mod oof;
 pub mod phase;
@@ -67,8 +70,11 @@ pub use hpo::*;
 pub use ids::*;
 pub use implementation_registry::*;
 pub use initial_refit::*;
+#[cfg(feature = "methods-optimizer")]
+pub use methods_estimator::*;
 pub use metric_provider::*;
 pub use metrics::*;
+pub use n4m_roles::*;
 pub use observability::*;
 pub use oof::*;
 pub use phase::*;

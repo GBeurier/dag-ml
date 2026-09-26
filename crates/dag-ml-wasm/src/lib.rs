@@ -16,8 +16,8 @@ use std::collections::BTreeMap;
 use dag_ml_core::{
     build_execution_plan, compile_pipeline_dsl, compile_pipeline_dsl_with_generation,
     compile_pipeline_dsl_with_generation_and_controller_registry, deserialize_external_contract,
-    fold_set_fingerprint, parse_pipeline_dsl_json, select_candidate, select_candidate_groups,
-    CampaignSpec, CandidateScore, ControllerManifest, ControllerRegistry,
+    fold_set_fingerprint, n4m_host_controller_specs, parse_pipeline_dsl_json, select_candidate,
+    select_candidate_groups, CampaignSpec, CandidateScore, ControllerManifest, ControllerRegistry,
     DagMlError as CoreDagMlError, ExecutionBundle, ExecutionPlan, FoldSet, GraphSpec,
     HostControllerSpec, InitialFullRefitPackage, KFoldSpec, PortablePredictorPackage,
     PredictCohortConstructionRequest, SampleId, SelectionPolicy, StackingFoldSelectionRequest,
@@ -94,6 +94,14 @@ pub fn derive_controller_manifest_list_json(
         .map_err(js_serde_error)?;
     let manifests = derive_controller_manifests(specs)?;
     serde_json::to_string(&manifests).map_err(js_serde_error)
+}
+
+/// One HostControllerSpec per graph role of an n4m method manifest
+/// (`n4m_method_manifest_json`).
+#[wasm_bindgen]
+pub fn n4m_host_controller_specs_json(manifest_json: &str) -> Result<String, JsValue> {
+    let specs = n4m_host_controller_specs(manifest_json).map_err(js_core_error)?;
+    serde_json::to_string(&specs).map_err(js_serde_error)
 }
 
 #[wasm_bindgen]
@@ -414,6 +422,7 @@ fn contract_manifest() -> serde_json::Value {
             "compile_pipeline_dsl_with_controller_registry",
             "derive_controller_manifest_from_host_spec",
             "derive_controller_manifest_registry_from_host_specs",
+            "derive_n4m_host_controller_specs",
             "build_execution_plan",
             "bind_training_losses_to_execution_plan",
             "execute_execution_plan_phase",
@@ -438,6 +447,7 @@ fn contract_manifest() -> serde_json::Value {
             "validate_controller_manifest_list_json",
             "derive_controller_manifest_json",
             "derive_controller_manifest_list_json",
+            "n4m_host_controller_specs_json",
             "validate_pipeline_dsl_json",
             "validate_execution_plan_json",
             "validate_execution_bundle_json",
@@ -457,6 +467,7 @@ fn contract_manifest() -> serde_json::Value {
             "validate_controller_manifest_list_json",
             "derive_controller_manifest_json",
             "derive_controller_manifest_list_json",
+            "n4m_host_controller_specs_json",
             "validate_pipeline_dsl_json",
             "validate_execution_plan_json",
             "validate_execution_bundle_json",
@@ -829,6 +840,35 @@ mod tests {
             .as_array()
             .unwrap()
             .contains(&serde_json::json!("derive_controller_manifest_list_json")));
+    }
+
+    #[test]
+    fn derives_n4m_role_controller_specs_for_wasm_surface() {
+        let manifest_json = r#"{"abi": "2.13.0", "methods": [
+            {"method_id": "models.pls.pls_regression", "roles": ["transformer", "regressor"], "node_kinds": ["model", "transform"]},
+            {"method_id": "filters.y_outlier", "roles": ["sample_filter"], "node_kinds": ["exclude"]}
+        ]}"#;
+        let specs_json =
+            n4m_host_controller_specs_json(manifest_json).expect("n4m manifest derives specs");
+        let manifests_json =
+            derive_controller_manifest_list_json(&specs_json).expect("specs derive manifests");
+        let manifests: Vec<ControllerManifest> =
+            serde_json::from_str(&manifests_json).expect("manifest list decodes");
+        assert_eq!(
+            manifests
+                .iter()
+                .map(|manifest| manifest.controller_id.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "controller:n4m.transformer",
+                "controller:n4m.regressor",
+                "controller:n4m.sample_filter"
+            ]
+        );
+        assert!(contract_manifest()["wasm_exports"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("n4m_host_controller_specs_json")));
     }
 
     #[test]
