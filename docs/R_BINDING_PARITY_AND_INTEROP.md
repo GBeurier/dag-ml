@@ -68,34 +68,109 @@ Un pont ABI DAG-ML V2/V3 assemblant des payloads natifs signés a
 interlangage n'en découle encore**. Les jalons détaillés suivants conservent
 leur chronologie et ne doivent pas remplacer cet état courant.
 
-### Inventaire des interfaces n4m (candidat local postérieur, non publié)
+### Inventaire des interfaces n4m (lot ABI 2.10.0 fusionné, produit R en validation)
 
-Le lot Methods local `ec27e5fe` (ABI C 2.9.0, paquet R candidat
-`1.0.21.9005`) factorise le chemin prédictif **dans C++**. Les façades
+Le lot Methods fusionné sur `main` par [PR #34](https://github.com/GBeurier/nirs4all-methods/pull/34)
+(`79a39d47`, ABI C 2.10.0, paquet R `1.0.21.9005`) factorise le chemin
+prédictif et la sérialisation des
+prétraitements **dans C++**. Les façades
 sklearn, S3 et JS/WASM adaptent les formes d'appel et la gestion de vie ; elles
 ne refont pas la prédiction affine. Les comptes ci-dessous décrivent des
 **interfaces qui se recouvrent**, et ne doivent pas être additionnés pour
 obtenir un nombre de méthodes distinctes.
 
+La première construction publique de ce lot a réussi sous Linux mais échoué
+sur Windows : `Makevars.win` omettait `r_pipeline.o`. Le correctif
+[Methods #35](https://github.com/GBeurier/nirs4all-methods/pull/35)
+(`15e89789`) est fusionné ; la reconstruction multi-OS est encore en cours.
+
 | Contrat | Couverture vérifiée | Limite importante |
 | --- | ---: | --- |
+| Catalogue scientifique n4m | 212 entrées de méthodes de production | C'est un inventaire de familles et sous-ensembles, non 212 prédicteurs `fit/predict` portables. |
 | `n4m_model_fit` / `predict` / `transform` / N4MM | 8 codes d'algorithme de fit admis | 3 autres codes de l'enum empruntent d'autres routes ou sont refusés ici ; un N4MM affine importé est `predict`-only. |
 | Dispatcher `n4m_method` R / `MethodResult` C | 37 branches de fit/production, 25 sélecteurs, 2 diagnostics | Une branche de fit n'est pas nécessairement un prédicteur réutilisable. |
 | `n4m_model_from_method_result` C++/C ABI | 16 régressions affines marquées, testées hors apprentissage et sérialisables en N4MM | Capacité explicite, dimensions/valeurs contrôlées ; ne sérialise pas l'algorithme de réentraînement. |
 | `n4m_operator_kind_t` / pipeline C générique | 19 codes déclarés, 15 avec `fit/transform` pipeline | Finite Difference, Whittaker, FCK et Gaussian ont d'autres entrées natives, pas ce pipeline. |
+| N4MP C ABI `pipeline_export/import/get_info/get_operator` | Les 15 états ajustés du pipeline C linéaire, avec plan ordonné inspectable | Fusionné dans Methods ; ne contient ni branches DAG, ni sélection de variables, ni données de réentraînement. |
 | Façade `pls4all.sklearn` Python | 69 classes exportées : 39 estimateurs/classifieurs, 28 sélecteurs, 2 transformeurs de transfert | Une partie des 39 reste limitée au train ou suit un contrat non affine ; ce n'est pas 69 méthodes portables. |
 | Façade n4m-R | 7 constructeurs S3 par formule et un adaptateur matriciel commun pour les 16 affines | Les formules WeightedPLS/PLS-GLM non marquées gardent leur prédiction historique. |
+
+Les huit codes admis par `n4m_model_fit` sont PLS régression, PLS
+canonique, PLS-SVD, PLS-DA, OPLS, OPLS-DA, SparsePLS et PCR. Le choix d'un
+solveur (NIPALS, SIMPLS, SVD, etc.) est orthogonal à ce compte : il ne crée pas
+une nouvelle méthode exposée. Le contrat `MethodResult` donne accès à beaucoup
+plus de familles, mais un résultat d'entraînement n'est portable qu'après
+qualification explicite de sa prédiction hors échantillon et de son état.
+Le catalogue des 212 entrées se répartit en 37 modèles, 26 méthodes de
+sélection, 62 prétraitements, 39 augmentations, 21 AOM/POP, 9 splitters,
+7 filtres, 6 utilitaires et 5 diagnostics. Ces catégories décrivent des
+surfaces C++/C distinctes, pas autant d'estimateurs ni d'états entraînés
+interchangeables. Ainsi, **16 + 15 n'est pas le total des méthodes utilisables** :
+16 est la nouvelle conversion `MethodResult → N4MM`, tandis que 15 est la
+sous-famille de prétraitements qui utilise le pipeline C générique et N4MP.
+Les autres entrées peuvent avoir leur propre route native, sans profiter
+automatiquement de ces deux contrats de portabilité.
+
+Audit statique des **façades nommées** de ce lot (une entrée de catalogue
+peut disposer de plusieurs classes, ou d'un accès générique non compté ici) :
+
+| Famille du catalogue | Total | Symboles C propres | Python | R | JS/WASM |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| AOM/POP | 21 | 11 | 21 | 3 | 5 |
+| Augmentation | 39 | 39 | 39 | 0 | 0 |
+| Diagnostics | 5 | 5 | 1 | 4 | 0 |
+| Filtres | 7 | 7 | 7 | 0 | 0 |
+| Modèles | 37 | 36 | 14 | 36 | 19 |
+| Prétraitements | 62 | 62 | 61 | 13 | 29 |
+| Sélection | 26 | 26 | 26 | 26 | 25 |
+| Splitters | 9 | 9 | 9 | 1 | 6 |
+| Utilitaires | 6 | 6 | 6 | 0 | 0 |
+| **Total** | **212** | **201** | **184** | **83** | **84** |
+
+Ces nombres sont des correspondances **structurelles vérifiées dans les
+sources**, pas 184/83/84 oracles numériques réussis. Les 11 entrées sans
+symbole C propre sont des compositions AOM/POP ou `moment_stack`, qui
+réemploient d'autres symboles. Les surfaces génériques `MethodResult`, les
+appels C/ctypes directs et les classes sklearn supplémentaires peuvent rendre
+une méthode accessible sans façade nommée de même identifiant. En revanche,
+une façade nommée ne garantit ni la prédiction hors entraînement, ni la
+sérialisation de son état, ni une parité interlangage. Le plus gros écart R
+reste les augmentations (0/39), prétraitements hors pipeline générique
+(13/62 au total) et AOM/POP (3/21) ; il faudra une interface de famille C
+et des tests scientifiques par famille, sans recopier les calculs en R.
+Pour converger vers 212, la tranche suivante doit consolider trois contrats
+fermés au niveau C++/C : (1) estimateur/transformeur ajusté avec forme et
+capacités explicites ; (2) résultat de décision typé, distinguant sélection
+de colonnes, filtrage de lignes et découpage en folds ; (3) augmentation
+`X`/`y` réservée à l'entraînement avec RNG natif explicite. Un schéma audité
+par méthode (`method_id`, rôle, paramètres, formes, besoin de `y`, graine,
+capacités) peut générer le marshalling Python/R/WASM, mais ne doit pas
+réimplémenter les algorithmes ni déclarer `predict` pour une méthode qui ne
+le possède pas. Il faudra des oracles par famille avant de faire monter les
+comptes de parité numérique ou de portabilité entraînée.
 
 Les 16 affines qualifiées sont Ridge, RidgePLS, RobustPLS, CPPLS,
 SparseSIMPLS, ECR, ContinuumRegression, MIRPLS, FusedSparsePLS, BaggingPLS,
 BoostingPLS, RandomSubspacePLS, N-PLS, MB-PLS, DI-PLS et GroupSparsePLS.
 La façade R candidate des prétraitements expose le même pipeline C pour ses
 15 codes opérationnels et refuse explicitement les quatre autres. Son état
-ajusté est un handle local : **aucun export/import générique de cet état
-n'existe encore dans l'ABI**, donc elle ne satisfait pas à elle seule le
-niveau 2 entraîné interlangage. Les profils entraînés bornés déjà listés plus
-haut restent la seule couverture prouvée ; il faut un format versionné de
-l'état des opérateurs et des tests de roundtrip par famille pour l'étendre.
+ajusté a maintenant un export/import N4MP versionné ; les 15 opérateurs et des
+chaînes mixtes passent des roundtrips natifs, et Python/R échangent les mêmes
+octets sur des jeux tenus à l'écart. Cela qualifie la **brique linéaire de
+prétraitement**, pas encore tous les pipelines entraînés du produit. Un
+Le candidat [nirs4all R #30](https://github.com/GBeurier/nirs4all-r/pull/30)
+(`a704fc87`, tarball exact contrôlé à 0 erreur, 1 avertissement CRAN incoming,
+0 note) ajoute une enveloppe v6 N4MP+N4MM sur des chaînes
+linéaires sémantiquement qualifiées (SNV par défaut, MSC, detrend et SavGol
+borné), avec contrôle du plan C natif contre la recette au chargement ; la
+lecture [produit Python #149](https://github.com/GBeurier/nirs4all/pull/149)
+passe des tests bidirectionnels R↔Python. Les contrôles de publication du produit
+restent en cours. Les anciens
+profils entraînés bornés restent inchangés. En particulier,
+le `EMSC` du pipeline C (référence, intercept et polynômes sur l'axe normalisé)
+ne reproduit pas l'EMSC historique autonome (sans intercept, puissances de
+l'indice spectral) ; une recette existante ne doit pas être redirigée vers
+N4MP sans oracle numérique indépendant.
 
 **Actualisation du 25 septembre, R 0.4.0.9030 (PR [R #29](https://github.com/GBeurier/nirs4all-r/pull/29), [Python #147](https://github.com/GBeurier/nirs4all/pull/147)).**
 Le paquet R couvre désormais les contrôleurs `ranger`, `glmnet`, `parsnip`,
