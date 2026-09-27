@@ -9,6 +9,29 @@ deprecations follow [ADR-14](docs/adr/ADR-14-deprecation-policy.md).
 
 ## [Unreleased]
 
+### Added
+
+- `run_cv_refit_methods_in_process`: the callback-free twin of
+  `run_cv_refit_in_process`. Every node runs through the native Methods
+  controllers derived from the configured libn4m; the campaign, SELECT,
+  FIT_CV/REFIT and scoring are unchanged, and the REFIT records return with
+  their raw N4ME states.
+- Native n4m classifier nodes: they fit on integral class ids, predict class
+  ids and attest class probabilities on the report-only CV surfaces.
+- `register_methods_native_controllers` / `methods_native_controller_ids`: the
+  single callback-free Methods controller set.
+
+### Changed
+
+- n4m model nodes score the host model surfaces: `train` and `train_pool` in
+  FIT_CV and `final` in REFIT, each with its targets.
+- `execute_methods_training` and the portable full refit accept n4m role
+  controllers besides Methods PLS/Ridge.
+- The role controllers read method types from the native manifest JSON
+  (accepting ABI 2.14's additive keys and optional seeds), accept integral
+  binary64 values for `int` parameters, and name REFIT states per node and
+  variant so top-k REFIT states cannot collide.
+
 ## [0.3.28] - 2026-09-27
 
 ### Added
