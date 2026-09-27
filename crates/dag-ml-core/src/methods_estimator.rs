@@ -1,4 +1,5 @@
-//! Generic native controller for n4m role estimators (Methods ABI >= 2.13).
+//! Generic native controller for n4m role estimators (Methods ABI 2.14
+//! runtime; N4ME states from ABI 2.13 on).
 //!
 //! One [`MethodsEstimatorController`] serves each executable role of the n4m
 //! manifest (see [`crate::n4m_roles`]). A node names its method with the

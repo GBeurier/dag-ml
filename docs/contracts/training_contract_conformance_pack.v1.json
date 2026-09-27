@@ -6,7 +6,7 @@
   "artifacts": [
     {
       "path": ".github/workflows/ci.yml",
-      "sha256": "64b107c4da486baf4bf6460cf5550424e73a7eb91b4b2bae62795043e8e40e8f",
+      "sha256": "1af5834b18bb71d42885b0f449f7beaf03a97ee683f05841bf91bba83c861a03",
       "kind": "ci_gate"
     },
     {
@@ -36,7 +36,7 @@
     },
     {
       "path": "crates/dag-ml-core/Cargo.toml",
-      "sha256": "08fc21dd14c679d848416ecfb244231c91db0f2938c5f4a1a0eb53f0a2806c60",
+      "sha256": "4b0fb0454f546632f9e0ffa39e172f1def1ef1eb8f093238440a6d0a16a280a9",
       "kind": "published_native_manifest"
     },
     {
@@ -96,7 +96,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/hpo.rs",
-      "sha256": "1f2760ed92e80b4ef672e32365c7bcb55e57aa385207e4e3bd6f9b717240c849",
+      "sha256": "aa878cde323521ca63779f70aba5ea5d7fc0294a7c426b26bb2a454186681922",
       "kind": "native_hpo_controller"
     },
     {
@@ -191,7 +191,7 @@
     },
     {
       "path": "crates/dag-ml-py/Cargo.lock",
-      "sha256": "6d43697cee87ceacf62eb32f02faf2f650bb25f10f17c347c016881b66f59fc2",
+      "sha256": "fac9044166174d1751cdab73cf9264cd901adb2461ca29ee6ff597a7f34f4b88",
       "kind": "python_binding_lockfile"
     },
     {
@@ -236,7 +236,7 @@
     },
     {
       "path": "docs/HPO_METHODS_ADAPTER.md",
-      "sha256": "2a2b73346c1ef8a7c3ee1a6bc1e80401e0863033f18cc286e3d9b232929b05bb",
+      "sha256": "fcaf305bfbb90d7c415a67adf7f18e875bf715dfeb50d3275e2d42f68cd9706b",
       "kind": "hpo_documentation"
     },
     {
@@ -604,5 +604,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "8e3475367df67a7720eb1e76dd51f93bd188f6ff24b65d19e99576c1e4cf0bbc"
+  "pack_checksum": "381aa31ac42dd9e8c79801ee71b2be7c3f8ccb9b91d7103d1e8a8422564b969c"
 }

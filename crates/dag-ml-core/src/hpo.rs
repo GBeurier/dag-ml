@@ -25,7 +25,7 @@ pub const N4MOPT_CHECKPOINT_SCHEMA_VERSION: u32 = 1;
 pub const N4MOPT_ARTIFACT_KIND: &str = "n4m_optimizer_checkpoint";
 pub const N4MOPT_FORMAT: &str = "N4MOPT";
 pub const METHODS_ABI_MAJOR: u32 = 2;
-pub const METHODS_RUNTIME_ABI_MINOR: u32 = 13;
+pub const METHODS_RUNTIME_ABI_MINOR: u32 = 14;
 pub const METHODS_PLS_N4MM_MIN_ABI_MINOR: u32 = 0;
 pub const METHODS_PIPELINE_N4MM_MIN_ABI_MINOR: u32 = 5;
 pub const METHODS_N4MOPT_MIN_ABI_MINOR: u32 = 2;
@@ -1184,7 +1184,7 @@ impl MethodsRuntime {
             reason: format!("cannot load libn4m `{}`: {error}", canonical.display()),
         })?;
         // The binding performs the authoritative dynamic-library negotiation.
-        // Its published interface is ABI 2.13, which is the capability DAG-ML
+        // Its published interface is ABI 2.14, which is the capability DAG-ML
         // may safely claim after this preflight succeeds.
         n4m::Context::new().map_err(|error| HpoError::RuntimeConfiguration {
             reason: format!(

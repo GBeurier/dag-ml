@@ -286,6 +286,30 @@ mod tests {
         }
     }
 
+    /// ABI 2.14 adds a per-parameter `recorded` flag and publishes optional
+    /// seeds with a `null` default; derivation reads roles and node kinds only.
+    #[test]
+    fn abi_2_14_parameter_keys_do_not_change_derivation() {
+        let mut v214: serde_json::Value = serde_json::from_str(&manifest()).unwrap();
+        v214["abi"] = json!("2.14.0");
+        for method in v214["methods"].as_array_mut().unwrap() {
+            method["params"] = json!([
+                {"name": "n_components", "type": "int", "required": false, "default": 2,
+                 "min": 1, "max": null, "choices": [], "recorded": true},
+                {"name": "seed", "type": "int", "required": false, "default": null,
+                 "min": 0, "max": null, "choices": [], "recorded": false}
+            ]);
+        }
+        let derived = n4m_host_controller_specs(&v214.to_string()).unwrap();
+        let baseline = n4m_host_controller_specs(&manifest()).unwrap();
+        assert_eq!(derived.len(), baseline.len());
+        for (derived, baseline) in derived.iter().zip(&baseline) {
+            assert_eq!(derived.controller_id, baseline.controller_id);
+            assert_eq!(derived.operator_selectors, baseline.operator_selectors);
+            assert_eq!(derived.controller_version, "n4m-abi-2.14.0");
+        }
+    }
+
     #[test]
     fn every_graph_role_gets_one_controller_with_its_methods() {
         let specs = n4m_host_controller_specs(&manifest()).unwrap();
