@@ -1516,7 +1516,7 @@ mod tests {
     use crate::controller::{
         ArtifactPolicy, ControllerCapability, ControllerFitScope, ControllerManifest, RngPolicy,
     };
-    use crate::fold::FoldPartitionMode;
+    use crate::fold::{FoldPartitionMode, FoldTrainExclusion};
 
     #[test]
     fn params_fingerprint_pins_serde_json_binary64_spelling() {
@@ -2782,6 +2782,7 @@ mod tests {
                     ],
                     sample_groups: BTreeMap::new(),
                     partition_mode: FoldPartitionMode::Partition,
+                    train_exclusion: FoldTrainExclusion::Relations,
                 }),
             }),
             generation: Default::default(),

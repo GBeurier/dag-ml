@@ -2454,7 +2454,7 @@ fn validate_unique_strings(label: &str, values: &[String]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fold::{FoldAssignment, FoldPartitionMode};
+    use crate::fold::{FoldAssignment, FoldPartitionMode, FoldTrainExclusion};
     use crate::ids::{ControllerId, FoldId, NodeId};
     use crate::runtime::{DataMaterializationRequest, RuntimeDataProvider};
 
@@ -2731,6 +2731,7 @@ mod tests {
             ],
             sample_groups: BTreeMap::new(),
             partition_mode: FoldPartitionMode::Partition,
+            train_exclusion: FoldTrainExclusion::Relations,
         }
     }
 

@@ -27,10 +27,11 @@ def _sample(index: int) -> str:
     return f"sample:{index:02d}"
 
 
-def _envelope(*, content: bool = True) -> dict:
+def _envelope(*, content: bool = True, excluded: frozenset[int] = frozenset()) -> dict:
     relations = {
         "records": [
             {"observation_id": f"observation:{index:02d}", "sample_id": _sample(index)}
+            | ({"excluded": True} if index in excluded else {})
             for index in range(N_SAMPLES)
         ]
     }
@@ -185,6 +186,38 @@ class MethodsCvRefitInProcessTests(unittest.TestCase):
         # Inputs must exactly cover the plan's data bindings.
         with self.assertRaisesRegex(dag_ml.DagMlError, "exactly cover"):
             _run(_dsl(envelope, _steps("models.pls.cppls", n_components=2)), envelope, {})
+
+    def test_fold_local_train_exclusion_trains_listed_rows_and_refit_excludes(self) -> None:
+        # sample:05 is relation-excluded (the REFIT-level filter); the host's
+        # fold-local filters kept it in fold:0 and fold:2's train lists.
+        envelope = _envelope(excluded=frozenset({5}))
+
+        def fit_rows(payload: dict, partition: str) -> dict:
+            return {
+                block.get("fold_id"): sorted(block["sample_ids"])
+                for frame in payload["node_results"]
+                for block in frame.get("predictions", [])
+                if block["partition"] == partition and block["producer_node"] == "model:compat.1"
+            }
+
+        relations, _ = _run(_dsl(envelope, _steps("models.pls.cppls", n_components=2)), envelope, _inputs())
+        fold_local_dsl = _dsl(envelope, _steps("models.pls.cppls", n_components=2))
+        fold_local_dsl["split_invocation"]["fold_set"]["train_exclusion"] = "fold_local"
+        fold_local, _ = _run(fold_local_dsl, envelope, _inputs())
+
+        excluded = _sample(5)
+        relation_train = fit_rows(relations, "train")
+        local_train = fit_rows(fold_local, "train")
+        for fold in ("fold:0", "fold:2"):
+            self.assertNotIn(excluded, relation_train[fold])
+            self.assertIn(excluded, local_train[fold])
+            self.assertEqual(sorted(local_train[fold]), sorted([*relation_train[fold], excluded]))
+        # Validation views are unchanged: the excluded sample is still validated in fold:1.
+        self.assertEqual(fit_rows(relations, "validation"), fit_rows(fold_local, "validation"))
+        self.assertIn(excluded, fit_rows(fold_local, "validation")["fold:1"])
+        # The relation bit still removes it from the REFIT training cohort.
+        self.assertEqual(fit_rows(relations, "final"), fit_rows(fold_local, "final"))
+        self.assertNotIn(excluded, [sample for rows in fit_rows(fold_local, "final").values() for sample in rows])
 
     def test_contract_manifest_declares_the_lane(self) -> None:
         manifest = json.loads(dag_ml.contract_manifest_json())

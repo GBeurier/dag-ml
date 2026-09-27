@@ -1183,12 +1183,24 @@ pub(crate) fn data_view_for_partition(
 ) -> Result<DataProviderViewSpec> {
     let fold = fold_for_scope(fold_set, scope.fold_id.as_ref())?;
     let mut sample_ids = sample_ids_for_partition(partition, fold_set, fold);
+    // A `fold_local` fold set's train lists are authoritative for FIT_CV: the
+    // host already applied its exclusions inside each fold's training rows, so
+    // relation-level exclusions (a REFIT-cohort authority) must not narrow a
+    // fold-train fit. Every other fit read (REFIT, unsafe non-fold-train fits)
+    // still drops them.
+    let fold_local_train = role == DataViewRole::Fit
+        && scope.phase == Phase::FitCv
+        && partition == DataRequestPartition::FoldTrain
+        && fold.is_some()
+        && fold_set
+            .is_some_and(|fold_set| fold_set.train_exclusion == FoldTrainExclusion::FoldLocal);
     // FIT role: enforce exclusion at the SPEC level (sample-local), so the
     // spec, the materialized view, and `equal_sample_influence_weights`
     // row_weights all agree on the same training rows. The policy escape hatch
     // `include_excluded` (+ `allow_excluded_rows`) keeps excluded rows when a
     // user explicitly opts in.
     if role == DataViewRole::Fit
+        && !fold_local_train
         && !binding.view_policy.include_excluded
         && !excluded_samples.is_empty()
     {
@@ -1226,8 +1238,10 @@ pub(crate) fn data_view_for_partition(
     // validation/predict read always retains them so they are still validated
     // and predicted. `filter_relations` honors this `include_excluded` flag as
     // defense-in-depth, but the filtered spec sample_ids above are authoritative.
+    // A `fold_local` fold-train read keeps them too: the host provider must not
+    // re-filter the authoritative fold list by the relation `excluded` bit.
     let include_excluded = match role {
-        DataViewRole::Fit => binding.view_policy.include_excluded,
+        DataViewRole::Fit => fold_local_train || binding.view_policy.include_excluded,
         DataViewRole::NonFit => true,
     };
     let mut extra = BTreeMap::new();
@@ -1421,10 +1435,9 @@ pub(crate) fn nested_fold_set_for_scope(
     let Some(outer) = fold_for_scope(outer_fold_set, scope.fold_id.as_ref())? else {
         return Ok(None);
     };
-    let outer_groups = &outer_fold_set
-        .expect("fold_for_scope returned a fold, so the outer fold set is present")
-        .sample_groups;
-    Ok(Some(spec.build_nested_fold_set(outer, outer_groups)?))
+    let outer_fold_set =
+        outer_fold_set.expect("fold_for_scope returned a fold, so the outer fold set is present");
+    Ok(Some(outer_fold_set.nested_fold_set(spec, outer)?))
 }
 
 /// Compatibility projection for controller `NodeTask` JSON. Existing

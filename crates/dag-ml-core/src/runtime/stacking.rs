@@ -124,7 +124,7 @@ fn check_prediction_join_capacity(
         parent.train_sample_ids.len(),
         "prediction source parent",
     )?;
-    let source_oof = policy.build_nested_fold_set(parent, &parent_set.sample_groups)?;
+    let source_oof = parent_set.nested_fold_set(policy, parent)?;
     for source_fold in &source_oof.inner_fold_set.folds {
         check_fit_capacity(
             &requirements.source,
@@ -153,7 +153,7 @@ fn check_capacity_scopes(
     )?;
     check_prediction_join_capacity(policy, parent_set, parent, requirements)?;
 
-    let residual_oof = policy.build_nested_fold_set(parent, &parent_set.sample_groups)?;
+    let residual_oof = parent_set.nested_fold_set(policy, parent)?;
     for residual_fold in &residual_oof.inner_fold_set.folds {
         check_fit_capacity(
             &requirements.base,
@@ -172,8 +172,9 @@ fn check_capacity_scopes(
                 residual_fold.train_sample_ids.len(),
                 "automatic-gate learner",
             )?;
-            let gate_oof = policy
-                .build_nested_fold_set(residual_fold, &residual_oof.inner_fold_set.sample_groups)?;
+            let gate_oof = residual_oof
+                .inner_fold_set
+                .nested_fold_set(policy, residual_fold)?;
             for gate_fold in &gate_oof.inner_fold_set.folds {
                 check_fit_capacity(
                     &requirements.base,
@@ -629,7 +630,7 @@ pub(crate) fn nested_stacking_campaign_plan_for_node(
         .map(|outer| {
             Ok(NestedStackingOuterScope {
                 outer_fold_id: outer.fold_id.clone(),
-                inner: inner_spec.build_nested_fold_set(outer, &fold_set.sample_groups)?,
+                inner: fold_set.nested_fold_set(&inner_spec, outer)?,
             })
         })
         .collect::<Result<Vec<_>>>()?;

@@ -1422,7 +1422,7 @@ impl SequentialScheduler {
                 let variant_spec = Some(VariantExecutionSpec::from_plan(variant));
                 let seed_root = variant.seed.or(ctx.root_seed);
                 for fold in &folds.folds {
-                    let subinner = inner_spec.build_nested_fold_set(fold, &folds.sample_groups)?;
+                    let subinner = folds.nested_fold_set(inner_spec, fold)?;
                     results.extend(self.execute_dependent_meta_campaigns(
                         plan,
                         controllers,
@@ -1548,7 +1548,7 @@ impl SequentialScheduler {
         variant: Option<VariantExecutionSpec>,
         seed_root: Option<u64>,
     ) -> Result<Vec<NodeResult>> {
-        let nested = inner_spec.build_nested_fold_set(parent_fold, &parent_set.sample_groups)?;
+        let nested = parent_set.nested_fold_set(inner_spec, parent_fold)?;
         let mut results = Vec::new();
         for fold in &nested.inner_fold_set.folds {
             if prediction_feature_sources_ready(plan, join, ctx, &fold.fold_id)? {
@@ -1925,10 +1925,10 @@ impl SequentialScheduler {
                         // inside this inner fold's training universe.  The
                         // third CV level prevents its held-out target from
                         // influencing any base prediction used for fitting.
-                        let subinner = inner_spec.build_nested_fold_set(
-                            inner_fold,
-                            &outer.inner.inner_fold_set.sample_groups,
-                        )?;
+                        let subinner = outer
+                            .inner
+                            .inner_fold_set
+                            .nested_fold_set(inner_spec, inner_fold)?;
                         results.extend(self.execute_dependent_meta_campaigns(
                             plan,
                             controllers,
@@ -3461,7 +3461,9 @@ mod hpo_scheduler_tests {
         ControllerRegistry, RngPolicy,
     };
     use crate::data::InMemoryDataProvider;
-    use crate::fold::{FoldAssignment, FoldPartitionMode, KFoldSpec, NestedCvSpec};
+    use crate::fold::{
+        FoldAssignment, FoldPartitionMode, FoldTrainExclusion, KFoldSpec, NestedCvSpec,
+    };
     use crate::graph::{
         EdgeContract, EdgeSpec, GraphInterface, GraphSpec, NodeSpec, PortRef, PortSchema, PortSpec,
     };
@@ -3911,6 +3913,7 @@ mod hpo_scheduler_tests {
             ],
             sample_groups: BTreeMap::new(),
             partition_mode: FoldPartitionMode::Partition,
+            train_exclusion: FoldTrainExclusion::Relations,
         };
         let mut registry = ControllerRegistry::new();
         registry

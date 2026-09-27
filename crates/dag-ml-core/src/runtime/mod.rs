@@ -36,7 +36,7 @@ pub(crate) use crate::data::{
     RepresentationCompatibilityReport, RepresentationPlan, RepresentationReplayManifest,
 };
 pub(crate) use crate::error::{DagMlError, Result};
-pub(crate) use crate::fold::{FoldAssignment, FoldPartitionMode, FoldSet};
+pub(crate) use crate::fold::{FoldAssignment, FoldPartitionMode, FoldSet, FoldTrainExclusion};
 pub(crate) use crate::generation::{
     enumerate_variants, GenerationChoice, GenerationConstraints, GenerationSpec,
     GenerationStrategy, OperatorVariantModel, VariantPlan,

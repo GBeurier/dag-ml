@@ -33,6 +33,26 @@ fn is_partition_mode_default(mode: &FoldPartitionMode) -> bool {
     *mode == FoldPartitionMode::Partition
 }
 
+/// Which authority narrows each fold's FIT_CV training cohort.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FoldTrainExclusion {
+    /// Relation-level exclusions (`SampleRelation.excluded`) are subtracted from every fold-train
+    /// view and from the REFIT cohort. Default.
+    #[default]
+    Relations,
+    /// The fold `train_sample_ids` are authoritative for FIT_CV: the host already applied its
+    /// exclusions inside each fold's own training rows (e.g. a supervised outlier filter fitted
+    /// per fold), so relation-excluded samples listed in a fold train are trained on in that fold.
+    /// Validation views are unchanged, and relation exclusions still narrow the REFIT cohort and
+    /// every other non-fold-train fit.
+    FoldLocal,
+}
+
+fn is_train_exclusion_default(mode: &FoldTrainExclusion) -> bool {
+    *mode == FoldTrainExclusion::Relations
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct FoldSet {
     pub id: String,
@@ -44,6 +64,10 @@ pub struct FoldSet {
     /// sets serialize byte-identically — no fingerprint or fixture churn.
     #[serde(default, skip_serializing_if = "is_partition_mode_default")]
     pub partition_mode: FoldPartitionMode,
+    /// Fold-train exclusion authority. Skipped when `Relations` (the default), so existing fold
+    /// sets serialize byte-identically — no fingerprint or fixture churn.
+    #[serde(default, skip_serializing_if = "is_train_exclusion_default")]
+    pub train_exclusion: FoldTrainExclusion,
 }
 
 impl FoldSet {
@@ -148,6 +172,19 @@ impl FoldSet {
         }
 
         Ok(())
+    }
+
+    /// Build `spec`'s nested inner fold set for `outer`, one of this set's folds. The inner set
+    /// inherits this set's groups and `train_exclusion`: its train lists are subsets of `outer`'s
+    /// training rows, so a fold-local exclusion authority carries down to every nested level.
+    pub fn nested_fold_set(
+        &self,
+        spec: &NestedCvSpec,
+        outer: &FoldAssignment,
+    ) -> Result<NestedFoldSet> {
+        let mut nested = spec.build_nested_fold_set(outer, &self.sample_groups)?;
+        nested.inner_fold_set.train_exclusion = self.train_exclusion;
+        Ok(nested)
     }
 
     fn validate_group_boundary(
@@ -282,6 +319,7 @@ impl KFoldSpec {
             folds,
             sample_groups: BTreeMap::new(),
             partition_mode: FoldPartitionMode::Partition,
+            train_exclusion: FoldTrainExclusion::Relations,
         };
         fold_set.validate()?;
         Ok(fold_set)
@@ -388,6 +426,7 @@ impl StratifiedKFoldSpec {
             folds,
             sample_groups: BTreeMap::new(),
             partition_mode: FoldPartitionMode::Partition,
+            train_exclusion: FoldTrainExclusion::Relations,
         };
         fold_set.validate()?;
         Ok(fold_set)
@@ -482,6 +521,7 @@ impl GroupKFoldSpec {
             folds,
             sample_groups: sample_groups.clone(),
             partition_mode: FoldPartitionMode::Partition,
+            train_exclusion: FoldTrainExclusion::Relations,
         };
         fold_set.validate()?;
         Ok(fold_set)
@@ -826,6 +866,7 @@ mod tests {
             }],
             sample_groups: BTreeMap::new(),
             partition_mode: FoldPartitionMode::Partition,
+            train_exclusion: FoldTrainExclusion::Relations,
         };
 
         assert!(fold_set.validate().is_err());
@@ -844,6 +885,7 @@ mod tests {
             }],
             sample_groups: BTreeMap::from([(sid("s1"), gid("g1"))]),
             partition_mode: FoldPartitionMode::Partition,
+            train_exclusion: FoldTrainExclusion::Relations,
         };
 
         assert!(fold_set.validate().is_err());
@@ -870,6 +912,7 @@ mod tests {
             ],
             sample_groups: BTreeMap::new(),
             partition_mode: FoldPartitionMode::Partition,
+            train_exclusion: FoldTrainExclusion::Relations,
         };
         let mut right = left.clone();
         right.sample_ids.reverse();
@@ -1099,6 +1142,7 @@ mod tests {
             ],
             sample_groups: BTreeMap::new(),
             partition_mode: FoldPartitionMode::Partition,
+            train_exclusion: FoldTrainExclusion::Relations,
         };
         inner
             .validate()
@@ -1133,6 +1177,7 @@ mod tests {
             }],
             sample_groups: BTreeMap::new(),
             partition_mode: FoldPartitionMode::Partition,
+            train_exclusion: FoldTrainExclusion::Relations,
         };
         assert!(validate_inner_fold_set_within_outer(&inner, outer_fold).is_err());
     }
@@ -1287,6 +1332,7 @@ mod tests {
             folds: folds.clone(),
             sample_groups: BTreeMap::new(),
             partition_mode: FoldPartitionMode::Partition,
+            train_exclusion: FoldTrainExclusion::Relations,
         };
         assert!(
             partition.validate().is_err(),
@@ -1299,6 +1345,7 @@ mod tests {
             folds,
             sample_groups: BTreeMap::new(),
             partition_mode: FoldPartitionMode::Resampled,
+            train_exclusion: FoldTrainExclusion::Relations,
         };
         resampled.validate().unwrap(); // overlapping / incomplete validation is allowed
 
@@ -1309,10 +1356,121 @@ mod tests {
             folds: vec![fold("f", &["s1"], &["s1"])],
             sample_groups: BTreeMap::new(),
             partition_mode: FoldPartitionMode::Resampled,
+            train_exclusion: FoldTrainExclusion::Relations,
         };
         assert!(
             leaky.validate().is_err(),
             "Resampled must still reject train/validation overlap"
         );
+    }
+
+    #[test]
+    fn train_exclusion_default_serializes_byte_identically_and_fold_local_round_trips() {
+        let json = r#"{"id":"outer","sample_ids":["s1","s2"],"folds":[{"fold_id":"fold:0","train_sample_ids":["s2"],"validation_sample_ids":["s1"],"metadata":{}},{"fold_id":"fold:1","train_sample_ids":["s1"],"validation_sample_ids":["s2"],"metadata":{}}],"sample_groups":{}}"#;
+        let relations: FoldSet = serde_json::from_str(json).unwrap();
+        assert_eq!(relations.train_exclusion, FoldTrainExclusion::Relations);
+        // The default is skipped: the serialized bytes and the fingerprint are unchanged.
+        assert_eq!(serde_json::to_string(&relations).unwrap(), json);
+        let fingerprint = fold_set_fingerprint(&relations).unwrap();
+
+        let mut fold_local = relations.clone();
+        fold_local.train_exclusion = FoldTrainExclusion::FoldLocal;
+        fold_local.validate().unwrap();
+        let encoded = serde_json::to_string(&fold_local).unwrap();
+        assert!(encoded.ends_with(r#""sample_groups":{},"train_exclusion":"fold_local"}"#));
+        assert_eq!(
+            serde_json::from_str::<FoldSet>(&encoded).unwrap(),
+            fold_local
+        );
+        // A different fold-train authority is a different training contract.
+        assert_ne!(fold_set_fingerprint(&fold_local).unwrap(), fingerprint);
+
+        let unknown = json.replace(
+            r#""sample_groups":{}"#,
+            r#""sample_groups":{},"train_exclusion":"fold"}"#,
+        );
+        assert!(serde_json::from_str::<FoldSet>(&unknown).is_err());
+    }
+
+    #[test]
+    fn fold_local_keeps_structural_leakage_checks() {
+        let mut fold_set = FoldSet {
+            id: "fold-local".to_string(),
+            sample_ids: vec![sid("s1"), sid("s2"), sid("s3")],
+            folds: vec![
+                FoldAssignment {
+                    fold_id: FoldId::new("f0").unwrap(),
+                    // s2 was dropped by the host's fold-local filter.
+                    train_sample_ids: vec![sid("s3")],
+                    validation_sample_ids: vec![sid("s1")],
+                    metadata: BTreeMap::new(),
+                },
+                FoldAssignment {
+                    fold_id: FoldId::new("f1").unwrap(),
+                    train_sample_ids: vec![sid("s1"), sid("s3")],
+                    validation_sample_ids: vec![sid("s2")],
+                    metadata: BTreeMap::new(),
+                },
+                FoldAssignment {
+                    fold_id: FoldId::new("f2").unwrap(),
+                    train_sample_ids: vec![sid("s1"), sid("s2")],
+                    validation_sample_ids: vec![sid("s3")],
+                    metadata: BTreeMap::new(),
+                },
+            ],
+            sample_groups: BTreeMap::new(),
+            partition_mode: FoldPartitionMode::Partition,
+            train_exclusion: FoldTrainExclusion::FoldLocal,
+        };
+        fold_set.validate().unwrap();
+
+        fold_set.folds[0].train_sample_ids.push(sid("s1"));
+        assert!(fold_set
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("train/validation overlap"));
+        fold_set.folds[0].train_sample_ids = vec![sid("s3"), sid("s9")];
+        assert!(fold_set
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("unknown sample `s9`"));
+    }
+
+    #[test]
+    fn nested_fold_sets_inherit_the_parent_train_exclusion() {
+        let samples = (0..6).map(|i| sid(&format!("s{i}"))).collect::<Vec<_>>();
+        let mut outer = KFoldSpec {
+            n_splits: 2,
+            shuffle: false,
+            seed: None,
+        }
+        .split("outer", &samples)
+        .unwrap();
+        let spec = NestedCvSpec::KFold(KFoldSpec {
+            n_splits: 2,
+            shuffle: false,
+            seed: None,
+        });
+        let relations = outer.nested_fold_set(&spec, &outer.folds[0]).unwrap();
+        assert_eq!(
+            relations.inner_fold_set.train_exclusion,
+            FoldTrainExclusion::Relations
+        );
+
+        outer.train_exclusion = FoldTrainExclusion::FoldLocal;
+        let nested = outer.nested_fold_set(&spec, &outer.folds[0]).unwrap();
+        assert_eq!(
+            nested.inner_fold_set.train_exclusion,
+            FoldTrainExclusion::FoldLocal
+        );
+        nested.validate_for_outer(&outer.folds[0]).unwrap();
+        // Everything but the inherited authority matches the plain splitter output.
+        let mut plain = spec
+            .build_nested_fold_set(&outer.folds[0], &outer.sample_groups)
+            .unwrap();
+        plain.inner_fold_set.train_exclusion = FoldTrainExclusion::FoldLocal;
+        assert_eq!(nested, plain);
     }
 }
