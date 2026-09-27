@@ -9,6 +9,19 @@ deprecations follow [ADR-14](docs/adr/ADR-14-deprecation-policy.md).
 
 ## [Unreleased]
 
+### Added
+
+- `FoldSet.train_exclusion`: `relations` (default, unchanged) or `fold_local`.
+  Under `fold_local` the fold `train_sample_ids` are authoritative for FIT_CV:
+  relation-excluded samples listed in a fold train are trained on in that fold
+  (the fold-train view carries `include_excluded: true`), so a host can fit
+  supervised sample filters inside each fold instead of on the whole train set.
+  Validation views are unchanged and the relation `excluded` bit still removes
+  samples from the REFIT cohort and every non-fold-train fit. Applies to the
+  callback scheduler and the callback-free Methods lane alike; nested inner fold
+  sets inherit the mode. The field is omitted at its default, so existing fold
+  sets serialize byte-identically and keep their fingerprints.
+
 ## [0.3.29] - 2026-09-27
 
 ### Added

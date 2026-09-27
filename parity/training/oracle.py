@@ -692,6 +692,11 @@ def _norm_fold_set(source: Any) -> Any:
                 "default": lambda: "partition",
                 "skip": lambda value: value == "partition",
             },
+            {
+                "name": "train_exclusion",
+                "default": lambda: "relations",
+                "skip": lambda value: value == "relations",
+            },
         ],
     )
 

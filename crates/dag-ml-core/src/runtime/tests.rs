@@ -27,7 +27,7 @@ use crate::data::{
     DataViewPolicy, ExternalDataPlanEnvelope, InMemoryDataProvider, PredictCohort,
     PredictCohortRole, SOURCE_INDEX_METADATA_KEY,
 };
-use crate::fold::{FoldAssignment, FoldPartitionMode, FoldSet};
+use crate::fold::{FoldAssignment, FoldPartitionMode, FoldSet, FoldTrainExclusion};
 use crate::generation::{
     GenerationChoice, GenerationConstraints, GenerationDimension, GenerationSpec,
     GenerationStrategy,
@@ -1733,6 +1733,7 @@ fn observation_prediction_runtime_plan() -> ExecutionPlan {
                 ],
                 sample_groups: BTreeMap::new(),
                 partition_mode: FoldPartitionMode::Partition,
+                train_exclusion: FoldTrainExclusion::Relations,
             }),
         }),
         generation: Default::default(),
@@ -1863,6 +1864,7 @@ fn live_group_oof_runtime_plan() -> ExecutionPlan {
                     ),
                 ]),
                 partition_mode: FoldPartitionMode::Partition,
+                train_exclusion: FoldTrainExclusion::Relations,
             }),
         }),
         generation: Default::default(),
@@ -2232,6 +2234,7 @@ fn two_fold_set() -> FoldSet {
         ],
         sample_groups: BTreeMap::new(),
         partition_mode: FoldPartitionMode::Partition,
+        train_exclusion: FoldTrainExclusion::Relations,
     }
 }
 
@@ -2265,6 +2268,7 @@ fn three_fold_stress_set() -> FoldSet {
         folds,
         sample_groups: BTreeMap::new(),
         partition_mode: FoldPartitionMode::Partition,
+        train_exclusion: FoldTrainExclusion::Relations,
     }
 }
 
@@ -2303,6 +2307,7 @@ fn grouped_repetition_fold_set() -> FoldSet {
             (s3, GroupId::new("group:product3").unwrap()),
         ]),
         partition_mode: FoldPartitionMode::Partition,
+        train_exclusion: FoldTrainExclusion::Relations,
     }
 }
 
@@ -5585,6 +5590,7 @@ fn refit_oof_cover_is_partition_mode_aware() {
         ],
         sample_groups: BTreeMap::new(),
         partition_mode: FoldPartitionMode::Resampled,
+        train_exclusion: FoldTrainExclusion::Relations,
     };
     resampled
         .validate()
@@ -5621,6 +5627,7 @@ fn refit_oof_cover_is_partition_mode_aware() {
     // Partition fold set with the SAME cross-fold duplicate (s1 in both folds): still rejected.
     let partition = FoldSet {
         partition_mode: FoldPartitionMode::Partition,
+        train_exclusion: FoldTrainExclusion::Relations,
         ..resampled.clone()
     };
     let err = validate_oof_blocks_cover_fold_set(&edge, &partition, &resampled_refs).unwrap_err();
@@ -13547,6 +13554,7 @@ fn one_fold_set() -> FoldSet {
         }],
         sample_groups: BTreeMap::new(),
         partition_mode: FoldPartitionMode::Resampled,
+        train_exclusion: FoldTrainExclusion::Relations,
     }
 }
 
@@ -14524,6 +14532,191 @@ fn fit_influence_row_weights_match_post_exclusion_training_spec() {
     );
 }
 
+/// Provider resolving one relation set whose `excluded` bit marks `s2`.
+struct ExcludedRelationProvider {
+    owner: ControllerId,
+    relations: SampleRelationSet,
+}
+
+impl ExcludedRelationProvider {
+    fn new() -> Self {
+        let records = (0..6)
+            .map(|index| {
+                let mut record = SampleRelation::new(
+                    ObservationId::new(format!("obs.s{index}")).unwrap(),
+                    SampleId::new(format!("s{index}")).unwrap(),
+                );
+                record.excluded = index == 2;
+                record
+            })
+            .collect();
+        Self {
+            owner: ControllerId::new("controller:data.excluded").unwrap(),
+            relations: SampleRelationSet { records },
+        }
+    }
+}
+
+impl RuntimeDataProvider for ExcludedRelationProvider {
+    fn materialize(&self, _request: &DataMaterializationRequest) -> Result<HandleRef> {
+        Ok(HandleRef {
+            handle: 91,
+            kind: HandleKind::Data,
+            owner_controller: self.owner.clone(),
+        })
+    }
+
+    fn make_view(&self, _request: &DataViewRequest) -> Result<HandleRef> {
+        Ok(HandleRef {
+            handle: 92,
+            kind: HandleKind::DataView,
+            owner_controller: self.owner.clone(),
+        })
+    }
+
+    fn coordinator_relations(
+        &self,
+        _binding: &crate::data::DataBinding,
+    ) -> Result<Option<SampleRelationSet>> {
+        Ok(Some(self.relations.clone()))
+    }
+}
+
+/// The scheduler-created data views of `model:pls` for one phase scope, over
+/// `three_fold_stress_set` (s0..s5; fold:0 validation=[s0,s3], train=[s1,s2,s4,s5])
+/// with relation-excluded `s2` and the given fold-train exclusion authority.
+fn excluded_relation_views(
+    train_exclusion: FoldTrainExclusion,
+    phase: Phase,
+    fold_id: Option<&str>,
+) -> BTreeMap<String, DataProviderViewSpec> {
+    let mut fold_set = three_fold_stress_set();
+    fold_set.train_exclusion = train_exclusion;
+    let model_id = NodeId::new("model:pls").unwrap();
+    let mut campaign = oof_edge_campaign();
+    campaign.split_invocation.as_mut().unwrap().fold_set = Some(fold_set);
+    campaign.data_bindings = BTreeMap::from([(model_id.clone(), vec![data_binding(&model_id)])]);
+    let plan = build_execution_plan(
+        "plan:fold.train.exclusion",
+        simple_graph(),
+        campaign,
+        &manifests(),
+    )
+    .unwrap();
+    let provider = ExcludedRelationProvider::new();
+    let resources = PhaseScopeResources {
+        data_provider: Some(&provider),
+        ..Default::default()
+    };
+    collect_input_handles(
+        &plan,
+        plan.node_plans.get(&model_id).unwrap(),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &resources,
+        &RunContext::new(RunId::new("run:fold.train.exclusion").unwrap(), Some(11)),
+        &PhaseScope {
+            phase,
+            variant_id: Some(VariantId::new("variant:base").unwrap()),
+            variant: None,
+            fold_id: fold_id.map(|id| FoldId::new(id).unwrap()),
+            seed_root: Some(11),
+        },
+    )
+    .unwrap()
+    .data_views
+}
+
+fn view_ids(view: &DataProviderViewSpec) -> Vec<&str> {
+    view.sample_ids
+        .as_ref()
+        .unwrap()
+        .iter()
+        .map(SampleId::as_str)
+        .collect()
+}
+
+#[test]
+fn relations_mode_drops_relation_excluded_samples_from_fold_train_and_refit() {
+    let fit_cv =
+        excluded_relation_views(FoldTrainExclusion::Relations, Phase::FitCv, Some("fold:0"));
+    let train = &fit_cv["data:x"];
+    assert_eq!(train.partition, DataRequestPartition::FoldTrain);
+    assert_eq!(view_ids(train), ["s1", "s4", "s5"]);
+    assert!(!train.include_excluded);
+    let validation = &fit_cv["data:x:validation"];
+    assert_eq!(view_ids(validation), ["s0", "s3"]);
+    assert!(validation.include_excluded);
+
+    let refit = excluded_relation_views(FoldTrainExclusion::Relations, Phase::Refit, None);
+    let refit = &refit["data:x"];
+    assert_eq!(refit.partition, DataRequestPartition::FullTrain);
+    assert_eq!(view_ids(refit), ["s0", "s1", "s3", "s4", "s5"]);
+    assert!(!refit.include_excluded);
+}
+
+#[test]
+fn fold_local_mode_trains_on_listed_fold_rows_but_refit_still_excludes() {
+    // The host kept relation-excluded s2 in fold:0's train list (its fold-local
+    // filter, fitted on fold:0's train only, accepted it): FIT_CV trains on it.
+    let fit_cv =
+        excluded_relation_views(FoldTrainExclusion::FoldLocal, Phase::FitCv, Some("fold:0"));
+    let train = &fit_cv["data:x"];
+    assert_eq!(train.partition, DataRequestPartition::FoldTrain);
+    assert_eq!(view_ids(train), ["s1", "s2", "s4", "s5"]);
+    assert!(
+        train.include_excluded,
+        "the provider must not re-filter the authoritative fold list"
+    );
+    let validation = &fit_cv["data:x:validation"];
+    assert_eq!(view_ids(validation), ["s0", "s3"]);
+    assert!(validation.include_excluded);
+    // Row weights follow the authoritative fold list.
+    assert_eq!(
+        equal_sample_influence_weights(&fit_cv).unwrap().len(),
+        4,
+        "row weights cover every fold-local training row"
+    );
+
+    // The relation bit still removes s2 from the REFIT training cohort.
+    let refit = excluded_relation_views(FoldTrainExclusion::FoldLocal, Phase::Refit, None);
+    let refit = &refit["data:x"];
+    assert_eq!(refit.partition, DataRequestPartition::FullTrain);
+    assert_eq!(view_ids(refit), ["s0", "s1", "s3", "s4", "s5"]);
+    assert!(!refit.include_excluded);
+}
+
+#[test]
+fn fold_local_mode_does_not_relax_non_fold_train_fit_reads() {
+    // An unsafe FIT_CV fit on the validation partition is not a fold-train
+    // read, so relation exclusions still narrow it under `fold_local`.
+    let node_id = NodeId::new("node:model").unwrap();
+    let mut binding = data_binding(&node_id);
+    binding.view_policy.fit_partition = DataRequestPartition::FoldValidation;
+    let mut fold_set = three_fold_stress_set();
+    fold_set.train_exclusion = FoldTrainExclusion::FoldLocal;
+    let excluded = BTreeSet::from([SampleId::new("s0").unwrap()]);
+    let scope = PhaseScope {
+        phase: Phase::FitCv,
+        variant_id: None,
+        variant: None,
+        fold_id: Some(FoldId::new("fold:0").unwrap()),
+        seed_root: None,
+    };
+    let view = data_view_for_partition(
+        &binding,
+        Some(&fold_set),
+        &scope,
+        DataRequestPartition::FoldValidation,
+        None,
+        DataViewRole::Fit,
+        &excluded,
+    )
+    .unwrap();
+    assert_eq!(view_ids(&view), ["s3"]);
+    assert!(!view.include_excluded);
+}
+
 #[test]
 fn exclusion_is_sample_local_across_relation_rows() {
     // (c) A sample with one excluded relation row and one non-excluded row is
@@ -15007,6 +15200,7 @@ fn fanned_out_branches_each_fit_cv_only_their_partition() {
         ],
         sample_groups: BTreeMap::new(),
         partition_mode: FoldPartitionMode::Partition,
+        train_exclusion: FoldTrainExclusion::Relations,
     };
     let campaign = CampaignSpec {
         inner_cv: None,
@@ -15235,6 +15429,7 @@ fn concat_merge_reassembles_disjoint_branch_oof_into_full_universe() {
         ],
         sample_groups: BTreeMap::new(),
         partition_mode: FoldPartitionMode::Partition,
+        train_exclusion: FoldTrainExclusion::Relations,
     };
     let campaign = CampaignSpec {
         inner_cv: None,
@@ -15437,6 +15632,7 @@ fn concat_merge_rejects_overlapping_branch_predictions() {
         ],
         sample_groups: BTreeMap::new(),
         partition_mode: FoldPartitionMode::Partition,
+        train_exclusion: FoldTrainExclusion::Relations,
     };
     let campaign = CampaignSpec {
         inner_cv: None,
@@ -15799,6 +15995,7 @@ fn scoring_merge_plan_and_provider(
         ],
         sample_groups: BTreeMap::new(),
         partition_mode: FoldPartitionMode::Partition,
+        train_exclusion: FoldTrainExclusion::Relations,
     };
     // A per-variant offset sweep applied to BOTH branch model nodes.
     let generation = if offsets.is_empty() {
@@ -16178,6 +16375,7 @@ fn empty_intersection_plan_and_provider() -> (ExecutionPlan, InMemoryDataProvide
         ],
         sample_groups: BTreeMap::new(),
         partition_mode: FoldPartitionMode::Partition,
+        train_exclusion: FoldTrainExclusion::Relations,
     };
     let bindings = ["model:site__A", "model:site__B", "model:site__C"]
         .iter()
@@ -16521,6 +16719,7 @@ fn fusion_merge_plan_and_provider(plan_id: &str) -> (ExecutionPlan, InMemoryData
         ],
         sample_groups: BTreeMap::new(),
         partition_mode: FoldPartitionMode::Partition,
+        train_exclusion: FoldTrainExclusion::Relations,
     };
     let campaign = CampaignSpec {
         inner_cv: None,
@@ -16758,6 +16957,7 @@ fn fusion_proba_mean_merge_averages_and_renormalizes_class_probabilities() {
         ],
         sample_groups: BTreeMap::new(),
         partition_mode: FoldPartitionMode::Partition,
+        train_exclusion: FoldTrainExclusion::Relations,
     };
     let campaign = CampaignSpec {
         inner_cv: None,
@@ -16982,6 +17182,7 @@ fn refit_merge_plan_and_provider(plan_id: &str) -> (ExecutionPlan, InMemoryDataP
         ],
         sample_groups: BTreeMap::new(),
         partition_mode: FoldPartitionMode::Partition,
+        train_exclusion: FoldTrainExclusion::Relations,
     };
     let campaign = CampaignSpec {
         inner_cv: None,
@@ -17322,6 +17523,7 @@ fn fusion_merge_averages_and_scores_refit_test_predictions() {
         ],
         sample_groups: BTreeMap::new(),
         partition_mode: FoldPartitionMode::Partition,
+        train_exclusion: FoldTrainExclusion::Relations,
     };
     let campaign = CampaignSpec {
         inner_cv: None,
@@ -17873,6 +18075,7 @@ fn off_fold_fusion_rejects_within_branch_duplicate_sample() {
         ],
         sample_groups: BTreeMap::new(),
         partition_mode: FoldPartitionMode::Partition,
+        train_exclusion: FoldTrainExclusion::Relations,
     };
     let campaign = CampaignSpec {
         inner_cv: None,
@@ -18455,6 +18658,7 @@ fn refit_full_train_universe_excludes_held_out_test_partition() {
         ],
         sample_groups: BTreeMap::new(),
         partition_mode: FoldPartitionMode::Partition,
+        train_exclusion: FoldTrainExclusion::Relations,
     };
     fold_set.validate().unwrap();
 

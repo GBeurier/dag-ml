@@ -350,6 +350,26 @@ A splitter is a controller capability invoked by the coordinator during campaign
 planning or early execution. It produces a `FoldSet`. The Rust core validates the
 `FoldSet` against identity, group, target, repetition and origin constraints.
 
+`FoldSet.train_exclusion` names the authority that narrows each fold's FIT_CV
+training cohort. It is omitted from the serialized fold set when it holds the
+default, so existing fold sets and their fingerprints are unchanged:
+
+- `relations` (default): samples whose coordinator relation carries
+  `excluded: true` are subtracted from every fold-train view and from the REFIT
+  training cohort.
+- `fold_local`: the fold `train_sample_ids` are authoritative for FIT_CV. The
+  host already applied its exclusions inside each fold (for example a supervised
+  outlier filter fitted on that fold's training rows only, so validation targets
+  never decide which rows a fold trains on), and relation-excluded samples listed
+  in a fold train are trained on in that fold. The fold-train view then carries
+  `include_excluded: true` so providers do not re-filter the list. Validation
+  views are unchanged, and the relation `excluded` bit still removes samples from
+  the REFIT cohort and from every fit read that is not a fold train. Nested inner
+  fold sets built from a `fold_local` fold inherit the mode; the REFIT-scope inner
+  CV of nested stacking keeps `relations`. The ordinary fold checks (known
+  samples, no train/validation overlap, group boundaries, OOF completeness) apply
+  in both modes.
+
 Native identity splitters such as KFold and GroupKFold may be shipped by the Rust
 core for deterministic cross-language behavior. Feature-dependent splitters such
 as KS/SPXY/sklearn splitters are external controller calls.

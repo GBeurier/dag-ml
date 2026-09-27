@@ -607,7 +607,7 @@ fn validate_unit_partitions<Unit: Ord + std::fmt::Display>(
 mod tests {
     use super::*;
     use crate::data::ExternalDataPlanEnvelope;
-    use crate::fold::{FoldAssignment, FoldPartitionMode};
+    use crate::fold::{FoldAssignment, FoldPartitionMode, FoldTrainExclusion};
 
     fn sid(value: &str) -> SampleId {
         SampleId::new(value).unwrap()
@@ -645,6 +645,7 @@ mod tests {
             ],
             sample_groups: BTreeMap::new(),
             partition_mode: FoldPartitionMode::Partition,
+            train_exclusion: FoldTrainExclusion::Relations,
         }
     }
 

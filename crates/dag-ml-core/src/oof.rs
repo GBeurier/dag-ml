@@ -979,6 +979,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::*;
+    use crate::fold::FoldTrainExclusion;
 
     fn sid(value: &str) -> SampleId {
         SampleId::new(value).unwrap()
@@ -1040,6 +1041,7 @@ mod tests {
             ],
             sample_groups: BTreeMap::new(),
             partition_mode: FoldPartitionMode::Partition,
+            train_exclusion: FoldTrainExclusion::Relations,
         }
     }
 

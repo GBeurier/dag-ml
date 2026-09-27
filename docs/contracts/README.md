@@ -306,6 +306,14 @@ into graph operators. Rust validation remains the semantic authority for fold
 membership, leakage guards, generation consistency, shape-plan/key alignment,
 branch-view selector sanity and data-binding fingerprint requirements.
 
+A concrete fold set may carry two optional serde fields that are omitted at
+their defaults (so default fold sets keep their bytes and fingerprints):
+`partition_mode` (`partition` | `resampled`) and `train_exclusion`
+(`relations` | `fold_local`). `fold_local` makes the fold train lists
+authoritative for FIT_CV instead of subtracting relation-excluded samples; the
+REFIT cohort still drops them. See `docs/COORDINATOR_SPEC.md` (Splitters). The
+JSON schemas above do not yet list these two fields.
+
 ## ExecutionPlan v1
 
 Schema: `execution_plan.schema.json`
