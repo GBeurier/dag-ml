@@ -9,12 +9,16 @@ deprecations follow [ADR-14](docs/adr/ADR-14-deprecation-policy.md).
 
 ## [Unreleased]
 
+## [0.3.30] - 2026-09-27
+
 ### Added
 
-- `FoldSet.train_exclusion`: `relations` (default, unchanged) or `fold_local`.
-  Under `fold_local` the fold `train_sample_ids` are authoritative for FIT_CV:
-  relation-excluded samples listed in a fold train are trained on in that fold
-  (the fold-train view carries `include_excluded: true`), so a host can fit
+- `FoldSet.train_exclusion`: `relations` (default, unchanged) or `fold_local`,
+  the fold-local train exclusion authority for FIT_CV requested by the nirs4all
+  re-audit (R01). Under `fold_local` the fold `train_sample_ids` are
+  authoritative for FIT_CV: relation-excluded samples listed in a fold train
+  are trained on in that fold (the fold-train view carries
+  `include_excluded: true`), so a host can fit
   supervised sample filters inside each fold instead of on the whole train set.
   Validation views are unchanged and the relation `excluded` bit still removes
   samples from the REFIT cohort and every non-fold-train fit. Applies to the
@@ -485,7 +489,8 @@ Initial active core scaffold. Executable Rust crates with:
   references.
 - Direct Python/YAML DSL frontends (JSON-only parser today).
 
-[Unreleased]: https://github.com/GBeurier/dag-ml/compare/v0.3.29...HEAD
+[Unreleased]: https://github.com/GBeurier/dag-ml/compare/v0.3.30...HEAD
+[0.3.30]: https://github.com/GBeurier/dag-ml/compare/v0.3.29...v0.3.30
 [0.3.29]: https://github.com/GBeurier/dag-ml/compare/v0.3.28...v0.3.29
 [0.3.28]: https://github.com/GBeurier/dag-ml/compare/v0.3.27...v0.3.28
 [0.3.27]: https://github.com/GBeurier/dag-ml/compare/v0.3.26...v0.3.27
