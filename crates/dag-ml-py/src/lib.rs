@@ -25,9 +25,9 @@ use dag_ml_core::{
     ExecutionPlan, ExternalDataPlanEnvelope, FoldSet, GraphSpec, HostControllerSpec,
     NamedSourceAlignmentRequest, ParameterProjection, PortablePredictorPackage,
     PortableRefitPackageV3, PredictCohortConstructionRequest, SampleRelationSet, SelectionPolicy,
-    StackingFoldSelectionRequest, StackingProducerSelectionRequest,
-    TrainingContractProjection, TrainingOutcome, TrainingReplayOutcome, TrainingReplayRequest,
-    TrainingRequest, EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION_V2,
+    StackingFoldSelectionRequest, StackingProducerSelectionRequest, TrainingContractProjection,
+    TrainingOutcome, TrainingReplayOutcome, TrainingReplayRequest, TrainingRequest,
+    EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION_V2,
 };
 
 create_exception!(_dag_ml, DagMlError, PyException);
@@ -648,6 +648,10 @@ fn _dag_ml(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
         module
     )?)?;
     module.add_function(wrap_pyfunction!(
+        in_process::run_cv_refit_methods_in_process,
+        module
+    )?)?;
+    module.add_function(wrap_pyfunction!(
         in_process::execute_phase_in_process,
         module
     )?)?;
@@ -760,6 +764,7 @@ fn contract_manifest() -> serde_json::Value {
             "structured_error_descriptors",
             "configure_methods_runtime",
             "execute_methods_training",
+            "execute_methods_cv_refit",
             "execute_methods_cv_refit_terminal_predict",
             "execute_methods_portable_full_refit",
             "build_conformal_presentation",
@@ -814,6 +819,7 @@ fn contract_manifest() -> serde_json::Value {
             "canonical_operator_variant_label",
             "canonical_operator_variant_value_json",
             "run_cv_refit_in_process",
+            "run_cv_refit_methods_in_process",
             "execute_phase_in_process",
             "replay_initial_full_refit_in_process",
             "execute_data_provider",

@@ -59,7 +59,7 @@ const PY_DATA_PROVIDER_CONTROLLER_ID: &str = "controller:python.data.provider";
 #[cfg(feature = "methods-optimizer")]
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct MethodsTrainingInputJson {
+pub(crate) struct MethodsTrainingInputJson {
     sample_ids: Vec<String>,
     x: Vec<Vec<f64>>,
     #[serde(default)]
@@ -82,16 +82,23 @@ struct MethodsPredictInputJson {
     target_names: Vec<String>,
 }
 
-/// Native Methods training input provider for the Python binding.
+/// Native Methods numeric input provider for the Python binding.
 ///
 /// This is deliberately separate from the generic Python callback provider.
-/// A native controller can consume only explicit numeric PLS views, while all
-/// ordinary nodes keep using opaque host handles and callbacks.
+/// A native controller can consume only explicit numeric views, while all
+/// ordinary nodes keep using opaque host handles and callbacks. The wrapped
+/// provider owns identity, relations and views; this layer only resolves the
+/// scheduler-selected identities to the host-supplied rows.
 #[cfg(feature = "methods-optimizer")]
-struct PyMethodsPlsTrainingProvider {
-    inner: EnvelopeAttestedRuntimeDataProvider<InMemoryDataProvider>,
+pub(crate) struct MethodsInputProvider<P> {
+    inner: P,
     inputs: BTreeMap<String, MethodsPlsDataset>,
 }
+
+/// The W1 training lane's envelope-attested Methods provider.
+#[cfg(feature = "methods-optimizer")]
+type PyMethodsPlsTrainingProvider =
+    MethodsInputProvider<EnvelopeAttestedRuntimeDataProvider<InMemoryDataProvider>>;
 
 enum TrainingDataProvider {
     Host(EnvelopeAttestedRuntimeDataProvider<InMemoryDataProvider>),
@@ -209,9 +216,28 @@ impl RuntimeDataProvider for TrainingDataProvider {
 
 #[cfg(feature = "methods-optimizer")]
 impl PyMethodsPlsTrainingProvider {
-    fn new(
+    fn attested(
         bindings: Vec<DataBinding>,
         envelopes: BTreeMap<String, ExternalDataPlanEnvelope>,
+        inputs: BTreeMap<String, MethodsPlsDataset>,
+    ) -> dag_ml_core::Result<Self> {
+        let mut raw = InMemoryDataProvider::new(dag_ml_core::ControllerId::new(
+            PY_DATA_PROVIDER_CONTROLLER_ID,
+        )?);
+        for envelope in envelopes.values().cloned() {
+            raw.register_envelope(envelope)?;
+        }
+        let inner = EnvelopeAttestedRuntimeDataProvider::new(raw, bindings.clone(), envelopes)?;
+        Self::new(inner, &bindings, inputs)
+    }
+}
+
+#[cfg(feature = "methods-optimizer")]
+impl<P: RuntimeDataProvider> MethodsInputProvider<P> {
+    /// Wrap `inner` with host rows that exactly cover `bindings`.
+    pub(crate) fn new(
+        inner: P,
+        bindings: &[DataBinding],
         inputs: BTreeMap<String, MethodsPlsDataset>,
     ) -> dag_ml_core::Result<Self> {
         let expected_keys = bindings
@@ -236,14 +262,6 @@ impl PyMethodsPlsTrainingProvider {
                     .join(", "),
             )));
         }
-
-        let mut raw = InMemoryDataProvider::new(dag_ml_core::ControllerId::new(
-            PY_DATA_PROVIDER_CONTROLLER_ID,
-        )?);
-        for envelope in envelopes.values().cloned() {
-            raw.register_envelope(envelope)?;
-        }
-        let inner = EnvelopeAttestedRuntimeDataProvider::new(raw, bindings, envelopes)?;
         for (key, dataset) in &inputs {
             // PREDICT inputs legitimately carry no target matrix. FIT_CV and
             // REFIT demand it again at the exact scheduler request below.
@@ -357,7 +375,7 @@ impl PyMethodsPlsTrainingProvider {
 }
 
 #[cfg(feature = "methods-optimizer")]
-impl RuntimeDataProvider for PyMethodsPlsTrainingProvider {
+impl<P: RuntimeDataProvider> RuntimeDataProvider for MethodsInputProvider<P> {
     fn materialize(&self, request: &DataMaterializationRequest) -> dag_ml_core::Result<HandleRef> {
         self.inner.materialize(request)
     }
@@ -1031,16 +1049,8 @@ pub fn execute_methods_training_json(
             .values()
             .flat_map(|node_plan| node_plan.data_bindings.iter().cloned())
             .collect::<Vec<DataBinding>>();
-        if projection
-            .plan
-            .node_plans
-            .values()
-            .any(|node_plan| !is_native_methods_model_controller(&node_plan.controller_id))
-        {
-            return Err(py_core_error(dag_ml_core::DagMlError::RuntimeValidation(
-                "native Methods training requires every executable node to use controller:methods.pls or controller:methods.ridge; host controller fallback is forbidden".to_string(),
-            )));
-        }
+        require_native_methods_controllers(&projection.plan, "native Methods training")
+            .map_err(py_core_error)?;
         let raw_inputs = parse_strict_json::<BTreeMap<String, MethodsTrainingInputJson>>(
             methods_inputs_json,
             "native Methods training input map",
@@ -1051,7 +1061,7 @@ pub fn execute_methods_training_json(
             .collect::<dag_ml_core::Result<BTreeMap<_, _>>>()
             .map_err(py_core_error)?;
         let data_provider = TrainingDataProvider::Methods(
-            PyMethodsPlsTrainingProvider::new(bindings, envelopes, inputs)
+            PyMethodsPlsTrainingProvider::attested(bindings, envelopes, inputs)
                 .map_err(py_core_error)?,
         );
         let runtime =
@@ -2320,16 +2330,11 @@ pub fn execute_methods_portable_full_refit_json(
             .values()
             .flat_map(|node_plan| node_plan.data_bindings.iter().cloned())
             .collect::<Vec<DataBinding>>();
-        if source_package
-            .effective_plan
-            .node_plans
-            .values()
-            .any(|node_plan| !is_native_methods_model_controller(&node_plan.controller_id))
-        {
-            return Err(py_core_error(dag_ml_core::DagMlError::RuntimeValidation(
-                "native Methods full refit requires every executable node to use controller:methods.pls or controller:methods.ridge; host controller fallback is forbidden".to_string(),
-            )));
-        }
+        require_native_methods_controllers(
+            &source_package.effective_plan,
+            "native Methods full refit",
+        )
+        .map_err(py_core_error)?;
         let raw_inputs = parse_strict_json::<BTreeMap<String, MethodsTrainingInputJson>>(
             methods_inputs_json,
             "native Methods full refit input map",
@@ -2340,7 +2345,7 @@ pub fn execute_methods_portable_full_refit_json(
             .collect::<dag_ml_core::Result<BTreeMap<_, _>>>()
             .map_err(py_core_error)?;
         let data_provider = TrainingDataProvider::Methods(
-            PyMethodsPlsTrainingProvider::new(bindings, envelopes, inputs)
+            PyMethodsPlsTrainingProvider::attested(bindings, envelopes, inputs)
                 .map_err(py_core_error)?,
         );
         let runtime =
@@ -2350,13 +2355,7 @@ pub fn execute_methods_portable_full_refit_json(
                 ))
             })?;
         let mut controllers = RuntimeControllerRegistry::new();
-        controllers
-            .register(Box::new(dag_ml_core::MethodsPlsController::new(
-                runtime.clone(),
-            )))
-            .map_err(py_core_error)?;
-        controllers
-            .register(Box::new(dag_ml_core::MethodsRidgeController::new(runtime)))
+        dag_ml_core::register_methods_native_controllers(&mut controllers, runtime)
             .map_err(py_core_error)?;
         let run_id = RunId::new(run_id).map_err(py_core_error)?;
         let bundle_id = BundleId::new(bundle_id).map_err(py_core_error)?;
@@ -2395,36 +2394,53 @@ pub fn execute_methods_portable_full_refit_json(
     }
 }
 
-/// Register the native PLS/Ridge controllers and, when attested by the campaign,
-/// its controller-owned Methods HPO companion.  The scheduler creates the
-/// thread-affine optimizer session later from the complete training context;
-/// this binding only establishes the exact controller identities before any
-/// operation can reach the provider.
+/// Register the native Methods controllers (PLS, Ridge and the n4m role
+/// estimators) and, when attested by the campaign, its controller-owned
+/// Methods HPO companion.  The scheduler creates the thread-affine optimizer
+/// session later from the complete training context; this binding only
+/// establishes the exact controller identities before any operation can reach
+/// the provider.
 #[cfg(feature = "methods-optimizer")]
 fn register_methods_training_controllers(
     projection: &dag_ml_core::TrainingContractProjection,
     runtime: dag_ml_core::MethodsRuntime,
     controllers: &mut RuntimeControllerRegistry,
 ) -> dag_ml_core::Result<()> {
-    let Some(hpo_controller_id) = methods_hpo_controller_id(&projection.plan.campaign.metadata)?
-    else {
-        controllers.register(Box::new(dag_ml_core::MethodsPlsController::new(
-            runtime.clone(),
-        )))?;
-        controllers.register(Box::new(dag_ml_core::MethodsRidgeController::new(runtime)))?;
-        return Ok(());
-    };
-    dag_ml_core::register_methods_runtime_controllers(controllers, hpo_controller_id, runtime)
+    match methods_hpo_controller_id(&projection.plan.campaign.metadata)? {
+        Some(hpo_controller_id) => dag_ml_core::register_methods_runtime_controllers(
+            controllers,
+            hpo_controller_id,
+            runtime,
+        ),
+        None => dag_ml_core::register_methods_native_controllers(controllers, runtime),
+    }
 }
 
-/// Return whether an executable node is owned by one of the two native Methods
-/// model controllers that the portable training/refit lane registers locally.
+/// Refuse a plan with any executable node outside the callback-free native
+/// Methods controllers: host controller fallback is forbidden in these lanes.
 #[cfg(feature = "methods-optimizer")]
-fn is_native_methods_model_controller(controller_id: &dag_ml_core::ControllerId) -> bool {
-    matches!(
-        controller_id.as_str(),
-        dag_ml_core::METHODS_PLS_CONTROLLER_ID | dag_ml_core::METHODS_RIDGE_CONTROLLER_ID
-    )
+pub(crate) fn require_native_methods_controllers(
+    plan: &dag_ml_core::ExecutionPlan,
+    lane: &str,
+) -> dag_ml_core::Result<()> {
+    let native = dag_ml_core::methods_native_controller_ids();
+    match plan
+        .node_plans
+        .values()
+        .find(|node_plan| !native.contains(&node_plan.controller_id))
+    {
+        Some(node_plan) => Err(dag_ml_core::DagMlError::RuntimeValidation(format!(
+            "{lane} requires every executable node to use a native Methods controller ({}); node `{}` uses `{}` and host controller fallback is forbidden",
+            native
+                .iter()
+                .map(|id| id.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+            node_plan.node_id,
+            node_plan.controller_id
+        ))),
+        None => Ok(()),
+    }
 }
 
 /// Extract only the controller identity that must be registered locally.
@@ -2460,7 +2476,7 @@ fn methods_hpo_controller_id(
 }
 
 #[cfg(feature = "methods-optimizer")]
-fn methods_dataset_from_json(
+pub(crate) fn methods_dataset_from_json(
     input: MethodsTrainingInputJson,
     require_targets: bool,
 ) -> dag_ml_core::Result<MethodsPlsDataset> {
@@ -2810,7 +2826,7 @@ pub fn execute_loaded_predictor_replay_json(
     serialize_json(&outcome)
 }
 
-fn parse_strict_json<T>(json: &str, label: &str) -> PyResult<T>
+pub(crate) fn parse_strict_json<T>(json: &str, label: &str) -> PyResult<T>
 where
     T: DeserializeOwned + Serialize,
 {
@@ -2921,18 +2937,34 @@ mod tests {
 
     #[cfg(feature = "methods-optimizer")]
     #[test]
-    fn portable_methods_model_lane_allows_only_pls_and_ridge_controllers() {
-        for controller in [
-            dag_ml_core::METHODS_PLS_CONTROLLER_ID,
-            dag_ml_core::METHODS_RIDGE_CONTROLLER_ID,
+    fn portable_methods_lanes_allow_only_native_methods_controllers() {
+        let native = dag_ml_core::methods_native_controller_ids()
+            .into_iter()
+            .map(|id| id.as_str().to_string())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            native,
+            BTreeSet::from(
+                [
+                    dag_ml_core::METHODS_PLS_CONTROLLER_ID,
+                    dag_ml_core::METHODS_RIDGE_CONTROLLER_ID,
+                    "controller:n4m.transformer",
+                    "controller:n4m.selector",
+                    "controller:n4m.regressor",
+                    "controller:n4m.classifier",
+                    "controller:n4m.sample_filter",
+                ]
+                .map(str::to_string)
+            )
+        );
+        // Derived but not executable roles, and host controllers, stay refused.
+        for refused in [
+            "controller:n4m.splitter",
+            "controller:n4m.augmenter",
+            "controller:test.host",
         ] {
-            assert!(is_native_methods_model_controller(
-                &dag_ml_core::ControllerId::new(controller).unwrap()
-            ));
+            assert!(!native.contains(refused), "{refused}");
         }
-        assert!(!is_native_methods_model_controller(
-            &dag_ml_core::ControllerId::new("controller:test.host").unwrap()
-        ));
     }
 
     #[cfg(not(feature = "methods-optimizer"))]
@@ -3467,6 +3499,178 @@ mod tests {
             );
             assert!(error.contains("feature-width compatibility"));
             assert_no_native(&error);
+        });
+    }
+
+    /// The W1 no-callback Methods lane trains, selects and refits an n4m
+    /// role chain (SNV -> CPPLS) through the manifest-derived role
+    /// controllers, capturing one durable N4ME state per fitted node.
+    #[cfg(feature = "methods-optimizer")]
+    #[test]
+    fn methods_training_runs_n4m_role_chain_with_n4me_refit_states() {
+        let library_path = match std::env::var_os("N4M_LIBRARY_PATH") {
+            Some(library_path) => library_path,
+            None if std::env::var_os("DAG_ML_REQUIRE_N4M_TEST").is_some() => {
+                panic!("DAG_ML_REQUIRE_N4M_TEST=1 requires an explicit N4M_LIBRARY_PATH");
+            }
+            None => return,
+        };
+        let runtime =
+            dag_ml_core::MethodsRuntime::configure(library_path.to_string_lossy().as_ref())
+                .unwrap();
+        let registry = dag_ml_core::derive_host_controller_registry(
+            &dag_ml_core::methods_estimator_host_controller_specs(&runtime).unwrap(),
+        )
+        .unwrap();
+
+        let mut request: TrainingRequest = serde_json::from_str(REQUEST_FIXTURE).unwrap();
+        request.campaign.generation = GenerationSpec::default();
+        for node in &mut request.graph.nodes {
+            let (method_id, extra) = match node.id.as_str() {
+                "transform:snv" => ("preprocessing.scatter.snv", None),
+                _ => (
+                    "models.pls.cppls",
+                    Some(("n_components", serde_json::json!(1))),
+                ),
+            };
+            node.operator = Some(serde_json::json!({"ref": format!("n4m:{method_id}")}));
+            node.params = BTreeMap::from([("method_id".to_string(), serde_json::json!(method_id))]);
+            node.params
+                .extend(extra.map(|(name, value)| (name.to_string(), value)));
+        }
+        for shape in request.campaign.shape_plans.values_mut() {
+            shape.augmentation_policy.sample_scope = dag_ml_core::AugmentationScope::None;
+            shape.augmentation_policy.feature_scope = dag_ml_core::AugmentationScope::None;
+        }
+        // The chain head reads the data binding; the model reads its output.
+        let mut bindings = request
+            .campaign
+            .data_bindings
+            .remove(&NodeId::new("model:base").unwrap())
+            .unwrap();
+        bindings[0].node_id = NodeId::new("transform:snv").unwrap();
+        bindings[0].view_policy.include_augmented_train = false;
+        request
+            .campaign
+            .data_bindings
+            .insert(NodeId::new("transform:snv").unwrap(), bindings);
+        request.controller_manifests = ["controller:n4m.regressor", "controller:n4m.transformer"]
+            .into_iter()
+            .map(|id| {
+                registry
+                    .get(&dag_ml_core::ControllerId::new(id).unwrap())
+                    .unwrap()
+                    .clone()
+            })
+            .collect();
+        request.options.scheduler.kind = dag_ml_core::TrainingSchedulerKind::Sequential;
+        request.options.scheduler.backend = None;
+        request.options.scheduler.workers = 1;
+        request.options.selection.required_metric_level = Some(PredictionLevel::Sample);
+        request.options.selection.evaluation_scope = Some(EvaluationScope::Oof);
+        request.options.resources.cpu_threads = 1;
+        request.options.resources.memory_bytes = None;
+        request.options.resources.wall_time_ms = None;
+        request.options.artifacts.cv_artifacts = CvArtifactRetention::Discard;
+        request.options.artifacts.prediction_caches =
+            dag_ml_core::PredictionCacheRetention::Discard;
+        request.options.artifacts.fitted_artifacts = FittedArtifactMode::PortableRequired;
+
+        let relations = SampleRelationSet {
+            records: (1..=4)
+                .map(|index| {
+                    SampleRelation::new(
+                        ObservationId::new(format!("observation:{index}")).unwrap(),
+                        sample(&format!("sample:{index}")),
+                    )
+                })
+                .collect(),
+        };
+        let binding = request
+            .campaign
+            .data_bindings
+            .values_mut()
+            .next()
+            .unwrap()
+            .first_mut()
+            .unwrap();
+        binding.relation_fingerprint = Some(relations.fingerprint().unwrap());
+        let envelope = envelope(binding, &request.data_identities[0], relations.clone());
+        request.data_identities =
+            vec![TrainingDataIdentity::from_binding_envelope(binding, &envelope).unwrap()];
+        request.request_fingerprint = "0".repeat(64);
+        request.request_fingerprint = request.compute_fingerprint().unwrap();
+        let projection = request.project().unwrap();
+        let influence = influence_manifest(&request, &projection, &relations);
+        let methods_inputs = serde_json::json!({
+            "transform:snv.x": {
+                "sample_ids": ["sample:1", "sample:2", "sample:3", "sample:4"],
+                "x": [
+                    [1.0, 0.2, 0.7, 0.1], [2.0, 1.1, 0.3, 0.9],
+                    [3.0, 0.4, 1.8, 0.2], [4.0, 1.7, 0.6, 1.4]
+                ],
+                "y": [[1.0], [2.0], [3.0], [4.0]],
+                "target_names": ["protein"]
+            }
+        });
+
+        Python::initialize();
+        Python::attach(|py| {
+            let result = execute_methods_training_json(
+                py,
+                &serde_json::to_string(&request).unwrap(),
+                &serde_json::to_string(&BTreeMap::from([(
+                    "transform:snv.x".to_string(),
+                    envelope,
+                )]))
+                .unwrap(),
+                &serde_json::to_string(&relations).unwrap(),
+                &serde_json::to_string(&influence).unwrap(),
+                &methods_inputs.to_string(),
+                &library_path.to_string_lossy(),
+                "outcome:n4m.roles",
+                "run:n4m.roles",
+                "bundle:n4m.roles",
+                "[]",
+                "{}",
+            )
+            .expect("an n4m role chain trains natively without a Python callback");
+            let bundle = &result.outcome.execution_bundle;
+            let records = bundle
+                .refit_artifacts
+                .iter()
+                .map(|record| {
+                    (
+                        record.node_id.as_str(),
+                        record.controller_id.as_str(),
+                        record.artifact.kind.as_str(),
+                    )
+                })
+                .collect::<BTreeSet<_>>();
+            assert_eq!(
+                records,
+                BTreeSet::from([
+                    ("model:base", "controller:n4m.regressor", "n4m_estimator"),
+                    (
+                        "transform:snv",
+                        "controller:n4m.transformer",
+                        "n4m_estimator"
+                    ),
+                ])
+            );
+            for record in &bundle.refit_artifacts {
+                assert!(bundle
+                    .raw_artifact_payloads
+                    .contains_key(&record.artifact.id));
+            }
+            result
+                .outcome
+                .to_portable_predictor_package(
+                    "package:n4m.roles",
+                    FittedArtifactMode::PortableRequired,
+                    ArtifactLoadMode::NativePortable,
+                )
+                .expect("N4ME states make the role chain a native portable package");
         });
     }
 

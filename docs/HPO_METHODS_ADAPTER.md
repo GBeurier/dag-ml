@@ -45,17 +45,44 @@ derivation is exposed to Python (`dag_ml.n4m_host_controller_specs`) and WASM
 
 With the `methods-optimizer` feature, `register_methods_estimator_controllers`
 registers the natively executed roles (transformer, selector, regressor,
-sample filter) as `MethodsEstimatorController`s sharing one invocation-local
-feature store, so `exclude -> transform -> model` chains run without a host
-callback. A node names its method with the reserved `method_id` parameter; all
-other parameters are typed by the native manifest. Sample filters act on
-training rows only and pass inference rows through. Refit states are raw
-`n4m_estimator` artifacts in format N4ME (ABI 2.13) with a
+classifier, sample filter) as `MethodsEstimatorController`s sharing one
+invocation-local feature store, so `exclude -> transform -> model` chains run
+without a host callback. A node names its method with the reserved `method_id`
+parameter; all other parameters are typed by the native manifest JSON (an
+integral number is an exact `int`, as numeric generators emit binary64 values).
+The controllers read the method catalog from that JSON contract only, so
+additive manifest keys of later ABIs (for example 2.14's per-parameter
+`recorded` flag and `null` defaults of optional seeds) are accepted. Sample
+filters act on training rows only and pass inference rows through.
+
+Model nodes score the surfaces of a host model controller: FIT_CV emits the
+fold-validation OOF block plus the in-fold `train` and report-only
+`train_pool` blocks, REFIT the `final` block (and a `test` block for an
+explicit held-out prediction view), each with its identity-keyed targets.
+Classifiers fit on the integral class ids of their single target column
+(`labels` fit input), predict class ids (scored as class labels by the
+accuracy/balanced-accuracy/F1 metrics) and, when the method defines
+probabilities, attest them on the `train`/`train_pool` surfaces.
+
+Refit states are raw `n4m_estimator` artifacts in format N4ME (ABI >= 2.13),
+one per node and variant (`artifact:n4m:<node>:<variant>:refit`), with a
 `dagml.native_estimator_descriptor.v1` read back from the native state.
 Methods whose state retains training rows are refused unless the node sets
 `unsafe_flags: ["allow_training_rows_in_artifact"]`, which is recorded in the
-lineage. Classifier, splitter and augmenter roles are derived for planning but
-have no native execution path yet.
+lineage. Splitter and augmenter roles are derived for planning but have no
+native execution path yet.
+
+Every callback-free Methods entry point registers the same native set
+(`register_methods_native_controllers`: Methods PLS, Ridge and the role
+controllers) and refuses a plan with any other controller:
+`execute_methods_training`, the portable full refit, Package V2/V3 replay and
+`run_cv_refit_methods_in_process`. The latter is the callback-free twin of
+`run_cv_refit_in_process`: the same compat-DSL compilation, envelope views,
+variant SELECT, FIT_CV, REFIT and scoring, with controller manifests derived
+from the configured libn4m, host rows supplied once as `methods_inputs_json`
+(exactly covering the plan's data bindings) and a target-bound envelope
+(relation, data content and target content fingerprints). It returns the
+host payload plus the REFIT records and their raw N4ME bytes.
 
 ## Training-local runtime route
 

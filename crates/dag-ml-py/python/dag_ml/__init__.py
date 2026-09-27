@@ -1365,7 +1365,10 @@ def execute_methods_training_json(
     warnings_json: str = "[]",
     diagnostics_json: str = "{}",
 ) -> TrainingResult:
-    """Run the portable Methods PLS lane with no Python operator callback.
+    """Run the portable Methods lane with no Python operator callback.
+
+    Every executable node must be a native Methods controller: Methods PLS or
+    Ridge, or an n4m role estimator controller (``controller:n4m.<role>``).
 
     ``methods_inputs_json`` is a strict map of host-owned full datasets.  The
     native scheduler selects FIT_CV/REFIT rows by its signed identity views;
@@ -1404,11 +1407,12 @@ def execute_methods_training(
     warnings: Any = (),
     diagnostics: Any = None,
 ) -> TrainingResult:
-    """Execute one strictly native Methods PLS training request.
+    """Execute one strictly native Methods training request.
 
-    The graph must contain only ``controller:methods.pls`` executable nodes.
-    Host-sidecar controllers and Python operator fallback are refused before
-    numerical execution.
+    The graph must contain only native Methods executable nodes (Methods PLS
+    or Ridge, or ``controller:n4m.<role>`` estimators). Host-sidecar
+    controllers and Python operator fallback are refused before numerical
+    execution.
     """
 
     return execute_methods_training_json(

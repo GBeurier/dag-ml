@@ -96,7 +96,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/hpo.rs",
-      "sha256": "44dea609854b4d254f82757a0eda4bd9731f390b724806a85c39d20e85ef3804",
+      "sha256": "1f2760ed92e80b4ef672e32365c7bcb55e57aa385207e4e3bd6f9b717240c849",
       "kind": "native_hpo_controller"
     },
     {
@@ -201,7 +201,7 @@
     },
     {
       "path": "crates/dag-ml-py/python/dag_ml/__init__.py",
-      "sha256": "0016fcc90aa13c2e0097a17d27a16bdf6285f887b01eced03f21c4736c2c3f07",
+      "sha256": "f9b27a9de1b5c43b1801ef1bbb856a749c478163a117b0fb2b69cf064a495b1a",
       "kind": "python_facade"
     },
     {
@@ -211,17 +211,17 @@
     },
     {
       "path": "crates/dag-ml-py/src/in_process.rs",
-      "sha256": "27df5aed42f9498519f59cbd3b88f46d49c29b4bafcd45d6918fda21dcbc8bcf",
+      "sha256": "22654b001a1d6c85a4018a6c309fc6dd700bd333b9403a5cf1aa9734596b3b39",
       "kind": "python_controller_bridge"
     },
     {
       "path": "crates/dag-ml-py/src/lib.rs",
-      "sha256": "5bdaa8d6ff3cbece08e8265489d2e8fb2bc91bd084e3fb94c5741fe00263d76a",
+      "sha256": "66ca5b548c70124723bd3c167f662995555f14fed48ea1691787447329705608",
       "kind": "python_binding"
     },
     {
       "path": "crates/dag-ml-py/src/training.rs",
-      "sha256": "e0009641b4c3951d846208aa7e237afb04b749273ddcb8e6ea0a29bbc4386d4b",
+      "sha256": "c5e5f7c000d47dabbd8e4f583a0708d46884c8b7b215c259d7482f93b121dc29",
       "kind": "python_training_binding"
     },
     {
@@ -236,7 +236,7 @@
     },
     {
       "path": "docs/HPO_METHODS_ADAPTER.md",
-      "sha256": "d46905883e1777e83390542b2ca1f468ff11aadef376b7620acc60a29a6639fc",
+      "sha256": "2a2b73346c1ef8a7c3ee1a6bc1e80401e0863033f18cc286e3d9b232929b05bb",
       "kind": "hpo_documentation"
     },
     {
@@ -604,5 +604,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "a177045c06e7eb2376cea28ccdf4982a4f5d9ee63fabe93f8fa7e4621b297543"
+  "pack_checksum": "8e3475367df67a7720eb1e76dd51f93bd188f6ff24b65d19e99576c1e4cf0bbc"
 }

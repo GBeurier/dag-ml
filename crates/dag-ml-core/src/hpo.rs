@@ -2796,6 +2796,42 @@ mod pls_controller {
 #[cfg(feature = "methods-optimizer")]
 pub use pls_controller::{MethodsPlsController, MethodsRidgeController};
 
+/// Controller ids of every callback-free native Methods controller: the
+/// Methods PLS and Ridge models plus one n4m estimator controller per
+/// executable role.
+#[cfg(feature = "methods-optimizer")]
+pub fn methods_native_controller_ids() -> Vec<crate::ControllerId> {
+    [METHODS_PLS_CONTROLLER_ID, METHODS_RIDGE_CONTROLLER_ID]
+        .into_iter()
+        .chain(
+            crate::methods_estimator::METHODS_ESTIMATOR_EXECUTABLE_ROLES
+                .iter()
+                .filter_map(|role| role.controller_id()),
+        )
+        .map(|id| crate::ControllerId::new(id).expect("fixed Methods controller ids are valid"))
+        .collect()
+}
+
+/// Register every controller of [`methods_native_controller_ids`] for one
+/// invocation. The registry is preflighted, so a duplicate id cannot leave a
+/// half-registered Methods runtime behind.
+#[cfg(feature = "methods-optimizer")]
+pub fn register_methods_native_controllers(
+    registry: &mut crate::runtime::RuntimeControllerRegistry,
+    runtime: MethodsRuntime,
+) -> crate::Result<()> {
+    for controller_id in methods_native_controller_ids() {
+        if registry.get(&controller_id).is_some() {
+            return Err(crate::DagMlError::RuntimeValidation(format!(
+                "duplicate runtime controller `{controller_id}`"
+            )));
+        }
+    }
+    registry.register(Box::new(MethodsPlsController::new(runtime.clone())))?;
+    registry.register(Box::new(MethodsRidgeController::new(runtime.clone())))?;
+    crate::methods_estimator::register_methods_estimator_controllers(registry, runtime)
+}
+
 /// Register the complete native Methods controller set for one process.
 ///
 /// The caller supplies the already-configured runtime and the controller id
@@ -2809,35 +2845,22 @@ pub fn register_methods_runtime_controllers(
     hpo_controller_id: crate::ControllerId,
     runtime: MethodsRuntime,
 ) -> crate::Result<()> {
-    let native_controller_ids = [METHODS_PLS_CONTROLLER_ID, METHODS_RIDGE_CONTROLLER_ID]
-        .into_iter()
-        .chain(
-            crate::methods_estimator::METHODS_ESTIMATOR_EXECUTABLE_ROLES
-                .iter()
-                .filter_map(|role| role.controller_id()),
-        )
-        .map(|id| crate::ControllerId::new(id).expect("fixed Methods controller ids are valid"))
-        .collect::<Vec<_>>();
-    if native_controller_ids.contains(&hpo_controller_id) {
+    if methods_native_controller_ids().contains(&hpo_controller_id) {
         return Err(crate::DagMlError::RuntimeValidation(
             "Methods HPO controller id must differ from the native Methods model and estimator controller ids"
                 .to_string(),
         ));
     }
-    for controller_id in native_controller_ids.iter().chain([&hpo_controller_id]) {
-        if registry.get(controller_id).is_some() {
-            return Err(crate::DagMlError::RuntimeValidation(format!(
-                "duplicate runtime controller `{controller_id}`"
-            )));
-        }
+    if registry.get(&hpo_controller_id).is_some() {
+        return Err(crate::DagMlError::RuntimeValidation(format!(
+            "duplicate runtime controller `{hpo_controller_id}`"
+        )));
     }
-    registry.register(Box::new(MethodsPlsController::new(runtime.clone())))?;
-    registry.register(Box::new(MethodsRidgeController::new(runtime.clone())))?;
+    register_methods_native_controllers(registry, runtime.clone())?;
     registry.register(Box::new(MethodsHpoController::new(
         hpo_controller_id,
-        runtime.clone(),
-    )))?;
-    crate::methods_estimator::register_methods_estimator_controllers(registry, runtime)
+        runtime,
+    )))
 }
 
 #[cfg(feature = "methods-optimizer")]

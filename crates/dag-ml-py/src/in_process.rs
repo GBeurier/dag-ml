@@ -52,9 +52,9 @@ use dag_ml_core::{
     ExternalDataPlanEnvelope, HandleKind, HandleRef, InMemoryArtifactStore, InMemoryDataProvider,
     NodeResult, NodeTask, OperatorVariantModel, Phase, RegressionMetricKind,
     RegressionMetricReport, RunContext, RunId, RuntimeController, RuntimeControllerRegistry,
-    ScoreSet, SequentialScheduler, TerminalPredictionReplay, TerminalPredictionSelector,
-    TrainingLossRoleReference, TrainingResourceLimits, VariantId, VariantValidationPredictions,
-    SCORE_SET_SCHEMA_VERSION,
+    RuntimeDataProvider, ScoreSet, SequentialScheduler, TerminalPredictionReplay,
+    TerminalPredictionSelector, TrainingLossRoleReference, TrainingResourceLimits, VariantId,
+    VariantValidationPredictions, SCORE_SET_SCHEMA_VERSION,
 };
 
 use crate::{py_core_error, py_serde_error};
@@ -1071,7 +1071,7 @@ fn resolve_operator_select(
     root_seed: u64,
     selection_metric: RegressionMetricKind,
     runtime_controllers: &RuntimeControllerRegistry,
-    data_provider: &InMemoryDataProvider,
+    data_provider: &dyn RuntimeDataProvider,
     resource_limits: Option<&TrainingResourceLimits>,
 ) -> Result<Option<ResolvedRefitVariant>, CoreDagMlError> {
     let selected = select_best_operator_variant_outcome_from_models(
@@ -1172,7 +1172,7 @@ fn resolve_refit_variant(
     root_seed: u64,
     selection_metric: RegressionMetricKind,
     runtime_controllers: &RuntimeControllerRegistry,
-    data_provider: &InMemoryDataProvider,
+    data_provider: &dyn RuntimeDataProvider,
     resource_limits: Option<&TrainingResourceLimits>,
 ) -> Result<ResolvedRefitVariant, CoreDagMlError> {
     if !operator_variant_models.is_empty() {
@@ -1599,19 +1599,13 @@ pub fn run_cv_refit_predict_in_process(
     .map_err(py_serde_error)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn run_cv_refit_in_process_impl(
-    py: Python<'_>,
-    dsl_json: &str,
-    envelope_json: &str,
-    controller_manifests_json: &str,
-    training_loss_roles_json: Option<&str>,
-    op_callback: Py<PyAny>,
+/// Validate the shared CV + REFIT execution options.
+fn cv_refit_options(
     selection_metric: &str,
     resource_limits_json: Option<&str>,
     refit: bool,
     refit_top_k: usize,
-) -> PyResult<String> {
+) -> PyResult<(RegressionMetricKind, Option<TrainingResourceLimits>)> {
     if refit_top_k == 0 || (!refit && refit_top_k != 1) {
         return Err(pyo3::exceptions::PyValueError::new_err(
             "refit_top_k must be positive and requires refit enabled",
@@ -1629,85 +1623,92 @@ fn run_cv_refit_in_process_impl(
             ));
         }
     }
+    Ok((metric, resource_limits))
+}
 
-    // 1. Read the envelope first (the CLI reads it before the plan so data-aware
-    //    branch fan-out can discover partition values from coordinator relations).
-    let envelope: ExternalDataPlanEnvelope =
-        serde_json::from_str(envelope_json).map_err(py_serde_error)?;
+/// One compiled CV + REFIT campaign: its plan, operator-variant models and
+/// the envelope whose relations the plan's folds were validated against.
+struct CvRefitCampaign {
+    dsl_id: String,
+    plan: ExecutionPlan,
+    operator_variant_models: Vec<OperatorVariantModel>,
+    envelope: ExternalDataPlanEnvelope,
+}
 
-    // 2. Build the plan exactly as `build_plan_from_dsl_path_with_envelope`:
-    //    fan out data-aware branches against the envelope, compile with the
-    //    controller registry, then build the execution plan from the compiled
-    //    graph + campaign template.
-    let dsl_spec = parse_pipeline_dsl_json(dsl_json.as_bytes()).map_err(py_core_error)?;
-    let dsl_spec = fan_out_data_aware_branches(&dsl_spec, &envelope).map_err(py_core_error)?;
-    let manifests =
-        serde_json::from_str::<Vec<dag_ml_core::ControllerManifest>>(controller_manifests_json)
-            .map_err(py_serde_error)?;
-    let mut controller_registry = ControllerRegistry::new();
-    for manifest in &manifests {
-        controller_registry
-            .register(manifest.clone())
-            .map_err(py_core_error)?;
-    }
+/// Compile a CV + REFIT campaign exactly as the CLI's
+/// `build_plan_from_dsl_path_with_envelope`: read the envelope first (data-aware
+/// branch fan-out discovers partition values from its coordinator relations),
+/// compile with the controller registry, lower the operator-level generators
+/// into operator-variant models (the SAME additive derivation the CLI runs; it
+/// does not touch the compiled graph, OOF lanes or fingerprints), build the
+/// plan and validate the envelope relations against the campaign folds.
+fn compile_cv_refit_campaign(
+    dsl_json: &str,
+    envelope: ExternalDataPlanEnvelope,
+    controller_registry: &ControllerRegistry,
+) -> Result<CvRefitCampaign, CoreDagMlError> {
+    let dsl_spec = parse_pipeline_dsl_json(dsl_json.as_bytes())?;
+    let dsl_spec = fan_out_data_aware_branches(&dsl_spec, &envelope)?;
     let compiled = compile_pipeline_dsl_with_generation_and_controller_registry(
         &dsl_spec,
-        &controller_registry,
-    )
-    .map_err(py_core_error)?;
-    // Lower the spec's operator-level generators (Mechanism B) into operator-variant models — the
-    // SAME additive derivation the CLI runs (it does not touch the compiled graph / OOF lanes /
-    // fingerprints). Empty when the spec has no operator generator. This is what enables the
-    // default in-process binding to native operator-SELECT, mirroring CLI Mechanism A.
-    let operator_variant_models =
-        compile_operator_variant_models(&dsl_spec).map_err(py_core_error)?;
-    let mut plan = build_execution_plan(
+        controller_registry,
+    )?;
+    let operator_variant_models = compile_operator_variant_models(&dsl_spec)?;
+    let plan = build_execution_plan(
         format!("plan:{}", dsl_spec.id),
         compiled.graph,
         compiled.campaign_template,
-        &controller_registry,
-    )
-    .map_err(py_core_error)?;
-    if let Some(training_loss_roles_json) = training_loss_roles_json {
-        let roles: Vec<TrainingLossRoleReference> =
-            serde_json::from_str(training_loss_roles_json).map_err(py_serde_error)?;
-        plan = plan.with_training_losses(roles).map_err(py_core_error)?;
-    }
-
-    // 3. Build the SAME Rust data provider the CLI uses
-    //    (`data_provider_for_training_envelope`): validate the envelope relations
-    //    against the campaign folds, then register the envelope. data_views /
-    //    sample_ids are produced identically to the subprocess path.
-    plan.campaign
-        .validate_data_envelope_relations(&envelope)
-        .map_err(py_core_error)?;
-    let data_provider = InMemoryDataProvider::with_envelope(
-        ControllerId::new("controller:data.provider").map_err(py_core_error)?,
+        controller_registry,
+    )?;
+    plan.campaign.validate_data_envelope_relations(&envelope)?;
+    Ok(CvRefitCampaign {
+        dsl_id: dsl_spec.id,
+        plan,
+        operator_variant_models,
         envelope,
-    )
-    .map_err(py_core_error)?;
+    })
+}
 
-    let runtime_controllers =
-        build_runtime_controllers(py, &plan, &op_callback).map_err(py_core_error)?;
+/// Outcome of [`execute_cv_refit`]: the host payload and every REFIT
+/// artifact record the run captured (the selected variant first).
+struct CvRefitRun {
+    payload: serde_json::Value,
+    /// Read by the callback-free Methods twin, which exports their payloads.
+    #[cfg_attr(not(feature = "methods-optimizer"), allow(dead_code))]
+    refit_artifacts: Vec<dag_ml_core::RefitArtifactRecord>,
+}
 
-    let run_id = RunId::new(format!("run:{}:in-process", dsl_spec.id)).map_err(py_core_error)?;
+/// Run one compiled campaign through the runtime, mirroring the CLI's
+/// `build_bundle_from_cv_then_captured_refit`: native operator-SELECT (when
+/// the spec carries an operator generator) or param-variant SELECT (when
+/// multi-variant), then the winner FIT_CV + REFIT in ONE RunContext, then
+/// score. For operator-SELECT the winner runs on its PRUNED plan (merge +
+/// meta-model + inactive choices elided), not the stacking union.
+#[allow(clippy::too_many_arguments)]
+fn execute_cv_refit(
+    campaign: &CvRefitCampaign,
+    runtime_controllers: &RuntimeControllerRegistry,
+    data_provider: &dyn RuntimeDataProvider,
+    metric: RegressionMetricKind,
+    resource_limits: Option<TrainingResourceLimits>,
+    refit: bool,
+    refit_top_k: usize,
+) -> Result<CvRefitRun, CoreDagMlError> {
+    let plan = &campaign.plan;
+    let operator_variant_models = &campaign.operator_variant_models;
+    let run_id = RunId::new(format!("run:{}:in-process", campaign.dsl_id))?;
     let root_seed: u64 = 0;
 
-    // 4. Mirror `build_bundle_from_cv_then_captured_refit`: native operator-SELECT (when the spec
-    //    carries an operator generator) or param-variant SELECT (when multi-variant), then the
-    //    winner FIT_CV + REFIT in ONE RunContext, then score. For operator-SELECT the winner runs on
-    //    its PRUNED plan (merge + meta-model + inactive choices elided), not the stacking union.
     let resolved = resolve_refit_variant(
-        &plan,
-        &operator_variant_models,
+        plan,
+        operator_variant_models,
         &run_id,
         root_seed,
         metric,
-        &runtime_controllers,
-        &data_provider,
+        runtime_controllers,
+        data_provider,
         resource_limits.as_ref(),
-    )
-    .map_err(py_core_error)?;
+    )?;
     let selected_variant_id = resolved.variant_id;
     let additional_variant_ids = resolved
         .ranked_variant_ids
@@ -1724,51 +1725,48 @@ fn run_cv_refit_in_process_impl(
     let winner_variant_label = resolved.winner_variant_label;
     // For operator-SELECT the winner FIT_CV + REFIT run on the WINNER's PRUNED plan; for all other
     // paths the union plan IS the refit plan.
-    let refit_plan = resolved.pruned_plan.as_ref().unwrap_or(&plan);
+    let refit_plan = resolved.pruned_plan.as_ref().unwrap_or(plan);
 
     let mut ctx = RunContext::new(run_id.clone(), Some(root_seed));
     ctx.variant_id = Some(selected_variant_id.clone());
     ctx.resource_limits = resource_limits.clone();
 
-    let fit_cv_results = SequentialScheduler
-        .execute_campaign_phase_with_data_provider(
-            refit_plan,
-            &runtime_controllers,
-            &data_provider,
-            &mut ctx,
-            Phase::FitCv,
-        )
-        .map_err(py_core_error)?;
+    let fit_cv_results = SequentialScheduler.execute_campaign_phase_with_data_provider(
+        refit_plan,
+        runtime_controllers,
+        data_provider,
+        &mut ctx,
+        Phase::FitCv,
+    )?;
 
+    let mut refit_artifacts = Vec::new();
     let refit_results = if refit {
         let mut artifact_store = InMemoryArtifactStore::new();
-        SequentialScheduler
+        let results = SequentialScheduler
             .execute_campaign_phase_with_data_provider_and_artifact_store(
                 refit_plan,
-                &runtime_controllers,
-                &data_provider,
+                runtime_controllers,
+                data_provider,
                 &mut artifact_store,
                 &mut ctx,
                 Phase::Refit,
-            )
-            .map_err(py_core_error)?
+            )?;
+        refit_artifacts.extend(artifact_store.refit_artifacts());
+        results
     } else {
         Vec::new()
     };
 
-    // 5. Score: collect the cross-fold OOF average (cv_best_score) + the REFIT
-    //    final/test reports. The loser variants' VALIDATION (OOF) reports captured
-    //    during native SELECT are merged in FIRST (each tagged its own variant_id,
-    //    REPORT-ONLY — they carry no predictions/handles), so the bundle surfaces
-    //    every variant's CV score, not just the winner's. Then build the native
-    //    ScoreSet the host maps to a RunResult — identical to the CLI's
-    //    `bundle.scores`.
-    ctx.collect_cross_fold_validation_scores(plan_oof_partition_mode(refit_plan))
-        .map_err(py_core_error)?;
-    ctx.collect_cross_fold_train_scores(metric)
-        .map_err(py_core_error)?;
-    ctx.collect_cross_fold_test_scores(metric)
-        .map_err(py_core_error)?;
+    // Score: collect the cross-fold OOF average (cv_best_score) + the REFIT
+    // final/test reports. The loser variants' VALIDATION (OOF) reports captured
+    // during native SELECT are merged in FIRST (each tagged its own variant_id,
+    // REPORT-ONLY — they carry no predictions/handles), so the bundle surfaces
+    // every variant's CV score, not just the winner's. Then build the native
+    // ScoreSet the host maps to a RunResult — identical to the CLI's
+    // `bundle.scores`.
+    ctx.collect_cross_fold_validation_scores(plan_oof_partition_mode(refit_plan))?;
+    ctx.collect_cross_fold_train_scores(metric)?;
+    ctx.collect_cross_fold_test_scores(metric)?;
     let mut scores = ctx.build_score_set(refit_plan.id.clone(), None);
     // Phase 5: the winner reports come from the REAL winner FIT_CV/REFIT pass above (not the
     // transient selection loop), so stamp the winner's operator-variant content fingerprint on them
@@ -1781,15 +1779,12 @@ fn run_cv_refit_in_process_impl(
     node_results.extend(refit_results);
     for variant_id in &additional_variant_ids {
         let extra_pruned_plan = if !operator_variant_models.is_empty() {
-            Some(
-                pruned_plan_for_operator_variant(
-                    &plan,
-                    &operator_variant_models,
-                    variant_id,
-                    root_seed,
-                )
-                .map_err(py_core_error)?,
-            )
+            Some(pruned_plan_for_operator_variant(
+                plan,
+                operator_variant_models,
+                variant_id,
+                root_seed,
+            )?)
         } else {
             None
         };
@@ -1797,31 +1792,29 @@ fn run_cv_refit_in_process_impl(
         let mut extra_ctx = RunContext::new(run_id.clone(), Some(root_seed));
         extra_ctx.variant_id = Some(variant_id.clone());
         extra_ctx.resource_limits = resource_limits.clone();
-        SequentialScheduler
-            .execute_campaign_phase_with_data_provider(
-                extra_plan,
-                &runtime_controllers,
-                &data_provider,
-                &mut extra_ctx,
-                Phase::FitCv,
-            )
-            .map_err(py_core_error)?;
+        SequentialScheduler.execute_campaign_phase_with_data_provider(
+            extra_plan,
+            runtime_controllers,
+            data_provider,
+            &mut extra_ctx,
+            Phase::FitCv,
+        )?;
         let mut extra_store = InMemoryArtifactStore::new();
         let extra_results = SequentialScheduler
             .execute_campaign_phase_with_data_provider_and_artifact_store(
                 extra_plan,
-                &runtime_controllers,
-                &data_provider,
+                runtime_controllers,
+                data_provider,
                 &mut extra_store,
                 &mut extra_ctx,
                 Phase::Refit,
-            )
-            .map_err(py_core_error)?;
+            )?;
         if extra_store.is_empty() {
-            return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
+            return Err(CoreDagMlError::RuntimeValidation(format!(
                 "additional refit for `{variant_id}` captured no artifacts"
             )));
         }
+        refit_artifacts.extend(extra_store.refit_artifacts());
         node_results.extend(extra_results);
         if let Some(mut extra_scores) = extra_ctx.build_score_set(refit_plan.id.clone(), None) {
             for report in &mut extra_scores.reports {
@@ -1837,14 +1830,15 @@ fn run_cv_refit_in_process_impl(
         }
     }
 
-    // 6. ADDITIVELY surface the per-sample cross-fold OOF AVERAGE so the host fills the
-    //    `(validation, avg)` row's y_pred (it had only the scalar OOF report before). Each
-    //    `OofAverageBlock` becomes a synthetic NodeResult frame carrying the SAMPLE-level
-    //    `aggregated_predictions` block (producer / validation / `avg`) + its id-matched sample-level
-    //    `regression_targets` y_true — the exact shape `result._index_sample_blocks` reads. The block
-    //    holds the SAME averaged values the scalar was computed from (purely additive; no score,
-    //    `num_predictions` or existing block changes), and never feeds a training/feature path.
-    let node_results = serde_json::to_value(&node_results).map_err(py_serde_error)?;
+    // ADDITIVELY surface the per-sample cross-fold OOF AVERAGE so the host fills the
+    // `(validation, avg)` row's y_pred (it had only the scalar OOF report before). Each
+    // `OofAverageBlock` becomes a synthetic NodeResult frame carrying the SAMPLE-level
+    // `aggregated_predictions` block (producer / validation / `avg`) + its id-matched sample-level
+    // `regression_targets` y_true — the exact shape `result._index_sample_blocks` reads. The block
+    // holds the SAME averaged values the scalar was computed from (purely additive; no score,
+    // `num_predictions` or existing block changes), and never feeds a training/feature path.
+    let node_results = serde_json::to_value(&node_results)
+        .map_err(|error| CoreDagMlError::RuntimeValidation(error.to_string()))?;
     let mut node_results = match node_results {
         serde_json::Value::Array(frames) => frames,
         other => vec![other],
@@ -1862,27 +1856,255 @@ fn run_cv_refit_in_process_impl(
         }));
     }
 
-    // 7. ADDITIVELY surface each LOSER variant's per-fold VALIDATION (OOF) predictions so the host can
-    //    fill that variant's per-sample prediction rows (it had only the loser's scalar OOF report
-    //    before). Each loser's captured per-fold `PredictionBlock` (paired POSITION-FOR-POSITION with
-    //    its id-matched y_true) + cross-fold OOF AVERAGE block becomes a synthetic frame TAGGED with
-    //    the loser's `variant_id` + `variant_label`, so the host routes a loser's frames to ITS OWN
-    //    variant (NO cross-variant mixing). These are the loser's OWN validation (OOF) predictions —
-    //    for host persistence/display only, never fed as a training feature / across a `requires_oof`
-    //    edge (strictly additive, analogous to the OOF-average block above).
+    // ADDITIVELY surface each LOSER variant's per-fold VALIDATION (OOF) predictions so the host can
+    // fill that variant's per-sample prediction rows (it had only the loser's scalar OOF report
+    // before). Each loser's captured per-fold `PredictionBlock` (paired POSITION-FOR-POSITION with
+    // its id-matched y_true) + cross-fold OOF AVERAGE block becomes a synthetic frame TAGGED with
+    // the loser's `variant_id` + `variant_label`, so the host routes a loser's frames to ITS OWN
+    // variant (NO cross-variant mixing). These are the loser's OWN validation (OOF) predictions —
+    // for host persistence/display only, never fed as a training feature / across a `requires_oof`
+    // edge (strictly additive, analogous to the OOF-average block above).
     for captured in &loser_validation_predictions {
         node_results.extend(surface_loser_validation_frames(captured));
     }
 
-    let payload = serde_json::json!({
-        "node_results": node_results,
-        "scores": scores,
-        "residual_gates": ctx.residual_gate_records(),
-        "refit_enabled": refit,
-        "selected_refit_variant_ids": std::iter::once(&selected_variant_id).chain(additional_variant_ids.iter()).collect::<Vec<_>>(),
-        "variant_catalog": plan.variants,
-    });
-    serde_json::to_string(&payload).map_err(py_serde_error)
+    Ok(CvRefitRun {
+        payload: serde_json::json!({
+            "node_results": node_results,
+            "scores": scores,
+            "residual_gates": ctx.residual_gate_records(),
+            "refit_enabled": refit,
+            "selected_refit_variant_ids": std::iter::once(&selected_variant_id).chain(additional_variant_ids.iter()).collect::<Vec<_>>(),
+            "variant_catalog": plan.variants,
+        }),
+        refit_artifacts,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_cv_refit_in_process_impl(
+    py: Python<'_>,
+    dsl_json: &str,
+    envelope_json: &str,
+    controller_manifests_json: &str,
+    training_loss_roles_json: Option<&str>,
+    op_callback: Py<PyAny>,
+    selection_metric: &str,
+    resource_limits_json: Option<&str>,
+    refit: bool,
+    refit_top_k: usize,
+) -> PyResult<String> {
+    let (metric, resource_limits) =
+        cv_refit_options(selection_metric, resource_limits_json, refit, refit_top_k)?;
+    let manifests =
+        serde_json::from_str::<Vec<dag_ml_core::ControllerManifest>>(controller_manifests_json)
+            .map_err(py_serde_error)?;
+    let mut controller_registry = ControllerRegistry::new();
+    for manifest in &manifests {
+        controller_registry
+            .register(manifest.clone())
+            .map_err(py_core_error)?;
+    }
+    let envelope: ExternalDataPlanEnvelope =
+        serde_json::from_str(envelope_json).map_err(py_serde_error)?;
+    let mut campaign = compile_cv_refit_campaign(dsl_json, envelope, &controller_registry)
+        .map_err(py_core_error)?;
+    if let Some(training_loss_roles_json) = training_loss_roles_json {
+        let roles: Vec<TrainingLossRoleReference> =
+            serde_json::from_str(training_loss_roles_json).map_err(py_serde_error)?;
+        campaign.plan = campaign
+            .plan
+            .with_training_losses(roles)
+            .map_err(py_core_error)?;
+    }
+    // The SAME Rust data provider the CLI uses (`data_provider_for_training_envelope`):
+    // data_views / sample_ids are produced identically to the subprocess path.
+    let data_provider = InMemoryDataProvider::with_envelope(
+        ControllerId::new("controller:data.provider").map_err(py_core_error)?,
+        campaign.envelope.clone(),
+    )
+    .map_err(py_core_error)?;
+    let runtime_controllers =
+        build_runtime_controllers(py, &campaign.plan, &op_callback).map_err(py_core_error)?;
+    let run = execute_cv_refit(
+        &campaign,
+        &runtime_controllers,
+        &data_provider,
+        metric,
+        resource_limits,
+        refit,
+        refit_top_k,
+    )
+    .map_err(py_core_error)?;
+    serde_json::to_string(&run.payload).map_err(py_serde_error)
+}
+
+/// Run a CV + REFIT campaign IN-PROCESS with NO Python callback: every
+/// executable node is a native Methods controller (the n4m role estimators
+/// derived from the configured libn4m's live manifest, plus Methods PLS and
+/// Ridge).
+///
+/// The callback-free twin of [`run_cv_refit_in_process`]: the SAME campaign
+/// compilation, envelope-based data views, variant SELECT, FIT_CV, REFIT and
+/// scoring, with the numeric rows supplied up front.
+///
+/// * `dsl_json` — the executable DSL. Its nodes name methods as
+///   `n4m:<method_id>` operators whose `method_id` parameter is set; they are
+///   resolved through controller manifests derived natively from libn4m.
+/// * `envelope_json` — the [`ExternalDataPlanEnvelope`]. Native Methods
+///   training is target-bound: the envelope must carry its relation, data
+///   content and target content fingerprints.
+/// * `methods_inputs_json` — strict `{node_id.input_name: {sample_ids, x, y,
+///   target_names}}` rows, exactly covering the plan's data bindings; the
+///   scheduler selects rows by identity, never by position.
+/// * `methods_library_path` — the exact absolute libn4m file.
+///
+/// Returns `(payload_json, refit_payloads)`: the payload has the same shape
+/// as [`run_cv_refit_in_process`] plus `refit_artifacts` (the REFIT artifact
+/// records), and `refit_payloads` maps each record's artifact id to its raw
+/// N4ME bytes.
+#[pyfunction]
+#[pyo3(signature = (
+    dsl_json,
+    envelope_json,
+    methods_inputs_json,
+    methods_library_path,
+    selection_metric,
+    resource_limits_json = None,
+    refit = true,
+    refit_top_k = 1,
+))]
+#[allow(clippy::too_many_arguments)]
+pub fn run_cv_refit_methods_in_process<'py>(
+    py: Python<'py>,
+    dsl_json: &str,
+    envelope_json: &str,
+    methods_inputs_json: &str,
+    methods_library_path: &str,
+    selection_metric: &str,
+    resource_limits_json: Option<&str>,
+    refit: bool,
+    refit_top_k: usize,
+) -> PyResult<(String, Bound<'py, pyo3::types::PyDict>)> {
+    #[cfg(not(feature = "methods-optimizer"))]
+    {
+        let _ = (
+            py,
+            dsl_json,
+            envelope_json,
+            methods_inputs_json,
+            methods_library_path,
+            selection_metric,
+            resource_limits_json,
+            refit,
+            refit_top_k,
+        );
+        Err(py_core_error(CoreDagMlError::RuntimeValidation(
+            "Methods CV/REFIT support is absent from this dag-ml binding; install a wheel rebuilt with the `methods-optimizer` feature".to_string(),
+        )))
+    }
+    #[cfg(feature = "methods-optimizer")]
+    {
+        use pyo3::types::{PyBytes, PyDict};
+
+        let (metric, resource_limits) =
+            cv_refit_options(selection_metric, resource_limits_json, refit, refit_top_k)?;
+        let runtime = dag_ml_core::MethodsRuntime::configure(methods_library_path)
+            .map_err(|error| py_core_error(CoreDagMlError::RuntimeValidation(error.to_string())))?;
+        let controller_registry = dag_ml_core::derive_host_controller_registry(
+            &dag_ml_core::methods_estimator_host_controller_specs(&runtime)
+                .map_err(py_core_error)?,
+        )
+        .map_err(py_core_error)?;
+        let envelope: ExternalDataPlanEnvelope =
+            serde_json::from_str(envelope_json).map_err(py_serde_error)?;
+        let campaign = compile_cv_refit_campaign(dsl_json, envelope, &controller_registry)
+            .map_err(py_core_error)?;
+        crate::training::require_native_methods_controllers(
+            &campaign.plan,
+            "native Methods CV/REFIT",
+        )
+        .map_err(py_core_error)?;
+        let bindings = campaign
+            .plan
+            .node_plans
+            .values()
+            .flat_map(|node_plan| node_plan.data_bindings.iter().cloned())
+            .collect::<Vec<_>>();
+        let inputs = crate::training::parse_strict_json::<
+            BTreeMap<String, crate::training::MethodsTrainingInputJson>,
+        >(methods_inputs_json, "native Methods CV/REFIT input map")?
+        .into_iter()
+        .map(|(key, input)| {
+            Ok((
+                key,
+                crate::training::methods_dataset_from_json(input, false)?,
+            ))
+        })
+        .collect::<dag_ml_core::Result<BTreeMap<_, _>>>()
+        .map_err(py_core_error)?;
+        let data_provider = crate::training::MethodsInputProvider::new(
+            InMemoryDataProvider::with_envelope(
+                ControllerId::new("controller:data.provider").map_err(py_core_error)?,
+                campaign.envelope.clone(),
+            )
+            .map_err(py_core_error)?,
+            &bindings,
+            inputs,
+        )
+        .map_err(py_core_error)?;
+        let mut runtime_controllers = RuntimeControllerRegistry::new();
+        dag_ml_core::register_methods_native_controllers(&mut runtime_controllers, runtime)
+            .map_err(py_core_error)?;
+
+        let (run, payloads) = py
+            .detach(move || {
+                let run = execute_cv_refit(
+                    &campaign,
+                    &runtime_controllers,
+                    &data_provider,
+                    metric,
+                    resource_limits,
+                    refit,
+                    refit_top_k,
+                )?;
+                let payloads = run
+                    .refit_artifacts
+                    .iter()
+                    .map(|record| {
+                        let payload = runtime_controllers
+                            .get(&record.controller_id)
+                            .ok_or_else(|| {
+                                CoreDagMlError::RuntimeValidation(format!(
+                                    "REFIT artifact `{}` has no registered native controller `{}`",
+                                    record.artifact.id, record.controller_id
+                                ))
+                            })?
+                            .export_artifact_payload(&record.artifact.id)?
+                            .ok_or_else(|| {
+                                CoreDagMlError::RuntimeValidation(format!(
+                                    "native controller `{}` exported no payload for REFIT artifact `{}`",
+                                    record.controller_id, record.artifact.id
+                                ))
+                            })?;
+                        Ok((record.artifact.id.to_string(), payload))
+                    })
+                    .collect::<Result<BTreeMap<_, _>, CoreDagMlError>>()?;
+                Ok::<_, CoreDagMlError>((run, payloads))
+            })
+            .map_err(py_core_error)?;
+        let mut payload = run.payload;
+        payload["refit_artifacts"] =
+            serde_json::to_value(&run.refit_artifacts).map_err(py_serde_error)?;
+        let refit_payloads = PyDict::new(py);
+        for (artifact_id, bytes) in payloads {
+            refit_payloads.set_item(artifact_id, PyBytes::new(py, &bytes))?;
+        }
+        Ok((
+            serde_json::to_string(&payload).map_err(py_serde_error)?,
+            refit_payloads,
+        ))
+    }
 }
 
 #[cfg(test)]

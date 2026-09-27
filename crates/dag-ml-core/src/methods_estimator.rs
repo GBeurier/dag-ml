@@ -1,9 +1,11 @@
-//! Generic native controller for n4m role estimators (Methods ABI 2.13).
+//! Generic native controller for n4m role estimators (Methods ABI >= 2.13).
 //!
 //! One [`MethodsEstimatorController`] serves each executable role of the n4m
 //! manifest (see [`crate::n4m_roles`]). A node names its method with the
 //! reserved `method_id` parameter; every other parameter is typed by the
-//! native manifest and checked by libn4m. Fitting, transforms, masks and
+//! native manifest JSON (`n4m_method_manifest_json`, the cross-language
+//! contract; additive manifest keys are ignored) and checked by libn4m.
+//! Fitting, transforms, masks and
 //! predictions all run through `n4m::roles::Estimator`; fitted states leave
 //! the process only as N4ME bytes owned by the exporting controller.
 //!
@@ -12,16 +14,23 @@
 //! identity-keyed rows stay inside this store, so a chain such as
 //! `exclude -> transform -> model` runs natively without a host callback.
 //! Sample filters and their masks apply to training rows only.
+//!
+//! Model nodes (regressors and classifiers) score the same surfaces as a host
+//! model controller: FIT_CV emits the fold-validation OOF block, the in-fold
+//! `Train` block and the report-only `TrainPool` block, REFIT the `Final`
+//! block, each paired with its identity-keyed targets. Classifiers fit on the
+//! integral class ids of their single target column, predict class ids and
+//! attest class probabilities on the report-only CV surfaces when their method
+//! defines them.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use n4m::roles::{
-    self, Estimator, FitInput, FitInputs, InputRequirement, MethodInfo, MethodKind, ParamType,
-    ParamValue, Params,
-};
+use n4m::roles::{self, Estimator, FitInputs, ParamType, ParamValue, Params};
 use n4m::{Context, MatrixRef};
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use crate::controller_adapter::HostControllerSpec;
@@ -31,11 +40,12 @@ use crate::hpo::{
 use crate::n4m_roles::{n4m_host_controller_specs, N4mRole};
 use crate::runtime::{
     refit_artifact_input_key, ArtifactBackend, ArtifactMaterializationRequest, ArtifactRef,
-    HandleKind, HandleRef, LineageRecord, MethodsPlsDataset, MethodsPlsMatrix,
-    NativeEstimatorDescriptorV1, NodeResult, NodeTask, PredictionBlock, PredictionPartition,
-    RegressionTargetBlock, RuntimeController, RuntimeControllerRegistry, RuntimeDataProvider,
-    NATIVE_ESTIMATOR_ARTIFACT_KIND, NATIVE_ESTIMATOR_DESCRIPTOR_SCHEMA_VERSION_V1,
-    NATIVE_ESTIMATOR_DESCRIPTOR_TYPE_V1, NATIVE_ESTIMATOR_FORMAT_N4ME,
+    ClassificationProbabilityBlock, HandleKind, HandleRef, LineageRecord, MethodsPlsDataset,
+    MethodsPlsMatrix, NativeEstimatorDescriptorV1, NodeResult, NodeTask, PredictionBlock,
+    PredictionPartition, RegressionTargetBlock, RuntimeController, RuntimeControllerRegistry,
+    RuntimeDataProvider, NATIVE_ESTIMATOR_ARTIFACT_KIND,
+    NATIVE_ESTIMATOR_DESCRIPTOR_SCHEMA_VERSION_V1, NATIVE_ESTIMATOR_DESCRIPTOR_TYPE_V1,
+    NATIVE_ESTIMATOR_FORMAT_N4ME,
 };
 use crate::{
     ArtifactId, ControllerId, DagMlError, LineageId, Phase, PredictionLevel, PredictionUnitId,
@@ -50,12 +60,13 @@ pub const METHODS_ESTIMATOR_UNSAFE_FLAGS_PARAM: &str = "unsafe_flags";
 /// methods). Without it such methods are refused before any fit.
 pub const METHODS_ESTIMATOR_ALLOW_TRAINING_ROWS: &str = "allow_training_rows_in_artifact";
 
-/// Roles executed natively. Classifiers, splitters and augmenters are derived
-/// as controller specs but have no native execution path yet.
-pub const METHODS_ESTIMATOR_EXECUTABLE_ROLES: [N4mRole; 4] = [
+/// Roles executed natively. Splitters and augmenters are derived as
+/// controller specs but have no native execution path yet.
+pub const METHODS_ESTIMATOR_EXECUTABLE_ROLES: [N4mRole; 5] = [
     N4mRole::Transformer,
     N4mRole::Selector,
     N4mRole::Regressor,
+    N4mRole::Classifier,
     N4mRole::SampleFilter,
 ];
 
@@ -72,17 +83,6 @@ const CAPABILITY_NAMES: [(u64, &str); 10] = [
     (roles::CAP_RETAINS_TRAINING_ROWS, "retains_training_rows"),
 ];
 
-const ROLE_BITS: [(u32, N4mRole); 8] = [
-    (roles::ROLE_TRANSFORMER, N4mRole::Transformer),
-    (roles::ROLE_REGRESSOR, N4mRole::Regressor),
-    (roles::ROLE_CLASSIFIER, N4mRole::Classifier),
-    (roles::ROLE_SELECTOR, N4mRole::Selector),
-    (roles::ROLE_SAMPLE_FILTER, N4mRole::SampleFilter),
-    (roles::ROLE_SPLITTER, N4mRole::Splitter),
-    (roles::ROLE_AUGMENTER, N4mRole::Augmenter),
-    (roles::ROLE_GENERIC, N4mRole::Generic),
-];
-
 fn native_error(operation: &str, error: n4m::Error) -> DagMlError {
     DagMlError::RuntimeValidation(format!(
         "native Methods estimator {operation} failed: {error}"
@@ -93,12 +93,87 @@ fn lock_poisoned(what: &str) -> DagMlError {
     DagMlError::RuntimeValidation(format!("native Methods estimator {what} lock poisoned"))
 }
 
-fn method_roles(info: &MethodInfo) -> Vec<N4mRole> {
-    ROLE_BITS
-        .iter()
-        .filter(|(bit, _)| info.roles & bit != 0)
-        .map(|(_, role)| *role)
-        .collect()
+/// One method of the native manifest JSON: exactly the fields native
+/// execution reads. Other keys (for example ABI 2.14's per-parameter
+/// `recorded` flag, or a `null` default marking an optional seed) are
+/// additive and ignored.
+#[derive(Clone, Debug, Deserialize)]
+struct NativeMethod {
+    method_id: String,
+    kind: String,
+    roles: Vec<N4mRole>,
+    capabilities: BTreeSet<String>,
+    inputs: BTreeMap<String, String>,
+    params: Vec<NativeParam>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct NativeParam {
+    name: String,
+    #[serde(rename = "type")]
+    param_type: String,
+    #[serde(default)]
+    choices: Vec<String>,
+}
+
+impl NativeMethod {
+    /// Whether fitting reads the named input (`y`, `labels`, ...).
+    fn uses(&self, input: &str) -> bool {
+        self.inputs
+            .get(input)
+            .is_some_and(|requirement| requirement != "none")
+    }
+
+    fn param(&self, name: &str) -> Option<&NativeParam> {
+        self.params.iter().find(|param| param.name == name)
+    }
+}
+
+impl NativeParam {
+    fn native_type(&self) -> Option<ParamType> {
+        Some(match self.param_type.as_str() {
+            "int" => ParamType::Int,
+            "double" => ParamType::Double,
+            "bool" => ParamType::Bool,
+            "enum" => ParamType::Enum,
+            "int_array" => ParamType::IntArray,
+            "double_array" => ParamType::DoubleArray,
+            _ => return None,
+        })
+    }
+}
+
+/// The methods of the configured libn4m, read once from its live manifest.
+struct NativeCatalog(BTreeMap<String, Arc<NativeMethod>>);
+
+impl NativeCatalog {
+    fn live() -> Result<Self> {
+        #[derive(Deserialize)]
+        struct Manifest {
+            methods: Vec<NativeMethod>,
+        }
+        let json = roles::manifest_json().map_err(|error| native_error("manifest", error))?;
+        let manifest = serde_json::from_str::<Manifest>(&json).map_err(|error| {
+            DagMlError::RuntimeValidation(format!(
+                "native Methods manifest is not the expected JSON contract: {error}"
+            ))
+        })?;
+        Ok(Self(
+            manifest
+                .methods
+                .into_iter()
+                .map(|method| (method.method_id.clone(), Arc::new(method)))
+                .collect(),
+        ))
+    }
+
+    fn method(&self, method_id: &str) -> Result<&Arc<NativeMethod>> {
+        self.0.get(method_id).ok_or_else(|| {
+            DagMlError::RuntimeValidation(format!(
+                "native Methods manifest has no method `{method_id}`"
+            ))
+        })
+    }
 }
 
 fn capability_names(capabilities: u64) -> Vec<String> {
@@ -120,12 +195,19 @@ pub fn methods_estimator_host_controller_specs(
     n4m_host_controller_specs(&manifest)
 }
 
-/// Register one controller per executable role, all sharing one feature store.
+/// Register one controller per executable role, all sharing one feature store
+/// and the live native manifest.
 pub fn register_methods_estimator_controllers(
     registry: &mut RuntimeControllerRegistry,
     runtime: MethodsRuntime,
 ) -> Result<()> {
-    let shared = Arc::new(SharedState::default());
+    let shared = Arc::new(SharedState {
+        catalog: NativeCatalog::live()?,
+        next_handle: AtomicU64::default(),
+        features: Mutex::default(),
+        exported: Mutex::default(),
+        hydrated: Mutex::default(),
+    });
     for role in METHODS_ESTIMATOR_EXECUTABLE_ROLES {
         registry.register(Box::new(MethodsEstimatorController {
             id: ControllerId::new(role.controller_id().expect("executable roles have ids"))?,
@@ -144,6 +226,14 @@ pub fn inspect_methods_native_estimator_descriptor_v1(
     owner_controller: &ControllerId,
     payload: &[u8],
 ) -> Result<NativeEstimatorDescriptorV1> {
+    inspect_descriptor(&NativeCatalog::live()?, owner_controller, payload)
+}
+
+fn inspect_descriptor(
+    catalog: &NativeCatalog,
+    owner_controller: &ControllerId,
+    payload: &[u8],
+) -> Result<NativeEstimatorDescriptorV1> {
     let context = Context::new().map_err(|error| native_error("context_create", error))?;
     let estimator = Estimator::from_n4me(&context, payload)
         .map_err(|error| native_error("import_n4me", error))?;
@@ -153,8 +243,7 @@ pub fn inspect_methods_native_estimator_descriptor_v1(
     let capabilities = estimator
         .capabilities()
         .map_err(|error| native_error("capabilities", error))?;
-    let info =
-        roles::method_info(&method_id).map_err(|error| native_error("method_info", error))?;
+    let roles = catalog.method(&method_id)?.roles.clone();
     let mut descriptor = NativeEstimatorDescriptorV1 {
         descriptor_type: NATIVE_ESTIMATOR_DESCRIPTOR_TYPE_V1.to_string(),
         schema_version: NATIVE_ESTIMATOR_DESCRIPTOR_SCHEMA_VERSION_V1,
@@ -162,7 +251,7 @@ pub fn inspect_methods_native_estimator_descriptor_v1(
         owner_controller: owner_controller.clone(),
         format: NATIVE_ESTIMATOR_FORMAT_N4ME.to_string(),
         method_id,
-        roles: method_roles(&info),
+        roles,
         capabilities: capability_names(capabilities),
         descriptor_fingerprint: String::new(),
     };
@@ -178,8 +267,8 @@ struct FeatureSet {
     prediction: Option<MethodsPlsDataset>,
 }
 
-#[derive(Default)]
 struct SharedState {
+    catalog: NativeCatalog,
     next_handle: AtomicU64,
     features: Mutex<BTreeMap<u64, Arc<FeatureSet>>>,
     exported: Mutex<BTreeMap<ArtifactId, Vec<u8>>>,
@@ -189,13 +278,13 @@ struct SharedState {
 /// Resolved method of one node task.
 struct NodeMethod {
     method_id: String,
-    info: MethodInfo,
+    info: Arc<NativeMethod>,
     params: Vec<(String, ParamValue)>,
     allow_training_rows: bool,
 }
 
 impl NodeMethod {
-    fn from_task(task: &NodeTask, role: N4mRole) -> Result<Self> {
+    fn from_task(task: &NodeTask, role: N4mRole, catalog: &NativeCatalog) -> Result<Self> {
         let node_id = &task.node_plan.node_id;
         let invalid = |reason: String| {
             DagMlError::RuntimeValidation(format!(
@@ -212,9 +301,12 @@ impl NodeMethod {
                 ))
             })?
             .to_string();
-        let info = roles::method_info(&method_id)
-            .map_err(|error| invalid(format!("names an unknown method: {error}")))?;
-        if info.kind != MethodKind::Estimator || !method_roles(&info).contains(&role) {
+        let info = Arc::clone(
+            catalog
+                .method(&method_id)
+                .map_err(|error| invalid(format!("names an unknown method: {error}")))?,
+        );
+        if info.kind != "estimator" || !info.roles.contains(&role) {
             return Err(invalid(format!(
                 "method `{method_id}` is not a {} estimator",
                 role.as_str()
@@ -233,7 +325,7 @@ impl NodeMethod {
                 }
             }
         }
-        if info.capabilities & roles::CAP_RETAINS_TRAINING_ROWS != 0 && !allow_training_rows {
+        if info.capabilities.contains("retains_training_rows") && !allow_training_rows {
             return Err(invalid(format!(
                 "method `{method_id}` retains training rows in its fitted state; set `{METHODS_ESTIMATOR_UNSAFE_FLAGS_PARAM}: [\"{METHODS_ESTIMATOR_ALLOW_TRAINING_ROWS}\"]` to allow it"
             )));
@@ -245,19 +337,18 @@ impl NodeMethod {
             {
                 continue;
             }
-            let param = info
-                .params
-                .iter()
-                .find(|param| &param.name == name)
-                .ok_or_else(|| {
-                    invalid(format!("sets unknown parameter `{name}` of `{method_id}`"))
-                })?;
-            let value = param_value(param.param_type, value).ok_or_else(|| {
-                invalid(format!(
-                    "parameter `{name}` is not a {:?} value",
-                    param.param_type
-                ))
+            let param = info.param(name).ok_or_else(|| {
+                invalid(format!("sets unknown parameter `{name}` of `{method_id}`"))
             })?;
+            let value = param
+                .native_type()
+                .and_then(|param_type| param_value(param_type, value))
+                .ok_or_else(|| {
+                    invalid(format!(
+                        "parameter `{name}` is not a {} value",
+                        param.param_type
+                    ))
+                })?;
             typed.push((name.clone(), value));
         }
         Ok(Self {
@@ -266,10 +357,6 @@ impl NodeMethod {
             params: typed,
             allow_training_rows,
         })
-    }
-
-    fn uses(&self, input: FitInput) -> bool {
-        self.info.input(input) != InputRequirement::None
     }
 
     fn estimator(&self, context: &Context) -> Result<Estimator> {
@@ -287,11 +374,19 @@ impl NodeMethod {
     fn fit(&self, context: &Context, data: &MethodsPlsDataset) -> Result<Estimator> {
         let mut estimator = self.estimator(context)?;
         let x = matrix(&data.x)?;
+        let labels = if self.info.uses("labels") {
+            Some(class_labels(data, &self.method_id)?)
+        } else {
+            None
+        };
         let mut inputs = FitInputs::new(x);
-        if self.uses(FitInput::Y) {
+        if self.info.uses("y") {
             if let Some(y) = &data.y {
                 inputs = inputs.y(matrix(y)?);
             }
+        }
+        if let Some(labels) = &labels {
+            inputs = inputs.labels(labels);
         }
         estimator
             .fit(context, &inputs)
@@ -318,9 +413,7 @@ impl NodeMethod {
                 ParamValue::Enum(label) => {
                     let choice = self
                         .info
-                        .params
-                        .iter()
-                        .find(|param| &param.name == name)
+                        .param(name)
                         .and_then(|param| param.choices.iter().position(|choice| choice == label));
                     choice.is_some_and(|index| ints() == Some(vec![index as i64]))
                 }
@@ -339,12 +432,23 @@ impl NodeMethod {
     }
 }
 
+/// Typed native value of a JSON parameter. An integral JSON number is an
+/// exact `int`: DAG-ML's numeric generators emit binary64 values, so a swept
+/// `3.0` must not be refused where `3` is accepted.
 fn param_value(param_type: ParamType, value: &serde_json::Value) -> Option<ParamValue> {
+    fn integral(value: &serde_json::Value) -> Option<i64> {
+        value.as_i64().or_else(|| {
+            value
+                .as_f64()
+                .filter(|value| value.fract() == 0.0 && value.abs() <= 2f64.powi(53))
+                .map(|value| value as i64)
+        })
+    }
     let ints = || {
         value
             .as_array()?
             .iter()
-            .map(serde_json::Value::as_i64)
+            .map(integral)
             .collect::<Option<Vec<_>>>()
     };
     let doubles = || {
@@ -355,13 +459,62 @@ fn param_value(param_type: ParamType, value: &serde_json::Value) -> Option<Param
             .collect::<Option<Vec<_>>>()
     };
     Some(match param_type {
-        ParamType::Int => ParamValue::Int(value.as_i64()?),
+        ParamType::Int => ParamValue::Int(integral(value)?),
         ParamType::Double => ParamValue::Double(value.as_f64()?),
         ParamType::Bool => ParamValue::Bool(value.as_bool()?),
         ParamType::Enum => ParamValue::Enum(value.as_str()?.to_string()),
         ParamType::IntArray => ParamValue::IntArray(ints()?),
         ParamType::DoubleArray => ParamValue::DoubleArray(doubles()?),
     })
+}
+
+/// Class ids of a single integral target column. Class ids cross the ABI
+/// unchanged, so a fitted N4ME state predicts the dataset's own labels.
+fn class_labels(data: &MethodsPlsDataset, method_id: &str) -> Result<Vec<i64>> {
+    let invalid = || {
+        DagMlError::RuntimeValidation(format!(
+            "native Methods method `{method_id}` requires one target column of integral class ids"
+        ))
+    };
+    let y = data
+        .y
+        .as_ref()
+        .filter(|y| y.cols == 1)
+        .ok_or_else(invalid)?;
+    y.values
+        .iter()
+        .map(|value| {
+            (value.fract() == 0.0 && value.abs() <= 2f64.powi(53))
+                .then_some(*value as i64)
+                .ok_or_else(invalid)
+        })
+        .collect()
+}
+
+/// Rows of `first` followed by the rows of `second` it does not already hold.
+fn union_rows(first: &MethodsPlsDataset, second: &MethodsPlsDataset) -> MethodsPlsDataset {
+    let seen = first.sample_ids.iter().collect::<BTreeSet<_>>();
+    let extra = second
+        .sample_ids
+        .iter()
+        .map(|sample_id| !seen.contains(sample_id))
+        .collect::<Vec<_>>();
+    let second = keep_rows(second, &extra);
+    let join = |left: &MethodsPlsMatrix, right: &MethodsPlsMatrix| MethodsPlsMatrix {
+        values: [left.values.as_slice(), right.values.as_slice()].concat(),
+        rows: left.rows + right.rows,
+        cols: left.cols,
+    };
+    MethodsPlsDataset {
+        sample_ids: [first.sample_ids.as_slice(), second.sample_ids.as_slice()].concat(),
+        x: join(&first.x, &second.x),
+        y: first
+            .y
+            .as_ref()
+            .zip(second.y.as_ref())
+            .map(|(left, right)| join(left, right)),
+        target_names: first.target_names.clone(),
+    }
 }
 
 fn matrix(values: &MethodsPlsMatrix) -> Result<MatrixRef<'_>> {
@@ -525,15 +678,24 @@ impl MethodsEstimatorController {
         let bytes = estimator
             .to_n4me(context, method.allow_training_rows)
             .map_err(|error| native_error("export_n4me", error))?;
-        let descriptor = inspect_methods_native_estimator_descriptor_v1(&self.id, &bytes)?;
-        let node_id = task.node_plan.node_id.as_str();
-        let id = ArtifactId::new(format!("artifact:n4m:{node_id}:refit"))?;
+        let descriptor = inspect_descriptor(&self.shared.catalog, &self.id, &bytes)?;
+        // One REFIT state per node and variant: a multi-variant REFIT (top-k)
+        // must never overwrite another variant's exported payload.
+        let scope = format!(
+            "{}:{}",
+            task.node_plan.node_id,
+            task.variant_id
+                .as_ref()
+                .map(|id| id.as_str())
+                .unwrap_or("base")
+        );
+        let id = ArtifactId::new(format!("artifact:n4m:{scope}:refit"))?;
         let artifact = ArtifactRef {
             id: id.clone(),
             kind: NATIVE_ESTIMATOR_ARTIFACT_KIND.to_string(),
             controller_id: self.id.clone(),
             backend: Some(ArtifactBackend::Raw),
-            uri: Some(format!("methods/{}.n4me", node_id.replace(':', "_"))),
+            uri: Some(format!("methods/{}.n4me", scope.replace(':', "_"))),
             content_fingerprint: Some(descriptor.artifact_sha256.clone()),
             size_bytes: Some(bytes.len() as u64),
             plugin: None,
@@ -595,8 +757,7 @@ impl MethodsEstimatorController {
         task: &NodeTask,
         method: &NodeMethod,
         outputs: BTreeMap<String, HandleRef>,
-        predictions: Vec<PredictionBlock>,
-        regression_targets: Vec<RegressionTargetBlock>,
+        scores: Scores,
         artifact: Option<(ArtifactRef, HandleRef)>,
     ) -> Result<NodeResult> {
         let (artifacts, artifact_handles) = artifact
@@ -614,10 +775,10 @@ impl MethodsEstimatorController {
         };
         Ok(NodeResult {
             schema_version: None,
-            classification_probabilities: Vec::new(),
+            classification_probabilities: scores.classification_probabilities,
             node_id: task.node_plan.node_id.clone(),
             outputs,
-            predictions,
+            predictions: scores.predictions,
             observation_predictions: Vec::new(),
             aggregated_predictions: Vec::new(),
             explanations: Vec::new(),
@@ -625,7 +786,7 @@ impl MethodsEstimatorController {
             artifacts: artifacts.clone(),
             artifact_handles,
             fit_influence_diagnostics: Vec::new(),
-            regression_targets,
+            regression_targets: scores.regression_targets,
             lineage: LineageRecord {
                 record_id: LineageId::new(format!(
                     "lineage:n4m:{}:{}:{}:{}",
@@ -693,7 +854,7 @@ impl MethodsEstimatorController {
             prediction: features.prediction.as_ref().map(apply).transpose()?,
         });
         let outputs = BTreeMap::from([("x_out".to_string(), self.emit_features(output)?)]);
-        self.result(task, method, outputs, Vec::new(), Vec::new(), artifact)
+        self.result(task, method, outputs, Scores::default(), artifact)
     }
 
     fn sample_filter(
@@ -707,7 +868,7 @@ impl MethodsEstimatorController {
                 let context =
                     Context::new().map_err(|error| native_error("context_create", error))?;
                 let estimator = method.fit(&context, &features.fit)?;
-                let y = if method.uses(FitInput::Y) {
+                let y = if method.info.uses("y") {
                     features.fit.y.as_ref().map(matrix).transpose()?
                 } else {
                     None
@@ -731,59 +892,152 @@ impl MethodsEstimatorController {
             phase => return Err(unsupported_phase(task, phase)),
         };
         let outputs = BTreeMap::from([("x_out".to_string(), self.emit_features(output)?)]);
-        self.result(task, method, outputs, Vec::new(), Vec::new(), None)
+        self.result(task, method, outputs, Scores::default(), None)
     }
 
-    fn regress(
+    /// Regressor and classifier nodes: fit (or hydrate), then score every
+    /// surface of the phase (see the module documentation).
+    fn model(
         &self,
         task: &NodeTask,
         method: &NodeMethod,
         features: &FeatureSet,
     ) -> Result<NodeResult> {
         let context = Context::new().map_err(|error| native_error("context_create", error))?;
-        let (estimator, artifact, rows, partition) = match task.phase {
-            Phase::FitCv | Phase::Refit => {
+        let (estimator, artifact, surfaces) = match task.phase {
+            Phase::FitCv => {
                 let estimator = method.fit(&context, &features.fit)?;
-                let artifact = (task.phase == Phase::Refit)
-                    .then(|| self.refit_artifact(task, &context, &estimator, method))
-                    .transpose()?;
-                let partition = match (task.phase, &features.prediction) {
-                    (Phase::FitCv, _) => PredictionPartition::Validation,
-                    // A REFIT prediction view is an explicitly held-out cohort;
-                    // without one the full-train output is a Final block.
-                    (_, Some(_)) => PredictionPartition::Test,
-                    (_, None) => PredictionPartition::Final,
-                };
-                let rows = features.prediction.as_ref().unwrap_or(&features.fit);
-                (estimator, artifact, rows, partition)
+                let mut surfaces = Vec::new();
+                if let Some(validation) = &features.prediction {
+                    surfaces.push((Cow::Borrowed(validation), PredictionPartition::Validation));
+                }
+                surfaces.push((Cow::Borrowed(&features.fit), PredictionPartition::Train));
+                // Report-only: the fold model on its whole training pool.
+                surfaces.push((
+                    features
+                        .prediction
+                        .as_ref()
+                        .map_or(Cow::Borrowed(&features.fit), |validation| {
+                            Cow::Owned(union_rows(&features.fit, validation))
+                        }),
+                    PredictionPartition::TrainPool,
+                ));
+                (estimator, None, surfaces)
+            }
+            Phase::Refit => {
+                let estimator = method.fit(&context, &features.fit)?;
+                let artifact = self.refit_artifact(task, &context, &estimator, method)?;
+                let mut surfaces = vec![(Cow::Borrowed(&features.fit), PredictionPartition::Final)];
+                // A REFIT prediction view is an explicitly held-out cohort.
+                if let Some(held_out) = &features.prediction {
+                    surfaces.push((Cow::Borrowed(held_out), PredictionPartition::Test));
+                }
+                (estimator, Some(artifact), surfaces)
             }
             Phase::Predict => (
                 self.hydrated_estimator(task, &context, method)?,
                 None,
-                &features.fit,
-                PredictionPartition::Final,
+                vec![(Cow::Borrowed(&features.fit), PredictionPartition::Final)],
             ),
             phase => return Err(unsupported_phase(task, phase)),
         };
-        let predicted = estimator
-            .predict(&context, matrix(&rows.x)?)
-            .map_err(|error| native_error("predict", error))?;
-        if predicted.cols != rows.target_names.len() {
-            return Err(DagMlError::RuntimeValidation(format!(
-                "native Methods regressor `{}` predicted {} targets for {} target names",
-                task.node_plan.node_id,
-                predicted.cols,
-                rows.target_names.len()
-            )));
+        let mut scores = Scores::default();
+        for (rows, partition) in surfaces {
+            self.score(
+                task,
+                method,
+                &context,
+                &estimator,
+                &rows,
+                partition,
+                &mut scores,
+            )?;
         }
-        let regression_targets = if task.phase == Phase::FitCv {
-            let targets = rows.y.as_ref().ok_or_else(|| {
-                DagMlError::RuntimeValidation(format!(
-                    "native Methods regressor `{}` FIT_CV requires validation targets",
-                    task.node_plan.node_id
-                ))
-            })?;
-            vec![RegressionTargetBlock {
+        let outputs = BTreeMap::from([("oof".to_string(), self.handle(HandleKind::Prediction))]);
+        self.result(task, method, outputs, scores, artifact)
+    }
+
+    /// Predict one surface, with its targets and, for a classifier on a
+    /// report-only CV surface, its class probabilities.
+    #[allow(clippy::too_many_arguments)]
+    fn score(
+        &self,
+        task: &NodeTask,
+        method: &NodeMethod,
+        context: &Context,
+        estimator: &Estimator,
+        rows: &MethodsPlsDataset,
+        partition: PredictionPartition,
+        scores: &mut Scores,
+    ) -> Result<()> {
+        let node_id = &task.node_plan.node_id;
+        let x = matrix(&rows.x)?;
+        let values = if self.role == N4mRole::Classifier {
+            if rows.target_names.len() != 1 {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "native Methods classifier `{node_id}` predicts one label column, not {} targets",
+                    rows.target_names.len()
+                )));
+            }
+            estimator
+                .predict_labels(context, x)
+                .map_err(|error| native_error("predict_labels", error))?
+                .into_iter()
+                .map(|label| vec![label as f64])
+                .collect::<Vec<_>>()
+        } else {
+            let predicted = estimator
+                .predict(context, x)
+                .map_err(|error| native_error("predict", error))?;
+            if predicted.cols != rows.target_names.len() {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "native Methods regressor `{node_id}` predicted {} targets for {} target names",
+                    predicted.cols,
+                    rows.target_names.len()
+                )));
+            }
+            predicted
+                .data
+                .chunks(predicted.cols)
+                .map(<[f64]>::to_vec)
+                .collect()
+        };
+        let fold_id = (task.phase == Phase::FitCv)
+            .then(|| task.fold_id.clone())
+            .flatten();
+        let producer_port = Some("oof".to_string());
+        if self.role == N4mRole::Classifier
+            && task.phase == Phase::FitCv
+            && matches!(
+                partition,
+                PredictionPartition::Train | PredictionPartition::TrainPool
+            )
+            && method.info.capabilities.contains("predict_proba")
+        {
+            let probabilities = estimator
+                .predict_proba(context, x)
+                .map_err(|error| native_error("predict_proba", error))?;
+            let classes = estimator
+                .classes()
+                .map_err(|error| native_error("classes", error))?;
+            scores
+                .classification_probabilities
+                .push(ClassificationProbabilityBlock {
+                    producer_node: node_id.clone(),
+                    producer_port: producer_port.clone(),
+                    partition: partition.clone(),
+                    fold_id: fold_id.clone(),
+                    sample_ids: rows.sample_ids.clone(),
+                    class_labels: classes.into_iter().map(|class| class as f64).collect(),
+                    values: probabilities
+                        .data
+                        .chunks(probabilities.cols)
+                        .map(<[f64]>::to_vec)
+                        .collect(),
+                });
+        }
+        if let Some(targets) = &rows.y {
+            scores.regression_targets.push(RegressionTargetBlock {
                 validity_masks: None,
                 level: PredictionLevel::Sample,
                 unit_ids: rows
@@ -798,44 +1052,44 @@ impl MethodsEstimatorController {
                     .map(<[f64]>::to_vec)
                     .collect(),
                 target_names: rows.target_names.clone(),
-            }]
-        } else {
-            Vec::new()
-        };
-        let prediction = PredictionBlock {
+            });
+        } else if task.phase != Phase::Predict {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "native Methods model `{node_id}` {} requires targets for its {partition:?} rows",
+                task.phase.as_str()
+            )));
+        }
+        scores.predictions.push(PredictionBlock {
             prediction_id: Some(format!(
-                "n4m:{}:{}:{}",
-                task.node_plan.node_id,
+                "n4m:{node_id}:{}:{}:{}:{partition:?}",
                 task.phase.as_str(),
+                task.variant_id
+                    .as_ref()
+                    .map(|id| id.as_str())
+                    .unwrap_or("base"),
                 task.fold_id
                     .as_ref()
                     .map(|id| id.as_str())
                     .unwrap_or("full")
             )),
-            producer_node: task.node_plan.node_id.clone(),
-            producer_port: Some("oof".to_string()),
+            producer_node: node_id.clone(),
+            producer_port,
             partition,
-            fold_id: (task.phase == Phase::FitCv)
-                .then(|| task.fold_id.clone())
-                .flatten(),
+            fold_id,
             sample_ids: rows.sample_ids.clone(),
-            values: predicted
-                .data
-                .chunks(predicted.cols)
-                .map(<[f64]>::to_vec)
-                .collect(),
+            values,
             target_names: rows.target_names.clone(),
-        };
-        let outputs = BTreeMap::from([("oof".to_string(), self.handle(HandleKind::Prediction))]);
-        self.result(
-            task,
-            method,
-            outputs,
-            vec![prediction],
-            regression_targets,
-            artifact,
-        )
+        });
+        Ok(())
     }
+}
+
+/// Scored prediction surfaces of one model invocation.
+#[derive(Default)]
+struct Scores {
+    predictions: Vec<PredictionBlock>,
+    regression_targets: Vec<RegressionTargetBlock>,
+    classification_probabilities: Vec<ClassificationProbabilityBlock>,
 }
 
 fn unsupported_phase(task: &NodeTask, phase: Phase) -> DagMlError {
@@ -871,11 +1125,11 @@ impl RuntimeController for MethodsEstimatorController {
                 task.node_plan.node_id
             )));
         }
-        let method = NodeMethod::from_task(task, self.role)?;
+        let method = NodeMethod::from_task(task, self.role, &self.shared.catalog)?;
         let features = self.input_features(task, provider)?;
         match self.role {
             N4mRole::Transformer | N4mRole::Selector => self.transform(task, &method, &features),
-            N4mRole::Regressor => self.regress(task, &method, &features),
+            N4mRole::Regressor | N4mRole::Classifier => self.model(task, &method, &features),
             N4mRole::SampleFilter => self.sample_filter(task, &method, &features),
             role => Err(DagMlError::RuntimeValidation(format!(
                 "native Methods {} role has no native execution path",
@@ -920,7 +1174,7 @@ impl RuntimeController for MethodsEstimatorController {
                 artifact.id
             )));
         }
-        let inspected = inspect_methods_native_estimator_descriptor_v1(&self.id, payload)?;
+        let inspected = inspect_descriptor(&self.shared.catalog, &self.id, payload)?;
         if artifact.native_estimator_descriptor.as_ref() != Some(&inspected) {
             return Err(DagMlError::RuntimeValidation(format!(
                 "N4ME payload `{}` does not match its inspected estimator descriptor",
@@ -1387,10 +1641,19 @@ mod tests {
         partition: PredictionPartition,
         fold: Option<&str>,
     ) -> &'a PredictionBlock {
+        node_block(blocks, "model:cppls", partition, fold)
+    }
+
+    fn node_block<'a>(
+        blocks: &'a [PredictionBlock],
+        producer: &str,
+        partition: PredictionPartition,
+        fold: Option<&str>,
+    ) -> &'a PredictionBlock {
         blocks
             .iter()
             .find(|block| {
-                block.producer_node.as_str() == "model:cppls"
+                block.producer_node.as_str() == producer
                     && block.partition == partition
                     && block.fold_id.as_ref().map(|id| id.as_str()) == fold
             })
@@ -1407,11 +1670,12 @@ mod tests {
                 .get(&ControllerId::new(role.controller_id().unwrap()).unwrap())
                 .unwrap();
             assert_eq!(Some(manifest.operator_kind.clone()), role.node_kind());
-            let native = roles::methods()
+            let native = NativeCatalog::live()
                 .unwrap()
-                .into_iter()
-                .filter(|info| method_roles(info).contains(&role))
-                .map(|info| format!("n4m:{}", info.method_id))
+                .0
+                .values()
+                .filter(|method| method.roles.contains(&role))
+                .map(|method| format!("n4m:{}", method.method_id))
                 .collect::<BTreeSet<_>>();
             assert_eq!(manifest.operator_selectors[0].refs, native);
         }
@@ -1472,7 +1736,7 @@ mod tests {
         let controllers = controllers();
         let mut ctx = RunContext::new(RunId::new("run:n4m.roles").unwrap(), Some(7));
         ctx.variant_id = Some(plan.variants[0].variant_id.clone());
-        SequentialScheduler
+        let fit_cv = SequentialScheduler
             .execute_campaign_phase_with_data_provider(
                 &plan,
                 &controllers,
@@ -1481,6 +1745,14 @@ mod tests {
                 Phase::FitCv,
             )
             .unwrap();
+        // Validation, Train and TrainPool surfaces, each with its targets.
+        for result in fit_cv
+            .iter()
+            .filter(|result| result.node_id.as_str() == "model:cppls")
+        {
+            assert_eq!(result.predictions.len(), 3);
+            assert_eq!(result.regression_targets.len(), 3);
+        }
         let fold_set = plan.fold_set.as_ref().unwrap();
         let index = |id: &SampleId| {
             id.as_str()
@@ -1511,12 +1783,41 @@ mod tests {
                 1e-9,
                 fold.fold_id.as_str(),
             );
+            // The in-fold surface holds the filtered training rows; the
+            // report-only pool appends the validation rows.
+            let kept = train
+                .iter()
+                .zip(&direct.kept)
+                .filter(|(_, keep)| **keep)
+                .map(|(i, _)| *i)
+                .collect::<Vec<_>>();
+            let pool = kept.iter().chain(&validation).copied().collect::<Vec<_>>();
+            for (partition, expected) in [
+                (PredictionPartition::Train, &kept),
+                (PredictionPartition::TrainPool, &pool),
+            ] {
+                let actual = block(
+                    ctx.prediction_store.blocks(),
+                    partition.clone(),
+                    Some(fold.fold_id.as_str()),
+                );
+                assert_eq!(
+                    actual.sample_ids,
+                    expected.iter().map(|i| sample("", *i)).collect::<Vec<_>>()
+                );
+                close(
+                    &actual.values.concat(),
+                    &direct.predict(&expected.iter().map(|i| x[*i].clone()).collect::<Vec<_>>()),
+                    1e-9,
+                    &format!("{partition:?} {}", fold.fold_id),
+                );
+            }
         }
 
         let mut store = InMemoryArtifactStore::new();
         let mut refit = RunContext::new(RunId::new("run:n4m.roles.refit").unwrap(), Some(7));
         refit.variant_id = Some(plan.variants[0].variant_id.clone());
-        SequentialScheduler
+        let refit_results = SequentialScheduler
             .execute_campaign_phase_with_data_provider_and_artifact_store(
                 &plan,
                 &controllers,
@@ -1526,6 +1827,12 @@ mod tests {
                 Phase::Refit,
             )
             .unwrap();
+        // The Final surface is scored against its targets like a host model.
+        let model_refit = refit_results
+            .iter()
+            .find(|result| result.node_id.as_str() == "model:cppls")
+            .unwrap();
+        assert_eq!(model_refit.regression_targets.len(), 1);
         let direct = Direct::fit(&x, &y);
         assert!(!direct.kept[5]);
         let final_block = block(
@@ -1634,6 +1941,386 @@ mod tests {
             1e-12,
             "replayed predict",
         );
+    }
+
+    /// Direct `n4m::roles` reference of SNV then a PLS-logistic classifier.
+    struct DirectClassifier {
+        context: Context,
+        snv: Estimator,
+        classifier: Estimator,
+    }
+
+    impl DirectClassifier {
+        fn fit(x: &[Vec<f64>], labels: &[i64]) -> Self {
+            let context = Context::new().unwrap();
+            let flat = x.concat();
+            let x_view = MatrixRef::row_major(&flat, x.len(), x[0].len()).unwrap();
+            let mut snv = Estimator::new(&context, "preprocessing.scatter.snv", None).unwrap();
+            snv.fit(&context, &FitInputs::new(x_view)).unwrap();
+            let x_snv = snv.transform(&context, x_view).unwrap();
+            let mut params = Params::new(&context, "models.classification.pls_logistic").unwrap();
+            params.set_int("n_components", 2).unwrap();
+            let mut classifier = Estimator::new(
+                &context,
+                "models.classification.pls_logistic",
+                Some(&params),
+            )
+            .unwrap();
+            classifier
+                .fit(
+                    &context,
+                    &FitInputs::new(
+                        MatrixRef::row_major(&x_snv.data, x.len(), x_snv.cols).unwrap(),
+                    )
+                    .labels(labels),
+                )
+                .unwrap();
+            Self {
+                context,
+                snv,
+                classifier,
+            }
+        }
+
+        fn features(&self, x: &[Vec<f64>]) -> n4m::Matrix {
+            let flat = x.concat();
+            self.snv
+                .transform(
+                    &self.context,
+                    MatrixRef::row_major(&flat, x.len(), x[0].len()).unwrap(),
+                )
+                .unwrap()
+        }
+
+        fn labels(&self, x: &[Vec<f64>]) -> Vec<f64> {
+            let features = self.features(x);
+            self.classifier
+                .predict_labels(
+                    &self.context,
+                    MatrixRef::row_major(&features.data, x.len(), features.cols).unwrap(),
+                )
+                .unwrap()
+                .into_iter()
+                .map(|label| label as f64)
+                .collect()
+        }
+
+        fn probabilities(&self, x: &[Vec<f64>]) -> Vec<f64> {
+            let features = self.features(x);
+            self.classifier
+                .predict_proba(
+                    &self.context,
+                    MatrixRef::row_major(&features.data, x.len(), features.cols).unwrap(),
+                )
+                .unwrap()
+                .data
+        }
+    }
+
+    #[test]
+    fn classifier_graph_matches_direct_roles_and_replays_class_labels() {
+        let fixture = fixture();
+        let x = rows(&fixture["x_train"]);
+        // Non-contiguous class ids cross the ABI unchanged.
+        let labels = rows(&fixture["labels_train"]).concat();
+        let class_ids = labels.iter().map(|label| *label as i64).collect::<Vec<_>>();
+        let x_predict = rows(&fixture["x_test"]);
+        let provider = Provider::new(&x, &labels, &x_predict);
+        let data_port = json!({"name": "x_out", "kind": "data", "representation": "tabular_numeric", "cardinality": "one", "description": ""});
+        let oof_port = json!({"name": "oof", "kind": "prediction", "representation": null, "cardinality": "one", "description": ""});
+        let plan = plan(
+            vec![
+                node(
+                    "transform:snv",
+                    "transform",
+                    "preprocessing.scatter.snv",
+                    json!({}),
+                    data_port,
+                ),
+                node(
+                    "model:logistic",
+                    "model",
+                    "models.classification.pls_logistic",
+                    json!({"n_components": 2}),
+                    oof_port,
+                ),
+            ],
+            vec![data_edge("transform:snv", "model:logistic")],
+            3,
+            x.len(),
+        );
+        assert_eq!(
+            plan.node_plans[&NodeId::new("model:logistic").unwrap()]
+                .controller_id
+                .as_str(),
+            "controller:n4m.classifier"
+        );
+        let controllers = controllers();
+        let mut ctx = RunContext::new(RunId::new("run:n4m.classifier").unwrap(), Some(7));
+        ctx.variant_id = Some(plan.variants[0].variant_id.clone());
+        let fit_cv = SequentialScheduler
+            .execute_campaign_phase_with_data_provider(
+                &plan,
+                &controllers,
+                &provider,
+                &mut ctx,
+                Phase::FitCv,
+            )
+            .unwrap();
+        let index = |id: &SampleId| {
+            id.as_str()
+                .trim_start_matches("sample:")
+                .parse::<usize>()
+                .unwrap()
+        };
+        let select = |ids: &[usize]| ids.iter().map(|i| x[*i].clone()).collect::<Vec<_>>();
+        for fold in &plan.fold_set.as_ref().unwrap().folds {
+            let train = fold.train_sample_ids.iter().map(index).collect::<Vec<_>>();
+            let validation = fold
+                .validation_sample_ids
+                .iter()
+                .map(index)
+                .collect::<Vec<_>>();
+            let pool = train.iter().chain(&validation).copied().collect::<Vec<_>>();
+            let direct = DirectClassifier::fit(
+                &select(&train),
+                &train.iter().map(|i| class_ids[*i]).collect::<Vec<_>>(),
+            );
+            let fold_id = Some(fold.fold_id.as_str());
+            for (partition, expected) in [
+                (PredictionPartition::Validation, &validation),
+                (PredictionPartition::Train, &train),
+                (PredictionPartition::TrainPool, &pool),
+            ] {
+                let actual = node_block(
+                    ctx.prediction_store.blocks(),
+                    "model:logistic",
+                    partition,
+                    fold_id,
+                );
+                assert_eq!(actual.values.concat(), direct.labels(&select(expected)));
+            }
+            // Probabilities attest the report-only CV surfaces only.
+            let result = fit_cv
+                .iter()
+                .find(|result| {
+                    result.node_id.as_str() == "model:logistic"
+                        && result.lineage.fold_id.as_ref().map(|id| id.as_str()) == fold_id
+                })
+                .unwrap();
+            assert_eq!(
+                result
+                    .classification_probabilities
+                    .iter()
+                    .map(|block| block.partition.clone())
+                    .collect::<Vec<_>>(),
+                vec![PredictionPartition::Train, PredictionPartition::TrainPool]
+            );
+            for (block, expected) in result
+                .classification_probabilities
+                .iter()
+                .zip([&train, &pool])
+            {
+                assert_eq!(block.class_labels, vec![10.0, 20.0, 30.0]);
+                close(
+                    &block.values.concat(),
+                    &direct.probabilities(&select(expected)),
+                    1e-12,
+                    "probabilities",
+                );
+            }
+            assert_eq!(result.regression_targets.len(), 3);
+        }
+
+        let mut store = InMemoryArtifactStore::new();
+        let mut refit = RunContext::new(RunId::new("run:n4m.classifier.refit").unwrap(), Some(7));
+        refit.variant_id = Some(plan.variants[0].variant_id.clone());
+        SequentialScheduler
+            .execute_campaign_phase_with_data_provider_and_artifact_store(
+                &plan,
+                &controllers,
+                &provider,
+                &mut store,
+                &mut refit,
+                Phase::Refit,
+            )
+            .unwrap();
+        let direct = DirectClassifier::fit(&x, &class_ids);
+        let final_block = node_block(
+            refit.prediction_store.blocks(),
+            "model:logistic",
+            PredictionPartition::Final,
+            None,
+        );
+        assert_eq!(final_block.values.concat(), direct.labels(&x));
+        let records = store.refit_artifacts();
+        let mut payloads = BTreeMap::new();
+        for record in &records {
+            let payload = controllers
+                .get(&record.controller_id)
+                .unwrap()
+                .export_artifact_payload(&record.artifact.id)
+                .unwrap()
+                .unwrap();
+            payloads.insert(record.artifact.id.clone(), payload);
+        }
+        let classifier = records
+            .iter()
+            .find(|record| record.node_id.as_str() == "model:logistic")
+            .unwrap();
+        assert_eq!(
+            classifier.artifact.id.as_str(),
+            format!(
+                "artifact:n4m:model:logistic:{}:refit",
+                plan.variants[0].variant_id
+            )
+        );
+        let descriptor = classifier
+            .artifact
+            .native_estimator_descriptor
+            .as_ref()
+            .unwrap();
+        assert_eq!(descriptor.roles, vec![N4mRole::Classifier]);
+        assert!(descriptor
+            .capabilities
+            .contains(&"predict_labels".to_string()));
+
+        let predictions = replay_predict(&plan, records, payloads, &provider);
+        let predicted = node_block(
+            &predictions,
+            "model:logistic",
+            PredictionPartition::Final,
+            None,
+        );
+        assert_eq!(predicted.values.concat(), direct.labels(&x_predict));
+    }
+
+    /// A seeded method runs natively with its seed unset (ABI 2.14 publishes
+    /// such seeds as optional, `"default": null`) and with an explicit seed,
+    /// and its REFIT state replays to the direct reference.
+    #[test]
+    fn seeded_method_runs_with_and_without_explicit_seed() {
+        let fixture = fixture();
+        let x = rows(&fixture["x_train"]);
+        let y = rows(&fixture["y_train"]).concat();
+        let x_predict = rows(&fixture["x_test"]);
+        let provider = Provider::new(&x, &y, &x_predict);
+        for params in [
+            json!({"n_estimators": 5}),
+            json!({"n_estimators": 5, "seed": 3}),
+        ] {
+            let plan = plan(
+                vec![node(
+                    "model:bagging",
+                    "model",
+                    "models.ensembles.bagging_pls",
+                    params.clone(),
+                    json!({"name": "oof", "kind": "prediction", "representation": null, "cardinality": "one", "description": ""}),
+                )],
+                Vec::new(),
+                3,
+                x.len(),
+            );
+            let controllers = controllers();
+            let mut store = InMemoryArtifactStore::new();
+            let mut ctx = RunContext::new(RunId::new("run:n4m.seeded").unwrap(), Some(7));
+            ctx.variant_id = Some(plan.variants[0].variant_id.clone());
+            SequentialScheduler
+                .execute_campaign_phase_with_data_provider_and_artifact_store(
+                    &plan,
+                    &controllers,
+                    &provider,
+                    &mut store,
+                    &mut ctx,
+                    Phase::Refit,
+                )
+                .unwrap();
+            let context = Context::new().unwrap();
+            let mut native = Params::new(&context, "models.ensembles.bagging_pls").unwrap();
+            native.set_int("n_estimators", 5).unwrap();
+            if let Some(seed) = params.get("seed").and_then(Value::as_i64) {
+                native.set_int("seed", seed).unwrap();
+            }
+            let mut direct =
+                Estimator::new(&context, "models.ensembles.bagging_pls", Some(&native)).unwrap();
+            let flat = x.concat();
+            direct
+                .fit(
+                    &context,
+                    &FitInputs::new(MatrixRef::row_major(&flat, x.len(), x[0].len()).unwrap())
+                        .y(MatrixRef::row_major(&y, y.len(), 1).unwrap()),
+                )
+                .unwrap();
+            let records = store.refit_artifacts();
+            let payloads = records
+                .iter()
+                .map(|record| {
+                    let payload = controllers
+                        .get(&record.controller_id)
+                        .unwrap()
+                        .export_artifact_payload(&record.artifact.id)
+                        .unwrap()
+                        .unwrap();
+                    (record.artifact.id.clone(), payload)
+                })
+                .collect();
+            let predicted = replay_predict(&plan, records, payloads, &provider);
+            let flat_predict = x_predict.concat();
+            close(
+                &node_block(
+                    &predicted,
+                    "model:bagging",
+                    PredictionPartition::Final,
+                    None,
+                )
+                .values
+                .concat(),
+                &direct
+                    .predict(
+                        &context,
+                        MatrixRef::row_major(&flat_predict, x_predict.len(), x_predict[0].len())
+                            .unwrap(),
+                    )
+                    .unwrap()
+                    .data,
+                1e-12,
+                &format!("bagging {params}"),
+            );
+        }
+    }
+
+    #[test]
+    fn classifier_refuses_non_integral_class_ids() {
+        let fixture = fixture();
+        let x = rows(&fixture["x_train"]);
+        let mut labels = rows(&fixture["labels_train"]).concat();
+        labels[0] = 10.5;
+        let provider = Provider::new(&x, &labels, &rows(&fixture["x_test"]));
+        let plan = plan(
+            vec![node(
+                "model:logistic",
+                "model",
+                "models.classification.pls_logistic",
+                json!({"n_components": 2}),
+                json!({"name": "oof", "kind": "prediction", "representation": null, "cardinality": "one", "description": ""}),
+            )],
+            Vec::new(),
+            3,
+            x.len(),
+        );
+        let mut ctx = RunContext::new(RunId::new("run:n4m.labels").unwrap(), Some(7));
+        ctx.variant_id = Some(plan.variants[0].variant_id.clone());
+        let error = SequentialScheduler
+            .execute_campaign_phase_with_data_provider(
+                &plan,
+                &controllers(),
+                &provider,
+                &mut ctx,
+                Phase::FitCv,
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("integral class ids"), "{error}");
     }
 
     /// PREDICT replay of the Python-written CPPLS N4ME (default parameters)
@@ -1793,25 +2480,29 @@ mod tests {
             wrong_role.contains("is not a regressor estimator"),
             "{wrong_role}"
         );
-        let wrong_type = run(
-            &plan(
+        let cppls = |n_components: Value| {
+            plan(
                 vec![node(
                     "model:cppls",
                     "model",
                     "models.pls.cppls",
-                    json!({"n_components": "two"}),
+                    json!({"n_components": n_components}),
                     output.clone(),
                 )],
                 Vec::new(),
                 3,
                 x.len(),
-            ),
-            Phase::FitCv,
-        )
-        .err()
-        .unwrap()
-        .to_string();
-        assert!(wrong_type.contains("n_components"), "{wrong_type}");
+            )
+        };
+        for inexact in [json!("two"), json!(2.5)] {
+            let wrong_type = run(&cppls(inexact), Phase::FitCv)
+                .err()
+                .unwrap()
+                .to_string();
+            assert!(wrong_type.contains("n_components"), "{wrong_type}");
+        }
+        // A generator's integral binary64 value is an exact int.
+        assert!(run(&cppls(json!(3.0)), Phase::FitCv).is_ok());
 
         let mismatch = std::panic::catch_unwind(|| python_cppls_replay(json!({"n_components": 3})))
             .err()
