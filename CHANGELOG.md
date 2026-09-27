@@ -9,32 +9,44 @@ deprecations follow [ADR-14](docs/adr/ADR-14-deprecation-policy.md).
 
 ## [Unreleased]
 
+## [0.3.29] - 2026-09-27
+
 ### Added
 
-- `run_cv_refit_methods_in_process`: the callback-free twin of
-  `run_cv_refit_in_process`. Every node runs through the native Methods
-  controllers derived from the configured libn4m; the campaign, SELECT,
-  FIT_CV/REFIT and scoring are unchanged, and the REFIT records return with
-  their raw N4ME states.
-- Native n4m classifier nodes: they fit on integral class ids, predict class
-  ids and attest class probabilities on the report-only CV surfaces.
+- Native in-process Methods role lane: `run_cv_refit_methods_in_process` is the
+  callback-free twin of `run_cv_refit_in_process`. Every node runs through the
+  native Methods controllers derived from the configured libn4m's manifest;
+  the campaign compilation, envelope views, variant SELECT, FIT_CV/REFIT and
+  scoring are unchanged. Hosts supply identity-keyed rows once (against a
+  target-bound envelope) and receive the REFIT records with their raw N4ME
+  states. No Python operator callback is installed.
+- Native n4m classifier nodes: they fit on the integral class ids of their
+  single target column, predict class ids (scored by accuracy,
+  balanced-accuracy and F1) and attest class probabilities on the report-only
+  `train`/`train_pool` CV surfaces when the method defines them.
 - `register_methods_native_controllers` / `methods_native_controller_ids`: the
-  single callback-free Methods controller set.
+  single callback-free Methods controller set (Methods PLS, Ridge and the n4m
+  role estimators) shared by every callback-free entry point.
 
 ### Changed
 
 - Require the published `n4m` 0.3.0 binding and a Methods ABI 2.14 runtime
   (Methods v1.2.0) for the `methods-optimizer` feature, so one process links a
-  single n4m instance alongside nirs4all-core. N4ME states written by ABI 2.13
-  remain loadable; older `libn4m` runtimes are refused at configuration.
-- n4m model nodes score the host model surfaces: `train` and `train_pool` in
-  FIT_CV and `final` in REFIT, each with its targets.
-- `execute_methods_training` and the portable full refit accept n4m role
-  controllers besides Methods PLS/Ridge.
-- The role controllers read method types from the native manifest JSON
-  (accepting ABI 2.14's additive keys and optional seeds), accept integral
-  binary64 values for `int` parameters, and name REFIT states per node and
-  variant so top-k REFIT states cannot collide.
+  single n4m instance alongside nirs4all-core. ABI 2.13 runtimes are refused
+  at configuration; N4ME states written by ABI 2.13 remain loadable.
+- n4m model nodes score the host model surfaces: `validation`, `train` and
+  `train_pool` in FIT_CV and `final` in REFIT, each with its targets.
+- `execute_methods_training`, the portable full refit and Package V2/V3
+  replay accept n4m role controllers besides Methods PLS/Ridge; host
+  controller fallback stays forbidden.
+- The role controllers read method types from the native manifest JSON, so
+  ABI 2.14's per-parameter `recorded` flag and optional (`null` default) seeds
+  are accepted.
+- `int` parameters accept whole-number floats (DAG-ML's numeric generators
+  emit binary64 values such as `3.0`); fractional values are still refused.
+- Native REFIT artifact ids include the variant
+  (`artifact:n4m:<node>:<variant>:refit`), so top-k REFIT states cannot
+  collide.
 
 ## [0.3.28] - 2026-09-27
 
@@ -460,7 +472,8 @@ Initial active core scaffold. Executable Rust crates with:
   references.
 - Direct Python/YAML DSL frontends (JSON-only parser today).
 
-[Unreleased]: https://github.com/GBeurier/dag-ml/compare/v0.3.28...HEAD
+[Unreleased]: https://github.com/GBeurier/dag-ml/compare/v0.3.29...HEAD
+[0.3.29]: https://github.com/GBeurier/dag-ml/compare/v0.3.28...v0.3.29
 [0.3.28]: https://github.com/GBeurier/dag-ml/compare/v0.3.27...v0.3.28
 [0.3.27]: https://github.com/GBeurier/dag-ml/compare/v0.3.26...v0.3.27
 [0.3.26]: https://github.com/GBeurier/dag-ml/compare/v0.3.25...v0.3.26
