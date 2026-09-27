@@ -9,6 +9,8 @@ deprecations follow [ADR-14](docs/adr/ADR-14-deprecation-policy.md).
 
 ## [Unreleased]
 
+## [0.3.28] - 2026-09-27
+
 ### Added
 
 - Derive one controller spec per n4m role from the native Methods manifest
@@ -20,8 +22,12 @@ deprecations follow [ADR-14](docs/adr/ADR-14-deprecation-policy.md).
 
 ### Changed
 
-- Require the `n4m` 0.2.0 binding (Methods ABI 2.13) for the
-  `methods-optimizer` feature.
+- Require the published `n4m` 0.2.0 binding and a Methods ABI 2.13 runtime
+  (Methods v1.1.0) for the `methods-optimizer` feature; older `libn4m`
+  runtimes are refused at configuration. The per-method N4MM PLS/Ridge lane
+  and its Archive V2/V3 contracts are unchanged.
+- Register the generic role controllers alongside the native PLS/Ridge
+  controllers in the Methods runtime registration and callback-free replay.
 
 ## [0.3.27] - 2026-09-24
 
@@ -427,7 +433,8 @@ Initial active core scaffold. Executable Rust crates with:
   references.
 - Direct Python/YAML DSL frontends (JSON-only parser today).
 
-[Unreleased]: https://github.com/GBeurier/dag-ml/compare/v0.3.27...HEAD
+[Unreleased]: https://github.com/GBeurier/dag-ml/compare/v0.3.28...HEAD
+[0.3.28]: https://github.com/GBeurier/dag-ml/compare/v0.3.27...v0.3.28
 [0.3.27]: https://github.com/GBeurier/dag-ml/compare/v0.3.26...v0.3.27
 [0.3.26]: https://github.com/GBeurier/dag-ml/compare/v0.3.25...v0.3.26
 [0.3.25]: https://github.com/GBeurier/dag-ml/compare/v0.3.24...v0.3.25
