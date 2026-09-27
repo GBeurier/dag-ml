@@ -23,6 +23,10 @@ deprecations follow [ADR-14](docs/adr/ADR-14-deprecation-policy.md).
 
 ### Changed
 
+- Require the published `n4m` 0.3.0 binding and a Methods ABI 2.14 runtime
+  (Methods v1.2.0) for the `methods-optimizer` feature, so one process links a
+  single n4m instance alongside nirs4all-core. N4ME states written by ABI 2.13
+  remain loadable; older `libn4m` runtimes are refused at configuration.
 - n4m model nodes score the host model surfaces: `train` and `train_pool` in
   FIT_CV and `final` in REFIT, each with its targets.
 - `execute_methods_training` and the portable full refit accept n4m role

@@ -304,10 +304,10 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: GBeurier/nirs4all-methods
-          # Methods v1.1.0 (ABI 2.13): builds the explicit runtime file below
+          # Methods v1.2.0 (ABI 2.14): builds the explicit runtime file below
           # and provides the estimator-roles N4ME fixture. The Rust binding
-          # itself is the published n4m 0.2.0 crate.
-          ref: 9a157fbd07877bf57cce58b9cc31587f0a6571d7
+          # itself is the published n4m 0.3.0 crate.
+          ref: d2a587642bde4627f0e22c9a2c9655324f46c5d5
           path: external/nirs4all-methods
       - uses: dtolnay/rust-toolchain@stable
       - name: Build ABI-matched Methods library
