@@ -139,6 +139,97 @@ class HostHpoResumeTests(unittest.TestCase):
         self.assertEqual([operator.offsets for operator in candidates.values()],
                          [[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]])
 
+    def test_sequential_generated_candidate_views_share_content_registry(self) -> None:
+        requested: dict[int, list[dict[str, Any]]] = {}
+
+        class GeneratedOperator(_Operators):
+            def __call__(self, task: dict[str, Any]) -> dict[str, Any]:
+                result = super().__call__(task)
+                self.assert_receipts(task)
+                result["consumed_data_views"] = {}
+                for key, receipt in task["data_view_receipts"].items():
+                    partition = task["data_views"][key]["partition"]
+                    operation = "fit" if partition == "fold_train" else "predict"
+                    result["consumed_data_views"][key] = {
+                        "receipt": receipt,
+                        "read_batches": [receipt["sample_ids"]],
+                        "model_calls": [{
+                            "operation": operation,
+                            "sample_ids": receipt["sample_ids"],
+                            "input_fingerprint": sha256(key.encode()).hexdigest(),
+                            **({"target_fingerprint": sha256(b"targets").hexdigest()} if operation == "fit" else {}),
+                        }],
+                    }
+                return result
+
+            @staticmethod
+            def assert_receipts(task: dict[str, Any]) -> None:
+                assert task["data_view_receipts"]
+                assert set(task["data_view_receipts"]) == set(task["data_views"])
+
+        def view_factory(index: int):
+            requested[index] = []
+
+            def view(call: dict[str, Any]) -> dict[str, Any]:
+                request = call["request"]
+                requested[index].append(request)
+                return {
+                    "handle": call["handle"],
+                    "view_key": request["view_key"],
+                    "sample_ids": request["view"]["sample_ids"],
+                    "schema_fingerprint": sha256(b"schema").hexdigest(),
+                    "content_fingerprint": sha256(request["view_key"].encode()).hexdigest(),
+                }
+
+            return view
+
+        result = self._run(
+            2, _Operators(), _Proposals(),
+            candidate_callback_factory=lambda _: GeneratedOperator(),
+            view_callback_factory=view_factory,
+        )
+        self.assertEqual(result["selected_trial_index"], 0)
+        self.assertEqual(sorted(requested), [0, 1])
+        self.assertEqual(len(requested[0]), len(requested[1]))
+        self.assertEqual(
+            [request["view_key"] for request in requested[0]],
+            [request["view_key"] for request in requested[1]],
+        )
+        manifest = result["generated_view_manifest"]
+        self.assertEqual(manifest["schema_version"], 1)
+        self.assertEqual(len(manifest["views"]), len({item["view_key"] for item in requested[0]}))
+        self.assertEqual(native_module.validate_generated_view_manifest_in_process(json.dumps(manifest)),
+                         manifest["fingerprint"])
+
+        def drifting_factory(index: int):
+            stable = view_factory(index)
+
+            def view(call: dict[str, Any]) -> dict[str, Any]:
+                receipt = stable(call)
+                if index == 1:
+                    receipt["content_fingerprint"] = sha256(
+                        (call["request"]["view_key"] + ":changed").encode()
+                    ).hexdigest()
+                return receipt
+
+            return view
+
+        with self.assertRaisesRegex(dag_ml.DagMlRuntimeError, "changed selector, seed, schema, or content"):
+            self._run(2, _Operators(), _Proposals(),
+                      candidate_callback_factory=lambda _: GeneratedOperator(),
+                      view_callback_factory=drifting_factory)
+
+        with self.assertRaisesRegex(dag_ml.DagMlRuntimeError, "checkpoint-bound manifest"):
+            self._run(1, _Operators(), _Proposals(), view_callback_factory=view_factory,
+                      progress_callback=lambda _: True)
+        request = _request(1)
+        request["optimizer_descriptor"]["n_jobs"] = 2
+        with self.assertRaisesRegex(dag_ml.DagMlRuntimeError, "sequential candidate"):
+            dag_ml.run_host_hpo_search_in_process(
+                _terminal_dsl(), _terminal_envelope(), _terminal_manifest(), request,
+                _Operators(), _Proposals(), view_callback_factory=view_factory,
+            )
+
     def test_parallel_candidates_overlap_with_ordered_optimizer_transitions(self) -> None:
         lock = threading.Lock()
         active = 0
