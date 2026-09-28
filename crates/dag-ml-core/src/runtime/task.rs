@@ -60,14 +60,37 @@ pub(crate) fn default_runtime_prediction_level() -> PredictionLevel {
     PredictionLevel::Sample
 }
 
-/// Host-reported materialization reads of an attested view. The receipt signs
-/// the full view; each batch preserves the row order returned to the host.
-/// These reads can include mask/presence checks and do not prove estimator use.
+/// Operation observed by the Python host at a model wrapper call boundary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelInputOperation {
+    Fit,
+    Predict,
+    PredictProba,
+}
+
+/// Host report captured at the model call boundary. Digests describe the
+/// supplied X/options and, for fit, y; they are not independently recomputed
+/// by the native scheduler from Python-owned buffers.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelInputCall {
+    pub operation: ModelInputOperation,
+    pub sample_ids: Vec<SampleId>,
+    pub input_fingerprint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_fingerprint: Option<String>,
+}
+
+/// Host-reported reads and model calls for an attested view. Read batches can
+/// include mask checks; model calls describe the wrapper's supplied arguments.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DataViewConsumption {
     pub receipt: DataViewReceipt,
     pub read_batches: Vec<Vec<SampleId>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub model_calls: Vec<ModelInputCall>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -977,6 +1000,65 @@ impl NodeResult {
                 {
                     return Err(DagMlError::RuntimeValidation(format!(
                         "node `{}` consumed data view `{key}` with invalid ordered read IDs",
+                        task.node_plan.node_id
+                    )));
+                }
+            }
+            let view = task.data_views.get(key).ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "node `{}` reported a model call for view `{key}` without a native selector",
+                    task.node_plan.node_id
+                ))
+            })?;
+            for call in &consumption.model_calls {
+                let unique = call.sample_ids.iter().collect::<BTreeSet<_>>();
+                let read_in_order = consumption.read_batches.iter().any(|batch| {
+                    let mut remaining = batch.iter();
+                    call.sample_ids
+                        .iter()
+                        .all(|sample| remaining.any(|candidate| candidate == sample))
+                });
+                if call.sample_ids.is_empty()
+                    || unique.len() != call.sample_ids.len()
+                    || !read_in_order
+                {
+                    return Err(DagMlError::RuntimeValidation(format!(
+                        "node `{}` reported a model call on view `{key}` outside its ordered reads",
+                        task.node_plan.node_id
+                    )));
+                }
+                let valid_hash = |value: &str| {
+                    value.len() == 64
+                        && value
+                            .bytes()
+                            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                };
+                if !valid_hash(&call.input_fingerprint)
+                    || call
+                        .target_fingerprint
+                        .as_deref()
+                        .is_some_and(|value| !valid_hash(value))
+                {
+                    return Err(DagMlError::RuntimeValidation(format!(
+                        "node `{}` reported a model call on view `{key}` without valid SHA-256 digests",
+                        task.node_plan.node_id
+                    )));
+                }
+                if matches!(call.operation, ModelInputOperation::Fit) {
+                    if !matches!(
+                        (task.phase, view.partition),
+                        (Phase::FitCv, DataRequestPartition::FoldTrain)
+                            | (Phase::Refit, DataRequestPartition::FullTrain)
+                    ) || call.target_fingerprint.is_none()
+                    {
+                        return Err(DagMlError::RuntimeValidation(format!(
+                            "node `{}` reported a fit call on view `{key}` outside a training scope",
+                            task.node_plan.node_id
+                        )));
+                    }
+                } else if call.target_fingerprint.is_some() {
+                    return Err(DagMlError::RuntimeValidation(format!(
+                        "node `{}` reported prediction targets on view `{key}`",
                         task.node_plan.node_id
                     )));
                 }
