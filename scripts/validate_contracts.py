@@ -53,6 +53,8 @@ PREDICT_COHORT_ENVELOPE_V2_SCHEMA_REL = Path(
 FEATURE_FUSION_SCHEMA_REL = Path("docs/contracts/feature_fusion_selector.schema.json")
 DATA_VIEW_REQUEST_V3_SCHEMA_REL = Path("docs/contracts/data_view_request.v3.schema.json")
 DATA_VIEW_REQUEST_V3_FIXTURE_REL = Path("examples/fixtures/data/data_view_request_v3.json")
+GENERATED_VIEW_MANIFEST_SCHEMA_REL = Path("docs/contracts/generated_view_manifest.v1.schema.json")
+GENERATED_VIEW_MANIFEST_FIXTURE_REL = Path("examples/fixtures/data/generated_view_manifest_v1.json")
 BRANCH_VIEW_SCHEMA_REL = Path("docs/contracts/coordinator_branch_view.schema.json")
 FITTED_ADAPTER_SCHEMA_REL = Path("docs/contracts/fitted_adapter_ref.schema.json")
 GRAPH_SPEC_SCHEMA_REL = Path("docs/contracts/graph_spec.schema.json")
@@ -19042,6 +19044,8 @@ def main(argv: list[str] | None = None) -> int:
         local_feature_fusion_schema = load_json(ROOT / FEATURE_FUSION_SCHEMA_REL)
         local_data_view_request_v3_schema = load_json(ROOT / DATA_VIEW_REQUEST_V3_SCHEMA_REL)
         local_data_view_request_v3_fixture = load_json(ROOT / DATA_VIEW_REQUEST_V3_FIXTURE_REL)
+        local_generated_view_manifest_schema = load_json(ROOT / GENERATED_VIEW_MANIFEST_SCHEMA_REL)
+        local_generated_view_manifest_fixture = load_json(ROOT / GENERATED_VIEW_MANIFEST_FIXTURE_REL)
         local_branch_view_schema = load_json(ROOT / BRANCH_VIEW_SCHEMA_REL)
         local_fitted_adapter_schema = load_json(ROOT / FITTED_ADAPTER_SCHEMA_REL)
         local_graph_spec_schema = load_json(ROOT / GRAPH_SPEC_SCHEMA_REL)
@@ -19287,6 +19291,19 @@ def main(argv: list[str] | None = None) -> int:
             )
         except (SchemaError, ValidationError) as exc:
             raise ContractError(f"dag-ml C ABI v3 data-view request contract: {exc}") from exc
+        try:
+            Draft202012Validator.check_schema(local_generated_view_manifest_schema)
+            Draft202012Validator(local_generated_view_manifest_schema).validate(
+                local_generated_view_manifest_fixture
+            )
+        except (SchemaError, ValidationError) as exc:
+            raise ContractError(f"dag-ml generated-view manifest contract: {exc}") from exc
+        manifest_views = local_generated_view_manifest_fixture["views"]
+        manifest_keys = [view["view_key"] for view in manifest_views]
+        if manifest_keys != sorted(set(manifest_keys)):
+            raise ContractError("dag-ml generated-view manifest keys must be unique and sorted")
+        if dagml_tcv1_sha256(["generated-view-manifest-v1", manifest_views]) != local_generated_view_manifest_fixture["fingerprint"]:
+            raise ContractError("dag-ml generated-view manifest fingerprint does not match its views")
         validate_chain_effect_analysis_schema(
             local_chain_effect_analysis_schema, "dag-ml"
         )
