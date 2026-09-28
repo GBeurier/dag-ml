@@ -21,8 +21,8 @@ from test_terminal_predict_facade import (
 )
 
 
-def _request(budget: int) -> dict[str, Any]:
-    return {
+def _request(budget: int, *, generated: bool = False) -> dict[str, Any]:
+    request = {
         "target_node": "model:terminal",
         "trial_budget": budget,
         "metric": "rmse",
@@ -33,6 +33,9 @@ def _request(budget: int) -> dict[str, Any]:
             "seed": 7,
         },
     }
+    if generated:
+        request["optimizer_descriptor"]["generated_view_mode"] = "checkpoint_manifest_v1"
+    return request
 
 
 class _Proposals:
@@ -73,7 +76,7 @@ class HostHpoResumeTests(unittest.TestCase):
     ) -> dict[str, Any]:
         return dag_ml.run_host_hpo_search_in_process(
             _terminal_dsl(), _terminal_envelope(), _terminal_manifest(),
-            _request(budget), operator, proposals, **kwargs,
+            _request(budget, generated=kwargs.get("view_callback_factory") is not None), operator, proposals, **kwargs,
         )
 
     def test_native_resume_preserves_scores_and_winner_without_replaying_trials(self) -> None:
@@ -219,15 +222,70 @@ class HostHpoResumeTests(unittest.TestCase):
                       candidate_callback_factory=lambda _: GeneratedOperator(),
                       view_callback_factory=drifting_factory)
 
-        with self.assertRaisesRegex(dag_ml.DagMlRuntimeError, "checkpoint-bound manifest"):
-            self._run(1, _Operators(), _Proposals(), view_callback_factory=view_factory,
-                      progress_callback=lambda _: True)
-        request = _request(1)
+        stopped = self._run(
+            2, _Operators(), _Proposals(),
+            candidate_callback_factory=lambda _: GeneratedOperator(),
+            view_callback_factory=view_factory,
+            progress_callback=lambda message: len(message["checkpoint"]["trials"]) < 1,
+        )
+        self.assertEqual(stopped["status"], "cancelled")
+        checkpoint = stopped["checkpoint"]
+        self.assertEqual(len(checkpoint["trials"]), 1)
+        saved_manifest = checkpoint["trials"][0]["evidence"]["generated_view_manifest"]
+        self.assertEqual(saved_manifest, stopped["generated_view_manifest"])
+
+        def validate_saved_view(record: dict[str, Any]) -> dict[str, str]:
+            return {
+                "schema_fingerprint": sha256(b"schema").hexdigest(),
+                "content_fingerprint": sha256(record["view_key"].encode()).hexdigest(),
+            }
+
+        with self.assertRaisesRegex(dag_ml.DagMlRuntimeError, "requires a view-content validator"):
+            self._run(2, _Operators(), _Proposals(), resume_checkpoint=checkpoint,
+                      view_callback_factory=view_factory)
+        changed_request = _request(2, generated=True)
+        changed_request["optimizer_descriptor"]["seed"] = 8
+        recheck_calls: list[dict[str, Any]] = []
+        with self.assertRaisesRegex(dag_ml.DagMlRuntimeError, "binding mismatch"):
+            dag_ml.run_host_hpo_search_in_process(
+                _terminal_dsl(), _terminal_envelope(), _terminal_manifest(), changed_request,
+                _Operators(), _Proposals(), resume_checkpoint=checkpoint,
+                view_callback_factory=view_factory,
+                resume_view_validator=lambda record: recheck_calls.append(record),
+            )
+        self.assertEqual(recheck_calls, [])
+        with self.assertRaisesRegex(dag_ml.DagMlRuntimeError, "resume changed content"):
+            self._run(2, _Operators(), _Proposals(), resume_checkpoint=checkpoint,
+                      view_callback_factory=view_factory,
+                      resume_view_validator=lambda record: {
+                          **validate_saved_view(record),
+                          "content_fingerprint": sha256(b"changed").hexdigest(),
+                      })
+        requested.clear()
+        resumed = self._run(
+            2, _Operators(), _Proposals(), resume_checkpoint=checkpoint,
+            candidate_callback_factory=lambda _: GeneratedOperator(),
+            view_callback_factory=view_factory,
+            resume_view_validator=validate_saved_view,
+        )
+        self.assertEqual(resumed["status"], "completed")
+        self.assertEqual(list(requested), [1])
+        self.assertEqual(resumed["checkpoint"]["trials"][0], checkpoint["trials"][0])
+        self.assertEqual(resumed["generated_view_manifest"], result["generated_view_manifest"])
+        self.assertEqual(resumed["checkpoint"]["trials"][1]["evidence"]["generated_view_manifest"],
+                         result["generated_view_manifest"])
+        request = _request(1, generated=True)
         request["optimizer_descriptor"]["n_jobs"] = 2
         with self.assertRaisesRegex(dag_ml.DagMlRuntimeError, "sequential candidate"):
             dag_ml.run_host_hpo_search_in_process(
                 _terminal_dsl(), _terminal_envelope(), _terminal_manifest(), request,
                 _Operators(), _Proposals(), view_callback_factory=view_factory,
+            )
+        request = _request(1, generated=True)
+        with self.assertRaisesRegex(dag_ml.DagMlRuntimeError, "descriptor and callback factory disagree"):
+            dag_ml.run_host_hpo_search_in_process(
+                _terminal_dsl(), _terminal_envelope(), _terminal_manifest(), request,
+                _Operators(), _Proposals(),
             )
 
     def test_parallel_candidates_overlap_with_ordered_optimizer_transitions(self) -> None:

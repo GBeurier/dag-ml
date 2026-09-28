@@ -390,6 +390,11 @@ pub trait RuntimeDataProvider {
             receipt: None,
         })
     }
+    /// Snapshot the generated views attested by this provider so a durable
+    /// host search can seal their content with each terminal candidate.
+    fn generated_view_manifest(&self) -> Result<Option<serde_json::Value>> {
+        Ok(None)
+    }
     /// Attest the exact feature and target content bound to one training input.
     ///
     /// Legacy phase execution may return `None`; the native W1 training
