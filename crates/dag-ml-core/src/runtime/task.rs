@@ -972,6 +972,41 @@ pub struct NodeResult {
 }
 
 impl NodeResult {
+    /// Require a call-boundary fit witness for every dynamic training view of
+    /// a model task. This complements the host read ledger; it does not replace
+    /// the separate dynamic-view gate or make base-cohort identity sufficient.
+    pub fn validate_required_model_calls_for_task(&self, task: &NodeTask) -> Result<()> {
+        if task.node_plan.kind != NodeKind::Model {
+            return Ok(());
+        }
+        let train_partition = match task.phase {
+            Phase::FitCv => DataRequestPartition::FoldTrain,
+            Phase::Refit => DataRequestPartition::FullTrain,
+            _ => return Ok(()),
+        };
+        for (key, view) in &task.data_views {
+            if view.partition != train_partition || !task.data_view_receipts.contains_key(key) {
+                continue;
+            }
+            let witnessed = self
+                .consumed_data_views
+                .get(key)
+                .is_some_and(|consumption| {
+                    consumption
+                        .model_calls
+                        .iter()
+                        .any(|call| call.operation == ModelInputOperation::Fit)
+                });
+            if !witnessed {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "node `{}` has no fit call bound to dynamic training view `{key}`",
+                    task.node_plan.node_id
+                )));
+            }
+        }
+        Ok(())
+    }
+
     pub fn validate_consumed_data_views_for_task(&self, task: &NodeTask) -> Result<()> {
         task.validate_data_view_receipts()?;
         for (key, consumption) in &self.consumed_data_views {
@@ -1070,6 +1105,7 @@ impl NodeResult {
     pub fn validate_for_task(&self, task: &NodeTask) -> Result<()> {
         self.validate_consumed_data_views_for_task(task)?;
         task.validate_dynamic_view_training_gate()?;
+        self.validate_required_model_calls_for_task(task)?;
         if self.node_id != task.node_plan.node_id {
             return Err(DagMlError::RuntimeValidation(format!(
                 "task for `{}` returned result for `{}`",

@@ -7190,6 +7190,9 @@ fn node_result_consumption_binds_a_successful_read_to_its_native_receipt() {
         },
     };
     result.validate_consumed_data_views_for_task(&task).unwrap();
+    result
+        .validate_required_model_calls_for_task(&task)
+        .unwrap();
     let encoded = serde_json::to_value(&result).unwrap();
     assert_eq!(
         encoded["consumed_data_views"][&key]["read_batches"],
@@ -7202,6 +7205,37 @@ fn node_result_consumption_binds_a_successful_read_to_its_native_receipt() {
     assert_eq!(
         serde_json::from_value::<NodeResult>(encoded).unwrap(),
         result
+    );
+
+    result
+        .consumed_data_views
+        .get_mut(&key)
+        .unwrap()
+        .model_calls
+        .clear();
+    assert!(result
+        .validate_required_model_calls_for_task(&task)
+        .unwrap_err()
+        .to_string()
+        .contains("no fit call bound to dynamic training view"));
+    result.consumed_data_views.clear();
+    assert!(result
+        .validate_required_model_calls_for_task(&task)
+        .unwrap_err()
+        .to_string()
+        .contains("no fit call bound to dynamic training view"));
+    result.consumed_data_views.insert(
+        key.clone(),
+        DataViewConsumption {
+            receipt: receipt.clone(),
+            read_batches: vec![vec![sample_ids[0].clone(), sample_ids[2].clone()]],
+            model_calls: vec![ModelInputCall {
+                operation: ModelInputOperation::Fit,
+                sample_ids: vec![sample_ids[0].clone(), sample_ids[2].clone()],
+                input_fingerprint: "a".repeat(64),
+                target_fingerprint: Some("b".repeat(64)),
+            }],
+        },
     );
 
     let consumed = result.consumed_data_views.get_mut(&key).unwrap();
