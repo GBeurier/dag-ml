@@ -318,9 +318,73 @@ pub struct DataViewRequest {
     pub predict_cohort: Option<crate::data::PredictCohort>,
 }
 
+/// Feature-content evidence for one scheduler-selected, host-owned view.
+///
+/// This receipt travels with the native task; it does not by itself prove that
+/// an operator consumed the buffers. A dynamic controller must return matching
+/// consumption evidence before its fit can be admitted.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DataViewReceipt {
+    pub handle: HandleRef,
+    pub view_key: String,
+    pub sample_ids: Vec<SampleId>,
+    pub schema_fingerprint: String,
+    pub content_fingerprint: String,
+}
+
+impl DataViewReceipt {
+    pub fn validate_for(&self, request: &DataViewRequest, handle: &HandleRef) -> Result<()> {
+        if self.sample_ids.is_empty() {
+            return Err(DagMlError::RuntimeValidation(
+                "data view receipt requires nonempty ordered sample IDs".to_string(),
+            ));
+        }
+        if &self.handle != handle || self.view_key != request.view_key {
+            return Err(DagMlError::RuntimeValidation(
+                "data view receipt handle or key does not match the native request".to_string(),
+            ));
+        }
+        if request.view.sample_ids.as_ref() != Some(&self.sample_ids) {
+            return Err(DagMlError::RuntimeValidation(
+                "data view receipt ordered sample IDs do not match the native request".to_string(),
+            ));
+        }
+        for (label, fingerprint) in [
+            ("schema", &self.schema_fingerprint),
+            ("content", &self.content_fingerprint),
+        ] {
+            if fingerprint.len() != 64
+                || !fingerprint
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "data view receipt {label} fingerprint must be lowercase SHA-256"
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct AttestedDataView {
+    pub handle: HandleRef,
+    pub receipt: Option<DataViewReceipt>,
+}
+
 pub trait RuntimeDataProvider {
     fn materialize(&self, request: &DataMaterializationRequest) -> Result<HandleRef>;
     fn make_view(&self, request: &DataViewRequest) -> Result<HandleRef>;
+    /// Atomically return a view handle and its feature-content receipt.
+    /// Existing fixed providers retain the handle-only contract by default.
+    fn make_view_attested(&self, request: &DataViewRequest) -> Result<AttestedDataView> {
+        Ok(AttestedDataView {
+            handle: self.make_view(request)?,
+            receipt: None,
+        })
+    }
     /// Attest the exact feature and target content bound to one training input.
     ///
     /// Legacy phase execution may return `None`; the native W1 training
@@ -766,6 +830,10 @@ impl RuntimeDataProvider for MethodsPlsPredictDataProvider {
         self.inner.make_view(request)
     }
 
+    fn make_view_attested(&self, request: &DataViewRequest) -> Result<AttestedDataView> {
+        self.inner.make_view_attested(request)
+    }
+
     fn training_data_identity(
         &self,
         binding: &DataBinding,
@@ -1025,6 +1093,17 @@ impl<P: RuntimeDataProvider> RuntimeDataProvider for EnvelopeAttestedRuntimeData
         self.inner.make_view(request)
     }
 
+    fn make_view_attested(&self, request: &DataViewRequest) -> Result<AttestedDataView> {
+        request.view.validate()?;
+        self.validate_request_binding(&request.node_id, &request.input_name, &request.binding)?;
+        self.validate_predict_cohort_request(
+            &request.binding,
+            request.phase,
+            &request.predict_cohort,
+        )?;
+        self.inner.make_view_attested(request)
+    }
+
     fn training_data_identity(
         &self,
         binding: &DataBinding,
@@ -1203,6 +1282,7 @@ pub trait RuntimeTunerSession {
 pub(crate) struct CollectedInputs {
     pub(crate) handles: BTreeMap<String, HandleRef>,
     pub(crate) data_views: BTreeMap<String, DataProviderViewSpec>,
+    pub(crate) data_view_receipts: BTreeMap<String, DataViewReceipt>,
     pub(crate) prediction_inputs: BTreeMap<String, PredictionInputSpec>,
     pub(crate) skip_node: bool,
 }
@@ -1527,11 +1607,11 @@ pub(crate) fn make_data_view_handle(
     scope: &PhaseScope,
     binding: &DataBinding,
     input: DataViewHandleInput<'_>,
-) -> Result<HandleRef> {
+) -> Result<AttestedDataView> {
     input.view.validate()?;
     let (view_key, view_seed) =
         data_view_identity(ctx.root_seed, binding, input.view, input.predict_cohort)?;
-    let view_handle = data_provider.make_view(&DataViewRequest {
+    let request = DataViewRequest {
         run_id: ctx.run_id.clone(),
         node_id: node_plan.node_id.clone(),
         input_name: binding.input_name.clone(),
@@ -1544,17 +1624,24 @@ pub(crate) fn make_data_view_handle(
         view_key,
         view_seed,
         predict_cohort: input.predict_cohort.cloned(),
-    })?;
+    };
+    let attested = data_provider.make_view_attested(&request)?;
     // A data view is delivered to the controller as a data input, so the
     // provider must return a data-bearing handle. Refuse a model / artifact /
     // prediction / relation handle masquerading as a view across the ABI.
-    if !matches!(view_handle.kind, HandleKind::Data | HandleKind::DataView) {
+    if !matches!(
+        attested.handle.kind,
+        HandleKind::Data | HandleKind::DataView
+    ) {
         return Err(DagMlError::RuntimeValidation(format!(
             "node `{}` data view `{}` resolved to a non-data/data-view handle kind {:?}",
-            node_plan.node_id, binding.input_name, view_handle.kind
+            node_plan.node_id, binding.input_name, attested.handle.kind
         )));
     }
-    Ok(view_handle)
+    if let Some(receipt) = &attested.receipt {
+        receipt.validate_for(&request, &attested.handle)?;
+    }
+    Ok(attested)
 }
 
 fn data_view_identity(

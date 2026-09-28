@@ -2364,6 +2364,7 @@ impl SequentialScheduler {
                             branch_path: Vec::new(),
                             input_handles: BTreeMap::new(),
                             data_views: BTreeMap::new(),
+                            data_view_receipts: BTreeMap::new(),
                             prediction_inputs: BTreeMap::new(),
                             prediction_feature_matrix: None,
                             prediction_feature_off_fold_matrix: None,
@@ -2526,6 +2527,7 @@ impl SequentialScheduler {
                     branch_path: Vec::new(),
                     input_handles,
                     data_views: collected_inputs.data_views,
+                    data_view_receipts: collected_inputs.data_view_receipts,
                     prediction_inputs,
                     prediction_feature_matrix,
                     prediction_feature_off_fold_matrix,
@@ -2551,6 +2553,7 @@ impl SequentialScheduler {
                     task.node_plan.controller_id.as_str(),
                 )
                 .entered();
+                task.validate_dynamic_view_training_gate()?;
                 let mut result = if task.node_plan.kind == NodeKind::Tuner {
                     return Err(DagMlError::RuntimeValidation(format!(
                         "tuner node `{}` requires execute_hpo_campaign with an explicit RuntimeHpoExecutionContext",
@@ -3105,6 +3108,7 @@ impl ParallelScheduler {
                         branch_path: Vec::new(),
                         input_handles,
                         data_views: collected_inputs.data_views,
+                        data_view_receipts: collected_inputs.data_view_receipts,
                         prediction_inputs,
                         prediction_feature_matrix,
                         prediction_feature_off_fold_matrix,
@@ -3149,6 +3153,7 @@ impl ParallelScheduler {
                                     prepared_task.task.node_plan.controller_id.as_str(),
                                 )
                                 .entered();
+                                prepared_task.task.validate_dynamic_view_training_gate()?;
                                 let mut result =
                                     if prepared_task.task.node_plan.kind == NodeKind::Tuner {
                                         return Err(DagMlError::RuntimeValidation(format!(
@@ -3267,6 +3272,7 @@ impl ParallelScheduler {
                         branch_path: Vec::new(),
                         input_handles: BTreeMap::new(),
                         data_views: BTreeMap::new(),
+                        data_view_receipts: BTreeMap::new(),
                         prediction_inputs: BTreeMap::new(),
                         prediction_feature_matrix: None,
                         prediction_feature_off_fold_matrix: None,
@@ -4719,6 +4725,7 @@ pub(crate) fn collect_input_handles(
 ) -> Result<CollectedInputs> {
     let mut inputs = BTreeMap::new();
     let mut data_views = BTreeMap::new();
+    let mut data_view_receipts = BTreeMap::new();
     let mut prediction_inputs = BTreeMap::new();
     let training_oof_edges = incoming_training_oof_edges(plan, node_plan, scope)?;
     // An OOF edge replaces exactly one raw producer port. Do not hide sibling
@@ -4817,6 +4824,7 @@ pub(crate) fn collect_input_handles(
             return Ok(CollectedInputs {
                 handles: BTreeMap::new(),
                 data_views: BTreeMap::new(),
+                data_view_receipts: BTreeMap::new(),
                 prediction_inputs: BTreeMap::new(),
                 skip_node: true,
             });
@@ -4970,7 +4978,7 @@ pub(crate) fn collect_input_handles(
                 bind_predict_cohort_to_view(&mut view, cohort)?;
             }
             let key = data_view_key(&binding.input_name);
-            let view_handle = make_data_view_handle(
+            let attested = make_data_view_handle(
                 data_provider,
                 ctx,
                 node_plan,
@@ -4988,11 +4996,14 @@ pub(crate) fn collect_input_handles(
                     node_plan.node_id
                 )));
             }
-            if inputs.insert(key.clone(), view_handle).is_some() {
+            if inputs.insert(key.clone(), attested.handle).is_some() {
                 return Err(DagMlError::RuntimeValidation(format!(
                     "node `{}` received duplicate data input `{key}`",
                     node_plan.node_id
                 )));
+            }
+            if let Some(receipt) = attested.receipt {
+                data_view_receipts.insert(key.clone(), receipt);
             }
 
             if scope.phase == Phase::FitCv {
@@ -5020,7 +5031,7 @@ pub(crate) fn collect_input_handles(
                     test_view.include_augmented = false;
                     bind_predict_cohort_to_view(&mut test_view, cohort)?;
                     let test_key = format!("{key}:test");
-                    let test_handle = make_data_view_handle(
+                    let attested = make_data_view_handle(
                         data_provider,
                         ctx,
                         node_plan,
@@ -5033,7 +5044,10 @@ pub(crate) fn collect_input_handles(
                         },
                     )?;
                     data_views.insert(test_key.clone(), test_view);
-                    inputs.insert(test_key, test_handle);
+                    inputs.insert(test_key.clone(), attested.handle);
+                    if let Some(receipt) = attested.receipt {
+                        data_view_receipts.insert(test_key, receipt);
+                    }
                 }
             }
 
@@ -5045,7 +5059,7 @@ pub(crate) fn collect_input_handles(
                 &excluded_samples,
             )? {
                 let validation_key = format!("{key}:validation");
-                let validation_handle = make_data_view_handle(
+                let attested = make_data_view_handle(
                     data_provider,
                     ctx,
                     node_plan,
@@ -5067,7 +5081,7 @@ pub(crate) fn collect_input_handles(
                     )));
                 }
                 if inputs
-                    .insert(validation_key.clone(), validation_handle)
+                    .insert(validation_key.clone(), attested.handle)
                     .is_some()
                 {
                     return Err(DagMlError::RuntimeValidation(format!(
@@ -5075,12 +5089,16 @@ pub(crate) fn collect_input_handles(
                         node_plan.node_id
                     )));
                 }
+                if let Some(receipt) = attested.receipt {
+                    data_view_receipts.insert(validation_key, receipt);
+                }
             }
         }
     }
     Ok(CollectedInputs {
         handles: inputs,
         data_views,
+        data_view_receipts,
         prediction_inputs,
         skip_node: false,
     })

@@ -6964,6 +6964,7 @@ mod tests {
             branch_path: Vec::new(),
             input_handles: BTreeMap::new(),
             data_views: BTreeMap::new(),
+            data_view_receipts: BTreeMap::new(),
             prediction_inputs: BTreeMap::new(),
             prediction_feature_matrix: None,
             prediction_feature_off_fold_matrix: None,

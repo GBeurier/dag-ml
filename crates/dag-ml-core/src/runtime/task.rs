@@ -79,6 +79,11 @@ pub struct NodeTask {
     pub input_handles: BTreeMap<String, HandleRef>,
     #[serde(default)]
     pub data_views: BTreeMap<String, DataProviderViewSpec>,
+    /// Optional host feature-content receipts for scheduler-selected views.
+    /// Legacy fixed providers emit none; dynamic providers must pair these
+    /// with evidence of the buffers actually consumed before fitting.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub data_view_receipts: BTreeMap<String, DataViewReceipt>,
     #[serde(default)]
     pub prediction_inputs: BTreeMap<String, PredictionInputSpec>,
     /// Native, sample-keyed prediction features for a PredictionJoin Data
@@ -112,6 +117,40 @@ pub struct NodeTask {
 }
 
 impl NodeTask {
+    pub fn validate_data_view_receipts(&self) -> Result<()> {
+        for (key, receipt) in &self.data_view_receipts {
+            let view = self.data_views.get(key).ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "task for node `{}` has a receipt without data view `{key}`",
+                    self.node_plan.node_id
+                ))
+            })?;
+            if self.input_handles.get(key) != Some(&receipt.handle)
+                || view.sample_ids.as_ref() != Some(&receipt.sample_ids)
+            {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "task for node `{}` has a data view receipt unrelated to input `{key}`",
+                    self.node_plan.node_id
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Dynamic feature receipts cannot authorize fitting until the controller
+    /// returns evidence tied to the exact buffers it consumed.
+    pub fn validate_dynamic_view_training_gate(&self) -> Result<()> {
+        self.validate_data_view_receipts()?;
+        if matches!(self.phase, Phase::FitCv | Phase::Refit) && !self.data_view_receipts.is_empty()
+        {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "node `{}` cannot fit a dynamic data view before native consumption attestation is available",
+                self.node_plan.node_id
+            )));
+        }
+        Ok(())
+    }
+
     pub fn required_loss_attestations_for(
         node_plan: &NodePlan,
         phase: Phase,
@@ -896,6 +935,7 @@ pub struct NodeResult {
 
 impl NodeResult {
     pub fn validate_for_task(&self, task: &NodeTask) -> Result<()> {
+        task.validate_dynamic_view_training_gate()?;
         if self.node_id != task.node_plan.node_id {
             return Err(DagMlError::RuntimeValidation(format!(
                 "task for `{}` returned result for `{}`",

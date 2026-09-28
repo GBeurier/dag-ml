@@ -2376,6 +2376,7 @@ fn node_task_result_fixture() -> (NodeTask, NodeResult) {
         branch_path: Vec::new(),
         input_handles: BTreeMap::new(),
         data_views: BTreeMap::new(),
+        data_view_receipts: BTreeMap::new(),
         prediction_inputs: BTreeMap::new(),
         artifact_inputs: BTreeMap::new(),
         required_loss_attestations: Vec::new(),

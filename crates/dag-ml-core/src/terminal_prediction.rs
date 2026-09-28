@@ -586,6 +586,13 @@ impl RuntimeDataProvider for BorrowedRuntimeDataProvider<'_> {
         self.0.make_view(request)
     }
 
+    fn make_view_attested(
+        &self,
+        request: &crate::runtime::DataViewRequest,
+    ) -> Result<crate::runtime::AttestedDataView> {
+        self.0.make_view_attested(request)
+    }
+
     fn training_data_identity(
         &self,
         binding: &crate::data::DataBinding,
@@ -654,6 +661,13 @@ impl<P: RuntimeDataProvider> RuntimeDataProvider
         request: &crate::runtime::DataViewRequest,
     ) -> Result<crate::runtime::HandleRef> {
         self.inner.make_view(request)
+    }
+
+    fn make_view_attested(
+        &self,
+        request: &crate::runtime::DataViewRequest,
+    ) -> Result<crate::runtime::AttestedDataView> {
+        self.inner.make_view_attested(request)
     }
 
     fn training_data_identity(

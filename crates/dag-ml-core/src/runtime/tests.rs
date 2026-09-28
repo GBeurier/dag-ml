@@ -7023,6 +7023,7 @@ fn fit_influence_validation_task(fit_influence: FitInfluenceTask) -> NodeTask {
         branch_path: Vec::new(),
         input_handles: BTreeMap::new(),
         data_views: BTreeMap::new(),
+        data_view_receipts: BTreeMap::new(),
         prediction_inputs: BTreeMap::new(),
         prediction_feature_matrix: None,
         prediction_feature_off_fold_matrix: None,
@@ -7031,6 +7032,61 @@ fn fit_influence_validation_task(fit_influence: FitInfluenceTask) -> NodeTask {
         fit_influence,
         seed: Some(7),
     }
+}
+
+#[test]
+fn node_task_receipt_round_trips_and_refuses_an_unrelated_view() {
+    let mut task = fit_influence_validation_task(FitInfluenceTask::default());
+    let key = "data:x".to_string();
+    let sample_id = SampleId::new("sample:receipt").unwrap();
+    let handle = HandleRef {
+        handle: 82,
+        kind: HandleKind::DataView,
+        owner_controller: ControllerId::new("controller:data.provider").unwrap(),
+    };
+    task.input_handles.insert(key.clone(), handle.clone());
+    task.data_views.insert(
+        key.clone(),
+        DataProviderViewSpec {
+            sample_ids: Some(vec![sample_id.clone()]),
+            partition: DataRequestPartition::FoldTrain,
+            fold_id: task.fold_id.clone(),
+            source_ids: None,
+            columns: None,
+            include_augmented: false,
+            include_excluded: false,
+            branch_view: None,
+            extra: BTreeMap::new(),
+        },
+    );
+    task.data_view_receipts.insert(
+        key.clone(),
+        DataViewReceipt {
+            handle,
+            view_key: format!("view:v1:{}", "a".repeat(64)),
+            sample_ids: vec![sample_id],
+            schema_fingerprint: "b".repeat(64),
+            content_fingerprint: "c".repeat(64),
+        },
+    );
+    task.validate_data_view_receipts().unwrap();
+    let encoded = serde_json::to_value(&task).unwrap();
+    assert!(encoded["data_view_receipts"]["data:x"].is_object());
+    let decoded: NodeTask = serde_json::from_value(encoded).unwrap();
+    assert_eq!(decoded, task);
+    assert!(task
+        .validate_dynamic_view_training_gate()
+        .unwrap_err()
+        .to_string()
+        .contains("before native consumption attestation"));
+
+    task.data_views.get_mut(&key).unwrap().sample_ids =
+        Some(vec![SampleId::new("sample:other").unwrap()]);
+    assert!(task
+        .validate_data_view_receipts()
+        .unwrap_err()
+        .to_string()
+        .contains("unrelated to input"));
 }
 
 #[test]
@@ -7294,6 +7350,7 @@ fn node_result_validation_rejects_external_conformance_mismatches() {
         branch_path: Vec::new(),
         input_handles: BTreeMap::new(),
         data_views: BTreeMap::new(),
+        data_view_receipts: BTreeMap::new(),
         prediction_inputs: BTreeMap::new(),
         prediction_feature_matrix: None,
         prediction_feature_off_fold_matrix: None,
@@ -7764,6 +7821,7 @@ fn node_result_validation_checks_shape_fingerprints_and_feature_deltas() {
         branch_path: Vec::new(),
         input_handles: BTreeMap::new(),
         data_views: BTreeMap::new(),
+        data_view_receipts: BTreeMap::new(),
         prediction_inputs: BTreeMap::new(),
         prediction_feature_matrix: None,
         prediction_feature_off_fold_matrix: None,
@@ -7858,6 +7916,7 @@ fn node_result_validation_rejects_bad_artifact_handles() {
         branch_path: Vec::new(),
         input_handles: BTreeMap::new(),
         data_views: BTreeMap::new(),
+        data_view_receipts: BTreeMap::new(),
         prediction_inputs: BTreeMap::new(),
         prediction_feature_matrix: None,
         prediction_feature_off_fold_matrix: None,
@@ -8107,6 +8166,7 @@ fn node_result_validation_rejects_predictions_outside_validation_view() {
                 extra: BTreeMap::new(),
             },
         )]),
+        data_view_receipts: BTreeMap::new(),
         prediction_inputs: BTreeMap::new(),
         prediction_feature_matrix: None,
         prediction_feature_off_fold_matrix: None,
@@ -8229,6 +8289,7 @@ fn node_result_validation_rejects_aggregated_units_outside_validation_view() {
                 extra: BTreeMap::new(),
             },
         )]),
+        data_view_receipts: BTreeMap::new(),
         prediction_inputs: BTreeMap::new(),
         prediction_feature_matrix: None,
         prediction_feature_off_fold_matrix: None,
@@ -8371,6 +8432,7 @@ fn controller_emitted_aggregated_block_must_match_policy_level() {
         branch_path: Vec::new(),
         input_handles: BTreeMap::new(),
         data_views: BTreeMap::new(),
+        data_view_receipts: BTreeMap::new(),
         prediction_inputs: BTreeMap::new(),
         prediction_feature_matrix: None,
         prediction_feature_off_fold_matrix: None,
@@ -8686,6 +8748,24 @@ fn predict_uses_attested_cohort_without_resolving_cv_relations() {
             })
         }
 
+        fn make_view_attested(&self, request: &DataViewRequest) -> Result<AttestedDataView> {
+            let handle = self.make_view(request)?;
+            Ok(AttestedDataView {
+                receipt: Some(DataViewReceipt {
+                    handle: handle.clone(),
+                    view_key: request.view_key.clone(),
+                    sample_ids: request
+                        .view
+                        .sample_ids
+                        .clone()
+                        .expect("explicit PREDICT IDs"),
+                    schema_fingerprint: "a".repeat(64),
+                    content_fingerprint: "b".repeat(64),
+                }),
+                handle,
+            })
+        }
+
         fn coordinator_relations(
             &self,
             _binding: &crate::data::DataBinding,
@@ -8773,6 +8853,11 @@ fn predict_uses_attested_cohort_without_resolving_cv_relations() {
     assert_eq!(provider.materialize_calls.get(), 1);
     assert_eq!(provider.make_view_calls.get(), 1);
     assert_eq!(provider.relation_calls.get(), 0);
+    let receipt = &collected.data_view_receipts["data:x"];
+    assert_eq!(receipt.handle, collected.handles["data:x"]);
+    assert_eq!(receipt.sample_ids, vec![held_out.clone()]);
+    assert!(receipt.view_key.starts_with("view:v1:"));
+    assert_eq!(receipt.content_fingerprint, "b".repeat(64));
     assert_eq!(
         collected.data_views["data:x"].sample_ids,
         Some(vec![held_out])
