@@ -377,6 +377,11 @@ pub struct AttestedDataView {
 pub trait RuntimeDataProvider {
     fn materialize(&self, request: &DataMaterializationRequest) -> Result<HandleRef>;
     fn make_view(&self, request: &DataViewRequest) -> Result<HandleRef>;
+    /// Opt in before materialization so generated-view cohort guards can run
+    /// without changing the historical static REFIT and FIT_CV paths.
+    fn generated_views_enabled(&self) -> bool {
+        false
+    }
     /// Atomically return a view handle and its feature-content receipt.
     /// Existing fixed providers retain the handle-only contract by default.
     fn make_view_attested(&self, request: &DataViewRequest) -> Result<AttestedDataView> {
@@ -420,7 +425,7 @@ pub trait RuntimeDataProvider {
         Ok(None)
     }
 
-    /// Optional separately attested external-test cohort for a non-fit FIT_CV companion view.
+    /// Optional separately attested external-test cohort for a non-fit FIT_CV or REFIT companion view.
     fn cv_test_cohort(&self, _binding: &DataBinding) -> Result<Option<crate::data::PredictCohort>> {
         Ok(None)
     }

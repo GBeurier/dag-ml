@@ -2,6 +2,13 @@
 use super::*;
 use crate::TrainingLossRoleReference;
 
+fn valid_sha256_fingerprint(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PredictionInputSpec {
     pub producer_node: NodeId,
@@ -166,22 +173,77 @@ impl NodeTask {
                     self.node_plan.node_id
                 )));
             }
+            if receipt.sample_ids.is_empty()
+                || receipt.sample_ids.iter().collect::<BTreeSet<_>>().len()
+                    != receipt.sample_ids.len()
+                || !valid_sha256_fingerprint(&receipt.schema_fingerprint)
+                || !valid_sha256_fingerprint(&receipt.content_fingerprint)
+            {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "task for node `{}` has invalid ordered IDs or fingerprints in data view receipt `{key}`",
+                    self.node_plan.node_id
+                )));
+            }
         }
         Ok(())
     }
 
-    /// Dynamic feature receipts cannot authorize fitting until the controller
-    /// returns evidence tied to the exact buffers it consumed.
+    /// Permit only supported model phases to reach a controller with dynamic views.
+    /// Admission still depends on the returned NodeResult's consumption proof.
     pub fn validate_dynamic_view_training_gate(&self) -> Result<()> {
-        self.validate_data_view_receipts()?;
-        if matches!(self.phase, Phase::FitCv | Phase::Refit) && !self.data_view_receipts.is_empty()
-        {
+        if self.data_view_receipts.is_empty() {
+            return Ok(());
+        }
+        if self.node_plan.kind != NodeKind::Model {
             return Err(DagMlError::RuntimeValidation(format!(
-                "node `{}` cannot fit a dynamic data view before native consumption attestation is available",
+                "node `{}` cannot execute a dynamic data view outside a model task",
                 self.node_plan.node_id
             )));
         }
-        Ok(())
+        if !matches!(self.phase, Phase::FitCv | Phase::Refit | Phase::Predict) {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "node `{}` has a dynamic data view in unsupported model phase {:?}",
+                self.node_plan.node_id, self.phase
+            )));
+        }
+        // A partially attested task could use an unreceipted sibling for
+        // fitting or prediction. Check every view before invoking the host.
+        for (key, view) in &self.data_views {
+            let receipt = self.data_view_receipts.get(key).ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "node `{}` has no receipt for data view `{key}` in dynamic model execution",
+                    self.node_plan.node_id
+                ))
+            })?;
+            let ordered_ids = view.sample_ids.as_ref().ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "node `{}` has no ordered IDs for dynamic data view `{key}`",
+                    self.node_plan.node_id
+                ))
+            })?;
+            if ordered_ids != &receipt.sample_ids {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "node `{}` has ordered IDs different from the receipt for dynamic data view `{key}`",
+                    self.node_plan.node_id
+                )));
+            }
+            if !matches!(
+                (self.phase, view.partition),
+                (Phase::FitCv, DataRequestPartition::FoldTrain)
+                    | (Phase::FitCv, DataRequestPartition::FoldValidation)
+                    | (
+                        Phase::FitCv | Phase::Refit | Phase::Predict,
+                        DataRequestPartition::Predict
+                    )
+                    | (Phase::Refit, DataRequestPartition::FullTrain)
+            ) {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "node `{}` has unsupported dynamic model view `{key}` in phase {:?} with partition {:?}",
+                    self.node_plan.node_id, self.phase, view.partition
+                )));
+            }
+        }
+        self.validate_data_view_receipts()
     }
 
     pub fn required_loss_attestations_for(
@@ -972,35 +1034,59 @@ pub struct NodeResult {
 }
 
 impl NodeResult {
-    /// Require a call-boundary fit witness for every dynamic training view of
-    /// a model task. This complements the host read ledger; it does not replace
-    /// the separate dynamic-view gate or make base-cohort identity sufficient.
+    /// Require a full, ordered read and model call for every dynamic fit or
+    /// prediction view. These are host-reported call-boundary facts, not native
+    /// inspection of the estimator's internal consumption.
     pub fn validate_required_model_calls_for_task(&self, task: &NodeTask) -> Result<()> {
-        if task.node_plan.kind != NodeKind::Model {
+        if task.node_plan.kind != NodeKind::Model || task.data_view_receipts.is_empty() {
             return Ok(());
         }
-        let train_partition = match task.phase {
-            Phase::FitCv => DataRequestPartition::FoldTrain,
-            Phase::Refit => DataRequestPartition::FullTrain,
-            _ => return Ok(()),
-        };
         for (key, view) in &task.data_views {
-            if view.partition != train_partition || !task.data_view_receipts.contains_key(key) {
-                continue;
+            let (operation, purpose) = match (task.phase, view.partition) {
+                (Phase::FitCv, DataRequestPartition::FoldTrain)
+                | (Phase::Refit, DataRequestPartition::FullTrain) => {
+                    (ModelInputOperation::Fit, "training")
+                }
+                (Phase::FitCv, DataRequestPartition::FoldValidation)
+                | (Phase::FitCv | Phase::Refit | Phase::Predict, DataRequestPartition::Predict) => {
+                    (ModelInputOperation::Predict, "prediction")
+                }
+                _ => {
+                    return Err(DagMlError::RuntimeValidation(format!(
+                        "node `{}` has unsupported dynamic model view `{key}` in phase {:?} with partition {:?}",
+                        task.node_plan.node_id, task.phase, view.partition
+                    )))
+                }
+            };
+            if !task.data_view_receipts.contains_key(key) {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "node `{}` has no receipt for dynamic {purpose} view `{key}`",
+                    task.node_plan.node_id
+                )));
             }
+            let expected_ids = view.sample_ids.as_ref().ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "node `{}` has no ordered IDs for dynamic {purpose} view `{key}`",
+                    task.node_plan.node_id
+                ))
+            })?;
             let witnessed = self
                 .consumed_data_views
                 .get(key)
                 .is_some_and(|consumption| {
                     consumption
-                        .model_calls
+                        .read_batches
                         .iter()
-                        .any(|call| call.operation == ModelInputOperation::Fit)
+                        .any(|batch| batch == expected_ids)
+                        && consumption.model_calls.iter().any(|call| {
+                            call.operation == operation && &call.sample_ids == expected_ids
+                        })
                 });
             if !witnessed {
                 return Err(DagMlError::RuntimeValidation(format!(
-                    "node `{}` has no fit call bound to dynamic training view `{key}`",
-                    task.node_plan.node_id
+                    "node `{}` has no full ordered read and {} call bound to dynamic {purpose} view `{key}`",
+                    task.node_plan.node_id,
+                    if operation == ModelInputOperation::Fit { "fit" } else { "predict" }
                 )));
             }
         }
@@ -1062,17 +1148,11 @@ impl NodeResult {
                         task.node_plan.node_id
                     )));
                 }
-                let valid_hash = |value: &str| {
-                    value.len() == 64
-                        && value
-                            .bytes()
-                            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-                };
-                if !valid_hash(&call.input_fingerprint)
+                if !valid_sha256_fingerprint(&call.input_fingerprint)
                     || call
                         .target_fingerprint
                         .as_deref()
-                        .is_some_and(|value| !valid_hash(value))
+                        .is_some_and(|value| !valid_sha256_fingerprint(value))
                 {
                     return Err(DagMlError::RuntimeValidation(format!(
                         "node `{}` reported a model call on view `{key}` without valid SHA-256 digests",
