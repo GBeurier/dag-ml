@@ -7086,11 +7086,129 @@ fn node_task_receipt_round_trips_and_refuses_an_unrelated_view() {
     assert!(encoded["data_view_receipts"]["data:x"].is_object());
     let decoded: NodeTask = serde_json::from_value(encoded).unwrap();
     assert_eq!(decoded, task);
+    task.validate_dynamic_view_training_gate().unwrap();
+    task.node_plan.kind = NodeKind::Transform;
     assert!(task
         .validate_dynamic_view_training_gate()
         .unwrap_err()
         .to_string()
-        .contains("before native consumption attestation"));
+        .contains("outside a model task"));
+    let mut non_model_predict = task.clone();
+    non_model_predict.phase = Phase::Predict;
+    non_model_predict.fold_id = None;
+    let predict_view = non_model_predict.data_views.get_mut(&key).unwrap();
+    predict_view.partition = DataRequestPartition::Predict;
+    predict_view.fold_id = None;
+    assert!(non_model_predict
+        .validate_dynamic_view_training_gate()
+        .unwrap_err()
+        .to_string()
+        .contains("outside a model task"));
+    task.node_plan.kind = NodeKind::Model;
+    let mut unsupported_phase = task.clone();
+    unsupported_phase.phase = Phase::Explain;
+    assert!(unsupported_phase
+        .validate_dynamic_view_training_gate()
+        .unwrap_err()
+        .to_string()
+        .contains("unsupported model phase"));
+
+    let mut unsupported_partition = task.clone();
+    unsupported_partition
+        .data_views
+        .get_mut(&key)
+        .unwrap()
+        .partition = DataRequestPartition::FullTrain;
+    assert!(unsupported_partition
+        .validate_dynamic_view_training_gate()
+        .unwrap_err()
+        .to_string()
+        .contains("unsupported dynamic model view"));
+
+    let mut missing_ids = task.clone();
+    missing_ids.data_views.get_mut(&key).unwrap().sample_ids = None;
+    assert!(missing_ids
+        .validate_dynamic_view_training_gate()
+        .unwrap_err()
+        .to_string()
+        .contains("no ordered IDs for dynamic data view"));
+
+    let mut reordered_ids = task.clone();
+    let second_id = SampleId::new("sample:receipt:second").unwrap();
+    reordered_ids
+        .data_views
+        .get_mut(&key)
+        .unwrap()
+        .sample_ids
+        .as_mut()
+        .unwrap()
+        .push(second_id.clone());
+    reordered_ids
+        .data_view_receipts
+        .get_mut(&key)
+        .unwrap()
+        .sample_ids
+        .push(second_id);
+    reordered_ids.validate_dynamic_view_training_gate().unwrap();
+    reordered_ids
+        .data_views
+        .get_mut(&key)
+        .unwrap()
+        .sample_ids
+        .as_mut()
+        .unwrap()
+        .reverse();
+    assert!(reordered_ids
+        .validate_dynamic_view_training_gate()
+        .unwrap_err()
+        .to_string()
+        .contains("ordered IDs different from the receipt"));
+
+    for (missing_key, partition) in [
+        ("data:y", DataRequestPartition::FoldTrain),
+        ("data:x:validation", DataRequestPartition::FoldValidation),
+    ] {
+        let mut partial = task.clone();
+        let mut sibling_view = partial.data_views.get(&key).unwrap().clone();
+        sibling_view.partition = partition;
+        let sibling_handle = HandleRef {
+            handle: 83,
+            kind: HandleKind::DataView,
+            owner_controller: ControllerId::new("controller:data.provider").unwrap(),
+        };
+        partial
+            .data_views
+            .insert(missing_key.to_string(), sibling_view);
+        partial
+            .input_handles
+            .insert(missing_key.to_string(), sibling_handle.clone());
+        assert!(partial
+            .validate_dynamic_view_training_gate()
+            .unwrap_err()
+            .to_string()
+            .contains(&format!("no receipt for data view `{missing_key}`")));
+        let mut sibling_receipt = partial.data_view_receipts.get(&key).unwrap().clone();
+        sibling_receipt.handle = sibling_handle;
+        sibling_receipt.view_key = format!("view:v1:{}", "d".repeat(64));
+        partial
+            .data_view_receipts
+            .insert(missing_key.to_string(), sibling_receipt);
+        partial.validate_dynamic_view_training_gate().unwrap();
+    }
+
+    task.data_view_receipts
+        .get_mut(&key)
+        .unwrap()
+        .content_fingerprint = "not-sha256".to_string();
+    assert!(task
+        .validate_data_view_receipts()
+        .unwrap_err()
+        .to_string()
+        .contains("invalid ordered IDs or fingerprints"));
+    task.data_view_receipts
+        .get_mut(&key)
+        .unwrap()
+        .content_fingerprint = "c".repeat(64);
 
     task.data_views.get_mut(&key).unwrap().sample_ids =
         Some(vec![SampleId::new("sample:other").unwrap()]);
@@ -7153,13 +7271,10 @@ fn node_result_consumption_binds_a_successful_read_to_its_native_receipt() {
             key.clone(),
             DataViewConsumption {
                 receipt: receipt.clone(),
-                read_batches: vec![
-                    vec![sample_ids[0].clone(), sample_ids[2].clone()],
-                    vec![sample_ids[2].clone(), sample_ids[0].clone()],
-                ],
+                read_batches: vec![sample_ids.clone()],
                 model_calls: vec![ModelInputCall {
                     operation: ModelInputOperation::Fit,
-                    sample_ids: vec![sample_ids[0].clone(), sample_ids[2].clone()],
+                    sample_ids: sample_ids.clone(),
                     input_fingerprint: "a".repeat(64),
                     target_fingerprint: Some("b".repeat(64)),
                 }],
@@ -7193,10 +7308,149 @@ fn node_result_consumption_binds_a_successful_read_to_its_native_receipt() {
     result
         .validate_required_model_calls_for_task(&task)
         .unwrap();
+    result.validate_for_task(&task).unwrap();
+
+    let mut refit_task = task.clone();
+    refit_task.phase = Phase::Refit;
+    refit_task.fold_id = None;
+    let refit_view = refit_task.data_views.get_mut(&key).unwrap();
+    refit_view.partition = DataRequestPartition::FullTrain;
+    refit_view.fold_id = None;
+    let mut refit_result = result.clone();
+    refit_result.lineage.phase = Phase::Refit;
+    refit_result.lineage.fold_id = None;
+    refit_task.validate_dynamic_view_training_gate().unwrap();
+    refit_result.validate_for_task(&refit_task).unwrap();
+
+    let validation_key = "data:x:validation".to_string();
+    let validation_ids = ["sample:validation:a", "sample:validation:b"]
+        .into_iter()
+        .map(|id| SampleId::new(id).unwrap())
+        .collect::<Vec<_>>();
+    let validation_handle = HandleRef {
+        handle: 83,
+        kind: HandleKind::DataView,
+        owner_controller: ControllerId::new("controller:data.provider").unwrap(),
+    };
+    let validation_receipt = DataViewReceipt {
+        handle: validation_handle.clone(),
+        view_key: format!("view:v1:{}", "d".repeat(64)),
+        sample_ids: validation_ids.clone(),
+        schema_fingerprint: "e".repeat(64),
+        content_fingerprint: "f".repeat(64),
+    };
+    let mut cv_prediction_task = task.clone();
+    let mut validation_view = cv_prediction_task.data_views.get(&key).unwrap().clone();
+    validation_view.partition = DataRequestPartition::FoldValidation;
+    validation_view.sample_ids = Some(validation_ids.clone());
+    cv_prediction_task
+        .input_handles
+        .insert(validation_key.clone(), validation_handle);
+    cv_prediction_task
+        .data_views
+        .insert(validation_key.clone(), validation_view);
+    cv_prediction_task
+        .data_view_receipts
+        .insert(validation_key.clone(), validation_receipt.clone());
+    let mut cv_prediction_result = result.clone();
+    let missing_predict = cv_prediction_result
+        .validate_for_task(&cv_prediction_task)
+        .unwrap_err();
+    assert!(
+        missing_predict
+            .to_string()
+            .contains("no full ordered read and predict call"),
+        "{missing_predict}"
+    );
+    cv_prediction_result.consumed_data_views.insert(
+        validation_key.clone(),
+        DataViewConsumption {
+            receipt: validation_receipt,
+            read_batches: vec![validation_ids.clone()],
+            model_calls: vec![ModelInputCall {
+                operation: ModelInputOperation::Predict,
+                sample_ids: validation_ids.clone(),
+                input_fingerprint: "a".repeat(64),
+                target_fingerprint: None,
+            }],
+        },
+    );
+    cv_prediction_result
+        .validate_for_task(&cv_prediction_task)
+        .unwrap();
+    cv_prediction_result
+        .consumed_data_views
+        .get_mut(&validation_key)
+        .unwrap()
+        .read_batches = vec![vec![validation_ids[0].clone()]];
+    assert!(cv_prediction_result
+        .validate_for_task(&cv_prediction_task)
+        .unwrap_err()
+        .to_string()
+        .contains("outside its ordered reads"));
+    let validation_consumption = cv_prediction_result
+        .consumed_data_views
+        .get_mut(&validation_key)
+        .unwrap();
+    validation_consumption.read_batches = vec![validation_ids.clone()];
+    validation_consumption.model_calls[0].sample_ids = vec![validation_ids[0].clone()];
+    assert!(cv_prediction_result
+        .validate_for_task(&cv_prediction_task)
+        .unwrap_err()
+        .to_string()
+        .contains("no full ordered read and predict call"));
+    let validation_consumption = cv_prediction_result
+        .consumed_data_views
+        .get_mut(&validation_key)
+        .unwrap();
+    validation_consumption.model_calls[0].sample_ids = validation_ids.clone();
+    validation_consumption.model_calls[0].operation = ModelInputOperation::PredictProba;
+    assert!(cv_prediction_result
+        .validate_for_task(&cv_prediction_task)
+        .unwrap_err()
+        .to_string()
+        .contains("no full ordered read and predict call"));
+
+    let mut predict_task = task.clone();
+    predict_task.phase = Phase::Predict;
+    predict_task.fold_id = None;
+    let predict_view = predict_task.data_views.get_mut(&key).unwrap();
+    predict_view.partition = DataRequestPartition::Predict;
+    predict_view.fold_id = None;
+    let mut predict_result = result.clone();
+    predict_result.lineage.phase = Phase::Predict;
+    predict_result.lineage.fold_id = None;
+    let predict_consumption = predict_result.consumed_data_views.get_mut(&key).unwrap();
+    predict_consumption.model_calls[0].operation = ModelInputOperation::Predict;
+    predict_consumption.model_calls[0].target_fingerprint = None;
+    predict_result.validate_for_task(&predict_task).unwrap();
+    predict_task.data_views.get_mut(&key).unwrap().partition = DataRequestPartition::FoldValidation;
+    assert!(predict_task
+        .validate_dynamic_view_training_gate()
+        .unwrap_err()
+        .to_string()
+        .contains("unsupported dynamic model view"));
+    assert!(predict_result
+        .validate_for_task(&predict_task)
+        .unwrap_err()
+        .to_string()
+        .contains("unsupported dynamic model view"));
+    predict_task.data_views.get_mut(&key).unwrap().partition = DataRequestPartition::Predict;
+    predict_result
+        .consumed_data_views
+        .get_mut(&key)
+        .unwrap()
+        .model_calls
+        .clear();
+    assert!(predict_result
+        .validate_for_task(&predict_task)
+        .unwrap_err()
+        .to_string()
+        .contains("no full ordered read and predict call"));
     let encoded = serde_json::to_value(&result).unwrap();
     assert_eq!(
         encoded["consumed_data_views"][&key]["read_batches"],
-        serde_json::json!([["sample:a", "sample:c"], ["sample:c", "sample:a"]])
+        serde_json::json!([["sample:a", "sample:b", "sample:c"]])
     );
     assert_eq!(
         encoded["consumed_data_views"][&key]["model_calls"][0]["operation"],
@@ -7217,29 +7471,63 @@ fn node_result_consumption_binds_a_successful_read_to_its_native_receipt() {
         .validate_required_model_calls_for_task(&task)
         .unwrap_err()
         .to_string()
-        .contains("no fit call bound to dynamic training view"));
+        .contains("no full ordered read and fit call bound to dynamic training view"));
     result.consumed_data_views.clear();
     assert!(result
         .validate_required_model_calls_for_task(&task)
         .unwrap_err()
         .to_string()
-        .contains("no fit call bound to dynamic training view"));
+        .contains("no full ordered read and fit call bound to dynamic training view"));
     result.consumed_data_views.insert(
         key.clone(),
         DataViewConsumption {
             receipt: receipt.clone(),
-            read_batches: vec![vec![sample_ids[0].clone(), sample_ids[2].clone()]],
+            read_batches: vec![sample_ids.clone()],
             model_calls: vec![ModelInputCall {
                 operation: ModelInputOperation::Fit,
-                sample_ids: vec![sample_ids[0].clone(), sample_ids[2].clone()],
+                sample_ids: sample_ids.clone(),
                 input_fingerprint: "a".repeat(64),
                 target_fingerprint: Some("b".repeat(64)),
             }],
         },
     );
 
+    result
+        .consumed_data_views
+        .get_mut(&key)
+        .unwrap()
+        .read_batches = vec![vec![sample_ids[0].clone(), sample_ids[2].clone()]];
+    assert!(result
+        .validate_for_task(&task)
+        .unwrap_err()
+        .to_string()
+        .contains("outside its ordered reads"));
+    result
+        .consumed_data_views
+        .get_mut(&key)
+        .unwrap()
+        .read_batches = vec![sample_ids.clone()];
+    result
+        .consumed_data_views
+        .get_mut(&key)
+        .unwrap()
+        .model_calls[0]
+        .sample_ids = vec![sample_ids[0].clone(), sample_ids[2].clone()];
+    assert!(result
+        .validate_for_task(&task)
+        .unwrap_err()
+        .to_string()
+        .contains("no full ordered read and fit call"));
+    result
+        .consumed_data_views
+        .get_mut(&key)
+        .unwrap()
+        .model_calls[0]
+        .sample_ids = sample_ids.clone();
+    result.validate_for_task(&task).unwrap();
+
     let consumed = result.consumed_data_views.get_mut(&key).unwrap();
-    consumed.model_calls[0].sample_ids = vec![sample_ids[0].clone(), sample_ids[1].clone()];
+    consumed.model_calls[0].sample_ids = vec![sample_ids[1].clone(), sample_ids[0].clone()];
     assert!(result
         .validate_consumed_data_views_for_task(&task)
         .unwrap_err()
@@ -9122,6 +9410,483 @@ fn predict_uses_attested_cohort_without_resolving_cv_relations() {
         collected.data_views["data:x"].sample_ids,
         Some(vec![held_out])
     );
+}
+
+#[test]
+fn refit_issues_an_attested_external_test_companion_view() {
+    struct RefitTestProvider {
+        owner: ControllerId,
+        train_relations: SampleRelationSet,
+        omit_relations: bool,
+        generated: bool,
+        cohort: Option<PredictCohort>,
+        refit_ids: Option<Vec<SampleId>>,
+        refit_id_calls: std::cell::Cell<usize>,
+        materializations: std::cell::RefCell<Vec<DataMaterializationRequest>>,
+        views: std::cell::RefCell<Vec<DataViewRequest>>,
+    }
+
+    impl RuntimeDataProvider for RefitTestProvider {
+        fn generated_views_enabled(&self) -> bool {
+            self.generated
+        }
+
+        fn materialize(&self, request: &DataMaterializationRequest) -> Result<HandleRef> {
+            self.materializations.borrow_mut().push(request.clone());
+            Ok(HandleRef {
+                handle: if request.predict_cohort.is_some() {
+                    91
+                } else {
+                    90
+                },
+                kind: HandleKind::Data,
+                owner_controller: self.owner.clone(),
+            })
+        }
+
+        fn make_view(&self, request: &DataViewRequest) -> Result<HandleRef> {
+            Ok(HandleRef {
+                handle: if request.view.partition == DataRequestPartition::Predict {
+                    93
+                } else {
+                    92
+                },
+                kind: HandleKind::DataView,
+                owner_controller: self.owner.clone(),
+            })
+        }
+
+        fn make_view_attested(&self, request: &DataViewRequest) -> Result<AttestedDataView> {
+            self.views.borrow_mut().push(request.clone());
+            let handle = self.make_view(request)?;
+            Ok(AttestedDataView {
+                receipt: self.generated.then(|| DataViewReceipt {
+                    handle: handle.clone(),
+                    view_key: request.view_key.clone(),
+                    sample_ids: request.view.sample_ids.clone().expect("selected IDs"),
+                    schema_fingerprint: "a".repeat(64),
+                    content_fingerprint: "b".repeat(64),
+                }),
+                handle,
+            })
+        }
+
+        fn coordinator_relations(
+            &self,
+            _binding: &DataBinding,
+        ) -> Result<Option<SampleRelationSet>> {
+            Ok((!self.omit_relations).then(|| self.train_relations.clone()))
+        }
+
+        fn cv_test_cohort(&self, _binding: &DataBinding) -> Result<Option<PredictCohort>> {
+            Ok(self.cohort.clone())
+        }
+
+        fn refit_sample_ids(&self, _binding: &DataBinding) -> Result<Option<Vec<SampleId>>> {
+            let calls = self.refit_id_calls.get() + 1;
+            self.refit_id_calls.set(calls);
+            if calls > 1 {
+                return Ok(self
+                    .cohort
+                    .as_ref()
+                    .map(|cohort| cohort.physical_sample_ids.clone()));
+            }
+            Ok(self.refit_ids.clone())
+        }
+    }
+
+    let model_id = NodeId::new("model:pls").unwrap();
+    let mut campaign = oof_edge_campaign();
+    campaign.data_bindings = BTreeMap::from([(model_id.clone(), vec![data_binding(&model_id)])]);
+    let plan = build_execution_plan(
+        "plan:refit.external.test.view",
+        simple_graph(),
+        campaign,
+        &manifests(),
+    )
+    .unwrap();
+    let training_ids = plan.fold_set.as_ref().unwrap().sample_ids.clone();
+    let train_relations = SampleRelationSet {
+        records: training_ids
+            .iter()
+            .enumerate()
+            .map(|(index, id)| {
+                SampleRelation::new(
+                    ObservationId::new(format!("obs:train:{index}")).unwrap(),
+                    id.clone(),
+                )
+            })
+            .collect(),
+    };
+    let test_id = SampleId::new("external:test").unwrap();
+    let test_relations = SampleRelationSet {
+        records: vec![SampleRelation::new(
+            ObservationId::new("obs:external.test").unwrap(),
+            test_id.clone(),
+        )],
+    };
+    let mut cohort = PredictCohort {
+        role: PredictCohortRole::ExternalTest,
+        physical_sample_ids: vec![test_id.clone()],
+        origin_sample_ids: vec![test_id.clone()],
+        target_names: vec!["y".to_string()],
+        relation_fingerprint: test_relations.fingerprint().unwrap(),
+        relations: test_relations,
+        data_content_fingerprint: "c".repeat(64),
+        target_content_fingerprint: Some("d".repeat(64)),
+        cohort_fingerprint: String::new(),
+    };
+    cohort.cohort_fingerprint = cohort.fingerprint().unwrap();
+    cohort
+        .validate_against_cv_fold_set(plan.fold_set.as_ref().unwrap())
+        .unwrap();
+    let provider = RefitTestProvider {
+        owner: ControllerId::new("controller:refit.test.provider").unwrap(),
+        train_relations,
+        omit_relations: false,
+        generated: true,
+        cohort: Some(cohort.clone()),
+        refit_ids: None,
+        refit_id_calls: std::cell::Cell::new(0),
+        materializations: std::cell::RefCell::new(Vec::new()),
+        views: std::cell::RefCell::new(Vec::new()),
+    };
+    let ctx = RunContext::new(
+        RunId::new("run:refit.external.test.view").unwrap(),
+        Some(11),
+    );
+    let scope = PhaseScope {
+        phase: Phase::Refit,
+        variant_id: None,
+        variant: None,
+        fold_id: None,
+        seed_root: Some(11),
+    };
+    let collected = collect_input_handles(
+        &plan,
+        plan.node_plans.get(&model_id).unwrap(),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &PhaseScopeResources {
+            data_provider: Some(&provider),
+            ..Default::default()
+        },
+        &ctx,
+        &scope,
+    )
+    .unwrap();
+
+    assert_eq!(
+        collected.data_views["data:x"].partition,
+        DataRequestPartition::FullTrain
+    );
+    assert_eq!(
+        collected.data_views["data:x"].sample_ids,
+        Some(training_ids.clone())
+    );
+    assert_eq!(
+        collected.data_views["data:x:test"].partition,
+        DataRequestPartition::Predict
+    );
+    assert_eq!(
+        collected.data_views["data:x:test"].sample_ids,
+        Some(vec![test_id.clone()])
+    );
+    assert_eq!(
+        collected.data_view_receipts["data:x:test"].sample_ids,
+        vec![test_id.clone()]
+    );
+    assert_eq!(
+        collected.data_view_receipts["data:x:test"].handle,
+        collected.handles["data:x:test"]
+    );
+    assert_eq!(provider.materializations.borrow().len(), 2);
+    assert!(provider.materializations.borrow()[0]
+        .predict_cohort
+        .is_none());
+    assert_eq!(
+        provider.materializations.borrow()[1].predict_cohort,
+        Some(cohort.clone())
+    );
+    assert_eq!(
+        provider.views.borrow()[1].predict_cohort,
+        Some(cohort.clone())
+    );
+
+    let mut task = fit_influence_validation_task(FitInfluenceTask::default());
+    task.node_plan = plan.node_plans.get(&model_id).unwrap().clone();
+    task.phase = Phase::Refit;
+    task.fold_id = None;
+    task.input_handles = collected.handles.clone();
+    task.data_views = collected.data_views.clone();
+    task.data_view_receipts = collected.data_view_receipts.clone();
+    task.validate_dynamic_view_training_gate().unwrap();
+
+    let make_candidate =
+        |candidate: PredictCohort, relations: SampleRelationSet| RefitTestProvider {
+            owner: provider.owner.clone(),
+            train_relations: relations,
+            omit_relations: false,
+            generated: true,
+            cohort: Some(candidate),
+            refit_ids: None,
+            refit_id_calls: std::cell::Cell::new(0),
+            materializations: std::cell::RefCell::new(Vec::new()),
+            views: std::cell::RefCell::new(Vec::new()),
+        };
+    let make_cohort = |sample: SampleId, origin: Option<SampleId>| {
+        let mut relation =
+            SampleRelation::new(ObservationId::new("obs:overlap.candidate").unwrap(), sample);
+        relation.origin_sample_id = origin;
+        PredictCohort::from_relations(
+            PredictCohortRole::ExternalTest,
+            SampleRelationSet {
+                records: vec![relation],
+            },
+            vec!["y".to_string()],
+            "c".repeat(64),
+            Some("d".repeat(64)),
+        )
+        .unwrap()
+    };
+    let physical_overlap = make_candidate(
+        make_cohort(training_ids[0].clone(), None),
+        provider.train_relations.clone(),
+    );
+    let cv_scope = PhaseScope {
+        phase: Phase::FitCv,
+        fold_id: Some(FoldId::new("fold:0").unwrap()),
+        ..scope.clone()
+    };
+    let error = collect_input_handles(
+        &plan,
+        plan.node_plans.get(&model_id).unwrap(),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &PhaseScopeResources {
+            data_provider: Some(&physical_overlap),
+            ..Default::default()
+        },
+        &ctx,
+        &cv_scope,
+    )
+    .err()
+    .expect("invalid external test must fail")
+    .to_string();
+    assert!(
+        error.contains("overlaps CV fold sample or origin"),
+        "{error}"
+    );
+    assert!(physical_overlap.materializations.borrow().is_empty());
+
+    let origin_overlap = make_candidate(
+        make_cohort(test_id.clone(), Some(training_ids[0].clone())),
+        provider.train_relations.clone(),
+    );
+    let error = collect_input_handles(
+        &plan,
+        plan.node_plans.get(&model_id).unwrap(),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &PhaseScopeResources {
+            data_provider: Some(&origin_overlap),
+            ..Default::default()
+        },
+        &ctx,
+        &scope,
+    )
+    .err()
+    .expect("invalid external test must fail")
+    .to_string();
+    assert!(
+        error.contains("overlaps CV fold sample or origin"),
+        "{error}"
+    );
+    assert!(origin_overlap.materializations.borrow().is_empty());
+
+    let mut aliased_relations = provider.train_relations.clone();
+    aliased_relations.records[0].origin_sample_id = Some(test_id.clone());
+    let relation_overlap = make_candidate(cohort.clone(), aliased_relations);
+    let error = collect_input_handles(
+        &plan,
+        plan.node_plans.get(&model_id).unwrap(),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &PhaseScopeResources {
+            data_provider: Some(&relation_overlap),
+            ..Default::default()
+        },
+        &ctx,
+        &scope,
+    )
+    .err()
+    .expect("invalid external test must fail")
+    .to_string();
+    assert!(
+        error.contains("overlaps CV relation identity closure"),
+        "{error}"
+    );
+    assert!(relation_overlap.materializations.borrow().is_empty());
+
+    let mut override_fold_set = two_fold_set();
+    let replaced_id = SampleId::new("s2").unwrap();
+    for id in &mut override_fold_set.sample_ids {
+        if *id == replaced_id {
+            *id = test_id.clone();
+        }
+    }
+    for fold in &mut override_fold_set.folds {
+        for id in fold
+            .train_sample_ids
+            .iter_mut()
+            .chain(fold.validation_sample_ids.iter_mut())
+        {
+            if *id == replaced_id {
+                *id = test_id.clone();
+            }
+        }
+    }
+    override_fold_set.validate().unwrap();
+    let override_provider = make_candidate(cohort.clone(), provider.train_relations.clone());
+    let error = collect_input_handles(
+        &plan,
+        plan.node_plans.get(&model_id).unwrap(),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &PhaseScopeResources {
+            data_provider: Some(&override_provider),
+            fold_set_override: Some(&override_fold_set),
+            ..Default::default()
+        },
+        &ctx,
+        &scope,
+    )
+    .err()
+    .expect("invalid external test must fail")
+    .to_string();
+    assert!(
+        error.contains("overlaps CV fold sample or origin"),
+        "{error}"
+    );
+    assert!(override_provider.materializations.borrow().is_empty());
+
+    let mut no_fold_plan = plan.clone();
+    no_fold_plan.fold_set = None;
+    let no_fold_provider = make_candidate(cohort.clone(), provider.train_relations.clone());
+    let error = collect_input_handles(
+        &no_fold_plan,
+        no_fold_plan.node_plans.get(&model_id).unwrap(),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &PhaseScopeResources {
+            data_provider: Some(&no_fold_provider),
+            ..Default::default()
+        },
+        &ctx,
+        &scope,
+    )
+    .err()
+    .expect("invalid external test must fail")
+    .to_string();
+    assert!(error.contains("without attested training IDs"), "{error}");
+    assert!(no_fold_provider.materializations.borrow().is_empty());
+
+    let mut no_fold_attested = make_candidate(cohort.clone(), provider.train_relations.clone());
+    no_fold_attested.refit_ids = Some(training_ids.clone());
+    let no_fold = collect_input_handles(
+        &no_fold_plan,
+        no_fold_plan.node_plans.get(&model_id).unwrap(),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &PhaseScopeResources {
+            data_provider: Some(&no_fold_attested),
+            ..Default::default()
+        },
+        &ctx,
+        &scope,
+    )
+    .unwrap();
+    assert_eq!(no_fold_attested.refit_id_calls.get(), 1);
+    assert_eq!(
+        no_fold.data_views["data:x"].sample_ids,
+        Some(training_ids.clone())
+    );
+
+    // A static REFIT-only host does not request or validate a generated test
+    // companion, even when its envelope has an external-test cohort.
+    let mut no_fold_static = make_candidate(cohort.clone(), provider.train_relations.clone());
+    no_fold_static.generated = false;
+    let static_refit = collect_input_handles(
+        &no_fold_plan,
+        no_fold_plan.node_plans.get(&model_id).unwrap(),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &PhaseScopeResources {
+            data_provider: Some(&no_fold_static),
+            ..Default::default()
+        },
+        &ctx,
+        &scope,
+    )
+    .unwrap();
+    assert_eq!(no_fold_static.refit_id_calls.get(), 1);
+    assert!(!static_refit.data_views.contains_key("data:x:test"));
+
+    let mut no_relations_provider =
+        make_candidate(cohort.clone(), provider.train_relations.clone());
+    no_relations_provider.omit_relations = true;
+    let mut optional_relation_node_plan = plan.node_plans.get(&model_id).unwrap().clone();
+    optional_relation_node_plan.data_bindings[0].require_relations = false;
+    optional_relation_node_plan.data_bindings[0].relation_fingerprint = None;
+    let error = collect_input_handles(
+        &plan,
+        &optional_relation_node_plan,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &PhaseScopeResources {
+            data_provider: Some(&no_relations_provider),
+            ..Default::default()
+        },
+        &ctx,
+        &scope,
+    )
+    .err()
+    .expect("invalid external test must fail")
+    .to_string();
+    assert!(
+        error.contains("without CV coordinator relations"),
+        "{error}"
+    );
+    assert!(no_relations_provider.materializations.borrow().is_empty());
+
+    let without_test = RefitTestProvider {
+        owner: provider.owner.clone(),
+        train_relations: provider.train_relations.clone(),
+        omit_relations: false,
+        generated: true,
+        cohort: None,
+        refit_ids: None,
+        refit_id_calls: std::cell::Cell::new(0),
+        materializations: std::cell::RefCell::new(Vec::new()),
+        views: std::cell::RefCell::new(Vec::new()),
+    };
+    let collected_without_test = collect_input_handles(
+        &plan,
+        plan.node_plans.get(&model_id).unwrap(),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &PhaseScopeResources {
+            data_provider: Some(&without_test),
+            ..Default::default()
+        },
+        &ctx,
+        &scope,
+    )
+    .unwrap();
+    assert!(!collected_without_test
+        .data_views
+        .contains_key("data:x:test"));
+    assert_eq!(without_test.materializations.borrow().len(), 1);
 }
 
 // R-P1-7: a node only sees upstream handles for ports it DECLARES an edge to.

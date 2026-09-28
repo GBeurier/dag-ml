@@ -701,6 +701,10 @@ struct PyViewCall<'a> {
 }
 
 impl RuntimeDataProvider for PyViewDataProvider {
+    fn generated_views_enabled(&self) -> bool {
+        true
+    }
+
     fn materialize(&self, request: &DataMaterializationRequest) -> dag_ml_core::Result<HandleRef> {
         self.inner.materialize(request)
     }

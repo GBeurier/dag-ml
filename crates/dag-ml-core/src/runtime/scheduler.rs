@@ -4906,6 +4906,7 @@ pub(crate) fn collect_input_handles(
         )));
     }
     if let Some(data_provider) = resources.data_provider {
+        let generated_views_enabled = data_provider.generated_views_enabled();
         // Samples excluded from training (sample-local) are relevant only to
         // fitting scopes. A top-level PREDICT must not even resolve the CV
         // relation authority: its separately attested cohort below owns the
@@ -4921,14 +4922,76 @@ pub(crate) fn collect_input_handles(
             .unwrap_or_default();
         let scope_fold_set = resources.fold_set_override.or(plan.fold_set.as_ref());
         for binding in &node_plan.data_bindings {
+            // Resolve the no-fold REFIT universe once. Reusing these exact IDs
+            // for both disjointness and the fit view prevents a mutable provider
+            // from changing the training set between validation and execution.
+            let refit_train_ids = if scope.phase == Phase::Refit && scope_fold_set.is_none() {
+                data_provider.refit_sample_ids(binding)?
+            } else {
+                None
+            };
             let predict_cohort = if scope.phase == Phase::Predict {
                 data_provider.predict_cohort(binding, scope.phase)?
-            } else if scope.phase == Phase::FitCv {
+            } else if scope.phase == Phase::FitCv
+                || (scope.phase == Phase::Refit && generated_views_enabled)
+            {
                 data_provider.cv_test_cohort(binding)?
             } else {
                 None
             };
-            // FIT_CV keeps its ordinary train/validation materialization. The separately
+            if generated_views_enabled && matches!(scope.phase, Phase::FitCv | Phase::Refit) {
+                if let Some(cohort) = predict_cohort.as_ref() {
+                    if cohort.role != crate::data::PredictCohortRole::ExternalTest {
+                        return Err(DagMlError::RuntimeValidation(format!(
+                            "node `{}` received a non-external-test cohort in {:?}",
+                            node_plan.node_id, scope.phase
+                        )));
+                    }
+                    if let Some(fold_set) = scope_fold_set {
+                        cohort.validate_against_cv_fold_set(fold_set)?;
+                    } else if scope.phase == Phase::Refit {
+                        // A REFIT-only package has no CV fold set. Its explicit
+                        // training IDs are the corresponding disjointness authority.
+                        let train_ids = refit_train_ids.as_ref().ok_or_else(|| {
+                            DagMlError::RuntimeValidation(format!(
+                                "node `{}` cannot materialize an external-test view in REFIT without attested training IDs",
+                                node_plan.node_id
+                            ))
+                        })?;
+                        if train_ids.is_empty() {
+                            return Err(DagMlError::RuntimeValidation(format!(
+                                "node `{}` cannot materialize an external-test view in REFIT with empty training IDs",
+                                node_plan.node_id
+                            )));
+                        }
+                        let training = train_ids.iter().collect::<BTreeSet<_>>();
+                        if cohort
+                            .physical_sample_ids
+                            .iter()
+                            .chain(&cohort.origin_sample_ids)
+                            .any(|id| training.contains(id))
+                        {
+                            return Err(DagMlError::RuntimeValidation(format!(
+                                "node `{}` external-test cohort overlaps REFIT training IDs",
+                                node_plan.node_id
+                            )));
+                        }
+                    } else {
+                        return Err(DagMlError::RuntimeValidation(format!(
+                            "node `{}` cannot materialize an external-test view in {:?} without an effective CV fold set",
+                            node_plan.node_id, scope.phase
+                        )));
+                    }
+                    let relations = coordinator_relations.as_ref().ok_or_else(|| {
+                        DagMlError::RuntimeValidation(format!(
+                            "node `{}` cannot materialize an external-test view in {:?} without CV coordinator relations",
+                            node_plan.node_id, scope.phase
+                        ))
+                    })?;
+                    cohort.validate_against_cv_relations(relations)?;
+                }
+            }
+            // FIT_CV and REFIT keep their ordinary training materialization. The separately
             // attested external test cohort is materialized only for a companion non-fit view.
             let primary_cohort = (scope.phase == Phase::Predict)
                 .then(|| predict_cohort.clone())
@@ -4967,7 +5030,7 @@ pub(crate) fn collect_input_handles(
                 && view.partition == DataRequestPartition::FullTrain
                 && view.sample_ids.is_none()
             {
-                view.sample_ids = data_provider.refit_sample_ids(binding)?;
+                view.sample_ids = refit_train_ids;
                 if !view.include_excluded {
                     if let Some(sample_ids) = view.sample_ids.as_mut() {
                         sample_ids.retain(|sample_id| !excluded_samples.contains(sample_id));
@@ -5003,11 +5066,23 @@ pub(crate) fn collect_input_handles(
                     node_plan.node_id
                 )));
             }
+            let generated_view = attested.receipt.is_some();
+            if matches!(scope.phase, Phase::FitCv | Phase::Refit)
+                && generated_view != generated_views_enabled
+            {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "node `{}` generated-view capability and receipt disagree",
+                    node_plan.node_id
+                )));
+            }
             if let Some(receipt) = attested.receipt {
                 data_view_receipts.insert(key.clone(), receipt);
             }
 
-            if scope.phase == Phase::FitCv {
+            // FIT_CV already exposes the test companion to existing hosts.
+            // A REFIT companion is new and needed only when generated buffers
+            // must be read through an attested native handle.
+            if scope.phase == Phase::FitCv || (scope.phase == Phase::Refit && generated_view) {
                 if let Some(cohort) = predict_cohort.as_ref() {
                     let test_materialized =
                         data_provider.materialize(&DataMaterializationRequest {
