@@ -652,6 +652,10 @@ fn _dag_ml(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
         module
     )?)?;
     module.add_function(wrap_pyfunction!(
+        in_process::validate_generated_view_manifest_in_process,
+        module
+    )?)?;
+    module.add_function(wrap_pyfunction!(
         in_process::run_cv_refit_methods_in_process,
         module
     )?)?;
@@ -824,6 +828,7 @@ fn contract_manifest() -> serde_json::Value {
             "canonical_operator_variant_value_json",
             "run_cv_refit_in_process",
             "probe_data_view_in_process",
+            "validate_generated_view_manifest_in_process",
             "run_cv_refit_methods_in_process",
             "execute_phase_in_process",
             "replay_initial_full_refit_in_process",

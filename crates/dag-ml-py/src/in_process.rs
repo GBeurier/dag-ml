@@ -424,7 +424,8 @@ struct PyViewDataProvider {
 /// One stable data request and its host-attested content. Runtime handles and
 /// estimator/variant IDs are deliberately omitted: one view key can be reused
 /// by several candidates while its selector and content must stay identical.
-#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct GeneratedViewRecord {
     view_key: String,
     view_seed: u64,
@@ -439,7 +440,8 @@ struct GeneratedViewRecord {
 /// Exactly the binding fields used by `data_view_identity` in dag-ml-core.
 /// In particular, the producer node and view policy do not distinguish a
 /// shared view, so they must not perturb its manifest identity either.
-#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct GeneratedViewBindingIdentity {
     schema_fingerprint: String,
     plan_fingerprint: String,
@@ -487,22 +489,144 @@ impl GeneratedViewRecord {
     }
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GeneratedViewManifest {
+    schema_version: u32,
+    views: Vec<GeneratedViewRecord>,
+    fingerprint: String,
+}
+
+fn generated_views_fingerprint(views: &[GeneratedViewRecord]) -> dag_ml_core::Result<String> {
+    // TCV1 canonicalizes object keys, Unicode and binary64 numbers across
+    // language runtimes. The array is sorted by view_key before hashing.
+    let serialized = serde_json::to_vec(&("generated-view-manifest-v1", views))?;
+    let typed = dag_ml_core::canonical::parse_typed_json_bytes(&serialized)
+        .map_err(|error| CoreDagMlError::RuntimeValidation(error.to_string()))?;
+    dag_ml_core::canonical::tcv1_sha256(&typed)
+        .map_err(|error| CoreDagMlError::RuntimeValidation(error.to_string()))
+}
+
 fn generated_view_manifest(
     receipts: &BTreeMap<String, GeneratedViewRecord>,
 ) -> dag_ml_core::Result<serde_json::Value> {
-    let views = receipts.values().collect::<Vec<_>>();
-    // TCV1 canonicalizes object keys, Unicode and binary64 numbers across
-    // language runtimes. The array is sorted by view_key before hashing.
-    let serialized = serde_json::to_vec(&("generated-view-manifest-v1", &views))?;
-    let typed = dag_ml_core::canonical::parse_typed_json_bytes(&serialized)
-        .map_err(|error| CoreDagMlError::RuntimeValidation(error.to_string()))?;
-    let fingerprint = dag_ml_core::canonical::tcv1_sha256(&typed)
-        .map_err(|error| CoreDagMlError::RuntimeValidation(error.to_string()))?;
-    Ok(serde_json::json!({
-        "schema_version": 1,
-        "views": views,
-        "fingerprint": fingerprint,
-    }))
+    if receipts.is_empty() {
+        return Err(CoreDagMlError::RuntimeValidation(
+            "generated view manifest has no generated views".into(),
+        ));
+    }
+    let views = receipts.values().cloned().collect::<Vec<_>>();
+    serde_json::to_value(GeneratedViewManifest {
+        schema_version: 1,
+        fingerprint: generated_views_fingerprint(&views)?,
+        views,
+    })
+    .map_err(Into::into)
+}
+
+fn validate_generated_view_manifest(manifest: &GeneratedViewManifest) -> dag_ml_core::Result<()> {
+    let invalid = |message: &str| CoreDagMlError::RuntimeValidation(format!(
+        "generated view manifest {message}"
+    ));
+    if manifest.schema_version != 1 {
+        return Err(invalid("uses an unsupported schema version"));
+    }
+    if manifest.views.is_empty() {
+        return Err(invalid("has no generated views"));
+    }
+    let mut prior_key: Option<&str> = None;
+    for record in &manifest.views {
+        let digest = record.view_key.strip_prefix("view:v1:").unwrap_or("");
+        if !lowercase_sha256(digest) {
+            return Err(invalid("contains an invalid view key"));
+        }
+        if prior_key.is_some_and(|prior| prior >= record.view_key.as_str()) {
+            return Err(invalid("view keys must be unique and sorted"));
+        }
+        prior_key = Some(&record.view_key);
+        record.view.validate()?;
+        if record.view.sample_ids.is_none() {
+            return Err(invalid("contains a view without ordered sample IDs"));
+        }
+        let binding = &record.binding_identity;
+        if [
+            &binding.output_representation,
+            &binding.request_id,
+            &binding.input_name,
+            &binding.feature_set_id,
+        ]
+        .iter()
+        .any(|value| value.is_empty())
+            || binding.source_ids.iter().any(String::is_empty)
+        {
+            return Err(invalid("contains an empty binding identity field"));
+        }
+        for digest in [
+            &record.schema_fingerprint,
+            &record.content_fingerprint,
+            &record.binding_identity.schema_fingerprint,
+            &record.binding_identity.plan_fingerprint,
+        ] {
+            if !lowercase_sha256(digest) {
+                return Err(invalid("contains an invalid SHA-256 fingerprint"));
+            }
+        }
+        if record
+            .binding_identity
+            .relation_fingerprint
+            .as_deref()
+            .is_some_and(|digest| !lowercase_sha256(digest))
+            || record
+                .predict_cohort_fingerprint
+                .as_deref()
+                .is_some_and(|digest| !lowercase_sha256(digest))
+        {
+            return Err(invalid("contains an invalid optional fingerprint"));
+        }
+    }
+    if manifest.fingerprint != generated_views_fingerprint(&manifest.views)? {
+        return Err(invalid("fingerprint does not match its views"));
+    }
+    Ok(())
+}
+
+fn lowercase_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+/// Validate a persisted generated-view manifest before a host archive trusts it.
+/// Returns the verified TCV1 fingerprint; no view callback or model is invoked.
+#[pyfunction]
+pub fn validate_generated_view_manifest_in_process(manifest_json: &str) -> PyResult<String> {
+    let raw_typed = dag_ml_core::canonical::parse_typed_json(manifest_json).map_err(|error| {
+        py_core_error(CoreDagMlError::RuntimeValidation(error.to_string()))
+    })?;
+    let manifest: GeneratedViewManifest = serde_json::from_str(manifest_json).map_err(|error| {
+        py_core_error(CoreDagMlError::RuntimeValidation(error.to_string()))
+    })?;
+    let normalized_json = serde_json::to_string(&manifest).map_err(|error| {
+        py_core_error(CoreDagMlError::RuntimeValidation(error.to_string()))
+    })?;
+    let normalized_typed = dag_ml_core::canonical::parse_typed_json(&normalized_json).map_err(|error| {
+        py_core_error(CoreDagMlError::RuntimeValidation(error.to_string()))
+    })?;
+    let raw_fingerprint = dag_ml_core::canonical::tcv1_sha256(&raw_typed).map_err(|error| {
+        py_core_error(CoreDagMlError::RuntimeValidation(error.to_string()))
+    })?;
+    let normalized_fingerprint =
+        dag_ml_core::canonical::tcv1_sha256(&normalized_typed).map_err(|error| {
+            py_core_error(CoreDagMlError::RuntimeValidation(error.to_string()))
+        })?;
+    if raw_fingerprint != normalized_fingerprint {
+        return Err(py_core_error(CoreDagMlError::RuntimeValidation(
+            "generated view manifest contains unknown or noncanonical fields".into(),
+        )));
+    }
+    validate_generated_view_manifest(&manifest).map_err(py_core_error)?;
+    Ok(manifest.fingerprint)
 }
 
 fn record_generated_view(

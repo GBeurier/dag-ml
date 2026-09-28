@@ -65,6 +65,33 @@ class DataViewProbeTests(unittest.TestCase):
         Draft202012Validator(schema).validate(manifest)
         preimage = tcv1_preimage(["generated-view-manifest-v1", manifest["views"]])
         self.assertEqual(manifest["fingerprint"], hashlib.sha256(preimage).hexdigest())
+        self.assertEqual(
+            native.validate_generated_view_manifest_in_process(json.dumps(manifest)),
+            manifest["fingerprint"],
+        )
+        tampered = copy.deepcopy(manifest)
+        tampered["views"][0]["content_fingerprint"] = "d" * 64
+        with self.assertRaisesRegex(native.DagMlRuntimeError, "fingerprint does not match"):
+            native.validate_generated_view_manifest_in_process(json.dumps(tampered))
+        for mutation, pattern in (
+            (lambda value: value.update(unexpected=123), "unknown field"),
+            (lambda value: value["views"][0]["view"].update(unexpected=123), "noncanonical fields"),
+            (lambda value: value["views"][0]["view"].pop("columns"), "noncanonical fields"),
+            (lambda value: value["views"][0]["binding_identity"].update(request_id=""), "empty binding identity"),
+            (lambda value: value.update(views=[]), "no generated views"),
+            (lambda value: value.update(schema_version=2), "unsupported schema version"),
+        ):
+            with self.subTest(pattern=pattern):
+                changed = copy.deepcopy(manifest)
+                mutation(changed)
+                if pattern in ("empty binding identity", "no generated views"):
+                    changed["fingerprint"] = hashlib.sha256(
+                        tcv1_preimage(["generated-view-manifest-v1", changed["views"]])
+                    ).hexdigest()
+                with self.assertRaisesRegex(native.DagMlRuntimeError, pattern):
+                    native.validate_generated_view_manifest_in_process(json.dumps(changed))
+        with self.assertRaises(native.DagMlRuntimeError):
+            native.validate_generated_view_manifest_in_process("{")
 
         def changed_content(call: dict) -> dict:
             return _receipt(call) | {"content_fingerprint": "c" * 64}
