@@ -302,6 +302,15 @@ pub struct DataViewRequest {
     pub binding: crate::data::DataBinding,
     pub data_handle: HandleRef,
     pub view: DataProviderViewSpec,
+    /// Stable identity of the selected provider view, independent of the
+    /// estimator node, variant, and run id. Hosts may use it to detect a
+    /// changed materialization when resuming the same data request.
+    #[serde(default)]
+    pub view_key: String,
+    /// Scheduler-derived RNG stream for this view. A campaign without a root
+    /// seed leaves it unset; dynamic providers must require one explicitly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view_seed: Option<u64>,
     /// The same separately attested cohort carried by the materialization
     /// request. The envelope-attested wrapper compares it exactly before a
     /// host provider can observe a data view.
@@ -1520,6 +1529,8 @@ pub(crate) fn make_data_view_handle(
     input: DataViewHandleInput<'_>,
 ) -> Result<HandleRef> {
     input.view.validate()?;
+    let (view_key, view_seed) =
+        data_view_identity(ctx.root_seed, binding, input.view, input.predict_cohort)?;
     let view_handle = data_provider.make_view(&DataViewRequest {
         run_id: ctx.run_id.clone(),
         node_id: node_plan.node_id.clone(),
@@ -1530,6 +1541,8 @@ pub(crate) fn make_data_view_handle(
         binding: binding.clone(),
         data_handle: input.data_handle.clone(),
         view: input.view.clone(),
+        view_key,
+        view_seed,
         predict_cohort: input.predict_cohort.cloned(),
     })?;
     // A data view is delivered to the controller as a data input, so the
@@ -1542,6 +1555,39 @@ pub(crate) fn make_data_view_handle(
         )));
     }
     Ok(view_handle)
+}
+
+fn data_view_identity(
+    root_seed: Option<u64>,
+    binding: &DataBinding,
+    view: &DataProviderViewSpec,
+    predict_cohort: Option<&crate::data::PredictCohort>,
+) -> Result<(String, Option<u64>)> {
+    // The content of the view is attested separately. This key identifies the
+    // scheduler request, including its exact ordered IDs and selected sources.
+    // A model node or HPO variant must not perturb the data RNG stream.
+    let fingerprint = stable_json_fingerprint(&(
+        "provider-view-v1",
+        root_seed,
+        &binding.schema_fingerprint,
+        &binding.plan_fingerprint,
+        &binding.relation_fingerprint,
+        &binding.output_representation,
+        &binding.request_id,
+        &binding.input_name,
+        binding.feature_set_id(),
+        &binding.source_ids,
+        &binding.metadata,
+        view,
+        predict_cohort,
+    ))?;
+    let key = format!("view:v1:{fingerprint}");
+    let seed = root_seed.map(|root| {
+        SeedContext::root(root)
+            .child(&key)
+            .derive_u64("materialize")
+    });
+    Ok((key, seed))
 }
 
 pub(crate) fn data_view_for_scope(
@@ -1788,6 +1834,71 @@ mod envelope_attested_provider_tests {
         }
     }
 
+    #[test]
+    fn provider_view_identity_tracks_selected_data_not_estimator_or_trial() {
+        let envelope = complete_envelope();
+        let binding = binding_for("model:first", "x", &envelope);
+        let view = DataProviderViewSpec {
+            sample_ids: Some(vec![SampleId::new("sample:1").unwrap()]),
+            partition: DataRequestPartition::FoldTrain,
+            fold_id: Some(FoldId::new("fold:0").unwrap()),
+            source_ids: Some(vec!["source:probe".to_string()]),
+            columns: None,
+            include_augmented: false,
+            include_excluded: false,
+            branch_view: None,
+            extra: BTreeMap::new(),
+        };
+        let (key, seed) = data_view_identity(Some(19), &binding, &view, None).unwrap();
+        assert!(key.starts_with("view:v1:"));
+        assert_eq!(
+            seed,
+            data_view_identity(Some(19), &binding, &view, None)
+                .unwrap()
+                .1
+        );
+
+        let other_node = binding_for("model:second", "x", &envelope);
+        assert_eq!(
+            (key.clone(), seed),
+            data_view_identity(Some(19), &other_node, &view, None).unwrap()
+        );
+        let (different_key, different_seed) =
+            data_view_identity(Some(20), &binding, &view, None).unwrap();
+        assert_ne!(different_key, key);
+        assert_ne!(different_seed, seed);
+
+        let mut validation = view.clone();
+        validation.partition = DataRequestPartition::FoldValidation;
+        assert_ne!(
+            data_view_identity(Some(19), &binding, &validation, None)
+                .unwrap()
+                .0,
+            key
+        );
+        let mut different_ids = view;
+        different_ids.sample_ids = Some(vec![SampleId::new("sample:2").unwrap()]);
+        assert_ne!(
+            data_view_identity(Some(19), &binding, &different_ids, None)
+                .unwrap()
+                .0,
+            key
+        );
+
+        let mut implicit_first = binding;
+        implicit_first.feature_set_id = None;
+        let mut implicit_second = implicit_first.clone();
+        implicit_second.input_name = "meta".to_string();
+        assert_ne!(
+            data_view_identity(Some(19), &implicit_first, &different_ids, None)
+                .unwrap()
+                .0,
+            data_view_identity(Some(19), &implicit_second, &different_ids, None)
+                .unwrap()
+                .0
+        );
+    }
+
     fn envelopes_for(
         binding: &DataBinding,
         envelope: ExternalDataPlanEnvelope,
@@ -1859,6 +1970,8 @@ mod envelope_attested_provider_tests {
                     branch_view: None,
                     extra: BTreeMap::new(),
                 },
+                view_key: String::new(),
+                view_seed: None,
                 predict_cohort: None,
             })
             .unwrap();

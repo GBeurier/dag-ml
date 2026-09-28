@@ -7208,6 +7208,8 @@ mod tests {
                         branch_view: None,
                         extra: BTreeMap::new(),
                     },
+                    view_key: String::new(),
+                    view_seed: None,
                     predict_cohort: None,
                 })
                 .unwrap();
