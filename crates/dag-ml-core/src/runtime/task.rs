@@ -60,6 +60,16 @@ pub(crate) fn default_runtime_prediction_level() -> PredictionLevel {
     PredictionLevel::Sample
 }
 
+/// Host-reported materialization reads of an attested view. The receipt signs
+/// the full view; each batch preserves the row order returned to the host.
+/// These reads can include mask/presence checks and do not prove estimator use.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DataViewConsumption {
+    pub receipt: DataViewReceipt,
+    pub read_batches: Vec<Vec<SampleId>>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct NodeTask {
     pub run_id: RunId,
@@ -923,6 +933,11 @@ pub struct NodeResult {
     pub artifacts: Vec<ArtifactRef>,
     #[serde(default)]
     pub artifact_handles: BTreeMap<ArtifactId, HandleRef>,
+    /// Host-reported reads of scheduler-selected feature views. This is
+    /// validated against `NodeTask`; it does not prove estimator consumption
+    /// and does not by itself open dynamic fit.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub consumed_data_views: BTreeMap<String, DataViewConsumption>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fit_influence_diagnostics: Vec<FitInfluenceDiagnostic>,
     /// Optional ground-truth targets the host controller emits alongside predictions so the core
@@ -934,7 +949,44 @@ pub struct NodeResult {
 }
 
 impl NodeResult {
+    pub fn validate_consumed_data_views_for_task(&self, task: &NodeTask) -> Result<()> {
+        task.validate_data_view_receipts()?;
+        for (key, consumption) in &self.consumed_data_views {
+            let expected = task.data_view_receipts.get(key).ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "node `{}` reported consumption of unreceipted data view `{key}`",
+                    task.node_plan.node_id
+                ))
+            })?;
+            if &consumption.receipt != expected {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "node `{}` consumed data view `{key}` with a receipt different from its native task",
+                    task.node_plan.node_id
+                )));
+            }
+            if consumption.read_batches.is_empty() {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "node `{}` consumed data view `{key}` without read batches",
+                    task.node_plan.node_id
+                )));
+            }
+            let permitted = expected.sample_ids.iter().collect::<BTreeSet<_>>();
+            for batch in &consumption.read_batches {
+                let unique = batch.iter().collect::<BTreeSet<_>>();
+                if batch.is_empty() || unique.len() != batch.len() || !unique.is_subset(&permitted)
+                {
+                    return Err(DagMlError::RuntimeValidation(format!(
+                        "node `{}` consumed data view `{key}` with invalid ordered read IDs",
+                        task.node_plan.node_id
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn validate_for_task(&self, task: &NodeTask) -> Result<()> {
+        self.validate_consumed_data_views_for_task(task)?;
         task.validate_dynamic_view_training_gate()?;
         if self.node_id != task.node_plan.node_id {
             return Err(DagMlError::RuntimeValidation(format!(

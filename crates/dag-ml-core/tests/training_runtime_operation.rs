@@ -506,6 +506,7 @@ impl RuntimeController for TrainingController {
         Ok(NodeResult {
             schema_version: None,
             classification_probabilities: Vec::new(),
+            consumed_data_views: std::collections::BTreeMap::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([(
                 output_port.to_string(),

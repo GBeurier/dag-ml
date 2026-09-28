@@ -149,6 +149,7 @@ impl RuntimeController for VariantProbeController {
         Ok(NodeResult {
             schema_version: None,
             classification_probabilities: Vec::new(),
+            consumed_data_views: std::collections::BTreeMap::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([(
                 "out".to_string(),
@@ -233,6 +234,7 @@ impl RuntimeController for ShapeDataController {
         Ok(NodeResult {
             schema_version: None,
             classification_probabilities: Vec::new(),
+            consumed_data_views: std::collections::BTreeMap::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([("x_out".to_string(), output)]),
             predictions: Vec::new(),
@@ -304,6 +306,7 @@ impl RuntimeController for DataViewProbeController {
         Ok(NodeResult {
             schema_version: None,
             classification_probabilities: Vec::new(),
+            consumed_data_views: std::collections::BTreeMap::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([(
                 "oof".to_string(),
@@ -447,6 +450,7 @@ impl RuntimeController for MockController {
         Ok(NodeResult {
             schema_version: None,
             classification_probabilities: Vec::new(),
+            consumed_data_views: std::collections::BTreeMap::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([
                 ("out".to_string(), output.clone()),
@@ -687,6 +691,7 @@ impl RuntimeController for ReplayMockController {
         Ok(NodeResult {
             schema_version: None,
             classification_probabilities: Vec::new(),
+            consumed_data_views: std::collections::BTreeMap::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([("out".to_string(), output)]),
             predictions,
@@ -841,6 +846,7 @@ impl RuntimeController for OofEdgeController {
         Ok(NodeResult {
             schema_version: None,
             classification_probabilities: Vec::new(),
+            consumed_data_views: std::collections::BTreeMap::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([(
                 "pred".to_string(),
@@ -961,6 +967,7 @@ impl RuntimeController for CaptureOofValuesController {
         Ok(NodeResult {
             schema_version: None,
             classification_probabilities: Vec::new(),
+            consumed_data_views: std::collections::BTreeMap::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([(
                 "pred".to_string(),
@@ -1072,6 +1079,7 @@ impl RuntimeController for ExpectedRefitOofController {
         Ok(NodeResult {
             schema_version: None,
             classification_probabilities: Vec::new(),
+            consumed_data_views: std::collections::BTreeMap::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([(
                 "pred".to_string(),
@@ -1183,6 +1191,7 @@ impl RuntimeController for GroupAggregatedOofController {
         Ok(NodeResult {
             schema_version: None,
             classification_probabilities: Vec::new(),
+            consumed_data_views: std::collections::BTreeMap::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([(
                 "pred".to_string(),
@@ -1471,6 +1480,7 @@ impl RuntimeController for ObservationPredictionRuntimeController {
         Ok(NodeResult {
             schema_version: None,
             classification_probabilities: Vec::new(),
+            consumed_data_views: std::collections::BTreeMap::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([(
                 "pred".to_string(),
@@ -3088,6 +3098,7 @@ fn parallel_scheduler_invokes_independent_level_concurrently() {
             Ok(NodeResult {
                 schema_version: None,
                 classification_probabilities: Vec::new(),
+                consumed_data_views: std::collections::BTreeMap::new(),
                 node_id: task.node_plan.node_id.clone(),
                 outputs: BTreeMap::from([(
                     "x".to_string(),
@@ -3243,6 +3254,7 @@ fn parallel_campaign_scheduler_stress_matches_sequential_across_variants_and_fol
             Ok(NodeResult {
                 schema_version: None,
                 classification_probabilities: Vec::new(),
+                consumed_data_views: std::collections::BTreeMap::new(),
                 node_id: task.node_plan.node_id.clone(),
                 outputs: BTreeMap::from([(
                     output_name.to_string(),
@@ -7090,6 +7102,169 @@ fn node_task_receipt_round_trips_and_refuses_an_unrelated_view() {
 }
 
 #[test]
+fn node_result_consumption_binds_a_successful_read_to_its_native_receipt() {
+    let mut task = fit_influence_validation_task(FitInfluenceTask::default());
+    let key = "data:x".to_string();
+    let sample_ids = ["sample:a", "sample:b", "sample:c"]
+        .into_iter()
+        .map(|id| SampleId::new(id).unwrap())
+        .collect::<Vec<_>>();
+    let handle = HandleRef {
+        handle: 82,
+        kind: HandleKind::DataView,
+        owner_controller: ControllerId::new("controller:data.provider").unwrap(),
+    };
+    let receipt = DataViewReceipt {
+        handle: handle.clone(),
+        view_key: format!("view:v1:{}", "a".repeat(64)),
+        sample_ids: sample_ids.clone(),
+        schema_fingerprint: "b".repeat(64),
+        content_fingerprint: "c".repeat(64),
+    };
+    task.input_handles.insert(key.clone(), handle);
+    task.data_views.insert(
+        key.clone(),
+        DataProviderViewSpec {
+            sample_ids: Some(sample_ids.clone()),
+            partition: DataRequestPartition::FoldTrain,
+            fold_id: task.fold_id.clone(),
+            source_ids: None,
+            columns: None,
+            include_augmented: false,
+            include_excluded: false,
+            branch_view: None,
+            extra: BTreeMap::new(),
+        },
+    );
+    task.data_view_receipts.insert(key.clone(), receipt.clone());
+    let mut result = NodeResult {
+        schema_version: None,
+        node_id: task.node_plan.node_id.clone(),
+        outputs: BTreeMap::new(),
+        predictions: Vec::new(),
+        classification_probabilities: Vec::new(),
+        observation_predictions: Vec::new(),
+        aggregated_predictions: Vec::new(),
+        explanations: Vec::new(),
+        shape_deltas: Vec::new(),
+        artifacts: Vec::new(),
+        artifact_handles: BTreeMap::new(),
+        consumed_data_views: BTreeMap::from([(
+            key.clone(),
+            DataViewConsumption {
+                receipt: receipt.clone(),
+                read_batches: vec![
+                    vec![sample_ids[0].clone(), sample_ids[2].clone()],
+                    vec![sample_ids[2].clone(), sample_ids[0].clone()],
+                ],
+            },
+        )]),
+        fit_influence_diagnostics: Vec::new(),
+        regression_targets: Vec::new(),
+        lineage: LineageRecord {
+            record_id: LineageId::new("lineage:consumed.view").unwrap(),
+            run_id: task.run_id.clone(),
+            node_id: task.node_plan.node_id.clone(),
+            phase: task.phase,
+            controller_id: task.node_plan.controller_id.clone(),
+            controller_version: task.node_plan.controller_version.clone(),
+            variant_id: task.variant_id.clone(),
+            fold_id: task.fold_id.clone(),
+            branch_path: task.branch_path.clone(),
+            input_lineage: Vec::new(),
+            artifact_refs: Vec::new(),
+            params_fingerprint: task.node_plan.params_fingerprint.clone(),
+            data_model_shape_fingerprint: None,
+            aggregation_policy_fingerprint: None,
+            seed: task.seed,
+            unsafe_flags: BTreeSet::new(),
+            metrics: BTreeMap::new(),
+            loss_attestations: Vec::new(),
+            early_stopping_records: Vec::new(),
+        },
+    };
+    result.validate_consumed_data_views_for_task(&task).unwrap();
+    let encoded = serde_json::to_value(&result).unwrap();
+    assert_eq!(
+        encoded["consumed_data_views"][&key]["read_batches"],
+        serde_json::json!([["sample:a", "sample:c"], ["sample:c", "sample:a"]])
+    );
+    assert_eq!(
+        serde_json::from_value::<NodeResult>(encoded).unwrap(),
+        result
+    );
+
+    let consumed = result.consumed_data_views.get_mut(&key).unwrap();
+    consumed
+        .read_batches
+        .push(vec![sample_ids[0].clone(), sample_ids[0].clone()]);
+    assert!(result
+        .validate_consumed_data_views_for_task(&task)
+        .unwrap_err()
+        .to_string()
+        .contains("invalid ordered read IDs"));
+    result
+        .consumed_data_views
+        .get_mut(&key)
+        .unwrap()
+        .read_batches = vec![vec![SampleId::new("sample:alien").unwrap()]];
+    assert!(result
+        .validate_consumed_data_views_for_task(&task)
+        .unwrap_err()
+        .to_string()
+        .contains("invalid ordered read IDs"));
+    result
+        .consumed_data_views
+        .get_mut(&key)
+        .unwrap()
+        .read_batches = Vec::new();
+    assert!(result
+        .validate_consumed_data_views_for_task(&task)
+        .unwrap_err()
+        .to_string()
+        .contains("without read batches"));
+    result
+        .consumed_data_views
+        .get_mut(&key)
+        .unwrap()
+        .read_batches = vec![Vec::new()];
+    assert!(result
+        .validate_consumed_data_views_for_task(&task)
+        .unwrap_err()
+        .to_string()
+        .contains("invalid ordered read IDs"));
+    result
+        .consumed_data_views
+        .get_mut(&key)
+        .unwrap()
+        .read_batches = vec![vec![sample_ids[0].clone()]];
+    result
+        .consumed_data_views
+        .get_mut(&key)
+        .unwrap()
+        .receipt
+        .content_fingerprint = "d".repeat(64);
+    assert!(result
+        .validate_consumed_data_views_for_task(&task)
+        .unwrap_err()
+        .to_string()
+        .contains("different from its native task"));
+    result.consumed_data_views.clear();
+    result.consumed_data_views.insert(
+        "data:other".to_string(),
+        DataViewConsumption {
+            receipt,
+            read_batches: vec![vec![sample_ids[0].clone()]],
+        },
+    );
+    assert!(result
+        .validate_consumed_data_views_for_task(&task)
+        .unwrap_err()
+        .to_string()
+        .contains("unreceipted data view"));
+}
+
+#[test]
 fn feature_partition_join_restores_fold_identity_and_rejects_mismatched_inputs() {
     let mut task = fit_influence_validation_task(FitInfluenceTask::default());
     let ids = vec![
@@ -8178,6 +8353,7 @@ fn node_result_validation_rejects_predictions_outside_validation_view() {
     let result = NodeResult {
         schema_version: None,
         classification_probabilities: Vec::new(),
+        consumed_data_views: std::collections::BTreeMap::new(),
         node_id: model_id.clone(),
         outputs: BTreeMap::from([(
             "out".to_string(),
@@ -8312,6 +8488,7 @@ fn node_result_validation_rejects_aggregated_units_outside_validation_view() {
     let mut result = NodeResult {
         schema_version: None,
         classification_probabilities: Vec::new(),
+        consumed_data_views: std::collections::BTreeMap::new(),
         node_id: model_id.clone(),
         outputs: BTreeMap::from([(
             "out".to_string(),
@@ -8494,6 +8671,7 @@ fn controller_emitted_aggregated_block_must_match_policy_level() {
     let base_result = |level: PredictionLevel, unit: PredictionUnitId| NodeResult {
         schema_version: None,
         classification_probabilities: Vec::new(),
+        consumed_data_views: std::collections::BTreeMap::new(),
         node_id: model_id.clone(),
         outputs: BTreeMap::new(),
         predictions: vec![PredictionBlock {
@@ -11144,6 +11322,7 @@ fn native_scoring_collects_reports_and_builds_score_set() {
     let make = |regression_targets: Vec<RegressionTargetBlock>| NodeResult {
         schema_version: None,
         classification_probabilities: Vec::new(),
+        consumed_data_views: std::collections::BTreeMap::new(),
         node_id: node.clone(),
         outputs: BTreeMap::new(),
         predictions: vec![predictions.clone()],
@@ -11247,6 +11426,7 @@ fn auxiliary_prediction_port_matches_primary_cohort_and_does_not_score() {
     let mut result = NodeResult {
         schema_version: None,
         classification_probabilities: Vec::new(),
+        consumed_data_views: std::collections::BTreeMap::new(),
         node_id: node_id.clone(),
         outputs: BTreeMap::new(),
         predictions: vec![primary, auxiliary],
@@ -11603,6 +11783,7 @@ impl RuntimeController for VariantScoringController {
         Ok(NodeResult {
             schema_version: None,
             classification_probabilities: Vec::new(),
+            consumed_data_views: std::collections::BTreeMap::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([("pred".to_string(), output)]),
             predictions,
@@ -13566,6 +13747,7 @@ impl RuntimeController for MultiPortVariantScoringController {
         Ok(NodeResult {
             schema_version: None,
             classification_probabilities: Vec::new(),
+            consumed_data_views: std::collections::BTreeMap::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([
                 ("pred".to_string(), output.clone()),
@@ -15072,6 +15254,7 @@ impl RuntimeController for BranchScopeRecordingController {
         Ok(NodeResult {
             schema_version: None,
             classification_probabilities: Vec::new(),
+            consumed_data_views: std::collections::BTreeMap::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([
                 ("pred".to_string(), prediction_output.clone()),
@@ -15171,6 +15354,7 @@ impl RuntimeController for OverlapEmittingController {
         Ok(NodeResult {
             schema_version: None,
             classification_probabilities: Vec::new(),
+            consumed_data_views: std::collections::BTreeMap::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([
                 ("pred".to_string(), prediction_output.clone()),
@@ -15816,6 +16000,7 @@ impl RuntimeController for SilentBranchController {
         Ok(NodeResult {
             schema_version: None,
             classification_probabilities: Vec::new(),
+            consumed_data_views: std::collections::BTreeMap::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([
                 ("oof".to_string(), output.clone()),
@@ -15982,6 +16167,7 @@ impl RuntimeController for ScoringBranchController {
         Ok(NodeResult {
             schema_version: None,
             classification_probabilities: Vec::new(),
+            consumed_data_views: std::collections::BTreeMap::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([
                 ("pred".to_string(), prediction_output.clone()),
@@ -16723,6 +16909,7 @@ impl RuntimeController for FusionBranchController {
         Ok(NodeResult {
             schema_version: None,
             classification_probabilities: Vec::new(),
+            consumed_data_views: std::collections::BTreeMap::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([
                 ("pred".to_string(), prediction_output.clone()),
@@ -17178,6 +17365,7 @@ impl RuntimeController for ProbaBranchController {
         Ok(NodeResult {
             schema_version: None,
             classification_probabilities: Vec::new(),
+            consumed_data_views: std::collections::BTreeMap::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([
                 ("pred".to_string(), prediction_output.clone()),
@@ -17441,6 +17629,7 @@ impl RuntimeController for OffFoldScoringController {
         Ok(NodeResult {
             schema_version: None,
             classification_probabilities: Vec::new(),
+            consumed_data_views: std::collections::BTreeMap::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([
                 ("pred".to_string(), prediction_output.clone()),
@@ -17788,6 +17977,7 @@ impl RuntimeController for OffFoldDuplicationController {
         Ok(NodeResult {
             schema_version: None,
             classification_probabilities: Vec::new(),
+            consumed_data_views: std::collections::BTreeMap::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([
                 ("pred".to_string(), prediction_output.clone()),
@@ -18276,6 +18466,7 @@ impl RuntimeController for DuplicateSampleBranchController {
         Ok(NodeResult {
             schema_version: None,
             classification_probabilities: Vec::new(),
+            consumed_data_views: std::collections::BTreeMap::new(),
             node_id: node_id.clone(),
             outputs: BTreeMap::from([
                 ("pred".to_string(), prediction_output.clone()),
@@ -18413,6 +18604,7 @@ impl RuntimeController for StackingOffFoldController {
         Ok(NodeResult {
             schema_version: None,
             classification_probabilities: Vec::new(),
+            consumed_data_views: std::collections::BTreeMap::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([(
                 "pred".to_string(),
@@ -18852,6 +19044,7 @@ impl RuntimeController for OperatorScoringController {
         Ok(NodeResult {
             schema_version: None,
             classification_probabilities: Vec::new(),
+            consumed_data_views: std::collections::BTreeMap::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs: BTreeMap::from([("oof".to_string(), output)]),
             predictions,

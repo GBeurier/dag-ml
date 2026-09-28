@@ -212,6 +212,7 @@ impl RuntimeController for TrainingController {
             outputs,
             predictions,
             classification_probabilities: Vec::new(),
+            consumed_data_views: std::collections::BTreeMap::new(),
             observation_predictions: Vec::new(),
             aggregated_predictions: Vec::new(),
             explanations: Vec::new(),

@@ -475,6 +475,7 @@ pub(crate) fn reassemble_branch_merge_off_fold(
     Ok(Some(NodeResult {
         schema_version: None,
         classification_probabilities: Vec::new(),
+        consumed_data_views: std::collections::BTreeMap::new(),
         node_id: node_plan.node_id.clone(),
         outputs: BTreeMap::new(),
         predictions: vec![merged],
@@ -844,6 +845,7 @@ pub(crate) fn reassemble_separation_merge(
     Ok(Some(NodeResult {
         schema_version: None,
         classification_probabilities: Vec::new(),
+        consumed_data_views: std::collections::BTreeMap::new(),
         node_id: node_plan.node_id.clone(),
         outputs: BTreeMap::new(),
         predictions: vec![merged],
@@ -1110,6 +1112,7 @@ pub(crate) fn reassemble_fusion_merge(
     Ok(Some(NodeResult {
         schema_version: None,
         classification_probabilities: Vec::new(),
+        consumed_data_views: std::collections::BTreeMap::new(),
         node_id: node_plan.node_id.clone(),
         outputs: BTreeMap::new(),
         predictions: vec![merged],
