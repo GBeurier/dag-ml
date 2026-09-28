@@ -545,7 +545,7 @@ def run_host_hpo_search_in_process(
     dsl: Any, envelope: Any, controller_manifests: Any, request: Any,
     op_callback: Any, optimizer_callback: Any,
     *, resume_checkpoint: Any = None, progress_callback: Any = None,
-    candidate_callback_factory: Any = None,
+    candidate_callback_factory: Any = None, view_callback_factory: Any = None,
 ) -> dict[str, Any]:
     """Run scheduler-owned FIT_CV trials using host ask/tell proposals.
 
@@ -565,6 +565,12 @@ def run_host_hpo_search_in_process(
     ``target_node`` selects the scored producer. An absent or empty mapping
     retains single-target routing. Bindings are validated before callbacks and
     fingerprinted for resume; returned parameter keys remain public keys.
+
+    ``view_callback_factory(trial_index)`` is a non-durable, sequential bridge
+    for candidate-local generated views. Its callback receives the native view
+    request and handle; the result includes ``generated_view_manifest``.
+    Checkpoint/resume and parallel trials remain closed for this mode until
+    generated content is paired atomically with the optimizer checkpoint.
     """
     return json.loads(_native_run_host_hpo_search_in_process(
         _coerce_json(dsl), _coerce_json(envelope), _coerce_json(controller_manifests),
@@ -572,6 +578,7 @@ def run_host_hpo_search_in_process(
         resume_checkpoint_json=None if resume_checkpoint is None else _coerce_json(resume_checkpoint),
         progress_callback=progress_callback,
         candidate_callback_factory=candidate_callback_factory,
+        view_callback_factory=view_callback_factory,
     ))
 
 

@@ -35,10 +35,9 @@
 //! returned `scores` is byte-identical to the bundle's `scores` the subprocess
 //! path reads back.
 
-use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::panic::AssertUnwindSafe;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use pyo3::prelude::*;
 use pyo3::types::PyAnyMethods;
@@ -419,7 +418,17 @@ where
 struct PyViewDataProvider {
     inner: InMemoryDataProvider,
     callback: Py<PyAny>,
-    receipts: Rc<RefCell<BTreeMap<String, GeneratedViewRecord>>>,
+    receipts: GeneratedReceiptRegistry,
+}
+
+type GeneratedReceiptRegistry = Arc<Mutex<BTreeMap<String, GeneratedViewRecord>>>;
+
+fn lock_generated_receipts(
+    receipts: &GeneratedReceiptRegistry,
+) -> dag_ml_core::Result<MutexGuard<'_, BTreeMap<String, GeneratedViewRecord>>> {
+    receipts.lock().map_err(|_| {
+        CoreDagMlError::RuntimeValidation("generated view receipt registry is poisoned".into())
+    })
 }
 
 /// One stable data request and its host-attested content. Runtime handles and
@@ -739,7 +748,7 @@ impl RuntimeDataProvider for PyViewDataProvider {
             )
         })?;
         let record = GeneratedViewRecord::from_receipt(request, &receipt)?;
-        record_generated_view(&mut self.receipts.borrow_mut(), record)?;
+        record_generated_view(&mut *lock_generated_receipts(&self.receipts)?, record)?;
         Ok(AttestedDataView {
             handle,
             receipt: Some(receipt),
@@ -830,11 +839,11 @@ pub fn probe_data_view_in_process(
         envelope,
     )
     .map_err(py_core_error)?;
-    let receipts = Rc::new(RefCell::new(BTreeMap::new()));
+    let receipts = Arc::new(Mutex::new(BTreeMap::new()));
     let provider = PyViewDataProvider {
         inner,
         callback: view_callback,
-        receipts: Rc::clone(&receipts),
+        receipts: Arc::clone(&receipts),
     };
     request.data_handle = provider
         .materialize(&DataMaterializationRequest {
@@ -849,8 +858,8 @@ pub fn probe_data_view_in_process(
         })
         .map_err(py_core_error)?;
     let handle = provider.make_view(&request).map_err(py_core_error)?;
-    let record = receipts
-        .borrow()
+    let record = lock_generated_receipts(&receipts)
+        .map_err(py_core_error)?
         .get(&request.view_key)
         .cloned()
         .ok_or_else(|| {
@@ -867,7 +876,8 @@ pub fn probe_data_view_in_process(
     });
     if include_manifest {
         payload["generated_view_manifest"] =
-            generated_view_manifest(&receipts.borrow()).map_err(py_core_error)?;
+            generated_view_manifest(&*lock_generated_receipts(&receipts).map_err(py_core_error)?)
+                .map_err(py_core_error)?;
     }
     serde_json::to_string(&payload).map_err(py_serde_error)
 }
@@ -888,6 +898,8 @@ struct PyHostHpoProposals {
 struct PyHostHpoProviderFactory {
     envelope: ExternalDataPlanEnvelope,
     controller_id: ControllerId,
+    view_callback_factory: Option<Py<PyAny>>,
+    receipts: GeneratedReceiptRegistry,
 }
 
 struct PyHostHpoControllerFactory {
@@ -916,12 +928,29 @@ impl dag_ml_core::HostHpoCandidateControllerFactory for PyHostHpoControllerFacto
 impl dag_ml_core::HostHpoCandidateProviderFactory for PyHostHpoProviderFactory {
     fn create(
         &self,
-        _trial_index: u32,
+        trial_index: u32,
     ) -> dag_ml_core::Result<Box<dyn dag_ml_core::RuntimeDataProvider + Send>> {
-        Ok(Box::new(InMemoryDataProvider::with_envelope(
-            self.controller_id.clone(),
-            self.envelope.clone(),
-        )?))
+        let inner =
+            InMemoryDataProvider::with_envelope(self.controller_id.clone(), self.envelope.clone())?;
+        let Some(factory) = &self.view_callback_factory else {
+            return Ok(Box::new(inner));
+        };
+        Python::attach(|py| {
+            let callback = factory
+                .bind(py)
+                .call1((trial_index,))
+                .map_err(core_error_from_py)?;
+            if !callback.is_callable() {
+                return Err(CoreDagMlError::RuntimeValidation(
+                    "host HPO view callback factory must return a callable".into(),
+                ));
+            }
+            Ok(Box::new(PyViewDataProvider {
+                inner,
+                callback: callback.unbind(),
+                receipts: Arc::clone(&self.receipts),
+            }) as Box<dyn RuntimeDataProvider + Send>)
+        })
     }
 }
 
@@ -1086,7 +1115,7 @@ pub fn recover_host_hpo_checkpoint_json(
 /// Bounded nonportable host-optimizer search. Only proposals cross from the
 /// tuner; all candidate execution, scoring and selection remain in core.
 #[pyfunction]
-#[pyo3(signature = (dsl_json, envelope_json, controller_manifests_json, request_json, op_callback, optimizer_callback, *, resume_checkpoint_json=None, progress_callback=None, candidate_callback_factory=None))]
+#[pyo3(signature = (dsl_json, envelope_json, controller_manifests_json, request_json, op_callback, optimizer_callback, *, resume_checkpoint_json=None, progress_callback=None, candidate_callback_factory=None, view_callback_factory=None))]
 #[allow(clippy::too_many_arguments)]
 pub fn run_host_hpo_search_in_process(
     py: Python<'_>,
@@ -1099,6 +1128,7 @@ pub fn run_host_hpo_search_in_process(
     resume_checkpoint_json: Option<&str>,
     progress_callback: Option<Py<PyAny>>,
     candidate_callback_factory: Option<Py<PyAny>>,
+    view_callback_factory: Option<Py<PyAny>>,
 ) -> PyResult<String> {
     if !op_callback.bind(py).is_callable() || !optimizer_callback.bind(py).is_callable() {
         return Err(py_core_error(CoreDagMlError::RuntimeValidation(
@@ -1119,6 +1149,22 @@ pub fn run_host_hpo_search_in_process(
     {
         return Err(py_core_error(CoreDagMlError::RuntimeValidation(
             "host HPO candidate callback factory must be callable".into(),
+        )));
+    }
+    if view_callback_factory
+        .as_ref()
+        .is_some_and(|callback| !callback.bind(py).is_callable())
+    {
+        return Err(py_core_error(CoreDagMlError::RuntimeValidation(
+            "host HPO view callback factory must be callable".into(),
+        )));
+    }
+    if view_callback_factory.is_some()
+        && (resume_checkpoint_json.is_some() || progress_callback.is_some())
+    {
+        return Err(py_core_error(CoreDagMlError::RuntimeValidation(
+            "host HPO generated views require a checkpoint-bound manifest before durable search"
+                .into(),
         )));
     }
     let envelope: ExternalDataPlanEnvelope = dag_ml_core::canonical::deserialize_external_contract(
@@ -1179,9 +1225,12 @@ pub fn run_host_hpo_search_in_process(
         .map_err(py_core_error)?;
     let provider_controller_id =
         ControllerId::new("controller:data.provider").map_err(py_core_error)?;
+    let generated_receipts = Arc::new(Mutex::new(BTreeMap::new()));
     let provider_factory = PyHostHpoProviderFactory {
         envelope: envelope.clone(),
         controller_id: provider_controller_id.clone(),
+        view_callback_factory,
+        receipts: Arc::clone(&generated_receipts),
     };
     let provider = InMemoryDataProvider::with_envelope(provider_controller_id, envelope)
         .map_err(py_core_error)?;
@@ -1196,6 +1245,11 @@ pub fn run_host_hpo_search_in_process(
         .get("n_jobs")
         .and_then(serde_json::Value::as_i64)
         .unwrap_or(1);
+    if provider_factory.view_callback_factory.is_some() && n_jobs != 1 {
+        return Err(py_core_error(CoreDagMlError::RuntimeValidation(
+            "host HPO generated views require sequential candidate execution".into(),
+        )));
+    }
     if n_jobs != 1 {
         let workers = if n_jobs == -1 {
             std::thread::available_parallelism()
@@ -1322,7 +1376,16 @@ pub fn run_host_hpo_search_in_process(
         )
     }
     .map_err(py_core_error)?;
-    serde_json::to_string(&result).map_err(py_serde_error)
+    if provider_factory.view_callback_factory.is_some() {
+        let mut payload = serde_json::to_value(&result).map_err(py_serde_error)?;
+        payload["generated_view_manifest"] = generated_view_manifest(
+            &*lock_generated_receipts(&generated_receipts).map_err(py_core_error)?,
+        )
+        .map_err(py_core_error)?;
+        serde_json::to_string(&payload).map_err(py_serde_error)
+    } else {
+        serde_json::to_string(&result).map_err(py_serde_error)
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -2410,12 +2473,12 @@ fn run_cv_refit_in_process_impl(
     .map_err(py_core_error)?;
     let generated_receipts = view_callback
         .as_ref()
-        .map(|_| Rc::new(RefCell::new(BTreeMap::new())));
+        .map(|_| Arc::new(Mutex::new(BTreeMap::new())));
     let data_provider: Box<dyn RuntimeDataProvider> = match view_callback {
         Some(callback) => Box::new(PyViewDataProvider {
             inner: static_provider,
             callback,
-            receipts: Rc::clone(
+            receipts: Arc::clone(
                 generated_receipts
                     .as_ref()
                     .expect("receipt registry initialized"),
@@ -2437,7 +2500,9 @@ fn run_cv_refit_in_process_impl(
     )
     .map_err(py_core_error)?;
     if let Some(receipts) = generated_receipts {
-        let manifest = generated_view_manifest(&receipts.borrow()).map_err(py_core_error)?;
+        let manifest =
+            generated_view_manifest(&*lock_generated_receipts(&receipts).map_err(py_core_error)?)
+                .map_err(py_core_error)?;
         let payload = run.payload.as_object_mut().ok_or_else(|| {
             py_core_error(CoreDagMlError::RuntimeValidation(
                 "CV/refit result has no object payload for generated view manifest".into(),
