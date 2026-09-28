@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from parity.conformal.oracle import fingerprint_without  # noqa: E402
-
+from parity.schema_dependencies import with_transitive_schema_dependencies  # noqa: E402
 
 FIXTURE = ROOT / "examples/fixtures/criteria/criteria_contracts.v1.json"
 PROVIDER_FIXTURE = ROOT / "examples/fixtures/criteria/metric_provider_contracts.v1.json"
@@ -663,7 +663,7 @@ def main() -> None:
         "fingerprint_profile": "DAGML-TCV1-unicode-17.0.0",
         "artifacts": [
             {"path": path, "sha256": sha256(ROOT / path), "kind": kind}
-            for path, kind in sorted(ARTIFACTS.items())
+            for path, kind in sorted(with_transitive_schema_dependencies(ROOT, ARTIFACTS).items())
         ],
         "required_negative_cases": [
             case["id"] for case in fixture["invalid"] + provider_fixture["invalid"]

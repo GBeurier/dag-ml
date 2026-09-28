@@ -120,7 +120,12 @@
     },
     {
       "path": "docs/contracts/node_result.schema.json",
-      "sha256": "bbfd6d3fa75ddee594df2812246a750231e863ba090eb36fb1db71c015716231",
+      "sha256": "23cc1f570249f61546fcc7d834f2e76478e8ec81c52bfe3fe905917053b3894e",
+      "kind": "schema_dependency"
+    },
+    {
+      "path": "docs/contracts/node_task.schema.json",
+      "sha256": "dc6c4eeab7767dec1b5a69b8c4a42f14fa9c8c62a384d9919559b39da573e1e6",
       "kind": "schema_dependency"
     },
     {
@@ -458,5 +463,5 @@
       ]
     }
   ],
-  "pack_checksum": "5d6f0f8fb3e65f42c5acd1483020ff2ddfcb44299b9db4f09f66fec6fe207f37"
+  "pack_checksum": "a4262bf168d2d7e9432be1af159be7a4e368434c29cee74e056cf5755a238adf"
 }

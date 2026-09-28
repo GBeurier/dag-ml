@@ -777,6 +777,7 @@ impl MethodsEstimatorController {
         Ok(NodeResult {
             schema_version: None,
             classification_probabilities: scores.classification_probabilities,
+            consumed_data_views: std::collections::BTreeMap::new(),
             node_id: task.node_plan.node_id.clone(),
             outputs,
             predictions: scores.predictions,

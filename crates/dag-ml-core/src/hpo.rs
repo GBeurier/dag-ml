@@ -1826,6 +1826,7 @@ mod pls_controller {
             Ok(NodeResult {
                 schema_version: None,
                 classification_probabilities: Vec::new(),
+                consumed_data_views: std::collections::BTreeMap::new(),
                 node_id: task.node_plan.node_id.clone(),
                 outputs: BTreeMap::from([("oof".to_string(), self.handle(HandleKind::Prediction))]),
                 predictions: vec![prediction],
@@ -2360,6 +2361,7 @@ mod pls_controller {
             Ok(NodeResult {
                 schema_version: None,
                 classification_probabilities: Vec::new(),
+                consumed_data_views: std::collections::BTreeMap::new(),
                 node_id: task.node_plan.node_id.clone(),
                 outputs: BTreeMap::from([("oof".to_string(), self.handle(HandleKind::Prediction))]),
                 predictions: vec![PredictionBlock {

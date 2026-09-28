@@ -3531,6 +3531,7 @@ mod hpo_scheduler_tests {
             Ok(NodeResult {
                 schema_version: None,
                 classification_probabilities: Vec::new(),
+                consumed_data_views: std::collections::BTreeMap::new(),
                 node_id: task.node_plan.node_id.clone(),
                 outputs: BTreeMap::from([(
                     "prediction".to_string(),

@@ -49,6 +49,13 @@
         "$ref": "https://github.com/GBeurier/dag-ml/schemas/node_result.v1.schema.json#/$defs/handle_ref"
       }
     },
+    "consumed_data_views": {
+      "type": "object",
+      "description": "Host-reported materialization reads of scheduler-selected feature views, including possible mask checks; these do not prove estimator consumption or authorize dynamic fit.",
+      "additionalProperties": {
+        "$ref": "https://github.com/GBeurier/dag-ml/schemas/node_result.v1.schema.json#/$defs/data_view_consumption"
+      }
+    },
     "fit_influence_diagnostics": {
       "type": "array",
       "items": {
