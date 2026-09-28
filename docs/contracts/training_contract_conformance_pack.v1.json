@@ -166,7 +166,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/runtime/task.rs",
-      "sha256": "c20c056f5f7954fdadb831930d7725a5d67376f16b2d63ea9d448f51f6d9a23a",
+      "sha256": "39040e011c909578c48e54699c803b63a71177cabb2613a202aba1c908e2f67a",
       "kind": "typed_runtime_dependency"
     },
     {
@@ -604,5 +604,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "febc03eb3aa629e01278747dd695f80f216b9c84fb24195ebd669c4e2eb05627"
+  "pack_checksum": "1b22c207c47c2e610dd44a834217119312037ab8670c23f6d3de1e9315bdb6a3"
 }
