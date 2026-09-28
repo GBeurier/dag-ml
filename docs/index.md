@@ -20,6 +20,7 @@ wire nirs4all directly.
 | Map aggregation across `dag-ml-data` | [Aggregation interop](AGGREGATION_INTEROP.md) |
 | Run release performance probes | [Performance probes](PERFORMANCE.md) |
 | Map nirs4all parity capabilities | [Capability matrix](CAPABILITY_MATRIX.md) |
+| Plan R parity and cross-language model transfer | [R binding parity and interoperability](R_BINDING_PARITY_AND_INTEROP.md) |
 | Inspect shared contracts | [Contract manifests](contracts/README.md) |
 | Use native training/fine-tuning contracts | [Training contracts](TRAINING_CONTRACTS.md) |
 | Review public training replay syntax and migration | [Training replay contracts](TRAINING_REPLAY_CONTRACTS.md) |
@@ -84,6 +85,7 @@ ARCHITECTURE
 COORDINATOR_SPEC
 ABI
 CAPABILITY_MATRIX
+R_BINDING_PARITY_AND_INTEROP
 DAG_ML_NODE_CATEGORIES
 ```
 
