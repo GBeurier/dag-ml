@@ -200,7 +200,27 @@
             "uniqueItems": true,
             "items": { "$ref": "#/$defs/identifier" }
           }
+        },
+        "model_calls": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/model_input_call" }
         }
+      }
+    },
+    "model_input_call": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operation", "sample_ids", "input_fingerprint"],
+      "properties": {
+        "operation": { "enum": ["fit", "predict", "predict_proba"] },
+        "sample_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/identifier" }
+        },
+        "input_fingerprint": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "target_fingerprint": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
       }
     },
     "prediction_block": {

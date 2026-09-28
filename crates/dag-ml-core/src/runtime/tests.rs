@@ -7157,6 +7157,12 @@ fn node_result_consumption_binds_a_successful_read_to_its_native_receipt() {
                     vec![sample_ids[0].clone(), sample_ids[2].clone()],
                     vec![sample_ids[2].clone(), sample_ids[0].clone()],
                 ],
+                model_calls: vec![ModelInputCall {
+                    operation: ModelInputOperation::Fit,
+                    sample_ids: vec![sample_ids[0].clone(), sample_ids[2].clone()],
+                    input_fingerprint: "a".repeat(64),
+                    target_fingerprint: Some("b".repeat(64)),
+                }],
             },
         )]),
         fit_influence_diagnostics: Vec::new(),
@@ -7190,9 +7196,50 @@ fn node_result_consumption_binds_a_successful_read_to_its_native_receipt() {
         serde_json::json!([["sample:a", "sample:c"], ["sample:c", "sample:a"]])
     );
     assert_eq!(
+        encoded["consumed_data_views"][&key]["model_calls"][0]["operation"],
+        "fit"
+    );
+    assert_eq!(
         serde_json::from_value::<NodeResult>(encoded).unwrap(),
         result
     );
+
+    let consumed = result.consumed_data_views.get_mut(&key).unwrap();
+    consumed.model_calls[0].sample_ids = vec![sample_ids[0].clone(), sample_ids[1].clone()];
+    assert!(result
+        .validate_consumed_data_views_for_task(&task)
+        .unwrap_err()
+        .to_string()
+        .contains("outside its ordered reads"));
+    let consumed = result.consumed_data_views.get_mut(&key).unwrap();
+    consumed.model_calls[0].sample_ids = vec![sample_ids[0].clone(), sample_ids[2].clone()];
+    consumed.model_calls[0].input_fingerprint = "not-sha256".to_string();
+    assert!(result
+        .validate_consumed_data_views_for_task(&task)
+        .unwrap_err()
+        .to_string()
+        .contains("valid SHA-256"));
+    let consumed = result.consumed_data_views.get_mut(&key).unwrap();
+    consumed.model_calls[0].input_fingerprint = "a".repeat(64);
+    consumed.model_calls[0].target_fingerprint = None;
+    assert!(result
+        .validate_consumed_data_views_for_task(&task)
+        .unwrap_err()
+        .to_string()
+        .contains("outside a training scope"));
+    result
+        .consumed_data_views
+        .get_mut(&key)
+        .unwrap()
+        .model_calls[0]
+        .target_fingerprint = Some("b".repeat(64));
+    task.data_views.get_mut(&key).unwrap().partition = DataRequestPartition::FullTrain;
+    assert!(result
+        .validate_consumed_data_views_for_task(&task)
+        .unwrap_err()
+        .to_string()
+        .contains("outside a training scope"));
+    task.data_views.get_mut(&key).unwrap().partition = DataRequestPartition::FoldTrain;
 
     let consumed = result.consumed_data_views.get_mut(&key).unwrap();
     consumed
@@ -7255,6 +7302,7 @@ fn node_result_consumption_binds_a_successful_read_to_its_native_receipt() {
         DataViewConsumption {
             receipt,
             read_batches: vec![vec![sample_ids[0].clone()]],
+            model_calls: Vec::new(),
         },
     );
     assert!(result
