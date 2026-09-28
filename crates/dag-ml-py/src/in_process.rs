@@ -510,6 +510,78 @@ struct GeneratedViewManifest {
     fingerprint: String,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GeneratedViewRecheck {
+    schema_fingerprint: String,
+    content_fingerprint: String,
+}
+
+fn restore_host_hpo_generated_receipts(
+    checkpoint: &dag_ml_core::HostHpoCheckpoint,
+    validator: &Py<PyAny>,
+    receipts: &GeneratedReceiptRegistry,
+) -> dag_ml_core::Result<()> {
+    checkpoint.verify_seal()?;
+    let mut previous = BTreeMap::new();
+    for trial in &checkpoint.trials {
+        let value = match trial {
+            dag_ml_core::HostHpoTerminalTrial::Complete { evidence } => {
+                evidence.generated_view_manifest.as_ref()
+            }
+            dag_ml_core::HostHpoTerminalTrial::Pruned { evidence } => {
+                evidence.generated_view_manifest.as_ref()
+            }
+            dag_ml_core::HostHpoTerminalTrial::Failed { .. } => {
+                return Err(CoreDagMlError::RuntimeValidation(
+                    "generated host HPO cannot resume a failed trial without a view manifest"
+                        .into(),
+                ));
+            }
+        }
+        .ok_or_else(|| {
+            CoreDagMlError::RuntimeValidation(
+                "generated host HPO checkpoint has a terminal trial without a view manifest".into(),
+            )
+        })?;
+        let manifest: GeneratedViewManifest =
+            serde_json::from_value(value.clone()).map_err(|error| {
+                CoreDagMlError::RuntimeValidation(format!(
+                    "generated host HPO checkpoint has an invalid view manifest: {error}"
+                ))
+            })?;
+        validate_generated_view_manifest(&manifest)?;
+        let current = manifest
+            .views
+            .into_iter()
+            .map(|record| (record.view_key.clone(), record))
+            .collect::<BTreeMap<_, _>>();
+        if previous
+            .iter()
+            .any(|(key, record)| current.get(key) != Some(record))
+        {
+            return Err(CoreDagMlError::RuntimeValidation(
+                "generated host HPO checkpoint changed a previously attested view".into(),
+            ));
+        }
+        previous = current;
+    }
+    for record in previous.values() {
+        let rechecked: GeneratedViewRecheck =
+            call_py_bridge(validator, record, "generated view resume")?;
+        if rechecked.schema_fingerprint != record.schema_fingerprint
+            || rechecked.content_fingerprint != record.content_fingerprint
+        {
+            return Err(CoreDagMlError::RuntimeValidation(format!(
+                "generated host HPO resume changed content for view key `{}`",
+                record.view_key
+            )));
+        }
+    }
+    *lock_generated_receipts(receipts)? = previous;
+    Ok(())
+}
+
 fn generated_views_fingerprint(views: &[GeneratedViewRecord]) -> dag_ml_core::Result<String> {
     // TCV1 canonicalizes object keys, Unicode and binary64 numbers across
     // language runtimes. The array is sorted by view_key before hashing.
@@ -709,6 +781,12 @@ struct PyViewCall<'a> {
 impl RuntimeDataProvider for PyViewDataProvider {
     fn generated_views_enabled(&self) -> bool {
         true
+    }
+
+    fn generated_view_manifest(&self) -> dag_ml_core::Result<Option<serde_json::Value>> {
+        Ok(Some(generated_view_manifest(&*lock_generated_receipts(
+            &self.receipts,
+        )?)?))
     }
 
     fn materialize(&self, request: &DataMaterializationRequest) -> dag_ml_core::Result<HandleRef> {
@@ -1115,7 +1193,7 @@ pub fn recover_host_hpo_checkpoint_json(
 /// Bounded nonportable host-optimizer search. Only proposals cross from the
 /// tuner; all candidate execution, scoring and selection remain in core.
 #[pyfunction]
-#[pyo3(signature = (dsl_json, envelope_json, controller_manifests_json, request_json, op_callback, optimizer_callback, *, resume_checkpoint_json=None, progress_callback=None, candidate_callback_factory=None, view_callback_factory=None))]
+#[pyo3(signature = (dsl_json, envelope_json, controller_manifests_json, request_json, op_callback, optimizer_callback, *, resume_checkpoint_json=None, progress_callback=None, candidate_callback_factory=None, view_callback_factory=None, resume_view_validator=None))]
 #[allow(clippy::too_many_arguments)]
 pub fn run_host_hpo_search_in_process(
     py: Python<'_>,
@@ -1129,6 +1207,7 @@ pub fn run_host_hpo_search_in_process(
     progress_callback: Option<Py<PyAny>>,
     candidate_callback_factory: Option<Py<PyAny>>,
     view_callback_factory: Option<Py<PyAny>>,
+    resume_view_validator: Option<Py<PyAny>>,
 ) -> PyResult<String> {
     if !op_callback.bind(py).is_callable() || !optimizer_callback.bind(py).is_callable() {
         return Err(py_core_error(CoreDagMlError::RuntimeValidation(
@@ -1159,12 +1238,27 @@ pub fn run_host_hpo_search_in_process(
             "host HPO view callback factory must be callable".into(),
         )));
     }
-    if view_callback_factory.is_some()
-        && (resume_checkpoint_json.is_some() || progress_callback.is_some())
+    if resume_view_validator
+        .as_ref()
+        .is_some_and(|callback| !callback.bind(py).is_callable())
     {
         return Err(py_core_error(CoreDagMlError::RuntimeValidation(
-            "host HPO generated views require a checkpoint-bound manifest before durable search"
-                .into(),
+            "host HPO resume view validator must be callable".into(),
+        )));
+    }
+    if resume_checkpoint_json.is_some()
+        && view_callback_factory.is_some()
+        && resume_view_validator.is_none()
+    {
+        return Err(py_core_error(CoreDagMlError::RuntimeValidation(
+            "generated host HPO resume requires a view-content validator".into(),
+        )));
+    }
+    if resume_view_validator.is_some()
+        && (resume_checkpoint_json.is_none() || view_callback_factory.is_none())
+    {
+        return Err(py_core_error(CoreDagMlError::RuntimeValidation(
+            "host HPO resume view validator requires a generated-view checkpoint".into(),
         )));
     }
     let envelope: ExternalDataPlanEnvelope = dag_ml_core::canonical::deserialize_external_contract(
@@ -1195,6 +1289,16 @@ pub fn run_host_hpo_search_in_process(
             CoreDagMlError::CampaignValidation,
         )
         .map_err(py_core_error)?;
+    let declared_generated = request
+        .optimizer_descriptor
+        .get("generated_view_mode")
+        .and_then(serde_json::Value::as_str)
+        == Some("checkpoint_manifest_v1");
+    if declared_generated != view_callback_factory.is_some() {
+        return Err(py_core_error(CoreDagMlError::RuntimeValidation(
+            "host HPO generated-view descriptor and callback factory disagree".into(),
+        )));
+    }
     let dsl = parse_pipeline_dsl_json(dsl_json.as_bytes()).map_err(py_core_error)?;
     let dsl = fan_out_data_aware_branches(&dsl, &envelope).map_err(py_core_error)?;
     if !compile_operator_variant_models(&dsl)
@@ -1223,9 +1327,20 @@ pub fn run_host_hpo_search_in_process(
     plan.campaign
         .validate_data_envelope_relations(&envelope)
         .map_err(py_core_error)?;
+    if resume_options.checkpoint.is_some() {
+        dag_ml_core::prepare_host_hpo_checkpoint(&plan, &request, &resume_options)
+            .map_err(py_core_error)?;
+    }
     let provider_controller_id =
         ControllerId::new("controller:data.provider").map_err(py_core_error)?;
     let generated_receipts = Arc::new(Mutex::new(BTreeMap::new()));
+    if let (Some(checkpoint), Some(validator)) = (
+        resume_options.checkpoint.as_ref(),
+        resume_view_validator.as_ref(),
+    ) {
+        restore_host_hpo_generated_receipts(checkpoint, validator, &generated_receipts)
+            .map_err(py_core_error)?;
+    }
     let provider_factory = PyHostHpoProviderFactory {
         envelope: envelope.clone(),
         controller_id: provider_controller_id.clone(),
@@ -1348,6 +1463,19 @@ pub fn run_host_hpo_search_in_process(
             )
         }
         .map_err(py_core_error)?;
+        if provider_factory.view_callback_factory.is_some() {
+            let mut payload = serde_json::to_value(&result).map_err(py_serde_error)?;
+            if !lock_generated_receipts(&generated_receipts)
+                .map_err(py_core_error)?
+                .is_empty()
+            {
+                payload["generated_view_manifest"] = generated_view_manifest(
+                    &*lock_generated_receipts(&generated_receipts).map_err(py_core_error)?,
+                )
+                .map_err(py_core_error)?;
+            }
+            return serde_json::to_string(&payload).map_err(py_serde_error);
+        }
         return serde_json::to_string(&result).map_err(py_serde_error);
     }
     let scheduler = SequentialScheduler;

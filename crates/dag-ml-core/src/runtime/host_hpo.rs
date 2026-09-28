@@ -161,6 +161,18 @@ pub trait HostHpoCandidateProviderFactory: Send + Sync {
     fn create(&self, trial_index: u32) -> Result<Box<dyn RuntimeDataProvider + Send>>;
 }
 
+fn host_hpo_provider_manifest(
+    provider: &dyn RuntimeDataProvider,
+) -> Result<Option<serde_json::Value>> {
+    let manifest = provider.generated_view_manifest()?;
+    if provider.generated_views_enabled() && manifest.is_none() {
+        return Err(DagMlError::RuntimeValidation(
+            "generated host HPO provider produced no view manifest".into(),
+        ));
+    }
+    Ok(manifest)
+}
+
 /// Build a controller registry with candidate-local host callback state.
 pub trait HostHpoCandidateControllerFactory: Send + Sync {
     fn create(&self, trial_index: u32) -> Result<RuntimeControllerRegistry>;
@@ -175,6 +187,8 @@ pub struct HostHpoTrialEvidence {
     pub scores: ScoreSet,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub objective_fold_scores: BTreeMap<String, f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generated_view_manifest: Option<serde_json::Value>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -200,6 +214,8 @@ pub struct HostHpoPrunedTrialEvidence {
     pub variant_id: VariantId,
     pub scores: ScoreSet,
     pub intermediate_scores: Vec<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generated_view_manifest: Option<serde_json::Value>,
 }
 
 enum HostHpoEvaluation {
@@ -582,6 +598,7 @@ pub fn evaluate_host_hpo_worker_task(
         variant_id: variant.variant_id.clone(),
         scores,
         objective_fold_scores,
+        generated_view_manifest: host_hpo_provider_manifest(provider)?,
     })
 }
 
@@ -755,6 +772,7 @@ pub fn host_hpo_worker_pruned_evidence(
         variant_id: task.candidate_plan.variants[0].variant_id.clone(),
         scores,
         intermediate_scores: folds.iter().map(|fold| fold.score).collect(),
+        generated_view_manifest: None,
     })
 }
 
@@ -1429,6 +1447,7 @@ impl SequentialScheduler {
                             variant_id: variant.variant_id.clone(),
                             scores,
                             intermediate_scores: intermediates,
+                            generated_view_manifest: host_hpo_provider_manifest(provider)?,
                         }));
                     }
                 } else {
@@ -1456,6 +1475,7 @@ impl SequentialScheduler {
                         variant_id: variant.variant_id.clone(),
                         scores,
                         objective_fold_scores,
+                        generated_view_manifest: host_hpo_provider_manifest(provider)?,
                     },
                     candidate,
                 ))
@@ -1898,6 +1918,7 @@ impl SequentialScheduler {
                                     return Ok(HostHpoEvaluation::Pruned(HostHpoPrunedTrialEvidence {
                                         trial_index, params, variant_id: variant.variant_id,
                                         scores, intermediate_scores: intermediates,
+                                        generated_view_manifest: host_hpo_provider_manifest(provider.as_ref())?,
                                     }));
                                 }
                             } else {
@@ -1913,6 +1934,7 @@ impl SequentialScheduler {
                             Ok(HostHpoEvaluation::Complete(HostHpoTrialEvidence {
                                 trial_index, params, score, variant_id: variant.variant_id,
                                 scores, objective_fold_scores,
+                                generated_view_manifest: host_hpo_provider_manifest(provider.as_ref())?,
                             }, candidate))
                         })();
                         let _ = tx.send(ParallelHostHpoEvent::Completed {
@@ -2107,7 +2129,9 @@ fn host_hpo_objective_fingerprint(request: &HostHpoSearchRequest) -> Result<Stri
     stable_json_fingerprint(&value)
 }
 
-fn prepare_host_hpo_checkpoint(
+/// Verify a resume checkpoint against the exact plan, request and data
+/// envelope before a host invokes any external data-view recheck callback.
+pub fn prepare_host_hpo_checkpoint(
     plan: &ExecutionPlan,
     request: &HostHpoSearchRequest,
     options: &HostHpoResumeOptions,
