@@ -30,6 +30,15 @@ untracked Rust inputs when that tracked extension is unchanged.
 
 ## Python Surface
 
+`dag_ml._dag_ml.probe_data_view_in_process(envelope_json, request_json,
+view_callback)` exercises the host view callback without fitting a model. It
+creates native parent/view handles, rejects IDs outside the envelope relations,
+and requires a receipt with the same handle, view key, ordered IDs, and SHA-256
+schema/content fingerprints. The caller supplies the request; this diagnostic
+does not prove scheduler fold membership or that training consumed those
+buffers. The CV/refit entry point therefore does not accept a view callback
+until the host resolver and native training identity are connected.
+
 For a concrete host-managed pipeline without cross-validation, use
 `execute_phase_in_process(dsl, envelope, controllers, callback, "REFIT",
 training_sample_ids=[...])`. Rust verifies the supplied row ordering is an

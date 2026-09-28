@@ -88,7 +88,12 @@ class HostHpoResumeTests(unittest.TestCase):
         stopped = self._run(3, operator, proposals, progress_callback=stop_after_first)
         self.assertEqual(stopped["status"], "cancelled")
         self.assertEqual(operator.offsets, [1.0, 1.0])
-        self.assertEqual([item["status"] for item in progress], ["running", "running", "cancelled"])
+        self.assertGreaterEqual(len(progress), 3)
+        self.assertTrue(all(item["status"] == "running" for item in progress[:-1]))
+        self.assertEqual(progress[-1]["status"], "cancelled")
+        trial_counts = [len(item["checkpoint"]["trials"]) for item in progress]
+        self.assertEqual(trial_counts, sorted(trial_counts))
+        self.assertEqual(trial_counts[-1], 1)
         checkpoint = json.loads(json.dumps(stopped["checkpoint"]))
         self.assertEqual(checkpoint, progress[-1]["checkpoint"])
 

@@ -33,6 +33,7 @@
 //! returned `scores` is byte-identical to the bundle's `scores` the subprocess
 //! path reads back.
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::panic::AssertUnwindSafe;
 
@@ -47,13 +48,15 @@ use dag_ml_core::{
     plan_oof_partition_mode, pruned_plan_for_operator_models,
     select_best_operator_variant_outcome_from_models, select_best_variant_outcome_by_cv,
     validate_terminal_prediction_preflight, AggregationControllerResult, AggregationControllerTask,
-    ArtifactMaterializationRequest, BundleId, ControllerId, ControllerRegistry,
-    DagMlError as CoreDagMlError, ExecutionPlan, ExplicitPhaseDataProvider,
-    ExternalDataPlanEnvelope, HandleKind, HandleRef, InMemoryArtifactStore, InMemoryDataProvider,
-    NodeResult, NodeTask, OperatorVariantModel, Phase, RegressionMetricKind,
+    ArtifactMaterializationRequest, BundleId, ControllerId, ControllerRegistry, DataBinding,
+    DataMaterializationRequest, DataViewRequest, DagMlError as CoreDagMlError, ExecutionPlan,
+    ExplicitPhaseDataProvider, ExternalDataPlanEnvelope, HandleKind, HandleRef,
+    InMemoryArtifactStore, InMemoryDataProvider, NodeResult, NodeTask, OperatorVariantModel, Phase,
+    PredictCohort, RegressionMetricKind,
     RegressionMetricReport, RunContext, RunId, RuntimeController, RuntimeControllerRegistry,
-    RuntimeDataProvider, ScoreSet, SequentialScheduler, TerminalPredictionReplay,
-    TerminalPredictionSelector, TrainingLossRoleReference, TrainingResourceLimits, VariantId,
+    RuntimeDataProvider, SampleId, SampleRelationSet, ScoreSet, SequentialScheduler,
+    TerminalPredictionReplay, TerminalPredictionSelector, TrainingDataIdentity,
+    TrainingLossRoleReference, TrainingResourceLimits, VariantId,
     VariantValidationPredictions, SCORE_SET_SCHEMA_VERSION,
 };
 
@@ -406,6 +409,177 @@ where
             panic_message(payload.as_ref())
         ))),
     }
+}
+
+/// Host view bridge used by the no-fit probe below. The eventual training path
+/// must bind these receipts to consumed buffers and native training identity.
+struct PyViewDataProvider {
+    inner: InMemoryDataProvider,
+    callback: Py<PyAny>,
+    receipts: RefCell<BTreeMap<String, (String, String)>>,
+}
+
+#[derive(serde::Serialize)]
+struct PyViewCall<'a> {
+    request: &'a DataViewRequest,
+    handle: &'a HandleRef,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+struct PyViewReceipt {
+    handle: HandleRef,
+    view_key: String,
+    sample_ids: Vec<SampleId>,
+    schema_fingerprint: String,
+    content_fingerprint: String,
+}
+
+fn is_sha256_hex(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
+impl RuntimeDataProvider for PyViewDataProvider {
+    fn materialize(&self, request: &DataMaterializationRequest) -> dag_ml_core::Result<HandleRef> {
+        self.inner.materialize(request)
+    }
+
+    fn make_view(&self, request: &DataViewRequest) -> dag_ml_core::Result<HandleRef> {
+        let selected = request.view.sample_ids.as_ref().ok_or_else(|| {
+            CoreDagMlError::RuntimeValidation("Python view provider requires scheduler-selected sample IDs".into())
+        })?;
+        if request.view_key.trim().is_empty() || request.view_seed.is_none() {
+            return Err(CoreDagMlError::RuntimeValidation(
+                "Python view provider requires a stable view key and seed".into(),
+            ));
+        }
+        let handle = self.inner.make_view(request)?;
+        let receipt: PyViewReceipt = call_py_bridge(
+            &self.callback,
+            &PyViewCall { request, handle: &handle },
+            "data view",
+        )?;
+        if receipt.handle != handle
+            || receipt.view_key != request.view_key
+            || receipt.sample_ids != *selected
+            || !is_sha256_hex(&receipt.schema_fingerprint)
+            || !is_sha256_hex(&receipt.content_fingerprint)
+        {
+            return Err(CoreDagMlError::RuntimeValidation(
+                "Python view provider receipt does not match the native handle, key, ordered IDs, or content digests".into(),
+            ));
+        }
+        let fingerprints = (receipt.schema_fingerprint, receipt.content_fingerprint);
+        let mut receipts = self.receipts.borrow_mut();
+        if receipts.get(&request.view_key).is_some_and(|prior| *prior != fingerprints) {
+            return Err(CoreDagMlError::RuntimeValidation(format!(
+                "Python view provider changed schema or content for view key `{}`",
+                request.view_key
+            )));
+        }
+        receipts.insert(request.view_key.clone(), fingerprints);
+        Ok(handle)
+    }
+
+    fn training_data_identity(&self, binding: &DataBinding) -> dag_ml_core::Result<Option<TrainingDataIdentity>> {
+        self.inner.training_data_identity(binding)
+    }
+
+    fn coordinator_relations(&self, binding: &DataBinding) -> dag_ml_core::Result<Option<SampleRelationSet>> {
+        self.inner.coordinator_relations(binding)
+    }
+
+    fn refit_sample_ids(&self, binding: &DataBinding) -> dag_ml_core::Result<Option<Vec<SampleId>>> {
+        self.inner.refit_sample_ids(binding)
+    }
+
+    fn predict_cohort(&self, binding: &DataBinding, phase: Phase) -> dag_ml_core::Result<Option<PredictCohort>> {
+        self.inner.predict_cohort(binding, phase)
+    }
+
+    fn cv_test_cohort(&self, binding: &DataBinding) -> dag_ml_core::Result<Option<PredictCohort>> {
+        self.inner.cv_test_cohort(binding)
+    }
+}
+
+/// Qualify one host-generated view without executing a training controller.
+/// The request is supplied by the caller, so this probes the bridge contract;
+/// it does not claim that a scheduler fold or training identity is attested.
+#[pyfunction]
+pub fn probe_data_view_in_process(
+    py: Python<'_>,
+    envelope_json: &str,
+    request_json: &str,
+    view_callback: Py<PyAny>,
+) -> PyResult<String> {
+    if !view_callback.bind(py).is_callable() {
+        return Err(py_core_error(CoreDagMlError::RuntimeValidation(
+            "view_callback must be callable".into(),
+        )));
+    }
+    let envelope: ExternalDataPlanEnvelope =
+        serde_json::from_str(envelope_json).map_err(py_serde_error)?;
+    let mut request: DataViewRequest = serde_json::from_str(request_json).map_err(py_serde_error)?;
+    request.view.validate().map_err(py_core_error)?;
+    let selected = request.view.sample_ids.as_ref().ok_or_else(|| {
+        py_core_error(CoreDagMlError::RuntimeValidation(
+            "data view probe requires explicit sample IDs".into(),
+        ))
+    })?;
+    let relations = envelope.coordinator_relations.as_ref().ok_or_else(|| {
+        py_core_error(CoreDagMlError::RuntimeValidation(
+            "data view probe requires attested coordinator relations".into(),
+        ))
+    })?;
+    let available = relations
+        .records
+        .iter()
+        .map(|record| &record.sample_id)
+        .collect::<std::collections::BTreeSet<_>>();
+    if selected.iter().any(|sample_id| !available.contains(sample_id)) {
+        return Err(py_core_error(CoreDagMlError::RuntimeValidation(
+            "data view probe selected IDs outside its attested cohort".into(),
+        )));
+    }
+    let inner = InMemoryDataProvider::with_envelope(
+        ControllerId::new("controller:data.provider").map_err(py_core_error)?,
+        envelope,
+    )
+    .map_err(py_core_error)?;
+    let provider = PyViewDataProvider {
+        inner,
+        callback: view_callback,
+        receipts: RefCell::new(BTreeMap::new()),
+    };
+    request.data_handle = provider
+        .materialize(&DataMaterializationRequest {
+            run_id: request.run_id.clone(),
+            node_id: request.node_id.clone(),
+            input_name: request.input_name.clone(),
+            phase: request.phase,
+            variant_id: request.variant_id.clone(),
+            fold_id: request.fold_id.clone(),
+            binding: request.binding.clone(),
+            predict_cohort: request.predict_cohort.clone(),
+        })
+        .map_err(py_core_error)?;
+    let handle = provider.make_view(&request).map_err(py_core_error)?;
+    let (schema_fingerprint, content_fingerprint) = provider
+        .receipts
+        .borrow()
+        .get(&request.view_key)
+        .cloned()
+        .ok_or_else(|| py_core_error(CoreDagMlError::RuntimeValidation(
+            "data view probe produced no content receipt".into(),
+        )))?;
+    serde_json::to_string(&serde_json::json!({
+        "handle": handle,
+        "view_key": request.view_key,
+        "sample_ids": request.view.sample_ids,
+        "schema_fingerprint": schema_fingerprint,
+        "content_fingerprint": content_fingerprint,
+    }))
+    .map_err(py_serde_error)
 }
 
 /// A [`RuntimeController`] backed by a Python callback. The scheduler hands it a
