@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GBeurier/dag-ml/schemas/generated_view_manifest.v1.schema.json",
+  "title": "DAG-ML in-process generated view manifest",
+  "description": "fingerprint is DAGML-TCV1 SHA-256 of [\"generated-view-manifest-v1\", views], with views sorted by view_key. TCV1 canonicalizes Unicode, keys and binary64 numbers.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "views", "fingerprint"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "fingerprint": {"$ref": "#/$defs/sha256"},
+    "views": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["view_key", "view_seed", "binding_identity", "view", "schema_fingerprint", "content_fingerprint"],
+        "properties": {
+          "view_key": {"type": "string", "pattern": "^view:v1:[0-9a-f]{64}$"},
+          "view_seed": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615},
+          "binding_identity": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["schema_fingerprint", "plan_fingerprint", "relation_fingerprint", "output_representation", "request_id", "input_name", "feature_set_id", "source_ids", "metadata"],
+            "properties": {
+              "schema_fingerprint": {"$ref": "#/$defs/sha256"},
+              "plan_fingerprint": {"$ref": "#/$defs/sha256"},
+              "relation_fingerprint": {"anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
+              "output_representation": {"$ref": "#/$defs/nonempty"},
+              "request_id": {"$ref": "#/$defs/nonempty"},
+              "input_name": {"$ref": "#/$defs/nonempty"},
+              "feature_set_id": {"$ref": "#/$defs/nonempty"},
+              "source_ids": {"type": "array", "items": {"$ref": "#/$defs/nonempty"}},
+              "metadata": {"type": "object"}
+            }
+          },
+          "view": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["sample_ids", "partition", "fold_id", "source_ids", "columns", "include_augmented", "include_excluded", "extra"],
+            "properties": {
+              "sample_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/nonempty"}},
+              "partition": {"type": "string", "pattern": "^[a-z][a-z_]*$"},
+              "fold_id": {"type": ["string", "null"]},
+              "source_ids": {"type": ["array", "null"], "items": {"$ref": "#/$defs/nonempty"}},
+              "columns": {"type": ["array", "null"], "items": {"$ref": "#/$defs/nonempty"}},
+              "include_augmented": {"type": "boolean"},
+              "include_excluded": {"type": "boolean"},
+              "branch_view": {"type": "object"},
+              "extra": {"type": "object"}
+            }
+          },
+          "predict_cohort_fingerprint": {"$ref": "#/$defs/sha256"},
+          "schema_fingerprint": {"$ref": "#/$defs/sha256"},
+          "content_fingerprint": {"$ref": "#/$defs/sha256"}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "nonempty": {"type": "string", "minLength": 1},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

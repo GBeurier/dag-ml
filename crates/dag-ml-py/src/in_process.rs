@@ -38,6 +38,7 @@
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::panic::AssertUnwindSafe;
+use std::rc::Rc;
 
 use pyo3::prelude::*;
 use pyo3::types::PyAnyMethods;
@@ -52,7 +53,7 @@ use dag_ml_core::{
     validate_terminal_prediction_preflight, AggregationControllerResult, AggregationControllerTask,
     ArtifactMaterializationRequest, AttestedDataView, BundleId, ControllerId, ControllerRegistry,
     DagMlError as CoreDagMlError, DataBinding, DataMaterializationRequest, DataViewReceipt,
-    DataViewRequest, ExecutionPlan, ExplicitPhaseDataProvider, ExternalDataPlanEnvelope,
+    DataViewRequest, DataProviderViewSpec, ExecutionPlan, ExplicitPhaseDataProvider, ExternalDataPlanEnvelope,
     HandleKind, HandleRef, InMemoryArtifactStore, InMemoryDataProvider, NodeResult, NodeTask,
     OperatorVariantModel, Phase, PredictCohort, RegressionMetricKind, RegressionMetricReport,
     RunContext, RunId, RuntimeController, RuntimeControllerRegistry, RuntimeDataProvider, SampleId,
@@ -417,7 +418,156 @@ where
 struct PyViewDataProvider {
     inner: InMemoryDataProvider,
     callback: Py<PyAny>,
-    receipts: RefCell<BTreeMap<String, (String, String)>>,
+    receipts: Rc<RefCell<BTreeMap<String, GeneratedViewRecord>>>,
+}
+
+/// One stable data request and its host-attested content. Runtime handles and
+/// estimator/variant IDs are deliberately omitted: one view key can be reused
+/// by several candidates while its selector and content must stay identical.
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+struct GeneratedViewRecord {
+    view_key: String,
+    view_seed: u64,
+    binding_identity: GeneratedViewBindingIdentity,
+    view: DataProviderViewSpec,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    predict_cohort_fingerprint: Option<String>,
+    schema_fingerprint: String,
+    content_fingerprint: String,
+}
+
+/// Exactly the binding fields used by `data_view_identity` in dag-ml-core.
+/// In particular, the producer node and view policy do not distinguish a
+/// shared view, so they must not perturb its manifest identity either.
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+struct GeneratedViewBindingIdentity {
+    schema_fingerprint: String,
+    plan_fingerprint: String,
+    relation_fingerprint: Option<String>,
+    output_representation: String,
+    request_id: String,
+    input_name: String,
+    feature_set_id: String,
+    source_ids: Vec<String>,
+    metadata: BTreeMap<String, serde_json::Value>,
+}
+
+impl From<&DataBinding> for GeneratedViewBindingIdentity {
+    fn from(binding: &DataBinding) -> Self {
+        Self {
+            schema_fingerprint: binding.schema_fingerprint.clone(),
+            plan_fingerprint: binding.plan_fingerprint.clone(),
+            relation_fingerprint: binding.relation_fingerprint.clone(),
+            output_representation: binding.output_representation.clone(),
+            request_id: binding.request_id.clone(),
+            input_name: binding.input_name.clone(),
+            feature_set_id: binding.feature_set_id().to_string(),
+            source_ids: binding.source_ids.clone(),
+            metadata: binding.metadata.clone(),
+        }
+    }
+}
+
+impl GeneratedViewRecord {
+    fn from_receipt(request: &DataViewRequest, receipt: &DataViewReceipt) -> dag_ml_core::Result<Self> {
+        Ok(Self {
+            view_key: request.view_key.clone(),
+            view_seed: request.view_seed.ok_or_else(|| {
+                CoreDagMlError::RuntimeValidation("generated view has no native seed".into())
+            })?,
+            binding_identity: GeneratedViewBindingIdentity::from(&request.binding),
+            view: request.view.clone(),
+            predict_cohort_fingerprint: request
+                .predict_cohort
+                .as_ref()
+                .map(|cohort| cohort.cohort_fingerprint.clone()),
+            schema_fingerprint: receipt.schema_fingerprint.clone(),
+            content_fingerprint: receipt.content_fingerprint.clone(),
+        })
+    }
+}
+
+fn generated_view_manifest(
+    receipts: &BTreeMap<String, GeneratedViewRecord>,
+) -> dag_ml_core::Result<serde_json::Value> {
+    let views = receipts.values().collect::<Vec<_>>();
+    // TCV1 canonicalizes object keys, Unicode and binary64 numbers across
+    // language runtimes. The array is sorted by view_key before hashing.
+    let serialized = serde_json::to_vec(&("generated-view-manifest-v1", &views))?;
+    let typed = dag_ml_core::canonical::parse_typed_json_bytes(&serialized)
+        .map_err(|error| CoreDagMlError::RuntimeValidation(error.to_string()))?;
+    let fingerprint = dag_ml_core::canonical::tcv1_sha256(&typed)
+        .map_err(|error| CoreDagMlError::RuntimeValidation(error.to_string()))?;
+    Ok(serde_json::json!({
+        "schema_version": 1,
+        "views": views,
+        "fingerprint": fingerprint,
+    }))
+}
+
+fn record_generated_view(
+    receipts: &mut BTreeMap<String, GeneratedViewRecord>,
+    record: GeneratedViewRecord,
+) -> dag_ml_core::Result<()> {
+    if receipts
+        .get(&record.view_key)
+        .is_some_and(|prior| *prior != record)
+    {
+        return Err(CoreDagMlError::RuntimeValidation(format!(
+            "Python view provider changed selector, seed, schema, or content for view key `{}`",
+            record.view_key
+        )));
+    }
+    receipts.insert(record.view_key.clone(), record);
+    Ok(())
+}
+
+#[cfg(test)]
+mod generated_view_manifest_tests {
+    use super::*;
+
+    #[test]
+    fn same_view_key_cannot_hide_changed_content_or_selector() {
+        let request: DataViewRequest = serde_json::from_str(include_str!(
+            "../../../examples/fixtures/data/data_view_request_v3.json"
+        ))
+        .unwrap();
+        let receipt = DataViewReceipt {
+            handle: request.data_handle.clone(),
+            view_key: request.view_key.clone(),
+            sample_ids: request.view.sample_ids.clone().unwrap(),
+            schema_fingerprint: "a".repeat(64),
+            content_fingerprint: "b".repeat(64),
+        };
+        let original = GeneratedViewRecord::from_receipt(&request, &receipt).unwrap();
+        let mut records = BTreeMap::new();
+        record_generated_view(&mut records, original.clone()).unwrap();
+        record_generated_view(&mut records, original.clone()).unwrap();
+        let mut same_view_other_model = request.clone();
+        same_view_other_model.binding.node_id = dag_ml_core::NodeId::new("model:other").unwrap();
+        same_view_other_model.node_id = dag_ml_core::NodeId::new("model:other").unwrap();
+        let shared = GeneratedViewRecord::from_receipt(&same_view_other_model, &receipt).unwrap();
+        record_generated_view(&mut records, shared).unwrap();
+        let fingerprint = generated_view_manifest(&records).unwrap()["fingerprint"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let mut changed = original.clone();
+        changed.content_fingerprint = "c".repeat(64);
+        assert!(record_generated_view(&mut records, changed.clone()).is_err());
+        assert_eq!(records.len(), 1);
+        changed.view_key = "view:v1:other".to_string();
+        record_generated_view(&mut records, changed).unwrap();
+        assert_ne!(
+            generated_view_manifest(&records).unwrap()["fingerprint"],
+            fingerprint
+        );
+
+        let mut changed = original;
+        changed.view.source_ids = Some(vec!["other-source".to_string()]);
+        assert!(record_generated_view(&mut records, changed).is_err());
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -463,21 +613,8 @@ impl RuntimeDataProvider for PyViewDataProvider {
                 "Python view provider receipt does not match the native handle, key, ordered IDs, or content digests".into(),
             )
         })?;
-        let fingerprints = (
-            receipt.schema_fingerprint.clone(),
-            receipt.content_fingerprint.clone(),
-        );
-        let mut receipts = self.receipts.borrow_mut();
-        if receipts
-            .get(&request.view_key)
-            .is_some_and(|prior| *prior != fingerprints)
-        {
-            return Err(CoreDagMlError::RuntimeValidation(format!(
-                "Python view provider changed schema or content for view key `{}`",
-                request.view_key
-            )));
-        }
-        receipts.insert(request.view_key.clone(), fingerprints);
+        let record = GeneratedViewRecord::from_receipt(request, &receipt)?;
+        record_generated_view(&mut self.receipts.borrow_mut(), record)?;
         Ok(AttestedDataView {
             handle,
             receipt: Some(receipt),
@@ -522,11 +659,13 @@ impl RuntimeDataProvider for PyViewDataProvider {
 /// The request is supplied by the caller, so this probes the bridge contract;
 /// it does not claim that a scheduler fold or training identity is attested.
 #[pyfunction]
+#[pyo3(signature = (envelope_json, request_json, view_callback, include_manifest=false))]
 pub fn probe_data_view_in_process(
     py: Python<'_>,
     envelope_json: &str,
     request_json: &str,
     view_callback: Py<PyAny>,
+    include_manifest: bool,
 ) -> PyResult<String> {
     if !view_callback.bind(py).is_callable() {
         return Err(py_core_error(CoreDagMlError::RuntimeValidation(
@@ -566,10 +705,11 @@ pub fn probe_data_view_in_process(
         envelope,
     )
     .map_err(py_core_error)?;
+    let receipts = Rc::new(RefCell::new(BTreeMap::new()));
     let provider = PyViewDataProvider {
         inner,
         callback: view_callback,
-        receipts: RefCell::new(BTreeMap::new()),
+        receipts: Rc::clone(&receipts),
     };
     request.data_handle = provider
         .materialize(&DataMaterializationRequest {
@@ -584,8 +724,7 @@ pub fn probe_data_view_in_process(
         })
         .map_err(py_core_error)?;
     let handle = provider.make_view(&request).map_err(py_core_error)?;
-    let (schema_fingerprint, content_fingerprint) = provider
-        .receipts
+    let record = receipts
         .borrow()
         .get(&request.view_key)
         .cloned()
@@ -594,14 +733,18 @@ pub fn probe_data_view_in_process(
                 "data view probe produced no content receipt".into(),
             ))
         })?;
-    serde_json::to_string(&serde_json::json!({
+    let mut payload = serde_json::json!({
         "handle": handle,
         "view_key": request.view_key,
         "sample_ids": request.view.sample_ids,
-        "schema_fingerprint": schema_fingerprint,
-        "content_fingerprint": content_fingerprint,
-    }))
-    .map_err(py_serde_error)
+        "schema_fingerprint": record.schema_fingerprint,
+        "content_fingerprint": record.content_fingerprint,
+    });
+    if include_manifest {
+        payload["generated_view_manifest"] =
+            generated_view_manifest(&receipts.borrow()).map_err(py_core_error)?;
+    }
+    serde_json::to_string(&payload).map_err(py_serde_error)
 }
 
 /// A [`RuntimeController`] backed by a Python callback. The scheduler hands it a
@@ -2133,17 +2276,18 @@ fn run_cv_refit_in_process_impl(
         campaign.envelope.clone(),
     )
     .map_err(py_core_error)?;
+    let generated_receipts = view_callback.as_ref().map(|_| Rc::new(RefCell::new(BTreeMap::new())));
     let data_provider: Box<dyn RuntimeDataProvider> = match view_callback {
         Some(callback) => Box::new(PyViewDataProvider {
             inner: static_provider,
             callback,
-            receipts: RefCell::new(BTreeMap::new()),
+            receipts: Rc::clone(generated_receipts.as_ref().expect("receipt registry initialized")),
         }),
         None => Box::new(static_provider),
     };
     let runtime_controllers =
         build_runtime_controllers(py, &campaign.plan, &op_callback).map_err(py_core_error)?;
-    let run = execute_cv_refit(
+    let mut run = execute_cv_refit(
         &campaign,
         &runtime_controllers,
         data_provider.as_ref(),
@@ -2153,6 +2297,15 @@ fn run_cv_refit_in_process_impl(
         refit_top_k,
     )
     .map_err(py_core_error)?;
+    if let Some(receipts) = generated_receipts {
+        let manifest = generated_view_manifest(&receipts.borrow()).map_err(py_core_error)?;
+        let payload = run.payload.as_object_mut().ok_or_else(|| {
+            py_core_error(CoreDagMlError::RuntimeValidation(
+                "CV/refit result has no object payload for generated view manifest".into(),
+            ))
+        })?;
+        payload.insert("generated_view_manifest".to_string(), manifest);
+    }
     serde_json::to_string(&run.payload).map_err(py_serde_error)
 }
 

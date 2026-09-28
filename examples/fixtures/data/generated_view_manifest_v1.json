@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "views": [
+    {
+      "view_key": "view:v1:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "view_seed": 29,
+      "binding_identity": {
+        "schema_fingerprint": "f97b37872fa22134b508f98fd8e207e5b776b52594fb8f6f5c3e15bee212246b",
+        "plan_fingerprint": "7c5431d85574b3f337022fa5d25971d5b5cf445b90331b49938f573ff6901e4d",
+        "relation_fingerprint": "a3a7e329df35db9f2883a17b8611b7fae6dcaa031875e3ec2c9be1b9e29cbe10",
+        "output_representation": "tabular_numeric",
+        "request_id": "nir-to-tabular",
+        "input_name": "x",
+        "source_ids": [
+          "nir"
+        ],
+        "metadata": {},
+        "feature_set_id": "x"
+      },
+      "view": {
+        "sample_ids": [
+          "sample:1"
+        ],
+        "partition": "fold_train",
+        "fold_id": "fold:0",
+        "source_ids": [
+          "nir"
+        ],
+        "columns": [
+          "abs_1000"
+        ],
+        "include_augmented": true,
+        "include_excluded": false,
+        "extra": {
+          "epsilon": 1e-07
+        }
+      },
+      "schema_fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "content_fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  ],
+  "fingerprint": "0b775c0620abc0ed913e3ed3a882c37ae4fce43556e440f2038b5accdf82b2db"
+}
