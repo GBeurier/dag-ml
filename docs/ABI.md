@@ -116,7 +116,16 @@ status code before parsing a payload.
   providers. The vtable uses the shared
   `DAG_ML_DATA_PROVIDER_VTABLE_ABI_VERSION` macro and guarded
   `DagMlDataVTable` definition so `dag_ml.h` and `dag_ml_data.h` can be
-  included together by bindings.
+  included together by bindings. Version 2 passes only `DataProviderViewSpec`
+  JSON to `make_view`. A host may opt in with
+  `DagMlDataVTable.abi_version` set to
+  `DAG_ML_DATA_PROVIDER_VIEW_REQUEST_ABI_VERSION == 3` to receive the full
+  `DataViewRequest` JSON, including scheduler-selected identities, `view_key`,
+  and `view_seed`, without changing the C struct layout. This opt-in macro is
+  declared by `dag_ml.h`; `dag_ml_data.h` continues to expose the shared v2
+  provider. The top-level v3 shape is frozen in
+  `docs/contracts/data_view_request.v3.schema.json`. The payload does not
+  attest generated feature content by itself.
 - `DagMlArtifactStoreVTable` for host replay artifact stores, returning typed
   `DagMlHandleRef` values for model/artifact handles. Artifact references are
   JSON-level Rust contracts with optional typed backend, URI, content

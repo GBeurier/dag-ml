@@ -85,6 +85,9 @@ pub const DAG_ML_AGGREGATION_CONTROLLER_TASK_SCHEMA_VERSION: u32 =
 pub const DAG_ML_AGGREGATION_CONTROLLER_RESULT_SCHEMA_VERSION: u32 =
     AGGREGATION_CONTROLLER_RESULT_SCHEMA_VERSION;
 pub const DAG_ML_DATA_PROVIDER_VTABLE_ABI_VERSION: u32 = 2;
+/// Opt-in payload upgrade: `make_view` receives the complete scheduler request.
+/// The vtable layout remains identical, and ABI v2 keeps its selector-only JSON.
+pub const DAG_ML_DATA_PROVIDER_VIEW_REQUEST_ABI_VERSION: u32 = 3;
 pub const DAG_ML_HANDLE_KIND_DATA: u32 = 1;
 pub const DAG_ML_HANDLE_KIND_DATA_VIEW: u32 = 2;
 pub const DAG_ML_HANDLE_KIND_MODEL: u32 = 3;
@@ -5200,7 +5203,10 @@ impl CAbiRuntimeDataProvider {
         dataset: DagMlHandle,
         vtable: DagMlDataVTable,
     ) -> dag_ml_core::Result<Self> {
-        if vtable.abi_version < DAG_ML_DATA_PROVIDER_VTABLE_ABI_VERSION {
+        if !(DAG_ML_DATA_PROVIDER_VTABLE_ABI_VERSION
+            ..=DAG_ML_DATA_PROVIDER_VIEW_REQUEST_ABI_VERSION)
+            .contains(&vtable.abi_version)
+        {
             return Err(DagMlError::RuntimeValidation(format!(
                 "data provider ABI version {} is unsupported",
                 vtable.abi_version
@@ -5291,7 +5297,14 @@ impl RuntimeDataProvider for CAbiRuntimeDataProvider {
                 request.input_name, request.node_id
             )));
         }
-        let selector_json = serde_json::to_vec(&request.view).map_err(|error| {
+        let payload_json = if self.vtable.abi_version
+            >= DAG_ML_DATA_PROVIDER_VIEW_REQUEST_ABI_VERSION
+        {
+            serde_json::to_vec(request)
+        } else {
+            serde_json::to_vec(&request.view)
+        }
+        .map_err(|error| {
             DagMlError::RuntimeValidation(format!("failed to serialize data view request: {error}"))
         })?;
         let mut out_view = 0;
@@ -5299,7 +5312,7 @@ impl RuntimeDataProvider for CAbiRuntimeDataProvider {
             make_view(
                 self.vtable.user_data,
                 request.data_handle.handle,
-                bytes_view(&selector_json),
+                bytes_view(&payload_json),
                 &mut out_view,
             )
         };
@@ -7127,10 +7140,44 @@ mod tests {
     }
 
     #[test]
+    fn c_abi_runtime_data_provider_rejects_unknown_payload_versions() {
+        for abi_version in [1, DAG_ML_DATA_PROVIDER_VIEW_REQUEST_ABI_VERSION + 1] {
+            let table = DagMlDataVTable {
+                abi_version,
+                user_data: std::ptr::null_mut(),
+                materialize: Some(materialize_stub),
+                make_view: Some(make_view_stub),
+                view_identity: None,
+                target_arrow: None,
+                feature_arrow: None,
+                release: None,
+                destroy: None,
+            };
+            let error = CAbiRuntimeDataProvider::new(
+                ControllerId::new("controller:data.provider").unwrap(),
+                7,
+                table,
+            )
+            .err()
+            .unwrap();
+            assert!(error.to_string().contains("ABI version"));
+        }
+    }
+
+    #[test]
     fn c_abi_runtime_data_provider_routes_materialize_and_view_requests() {
+        for abi_version in [
+            DAG_ML_DATA_PROVIDER_VTABLE_ABI_VERSION,
+            DAG_ML_DATA_PROVIDER_VIEW_REQUEST_ABI_VERSION,
+        ] {
+            assert_data_provider_view_payload(abi_version);
+        }
+    }
+
+    fn assert_data_provider_view_payload(abi_version: u32) {
         let mut state = DataProviderStub::default();
         let table = DagMlDataVTable {
-            abi_version: DAG_ML_DATA_PROVIDER_VTABLE_ABI_VERSION,
+            abi_version,
             user_data: (&mut state as *mut DataProviderStub).cast::<c_void>(),
             materialize: Some(materialize_stub),
             make_view: Some(make_view_stub),
@@ -7208,8 +7255,8 @@ mod tests {
                         branch_view: None,
                         extra: BTreeMap::new(),
                     },
-                    view_key: String::new(),
-                    view_seed: None,
+                    view_key: "view:v1:attested-selector".to_string(),
+                    view_seed: Some(29),
                     predict_cohort: None,
                 })
                 .unwrap();
@@ -7219,12 +7266,141 @@ mod tests {
             assert_eq!(state.make_view_parent, 41);
             let view_json: serde_json::Value =
                 serde_json::from_slice(&state.make_view_json).unwrap();
-            assert_eq!(view_json["partition"], "fold_train");
-            assert_eq!(view_json["fold_id"], "fold:0");
-            assert_eq!(view_json["sample_ids"][0], "s1");
-            assert_eq!(view_json["columns"][0], "abs_1000");
+            let selector = if abi_version == DAG_ML_DATA_PROVIDER_VTABLE_ABI_VERSION {
+                assert!(view_json.get("view_key").is_none());
+                &view_json
+            } else {
+                let fixture: serde_json::Value = serde_json::from_str(include_str!(
+                    "../../../examples/fixtures/data/data_view_request_v3.json"
+                ))
+                .unwrap();
+                assert_eq!(view_json, fixture);
+                assert_eq!(view_json["run_id"], "run:cabi.data");
+                assert_eq!(view_json["node_id"], "model:base");
+                assert_eq!(view_json["input_name"], "x");
+                assert_eq!(view_json["view_key"], "view:v1:attested-selector");
+                assert_eq!(view_json["view_seed"], 29);
+                assert_eq!(view_json["binding"]["request_id"], "nir-to-tabular");
+                assert_eq!(view_json["phase"], "FIT_CV");
+                assert_eq!(view_json["variant_id"], "variant:base");
+                assert_eq!(view_json["fold_id"], "fold:0");
+                assert_eq!(view_json["data_handle"]["handle"], 41);
+                assert_eq!(view_json["data_handle"]["kind"], "data");
+                assert!(view_json.get("predict_cohort").is_none());
+                assert_eq!(
+                    view_json
+                        .as_object()
+                        .unwrap()
+                        .keys()
+                        .map(String::as_str)
+                        .collect::<BTreeSet<_>>(),
+                    BTreeSet::from([
+                        "run_id",
+                        "node_id",
+                        "input_name",
+                        "phase",
+                        "variant_id",
+                        "fold_id",
+                        "binding",
+                        "data_handle",
+                        "view",
+                        "view_key",
+                        "view_seed",
+                    ]),
+                );
+                &view_json["view"]
+            };
+            assert_eq!(selector["partition"], "fold_train");
+            assert_eq!(selector["fold_id"], "fold:0");
+            assert_eq!(selector["sample_ids"][0], "s1");
+            assert_eq!(selector["columns"][0], "abs_1000");
         }
         assert_eq!(state.release_handles, vec![42, 41]);
+    }
+
+    #[test]
+    fn c_abi_v3_view_request_preserves_nullable_scope_and_predict_cohort() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../examples/fixtures/data/data_view_request_v3.json"
+        ))
+        .unwrap();
+        let binding: DataBinding = serde_json::from_value(fixture["binding"].clone()).unwrap();
+        let relations: SampleRelationSet = serde_json::from_value(serde_json::json!({
+            "records": [{
+                "observation_id": "obs.H001", "sample_id": "sample:heldout:1",
+                "target_id": "target:heldout:1", "group_id": "group:heldout",
+                "origin_sample_id": null, "source_id": "nir", "is_augmented": false
+            }]
+        }))
+        .unwrap();
+        let cohort = dag_ml_core::PredictCohort::from_relations(
+            dag_ml_core::PredictCohortRole::ExternalTest,
+            relations,
+            vec!["y".into()],
+            "a".repeat(64),
+            Some("b".repeat(64)),
+        )
+        .unwrap();
+        let mut state = DataProviderStub::default();
+        let table = DagMlDataVTable {
+            abi_version: DAG_ML_DATA_PROVIDER_VIEW_REQUEST_ABI_VERSION,
+            user_data: (&mut state as *mut DataProviderStub).cast::<c_void>(),
+            materialize: Some(materialize_stub),
+            make_view: Some(make_view_stub),
+            view_identity: None,
+            target_arrow: None,
+            feature_arrow: None,
+            release: Some(data_release_stub),
+            destroy: None,
+        };
+        let provider = CAbiRuntimeDataProvider::new(
+            ControllerId::new("controller:data.provider").unwrap(),
+            7,
+            table,
+        )
+        .unwrap();
+        provider
+            .make_view(&DataViewRequest {
+                run_id: RunId::new("run:cabi.predict").unwrap(),
+                node_id: binding.node_id.clone(),
+                input_name: binding.input_name.clone(),
+                phase: Phase::Predict,
+                variant_id: None,
+                fold_id: None,
+                binding,
+                data_handle: HandleRef {
+                    handle: 41,
+                    kind: HandleKind::Data,
+                    owner_controller: ControllerId::new("controller:data.provider").unwrap(),
+                },
+                view: DataProviderViewSpec {
+                    sample_ids: None,
+                    partition: DataRequestPartition::Predict,
+                    fold_id: None,
+                    source_ids: None,
+                    columns: None,
+                    include_augmented: false,
+                    include_excluded: false,
+                    branch_view: None,
+                    extra: BTreeMap::new(),
+                },
+                view_key: "view:v1:predict".to_string(),
+                view_seed: None,
+                predict_cohort: Some(cohort),
+            })
+            .unwrap();
+        let request: serde_json::Value = serde_json::from_slice(&state.make_view_json).unwrap();
+        assert!(request.as_object().unwrap().contains_key("variant_id"));
+        assert!(request.as_object().unwrap().contains_key("fold_id"));
+        assert!(request["view"]
+            .as_object()
+            .unwrap()
+            .contains_key("sample_ids"));
+        assert!(request["variant_id"].is_null());
+        assert!(request["fold_id"].is_null());
+        assert!(request["view"]["sample_ids"].is_null());
+        assert!(request.get("view_seed").is_none());
+        assert_eq!(request["predict_cohort"]["role"], "external_test");
     }
 
     #[test]

@@ -931,3 +931,13 @@ The shared provider surface is `DagMlDataVTable` guarded by
 `DAG_ML_DATA_PROVIDER_VTABLE_ABI_VERSION == 2`. `scripts/validate_contracts.py`
 and the C ABI tests verify that `dag_ml.h` and `dag_ml_data.h` can be included
 together in either order when the sibling checkout is available.
+
+The vtable layout is unchanged when `DagMlDataVTable.abi_version` is set to the
+opt-in `DAG_ML_DATA_PROVIDER_VIEW_REQUEST_ABI_VERSION == 3`. A v2 host receives only
+the `DataProviderViewSpec` selector in `make_view`; a v3 host receives the full
+`DataViewRequest` JSON with binding, selected IDs, view key and seed. The
+v3-only macro lives in `dag_ml.h`; the shared `dag_ml_data.h` remains at v2.
+The [v3 request schema](data_view_request.v3.schema.json) and
+[fixture](../../examples/fixtures/data/data_view_request_v3.json) freeze the
+transport shape. Hosts must still attest the generated buffers before enabling
+dynamic training views.

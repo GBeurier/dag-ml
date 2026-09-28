@@ -281,6 +281,12 @@ typedef struct DagMlHostHpoFeedbackCallbacks {
 #define DAG_ML_DATA_PROVIDER_VTABLE_ABI_VERSION 2u
 #endif
 
+/* Opt in to the complete DataViewRequest JSON in make_view. ABI v2 keeps the
+ * historical selector-only JSON; the DagMlDataVTable layout is unchanged. */
+#ifndef DAG_ML_DATA_PROVIDER_VIEW_REQUEST_ABI_VERSION
+#define DAG_ML_DATA_PROVIDER_VIEW_REQUEST_ABI_VERSION 3u
+#endif
+
 #ifndef DAG_ML_DATA_VTABLE_DEFINED
 #define DAG_ML_DATA_VTABLE_DEFINED
 typedef struct DagMlDataVTable {
