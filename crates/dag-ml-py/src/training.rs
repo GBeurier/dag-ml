@@ -141,6 +141,17 @@ impl RuntimeDataProvider for TrainingDataProvider {
         }
     }
 
+    fn make_view_attested(
+        &self,
+        request: &DataViewRequest,
+    ) -> dag_ml_core::Result<dag_ml_core::AttestedDataView> {
+        match self {
+            Self::Host(provider) => provider.make_view_attested(request),
+            #[cfg(feature = "methods-optimizer")]
+            Self::Methods(provider) => provider.make_view_attested(request),
+        }
+    }
+
     fn training_data_identity(
         &self,
         binding: &DataBinding,
@@ -382,6 +393,10 @@ impl<P: RuntimeDataProvider> RuntimeDataProvider for MethodsInputProvider<P> {
 
     fn make_view(&self, request: &DataViewRequest) -> dag_ml_core::Result<HandleRef> {
         self.inner.make_view(request)
+    }
+
+    fn make_view_attested(&self, request: &DataViewRequest) -> dag_ml_core::Result<dag_ml_core::AttestedDataView> {
+        self.inner.make_view_attested(request)
     }
 
     fn training_data_identity(

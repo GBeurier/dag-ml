@@ -49,7 +49,8 @@ use dag_ml_core::{
     select_best_operator_variant_outcome_from_models, select_best_variant_outcome_by_cv,
     validate_terminal_prediction_preflight, AggregationControllerResult, AggregationControllerTask,
     ArtifactMaterializationRequest, BundleId, ControllerId, ControllerRegistry, DataBinding,
-    DataMaterializationRequest, DataViewRequest, DagMlError as CoreDagMlError, ExecutionPlan,
+    AttestedDataView, DataMaterializationRequest, DataViewReceipt, DataViewRequest,
+    DagMlError as CoreDagMlError, ExecutionPlan,
     ExplicitPhaseDataProvider, ExternalDataPlanEnvelope, HandleKind, HandleRef,
     InMemoryArtifactStore, InMemoryDataProvider, NodeResult, NodeTask, OperatorVariantModel, Phase,
     PredictCohort, RegressionMetricKind,
@@ -425,51 +426,38 @@ struct PyViewCall<'a> {
     handle: &'a HandleRef,
 }
 
-#[derive(serde::Deserialize, serde::Serialize)]
-#[serde(deny_unknown_fields)]
-struct PyViewReceipt {
-    handle: HandleRef,
-    view_key: String,
-    sample_ids: Vec<SampleId>,
-    schema_fingerprint: String,
-    content_fingerprint: String,
-}
-
-fn is_sha256_hex(value: &str) -> bool {
-    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-}
-
 impl RuntimeDataProvider for PyViewDataProvider {
     fn materialize(&self, request: &DataMaterializationRequest) -> dag_ml_core::Result<HandleRef> {
         self.inner.materialize(request)
     }
 
     fn make_view(&self, request: &DataViewRequest) -> dag_ml_core::Result<HandleRef> {
-        let selected = request.view.sample_ids.as_ref().ok_or_else(|| {
-            CoreDagMlError::RuntimeValidation("Python view provider requires scheduler-selected sample IDs".into())
-        })?;
+        Ok(self.make_view_attested(request)?.handle)
+    }
+
+    fn make_view_attested(&self, request: &DataViewRequest) -> dag_ml_core::Result<AttestedDataView> {
+        if request.view.sample_ids.is_none() {
+            return Err(CoreDagMlError::RuntimeValidation(
+                "Python view provider requires scheduler-selected sample IDs".into(),
+            ));
+        }
         if request.view_key.trim().is_empty() || request.view_seed.is_none() {
             return Err(CoreDagMlError::RuntimeValidation(
                 "Python view provider requires a stable view key and seed".into(),
             ));
         }
         let handle = self.inner.make_view(request)?;
-        let receipt: PyViewReceipt = call_py_bridge(
+        let receipt: DataViewReceipt = call_py_bridge(
             &self.callback,
             &PyViewCall { request, handle: &handle },
             "data view",
         )?;
-        if receipt.handle != handle
-            || receipt.view_key != request.view_key
-            || receipt.sample_ids != *selected
-            || !is_sha256_hex(&receipt.schema_fingerprint)
-            || !is_sha256_hex(&receipt.content_fingerprint)
-        {
-            return Err(CoreDagMlError::RuntimeValidation(
+        receipt.validate_for(request, &handle).map_err(|_| {
+            CoreDagMlError::RuntimeValidation(
                 "Python view provider receipt does not match the native handle, key, ordered IDs, or content digests".into(),
-            ));
-        }
-        let fingerprints = (receipt.schema_fingerprint, receipt.content_fingerprint);
+            )
+        })?;
+        let fingerprints = (receipt.schema_fingerprint.clone(), receipt.content_fingerprint.clone());
         let mut receipts = self.receipts.borrow_mut();
         if receipts.get(&request.view_key).is_some_and(|prior| *prior != fingerprints) {
             return Err(CoreDagMlError::RuntimeValidation(format!(
@@ -478,7 +466,7 @@ impl RuntimeDataProvider for PyViewDataProvider {
             )));
         }
         receipts.insert(request.view_key.clone(), fingerprints);
-        Ok(handle)
+        Ok(AttestedDataView { handle, receipt: Some(receipt) })
     }
 
     fn training_data_identity(&self, binding: &DataBinding) -> dag_ml_core::Result<Option<TrainingDataIdentity>> {

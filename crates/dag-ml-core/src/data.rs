@@ -2165,6 +2165,13 @@ impl RuntimeDataProvider for ExplicitPhaseDataProvider {
         self.inner.make_view(request)
     }
 
+    fn make_view_attested(
+        &self,
+        request: &DataViewRequest,
+    ) -> Result<crate::runtime::AttestedDataView> {
+        self.inner.make_view_attested(request)
+    }
+
     fn coordinator_relations(&self, binding: &DataBinding) -> Result<Option<SampleRelationSet>> {
         self.inner.coordinator_relations(binding)
     }
