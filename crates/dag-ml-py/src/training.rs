@@ -395,7 +395,10 @@ impl<P: RuntimeDataProvider> RuntimeDataProvider for MethodsInputProvider<P> {
         self.inner.make_view(request)
     }
 
-    fn make_view_attested(&self, request: &DataViewRequest) -> dag_ml_core::Result<dag_ml_core::AttestedDataView> {
+    fn make_view_attested(
+        &self,
+        request: &DataViewRequest,
+    ) -> dag_ml_core::Result<dag_ml_core::AttestedDataView> {
         self.inner.make_view_attested(request)
     }
 

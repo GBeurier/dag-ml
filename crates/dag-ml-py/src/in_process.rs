@@ -7,13 +7,15 @@
 //! (`dag-ml-cli run-process-dsl-cv-refit-bundle`): the same envelope-based
 //! [`InMemoryDataProvider`] produces the per-fold / per-partition `data_views`
 //! (the `sample_ids`), so the host adapter's `run_node` self-fetches the same
-//! X / y and the scores cannot diverge. Only the OPERATOR execution crosses to
-//! Python — there is no Python data callback.
+//! X / y and the scores cannot diverge. An optional view callback can supply
+//! scheduler-selected data views; training on those views remains gated until
+//! the returned result attests the buffers consumed by the operator.
 //!
-//! The host wires ONE Python callback:
+//! The host wires an operator callback and, when requested, a view callback:
 //!
 //! * `op_callback(task_dict) -> result_dict` runs one [`NodeTask`] and returns a
 //!   [`NodeResult`] (the same JSON contract the JSONL subprocess adapter uses).
+//! * `view_callback({request, handle}) -> receipt` stores one selected host view.
 //!
 //! Every bridge crossing is a DIRECT serde<->`PyObject` conversion via the
 //! `pythonize` crate (Rust value -> `pythonize` -> Python dict; and the returned
@@ -48,17 +50,15 @@ use dag_ml_core::{
     plan_oof_partition_mode, pruned_plan_for_operator_models,
     select_best_operator_variant_outcome_from_models, select_best_variant_outcome_by_cv,
     validate_terminal_prediction_preflight, AggregationControllerResult, AggregationControllerTask,
-    ArtifactMaterializationRequest, BundleId, ControllerId, ControllerRegistry, DataBinding,
-    AttestedDataView, DataMaterializationRequest, DataViewReceipt, DataViewRequest,
-    DagMlError as CoreDagMlError, ExecutionPlan,
-    ExplicitPhaseDataProvider, ExternalDataPlanEnvelope, HandleKind, HandleRef,
-    InMemoryArtifactStore, InMemoryDataProvider, NodeResult, NodeTask, OperatorVariantModel, Phase,
-    PredictCohort, RegressionMetricKind,
-    RegressionMetricReport, RunContext, RunId, RuntimeController, RuntimeControllerRegistry,
-    RuntimeDataProvider, SampleId, SampleRelationSet, ScoreSet, SequentialScheduler,
-    TerminalPredictionReplay, TerminalPredictionSelector, TrainingDataIdentity,
-    TrainingLossRoleReference, TrainingResourceLimits, VariantId,
-    VariantValidationPredictions, SCORE_SET_SCHEMA_VERSION,
+    ArtifactMaterializationRequest, AttestedDataView, BundleId, ControllerId, ControllerRegistry,
+    DagMlError as CoreDagMlError, DataBinding, DataMaterializationRequest, DataViewReceipt,
+    DataViewRequest, ExecutionPlan, ExplicitPhaseDataProvider, ExternalDataPlanEnvelope,
+    HandleKind, HandleRef, InMemoryArtifactStore, InMemoryDataProvider, NodeResult, NodeTask,
+    OperatorVariantModel, Phase, PredictCohort, RegressionMetricKind, RegressionMetricReport,
+    RunContext, RunId, RuntimeController, RuntimeControllerRegistry, RuntimeDataProvider, SampleId,
+    SampleRelationSet, ScoreSet, SequentialScheduler, TerminalPredictionReplay,
+    TerminalPredictionSelector, TrainingDataIdentity, TrainingLossRoleReference,
+    TrainingResourceLimits, VariantId, VariantValidationPredictions, SCORE_SET_SCHEMA_VERSION,
 };
 
 use crate::{py_core_error, py_serde_error};
@@ -412,8 +412,8 @@ where
     }
 }
 
-/// Host view bridge used by the no-fit probe below. The eventual training path
-/// must bind these receipts to consumed buffers and native training identity.
+/// Host view bridge used by the probe and scheduler-selected CV requests.
+/// Training still requires receipts bound to consumed buffers and native identity.
 struct PyViewDataProvider {
     inner: InMemoryDataProvider,
     callback: Py<PyAny>,
@@ -435,7 +435,10 @@ impl RuntimeDataProvider for PyViewDataProvider {
         Ok(self.make_view_attested(request)?.handle)
     }
 
-    fn make_view_attested(&self, request: &DataViewRequest) -> dag_ml_core::Result<AttestedDataView> {
+    fn make_view_attested(
+        &self,
+        request: &DataViewRequest,
+    ) -> dag_ml_core::Result<AttestedDataView> {
         if request.view.sample_ids.is_none() {
             return Err(CoreDagMlError::RuntimeValidation(
                 "Python view provider requires scheduler-selected sample IDs".into(),
@@ -449,7 +452,10 @@ impl RuntimeDataProvider for PyViewDataProvider {
         let handle = self.inner.make_view(request)?;
         let receipt: DataViewReceipt = call_py_bridge(
             &self.callback,
-            &PyViewCall { request, handle: &handle },
+            &PyViewCall {
+                request,
+                handle: &handle,
+            },
             "data view",
         )?;
         receipt.validate_for(request, &handle).map_err(|_| {
@@ -457,31 +463,53 @@ impl RuntimeDataProvider for PyViewDataProvider {
                 "Python view provider receipt does not match the native handle, key, ordered IDs, or content digests".into(),
             )
         })?;
-        let fingerprints = (receipt.schema_fingerprint.clone(), receipt.content_fingerprint.clone());
+        let fingerprints = (
+            receipt.schema_fingerprint.clone(),
+            receipt.content_fingerprint.clone(),
+        );
         let mut receipts = self.receipts.borrow_mut();
-        if receipts.get(&request.view_key).is_some_and(|prior| *prior != fingerprints) {
+        if receipts
+            .get(&request.view_key)
+            .is_some_and(|prior| *prior != fingerprints)
+        {
             return Err(CoreDagMlError::RuntimeValidation(format!(
                 "Python view provider changed schema or content for view key `{}`",
                 request.view_key
             )));
         }
         receipts.insert(request.view_key.clone(), fingerprints);
-        Ok(AttestedDataView { handle, receipt: Some(receipt) })
+        Ok(AttestedDataView {
+            handle,
+            receipt: Some(receipt),
+        })
     }
 
-    fn training_data_identity(&self, binding: &DataBinding) -> dag_ml_core::Result<Option<TrainingDataIdentity>> {
+    fn training_data_identity(
+        &self,
+        binding: &DataBinding,
+    ) -> dag_ml_core::Result<Option<TrainingDataIdentity>> {
         self.inner.training_data_identity(binding)
     }
 
-    fn coordinator_relations(&self, binding: &DataBinding) -> dag_ml_core::Result<Option<SampleRelationSet>> {
+    fn coordinator_relations(
+        &self,
+        binding: &DataBinding,
+    ) -> dag_ml_core::Result<Option<SampleRelationSet>> {
         self.inner.coordinator_relations(binding)
     }
 
-    fn refit_sample_ids(&self, binding: &DataBinding) -> dag_ml_core::Result<Option<Vec<SampleId>>> {
+    fn refit_sample_ids(
+        &self,
+        binding: &DataBinding,
+    ) -> dag_ml_core::Result<Option<Vec<SampleId>>> {
         self.inner.refit_sample_ids(binding)
     }
 
-    fn predict_cohort(&self, binding: &DataBinding, phase: Phase) -> dag_ml_core::Result<Option<PredictCohort>> {
+    fn predict_cohort(
+        &self,
+        binding: &DataBinding,
+        phase: Phase,
+    ) -> dag_ml_core::Result<Option<PredictCohort>> {
         self.inner.predict_cohort(binding, phase)
     }
 
@@ -507,7 +535,8 @@ pub fn probe_data_view_in_process(
     }
     let envelope: ExternalDataPlanEnvelope =
         serde_json::from_str(envelope_json).map_err(py_serde_error)?;
-    let mut request: DataViewRequest = serde_json::from_str(request_json).map_err(py_serde_error)?;
+    let mut request: DataViewRequest =
+        serde_json::from_str(request_json).map_err(py_serde_error)?;
     request.view.validate().map_err(py_core_error)?;
     let selected = request.view.sample_ids.as_ref().ok_or_else(|| {
         py_core_error(CoreDagMlError::RuntimeValidation(
@@ -524,7 +553,10 @@ pub fn probe_data_view_in_process(
         .iter()
         .map(|record| &record.sample_id)
         .collect::<std::collections::BTreeSet<_>>();
-    if selected.iter().any(|sample_id| !available.contains(sample_id)) {
+    if selected
+        .iter()
+        .any(|sample_id| !available.contains(sample_id))
+    {
         return Err(py_core_error(CoreDagMlError::RuntimeValidation(
             "data view probe selected IDs outside its attested cohort".into(),
         )));
@@ -557,9 +589,11 @@ pub fn probe_data_view_in_process(
         .borrow()
         .get(&request.view_key)
         .cloned()
-        .ok_or_else(|| py_core_error(CoreDagMlError::RuntimeValidation(
-            "data view probe produced no content receipt".into(),
-        )))?;
+        .ok_or_else(|| {
+            py_core_error(CoreDagMlError::RuntimeValidation(
+                "data view probe produced no content receipt".into(),
+            ))
+        })?;
     serde_json::to_string(&serde_json::json!({
         "handle": handle,
         "view_key": request.view_key,
@@ -1526,6 +1560,7 @@ fn surface_loser_validation_frames(
     resource_limits_json = None,
     refit = true,
     refit_top_k = 1,
+    view_callback = None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub fn run_cv_refit_in_process(
@@ -1538,6 +1573,7 @@ pub fn run_cv_refit_in_process(
     resource_limits_json: Option<&str>,
     refit: bool,
     refit_top_k: usize,
+    view_callback: Option<Py<PyAny>>,
 ) -> PyResult<String> {
     run_cv_refit_in_process_impl(
         py,
@@ -1550,6 +1586,7 @@ pub fn run_cv_refit_in_process(
         resource_limits_json,
         refit,
         refit_top_k,
+        view_callback,
     )
 }
 
@@ -1583,6 +1620,7 @@ pub fn run_cv_refit_in_process_with_training_losses(
         None,
         true,
         1,
+        None,
     )
 }
 
@@ -2055,7 +2093,16 @@ fn run_cv_refit_in_process_impl(
     resource_limits_json: Option<&str>,
     refit: bool,
     refit_top_k: usize,
+    view_callback: Option<Py<PyAny>>,
 ) -> PyResult<String> {
+    if view_callback
+        .as_ref()
+        .is_some_and(|callback| !callback.bind(py).is_callable())
+    {
+        return Err(py_core_error(CoreDagMlError::RuntimeValidation(
+            "view_callback must be callable".into(),
+        )));
+    }
     let (metric, resource_limits) =
         cv_refit_options(selection_metric, resource_limits_json, refit, refit_top_k)?;
     let manifests =
@@ -2081,17 +2128,25 @@ fn run_cv_refit_in_process_impl(
     }
     // The SAME Rust data provider the CLI uses (`data_provider_for_training_envelope`):
     // data_views / sample_ids are produced identically to the subprocess path.
-    let data_provider = InMemoryDataProvider::with_envelope(
+    let static_provider = InMemoryDataProvider::with_envelope(
         ControllerId::new("controller:data.provider").map_err(py_core_error)?,
         campaign.envelope.clone(),
     )
     .map_err(py_core_error)?;
+    let data_provider: Box<dyn RuntimeDataProvider> = match view_callback {
+        Some(callback) => Box::new(PyViewDataProvider {
+            inner: static_provider,
+            callback,
+            receipts: RefCell::new(BTreeMap::new()),
+        }),
+        None => Box::new(static_provider),
+    };
     let runtime_controllers =
         build_runtime_controllers(py, &campaign.plan, &op_callback).map_err(py_core_error)?;
     let run = execute_cv_refit(
         &campaign,
         &runtime_controllers,
-        &data_provider,
+        data_provider.as_ref(),
         metric,
         resource_limits,
         refit,
