@@ -8670,6 +8670,8 @@ fn predict_uses_attested_cohort_without_resolving_cv_relations() {
         fn make_view(&self, request: &DataViewRequest) -> Result<HandleRef> {
             self.make_view_calls.set(self.make_view_calls.get() + 1);
             assert_eq!(request.phase, Phase::Predict);
+            assert!(request.view_key.starts_with("view:v1:"));
+            assert!(request.view_seed.is_some());
             assert_eq!(request.predict_cohort.as_ref(), Some(&self.cohort));
             assert_eq!(request.view.partition, DataRequestPartition::Predict);
             assert_eq!(request.view.fold_id, None);
