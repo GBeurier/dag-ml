@@ -9,6 +9,13 @@ deprecations follow [ADR-14](docs/adr/ADR-14-deprecation-policy.md).
 
 ## [Unreleased]
 
+### Added
+
+- The Python in-process provider bridge records generated CV/refit views in a
+  TCV1-fingerprinted manifest and exposes a native validator for its closed
+  structure and content fingerprint. Dynamic training and archive replay remain
+  gated pending host provenance binding.
+
 ## [0.3.30] - 2026-09-27
 
 ### Added
