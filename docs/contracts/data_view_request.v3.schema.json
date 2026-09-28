@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GBeurier/dag-ml/schemas/data_view_request.v3.schema.json",
+  "title": "DAG-ML C ABI v3 scheduler data-view request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["run_id", "node_id", "input_name", "phase", "variant_id", "fold_id", "binding", "data_handle", "view", "view_key"],
+  "properties": {
+    "run_id": {"$ref": "#/$defs/nonempty"},
+    "node_id": {"$ref": "#/$defs/nonempty"},
+    "input_name": {"$ref": "#/$defs/nonempty"},
+    "phase": {"type": "string", "pattern": "^[A-Z][A-Z_]*$"},
+    "variant_id": {"type": ["string", "null"]},
+    "fold_id": {"type": ["string", "null"]},
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node_id", "input_name", "request_id", "schema_fingerprint", "plan_fingerprint", "relation_fingerprint", "output_representation", "feature_set_id", "source_ids", "require_relations", "view_policy", "metadata"],
+      "properties": {
+        "node_id": {"$ref": "#/$defs/nonempty"},
+        "input_name": {"$ref": "#/$defs/nonempty"},
+        "request_id": {"$ref": "#/$defs/nonempty"},
+        "schema_fingerprint": {"$ref": "#/$defs/sha256"},
+        "plan_fingerprint": {"$ref": "#/$defs/sha256"},
+        "relation_fingerprint": {"anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
+        "output_representation": {"$ref": "#/$defs/nonempty"},
+        "feature_set_id": {"type": ["string", "null"]},
+        "source_ids": {"type": "array", "items": {"$ref": "#/$defs/nonempty"}},
+        "require_relations": {"type": "boolean"},
+        "view_policy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["fit_partition", "predict_partition", "include_augmented_train", "include_augmented_validation", "include_excluded", "require_sample_ids"],
+          "properties": {
+            "fit_partition": {"type": "string", "pattern": "^[a-z][a-z_]*$"},
+            "predict_partition": {"type": "string", "pattern": "^[a-z][a-z_]*$"},
+            "include_augmented_train": {"type": "boolean"},
+            "include_augmented_refit_predictions": {"type": "boolean"},
+            "include_augmented_cv_train_predictions": {"type": "boolean"},
+            "augmented_cv_train_prediction_ids_by_fold": {"type": "object"},
+            "include_augmented_validation": {"type": "boolean"},
+            "include_excluded": {"type": "boolean"},
+            "require_sample_ids": {"type": "boolean"},
+            "unsafe_flags": {"type": "array", "items": {"$ref": "#/$defs/nonempty"}}
+          }
+        },
+        "metadata": {"type": "object"}
+      }
+    },
+    "data_handle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["handle", "kind", "owner_controller"],
+      "properties": {
+        "handle": {"type": "integer", "minimum": 1},
+        "kind": {"const": "data"},
+        "owner_controller": {"$ref": "#/$defs/nonempty"}
+      }
+    },
+    "view": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sample_ids", "partition", "fold_id", "source_ids", "columns", "include_augmented", "include_excluded", "extra"],
+      "properties": {
+        "sample_ids": {"type": ["array", "null"], "items": {"$ref": "#/$defs/nonempty"}},
+        "partition": {"type": "string", "pattern": "^[a-z][a-z_]*$"},
+        "fold_id": {"type": ["string", "null"]},
+        "source_ids": {"type": ["array", "null"], "items": {"$ref": "#/$defs/nonempty"}},
+        "columns": {"type": ["array", "null"], "items": {"$ref": "#/$defs/nonempty"}},
+        "include_augmented": {"type": "boolean"},
+        "include_excluded": {"type": "boolean"},
+        "branch_view": {"type": "object"},
+        "extra": {"type": "object"}
+      }
+    },
+    "view_key": {"type": "string"},
+    "view_seed": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615},
+    "predict_cohort": {"type": "object"}
+  },
+  "$defs": {
+    "nonempty": {"type": "string", "minLength": 1},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

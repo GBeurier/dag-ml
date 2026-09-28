@@ -51,6 +51,8 @@ PREDICT_COHORT_ENVELOPE_V2_SCHEMA_REL = Path(
     "docs/contracts/coordinator_data_plan_envelope.v2.schema.json"
 )
 FEATURE_FUSION_SCHEMA_REL = Path("docs/contracts/feature_fusion_selector.schema.json")
+DATA_VIEW_REQUEST_V3_SCHEMA_REL = Path("docs/contracts/data_view_request.v3.schema.json")
+DATA_VIEW_REQUEST_V3_FIXTURE_REL = Path("examples/fixtures/data/data_view_request_v3.json")
 BRANCH_VIEW_SCHEMA_REL = Path("docs/contracts/coordinator_branch_view.schema.json")
 FITTED_ADAPTER_SCHEMA_REL = Path("docs/contracts/fitted_adapter_ref.schema.json")
 GRAPH_SPEC_SCHEMA_REL = Path("docs/contracts/graph_spec.schema.json")
@@ -13542,6 +13544,11 @@ def validate_data_provider_header(header: str, label: str) -> None:
         "#define DAG_ML_DATA_VTABLE_DEFINED" in header,
         f"{label} header must guard the shared DagMlDataVTable definition",
     )
+    if label == "dag-ml":
+        require(
+            "#define DAG_ML_DATA_PROVIDER_VIEW_REQUEST_ABI_VERSION 3u" in header,
+            "dag-ml header must declare the opt-in full view-request ABI version",
+        )
     require(
         "typedef struct DagMlDataVTable" in header,
         f"{label} header must expose DagMlDataVTable",
@@ -19033,6 +19040,8 @@ def main(argv: list[str] | None = None) -> int:
             ROOT / PREDICT_COHORT_ENVELOPE_V2_SCHEMA_REL
         )
         local_feature_fusion_schema = load_json(ROOT / FEATURE_FUSION_SCHEMA_REL)
+        local_data_view_request_v3_schema = load_json(ROOT / DATA_VIEW_REQUEST_V3_SCHEMA_REL)
+        local_data_view_request_v3_fixture = load_json(ROOT / DATA_VIEW_REQUEST_V3_FIXTURE_REL)
         local_branch_view_schema = load_json(ROOT / BRANCH_VIEW_SCHEMA_REL)
         local_fitted_adapter_schema = load_json(ROOT / FITTED_ADAPTER_SCHEMA_REL)
         local_graph_spec_schema = load_json(ROOT / GRAPH_SPEC_SCHEMA_REL)
@@ -19271,6 +19280,13 @@ def main(argv: list[str] | None = None) -> int:
         validate_node_result_schema(local_node_result_schema, "dag-ml")
         validate_score_set_schema(local_score_set_schema, "dag-ml")
         validate_score_set_fixture(local_score_set_fixture, "dag-ml")
+        try:
+            Draft202012Validator.check_schema(local_data_view_request_v3_schema)
+            Draft202012Validator(local_data_view_request_v3_schema).validate(
+                local_data_view_request_v3_fixture
+            )
+        except (SchemaError, ValidationError) as exc:
+            raise ContractError(f"dag-ml C ABI v3 data-view request contract: {exc}") from exc
         validate_chain_effect_analysis_schema(
             local_chain_effect_analysis_schema, "dag-ml"
         )
