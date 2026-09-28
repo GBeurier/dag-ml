@@ -211,7 +211,7 @@
     },
     {
       "path": "crates/dag-ml-py/src/in_process.rs",
-      "sha256": "c488ac34b166837ef787bd9c21af83b0d472229859064239d878553f23231751",
+      "sha256": "fa4d0913ba013c6c542cdf2345ad82fa6117a64ddfe42d33eb501d2ebb4af6dc",
       "kind": "python_controller_bridge"
     },
     {
@@ -604,5 +604,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "6ea1d703c50875fc18c2c403c087295ebfd07b4f9eca4e2e15f221cbfa182819"
+  "pack_checksum": "b0c73a245f92c5a4a70476dba7064994b7baef0cf86b4520f3c96a46d84da673"
 }

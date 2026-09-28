@@ -52,14 +52,15 @@ use dag_ml_core::{
     select_best_operator_variant_outcome_from_models, select_best_variant_outcome_by_cv,
     validate_terminal_prediction_preflight, AggregationControllerResult, AggregationControllerTask,
     ArtifactMaterializationRequest, AttestedDataView, BundleId, ControllerId, ControllerRegistry,
-    DagMlError as CoreDagMlError, DataBinding, DataMaterializationRequest, DataViewReceipt,
-    DataViewRequest, DataProviderViewSpec, ExecutionPlan, ExplicitPhaseDataProvider, ExternalDataPlanEnvelope,
-    HandleKind, HandleRef, InMemoryArtifactStore, InMemoryDataProvider, NodeResult, NodeTask,
-    OperatorVariantModel, Phase, PredictCohort, RegressionMetricKind, RegressionMetricReport,
-    RunContext, RunId, RuntimeController, RuntimeControllerRegistry, RuntimeDataProvider, SampleId,
-    SampleRelationSet, ScoreSet, SequentialScheduler, TerminalPredictionReplay,
-    TerminalPredictionSelector, TrainingDataIdentity, TrainingLossRoleReference,
-    TrainingResourceLimits, VariantId, VariantValidationPredictions, SCORE_SET_SCHEMA_VERSION,
+    DagMlError as CoreDagMlError, DataBinding, DataMaterializationRequest, DataProviderViewSpec,
+    DataViewReceipt, DataViewRequest, ExecutionPlan, ExplicitPhaseDataProvider,
+    ExternalDataPlanEnvelope, HandleKind, HandleRef, InMemoryArtifactStore, InMemoryDataProvider,
+    NodeResult, NodeTask, OperatorVariantModel, Phase, PredictCohort, RegressionMetricKind,
+    RegressionMetricReport, RunContext, RunId, RuntimeController, RuntimeControllerRegistry,
+    RuntimeDataProvider, SampleId, SampleRelationSet, ScoreSet, SequentialScheduler,
+    TerminalPredictionReplay, TerminalPredictionSelector, TrainingDataIdentity,
+    TrainingLossRoleReference, TrainingResourceLimits, VariantId, VariantValidationPredictions,
+    SCORE_SET_SCHEMA_VERSION,
 };
 
 use crate::{py_core_error, py_serde_error};
@@ -471,7 +472,10 @@ impl From<&DataBinding> for GeneratedViewBindingIdentity {
 }
 
 impl GeneratedViewRecord {
-    fn from_receipt(request: &DataViewRequest, receipt: &DataViewReceipt) -> dag_ml_core::Result<Self> {
+    fn from_receipt(
+        request: &DataViewRequest,
+        receipt: &DataViewReceipt,
+    ) -> dag_ml_core::Result<Self> {
         Ok(Self {
             view_key: request.view_key.clone(),
             view_seed: request.view_seed.ok_or_else(|| {
@@ -525,9 +529,9 @@ fn generated_view_manifest(
 }
 
 fn validate_generated_view_manifest(manifest: &GeneratedViewManifest) -> dag_ml_core::Result<()> {
-    let invalid = |message: &str| CoreDagMlError::RuntimeValidation(format!(
-        "generated view manifest {message}"
-    ));
+    let invalid = |message: &str| {
+        CoreDagMlError::RuntimeValidation(format!("generated view manifest {message}"))
+    };
     if manifest.schema_version != 1 {
         return Err(invalid("uses an unsupported schema version"));
     }
@@ -601,25 +605,18 @@ fn lowercase_sha256(value: &str) -> bool {
 /// Returns the verified TCV1 fingerprint; no view callback or model is invoked.
 #[pyfunction]
 pub fn validate_generated_view_manifest_in_process(manifest_json: &str) -> PyResult<String> {
-    let raw_typed = dag_ml_core::canonical::parse_typed_json(manifest_json).map_err(|error| {
-        py_core_error(CoreDagMlError::RuntimeValidation(error.to_string()))
-    })?;
-    let manifest: GeneratedViewManifest = serde_json::from_str(manifest_json).map_err(|error| {
-        py_core_error(CoreDagMlError::RuntimeValidation(error.to_string()))
-    })?;
-    let normalized_json = serde_json::to_string(&manifest).map_err(|error| {
-        py_core_error(CoreDagMlError::RuntimeValidation(error.to_string()))
-    })?;
-    let normalized_typed = dag_ml_core::canonical::parse_typed_json(&normalized_json).map_err(|error| {
-        py_core_error(CoreDagMlError::RuntimeValidation(error.to_string()))
-    })?;
-    let raw_fingerprint = dag_ml_core::canonical::tcv1_sha256(&raw_typed).map_err(|error| {
-        py_core_error(CoreDagMlError::RuntimeValidation(error.to_string()))
-    })?;
-    let normalized_fingerprint =
-        dag_ml_core::canonical::tcv1_sha256(&normalized_typed).map_err(|error| {
-            py_core_error(CoreDagMlError::RuntimeValidation(error.to_string()))
-        })?;
+    let raw_typed = dag_ml_core::canonical::parse_typed_json(manifest_json)
+        .map_err(|error| py_core_error(CoreDagMlError::RuntimeValidation(error.to_string())))?;
+    let manifest: GeneratedViewManifest = serde_json::from_str(manifest_json)
+        .map_err(|error| py_core_error(CoreDagMlError::RuntimeValidation(error.to_string())))?;
+    let normalized_json = serde_json::to_string(&manifest)
+        .map_err(|error| py_core_error(CoreDagMlError::RuntimeValidation(error.to_string())))?;
+    let normalized_typed = dag_ml_core::canonical::parse_typed_json(&normalized_json)
+        .map_err(|error| py_core_error(CoreDagMlError::RuntimeValidation(error.to_string())))?;
+    let raw_fingerprint = dag_ml_core::canonical::tcv1_sha256(&raw_typed)
+        .map_err(|error| py_core_error(CoreDagMlError::RuntimeValidation(error.to_string())))?;
+    let normalized_fingerprint = dag_ml_core::canonical::tcv1_sha256(&normalized_typed)
+        .map_err(|error| py_core_error(CoreDagMlError::RuntimeValidation(error.to_string())))?;
     if raw_fingerprint != normalized_fingerprint {
         return Err(py_core_error(CoreDagMlError::RuntimeValidation(
             "generated view manifest contains unknown or noncanonical fields".into(),
@@ -1818,6 +1815,8 @@ fn surface_loser_validation_frames(
 /// * `op_callback` — the host bridge running one [`NodeTask`] (`run_node`).
 /// * `selection_metric` — `rmse` | `accuracy` | `balanced_accuracy`, used only
 ///   for native multi-variant SELECT (validated even for single-variant plans).
+/// * `root_seed` — optional native control seed for view keys and task RNG;
+///   omitting it preserves the historical zero-seed campaign.
 ///
 /// Returns a JSON object `{ "node_results": [...], "scores": <ScoreSet|null> }`.
 /// `scores` is byte-identical to the subprocess bundle's `scores`, so the host
@@ -1832,6 +1831,7 @@ fn surface_loser_validation_frames(
     refit = true,
     refit_top_k = 1,
     view_callback = None,
+    root_seed = 0,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub fn run_cv_refit_in_process(
@@ -1845,6 +1845,7 @@ pub fn run_cv_refit_in_process(
     refit: bool,
     refit_top_k: usize,
     view_callback: Option<Py<PyAny>>,
+    root_seed: u64,
 ) -> PyResult<String> {
     run_cv_refit_in_process_impl(
         py,
@@ -1858,6 +1859,7 @@ pub fn run_cv_refit_in_process(
         refit,
         refit_top_k,
         view_callback,
+        root_seed,
     )
 }
 
@@ -1892,6 +1894,7 @@ pub fn run_cv_refit_in_process_with_training_losses(
         true,
         1,
         None,
+        0,
     )
 }
 
@@ -2164,11 +2167,11 @@ fn execute_cv_refit(
     resource_limits: Option<TrainingResourceLimits>,
     refit: bool,
     refit_top_k: usize,
+    root_seed: u64,
 ) -> Result<CvRefitRun, CoreDagMlError> {
     let plan = &campaign.plan;
     let operator_variant_models = &campaign.operator_variant_models;
     let run_id = RunId::new(format!("run:{}:in-process", campaign.dsl_id))?;
-    let root_seed: u64 = 0;
 
     let resolved = resolve_refit_variant(
         plan,
@@ -2365,6 +2368,7 @@ fn run_cv_refit_in_process_impl(
     refit: bool,
     refit_top_k: usize,
     view_callback: Option<Py<PyAny>>,
+    root_seed: u64,
 ) -> PyResult<String> {
     if view_callback
         .as_ref()
@@ -2404,12 +2408,18 @@ fn run_cv_refit_in_process_impl(
         campaign.envelope.clone(),
     )
     .map_err(py_core_error)?;
-    let generated_receipts = view_callback.as_ref().map(|_| Rc::new(RefCell::new(BTreeMap::new())));
+    let generated_receipts = view_callback
+        .as_ref()
+        .map(|_| Rc::new(RefCell::new(BTreeMap::new())));
     let data_provider: Box<dyn RuntimeDataProvider> = match view_callback {
         Some(callback) => Box::new(PyViewDataProvider {
             inner: static_provider,
             callback,
-            receipts: Rc::clone(generated_receipts.as_ref().expect("receipt registry initialized")),
+            receipts: Rc::clone(
+                generated_receipts
+                    .as_ref()
+                    .expect("receipt registry initialized"),
+            ),
         }),
         None => Box::new(static_provider),
     };
@@ -2423,6 +2433,7 @@ fn run_cv_refit_in_process_impl(
         resource_limits,
         refit,
         refit_top_k,
+        root_seed,
     )
     .map_err(py_core_error)?;
     if let Some(receipts) = generated_receipts {
@@ -2565,6 +2576,7 @@ pub fn run_cv_refit_methods_in_process<'py>(
                     resource_limits,
                     refit,
                     refit_top_k,
+                    0,
                 )?;
                 let payloads = run
                     .refit_artifacts
