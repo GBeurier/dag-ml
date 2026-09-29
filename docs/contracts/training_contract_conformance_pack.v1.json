@@ -201,7 +201,7 @@
     },
     {
       "path": "crates/dag-ml-py/python/dag_ml/__init__.py",
-      "sha256": "b9f3d81c8af92050c5df6983babdb73d4838bdf6a0cb396f20b788867c9a1e1d",
+      "sha256": "1288cbeb9452df9345f03cc2f46cdb2481cdde4a4aeb3529ea8fe7d1a30742a7",
       "kind": "python_facade"
     },
     {
@@ -211,12 +211,12 @@
     },
     {
       "path": "crates/dag-ml-py/src/in_process.rs",
-      "sha256": "768120c7f808ab86104b55b79b94004d52bc70bbfb1581560fc436be9cd920c5",
+      "sha256": "b068a33cd8fa924f23a46108a2c80789c2fc73aaa3f6fde1ddef2ee7eaa48c8f",
       "kind": "python_controller_bridge"
     },
     {
       "path": "crates/dag-ml-py/src/lib.rs",
-      "sha256": "1382860afcf14f5ea3ffd7c43cefa0f46e2d42a2388125bf5e5ceedcb44c4d90",
+      "sha256": "63d734b792d39e8b8ece3c3c09e3385176dcbabe79de02930c25fac8407879ac",
       "kind": "python_binding"
     },
     {
@@ -604,5 +604,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "6acd239e6b54930ecc78f8d7dc5332e95b739dec35dfb88fe70b1f7c1ae27005"
+  "pack_checksum": "a16b6d9b57d8103d6e7d5485c2f9549012b6df782d487e194910d1872f896cbe"
 }
