@@ -1,0 +1,55 @@
+name: Methods-backed WASM HPO candidate
+
+# Cross-repository qualification only. No npm or Python package is published.
+on:
+  workflow_dispatch:
+    inputs:
+      methods_ref:
+        description: "nirs4all-methods commit containing the JS optimizer"
+        required: true
+        default: "0ffe6f2339514ab71adfe6d60ae0d584e7a20902"
+
+permissions:
+  contents: read
+
+jobs:
+  native-methods-js-hpo:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          repository: GBeurier/nirs4all-methods
+          ref: ${{ inputs.methods_ref }}
+          path: external/nirs4all-methods
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          package-manager-cache: false
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 3.1.74
+      - name: Install Methods build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ninja-build cmake
+      - name: Build current DAG-ML Node WASM package
+        run: |
+          cargo install wasm-pack --version 0.15.0 --locked
+          wasm-pack build crates/dag-ml-wasm --target nodejs --out-dir "$PWD/target/wasm/dag-ml-wasm" --release
+      - name: Build candidate Methods JS/WASM without publishing
+        working-directory: external/nirs4all-methods
+        run: |
+          cmake --preset emscripten
+          cmake --build --preset emscripten --target n4m_wasm
+          cd bindings/js
+          npm ci
+          npm run build
+          npm run stage:wasm
+      - name: Fit Ridge with Methods proposals, resume and replay selected refit
+        run: |
+          node scripts/smoke_wasm_n4m_hpo.mjs \
+            "$PWD/target/wasm/dag-ml-wasm" \
+            "$PWD/external/nirs4all-methods/bindings/js/dist"
