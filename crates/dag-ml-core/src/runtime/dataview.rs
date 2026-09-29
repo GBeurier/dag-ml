@@ -395,6 +395,11 @@ pub trait RuntimeDataProvider {
     fn generated_view_manifest(&self) -> Result<Option<serde_json::Value>> {
         Ok(None)
     }
+    /// Preserve an explicit empty manifest when a candidate fails before its
+    /// first successful generated-view receipt.
+    fn generated_view_manifest_on_failure(&self) -> Result<Option<serde_json::Value>> {
+        self.generated_view_manifest()
+    }
     /// Attest the exact feature and target content bound to one training input.
     ///
     /// Legacy phase execution may return `None`; the native W1 training
