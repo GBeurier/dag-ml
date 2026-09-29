@@ -13,7 +13,7 @@
 [package]
 name = "dag-ml-py"
 description = "Python bindings for DAG-ML JSON contracts."
-version = "0.3.30"
+version = "0.3.31-dev.0"
 edition = "2021"
 rust-version = "1.85"
 license = "CECILL-2.1 OR AGPL-3.0-or-later"

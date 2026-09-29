@@ -328,7 +328,7 @@ dependencies = [
 
 [[package]]
 name = "dag-ml-py"
-version = "0.3.30"
+version = "0.3.31-dev.0"
 dependencies = [
  "dag-ml-core",
  "dag-ml-results",
