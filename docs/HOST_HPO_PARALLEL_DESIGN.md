@@ -128,11 +128,15 @@ pooled OOF scores, simultaneous dispatch, ordered terminalization, checkpoint
 resume, and an actual prune before the next fold. The synchronous
 single-worker API also supports fold pruning. This HPO surface returns CV
 trial evidence and selected parameters; it does not execute a REFIT or create
-a replayable predictor artifact. R/MATLAB JSONL adapters remain usable as
-separate CLI processes.
-The R and Octave CI jobs require their JSONL adapter, CLI wrapper, and native
-two-worker HPO/resume tests to pass; the latter exercises actual optimizer
-processes, not only a fake CLI. The web target is also exercised in headless
+a replayable predictor artifact. R and Octave JSONL adapters remain usable as
+separate CLI processes. Their Ridge oracles additionally qualify host REFIT
+and fresh-process replay from RDS and MAT sidecars, respectively; neither
+sidecar is a cross-language portable model format. Licensed MATLAB execution
+is outside the active qualification scope.
+The R and Octave CI jobs require their JSONL adapter, CLI wrapper, native
+two-worker HPO/resume tests, and Ridge operator oracles to pass. The HPO tests
+exercise actual optimizer processes, not only a fake CLI. The web target is
+also exercised in headless
 Chrome with two actual module `Web Worker` instances, each loading its own
 WASM instance. Each browser worker fits the same host-local ridge from its
 fold-train IDs; the smoke checks native per-fold and pooled OOF scores,
