@@ -21,6 +21,19 @@ Median pruning and two recovery windows. It uses the same simple DAG fixture
 as the stateless CLI adapters; comparison against the public nirs4all
 multimodal DAG, installed wheels and other language hosts remains separate.
 
+The JS/WASM example `examples/adapters/hpo_n4m_wasm_adapter.mjs` uses the
+Methods JS optimizer as the proposal source for `host_hpo_search_json`. Its
+synchronous persistence callback stores one snapshot containing both the
+sealed DAG-ML checkpoint and N4MOPT bytes. Resume checks terminal parameters,
+statuses and scores, and reconciles a prepared terminal or an orphaned ask.
+`scripts/smoke_wasm_n4m_hpo.mjs` fits actual JS Ridge folds, compares resumed
+and continuous trials, and checks recovery both before and after preparing a
+real Methods Median pruning decision. It checks selected refit/replay against the
+current DAG-ML WASM build. The manual, non-publishing
+`methods-wasm-hpo-candidate.yml` workflow builds both candidate WASM packages.
+This is a single-operator bridge, not yet parity for the four-source Python
+DAG or a packaged universal JS controller.
+
 Run the strict R oracle with `Rscript` and `jsonlite` installed:
 
 ```sh
