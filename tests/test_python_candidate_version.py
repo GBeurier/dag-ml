@@ -41,8 +41,28 @@ def copy_manifests(tmp_path: Path) -> Path:
     return tmp_path
 
 
+def set_stable_python_version(root: Path) -> None:
+    """Model a checkout immediately after a stable tag for the conversion test."""
+    with (root / "Cargo.toml").open("rb") as handle:
+        released = tomllib.load(handle)["workspace"]["package"]["version"]
+    major, minor, patch = (int(part) for part in released.split("."))
+    next_patch = f"{major}.{minor}.{patch + 1}"
+    package = root / "crates" / "dag-ml-py"
+    for name, old, new in (
+        ("Cargo.toml", f'name = "dag-ml-py"\ndescription = "Python bindings for DAG-ML JSON contracts."\nversion = "{next_patch}-dev.0"',
+         f'name = "dag-ml-py"\ndescription = "Python bindings for DAG-ML JSON contracts."\nversion = "{released}"'),
+        ("Cargo.lock", f'name = "dag-ml-py"\nversion = "{next_patch}-dev.0"',
+         f'name = "dag-ml-py"\nversion = "{released}"'),
+        ("pyproject.toml", f'name = "dag-ml"\nversion = "{next_patch}.dev0"',
+         f'name = "dag-ml"\nversion = "{released}"'),
+    ):
+        path = package / name
+        path.write_text(candidate_script.replace_once(path.read_text(encoding="utf-8"), old, new, name), encoding="utf-8")
+
+
 def test_next_patch_candidate_is_coherent_but_not_a_release(tmp_path: Path) -> None:
     root = copy_manifests(tmp_path)
+    set_stable_python_version(root)
     with (root / "Cargo.toml").open("rb") as handle:
         released = tomllib.load(handle)["workspace"]["package"]["version"]
     major, minor, patch = (int(part) for part in released.split("."))
@@ -65,13 +85,14 @@ def test_next_patch_candidate_is_coherent_but_not_a_release(tmp_path: Path) -> N
         release_metadata.validate_python(root, "dag-ml", released, release=True)
 
 
-def test_candidate_preparation_refuses_retagging_or_lock_drift(tmp_path: Path) -> None:
+def test_candidate_preparation_is_idempotent_but_refuses_lock_drift(tmp_path: Path) -> None:
     root = copy_manifests(tmp_path)
-    candidate_script.prepare(root)
-    with pytest.raises(ValueError, match="does not match"):
-        candidate_script.prepare(root)
+    set_stable_python_version(root)
+    prepared = candidate_script.prepare(root)
+    assert candidate_script.prepare(root) == prepared
 
     root = copy_manifests(tmp_path / "second")
+    set_stable_python_version(root)
     with (root / "Cargo.toml").open("rb") as handle:
         released = tomllib.load(handle)["workspace"]["package"]["version"]
     lock = root / "crates" / "dag-ml-py" / "Cargo.lock"
@@ -83,6 +104,18 @@ def test_candidate_preparation_refuses_retagging_or_lock_drift(tmp_path: Path) -
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="Cargo.lock"):
+        candidate_script.prepare(root)
+
+
+@pytest.mark.parametrize("name", ["Cargo.lock", "pyproject.toml"])
+def test_checked_in_candidate_refuses_metadata_drift(tmp_path: Path, name: str) -> None:
+    root = copy_manifests(tmp_path)
+    native, wheel = candidate_script.prepare(root)
+    path = root / "crates" / "dag-ml-py" / name
+    source = path.read_text(encoding="utf-8")
+    candidate = native if name == "Cargo.lock" else wheel
+    path.write_text(source.replace(candidate, "0.0.0", 1), encoding="utf-8")
+    with pytest.raises(ValueError, match="candidate metadata or Cargo.lock"):
         candidate_script.prepare(root)
 
 
