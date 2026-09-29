@@ -146,7 +146,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/runtime/host_hpo.rs",
-      "sha256": "7662a8216261af922148c204bca103bcf8f6d1a88506e8f52ce942d8a8a651eb",
+      "sha256": "775e11035edacacdab345f2dc40bf2579e79f26bbfba70a745d026d2ede80bf2",
       "kind": "native_hpo_runtime_session"
     },
     {
@@ -211,7 +211,7 @@
     },
     {
       "path": "crates/dag-ml-py/src/in_process.rs",
-      "sha256": "ba50992a33412b2282fe35645d7a2e5313b0f2c30aa42132ce2b0343b6247b6e",
+      "sha256": "768120c7f808ab86104b55b79b94004d52bc70bbfb1581560fc436be9cd920c5",
       "kind": "python_controller_bridge"
     },
     {
@@ -604,5 +604,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "83c36e3876bb7986d20904ff7c7f234f8e00252c21c78f34365bc570d39a6d17"
+  "pack_checksum": "6acd239e6b54930ecc78f8d7dc5332e95b739dec35dfb88fe70b1f7c1ae27005"
 }

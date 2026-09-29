@@ -13763,6 +13763,104 @@ fn host_hpo_parallel_window_overlaps_candidates_and_tells_in_trial_order() {
 }
 
 #[test]
+fn host_hpo_parallel_seals_one_batch_manifest_for_success_and_failure() {
+    struct ProviderFactory;
+    impl HostHpoCandidateProviderFactory for ProviderFactory {
+        fn create(&self, _trial_index: u32) -> Result<Box<dyn RuntimeDataProvider + Send>> {
+            Ok(Box::new(InMemoryDataProvider::new(ControllerId::new(
+                "controller:data",
+            )?)))
+        }
+
+        fn batch_generated_view_manifest(
+            &self,
+            _has_success: bool,
+        ) -> Result<Option<serde_json::Value>> {
+            Ok(Some(json!({"batch_receipts": ["trial:0", "trial:1"]})))
+        }
+    }
+    struct Model {
+        inner: VariantScoringController,
+        fail: bool,
+    }
+    impl RuntimeController for Model {
+        fn controller_id(&self) -> &ControllerId {
+            self.inner.controller_id()
+        }
+        fn invoke(&self, task: &NodeTask) -> Result<NodeResult> {
+            if self.fail {
+                return Err(DagMlError::RuntimeValidation(
+                    "deliberate parallel candidate failure".into(),
+                ));
+            }
+            self.inner.invoke(task)
+        }
+    }
+    struct ControllerFactory;
+    impl HostHpoCandidateControllerFactory for ControllerFactory {
+        fn create(&self, trial_index: u32) -> Result<RuntimeControllerRegistry> {
+            let mut registry = RuntimeControllerRegistry::new();
+            registry.register(Box::new(MockController {
+                id: ControllerId::new("controller:transform")?,
+                handle: 1,
+                emit_prediction: false,
+            }))?;
+            registry.register(Box::new(Model {
+                inner: VariantScoringController {
+                    id: ControllerId::new("controller:model")?,
+                    handle: 2,
+                    emit_targets: true,
+                },
+                fail: trial_index == 1,
+            }))?;
+            Ok(registry)
+        }
+    }
+
+    let (plan, _, _, mut request) = durable_host_fixture(false);
+    request.trial_budget = 2;
+    let mut progress = DurableHostProgress {
+        stop_after: usize::MAX,
+        checkpoints: Vec::new(),
+    };
+    let error = SequentialScheduler
+        .execute_resumable_parallel_host_hpo_search_with_candidate_factories(
+            &plan,
+            &ProviderFactory,
+            &ControllerFactory,
+            &request,
+            &mut durable_proposals(),
+            2,
+            &HostHpoResumeOptions {
+                data_fingerprint: "parallel-generated-batch".into(),
+                checkpoint: None,
+            },
+            &mut progress,
+        )
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("deliberate parallel candidate failure"));
+    let checkpoint = &progress.checkpoints.last().unwrap().0;
+    checkpoint.verify_seal().unwrap();
+    assert_eq!(checkpoint.trials.len(), 2);
+    let expected = Some(json!({"batch_receipts": ["trial:0", "trial:1"]}));
+    let first = match &checkpoint.trials[0] {
+        HostHpoTerminalTrial::Complete { evidence } => &evidence.generated_view_manifest,
+        other => panic!("expected complete first candidate, got {other:?}"),
+    };
+    let second = match &checkpoint.trials[1] {
+        HostHpoTerminalTrial::Failed {
+            generated_view_manifest,
+            ..
+        } => generated_view_manifest,
+        other => panic!("expected failed second candidate, got {other:?}"),
+    };
+    assert_eq!(first, &expected);
+    assert_eq!(second, &expected);
+}
+
+#[test]
 fn host_hpo_durable_masked_regression_resumes_with_native_scores_and_unchanged_selection() {
     struct MaskedModel {
         inner: VariantScoringController,

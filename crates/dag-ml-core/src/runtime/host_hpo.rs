@@ -159,6 +159,16 @@ pub trait HostHpoProposalSource {
 /// to the candidate; the returned provider may move to a worker thread.
 pub trait HostHpoCandidateProviderFactory: Send + Sync {
     fn create(&self, trial_index: u32) -> Result<Box<dyn RuntimeDataProvider + Send>>;
+
+    /// Snapshot the cumulative generated views after a parallel window joins.
+    /// Every terminal in that window receives the same snapshot, even when
+    /// candidates finished out of order or one failed after reading views.
+    fn batch_generated_view_manifest(
+        &self,
+        _has_success: bool,
+    ) -> Result<Option<serde_json::Value>> {
+        Ok(None)
+    }
 }
 
 fn host_hpo_provider_manifest(
@@ -1986,6 +1996,8 @@ impl SequentialScheduler {
                 }
                 completed
             });
+            let batch_manifest = provider_factory
+                .batch_generated_view_manifest(completed.values().any(Result::is_ok))?;
             let mut first_error = None;
             let mut cancel_requested = false;
             for trial_index in next - count as u32..next {
@@ -1993,6 +2005,20 @@ impl SequentialScheduler {
                     Err(DagMlError::RuntimeValidation(
                         "host HPO candidate worker returned no result".into(),
                     ))
+                });
+                let evaluated = evaluated.map(|outcome| match outcome {
+                    HostHpoEvaluation::Complete(mut evidence, candidate) => {
+                        if let Some(manifest) = &batch_manifest {
+                            evidence.generated_view_manifest = Some(manifest.clone());
+                        }
+                        HostHpoEvaluation::Complete(evidence, candidate)
+                    }
+                    HostHpoEvaluation::Pruned(mut evidence) => {
+                        if let Some(manifest) = &batch_manifest {
+                            evidence.generated_view_manifest = Some(manifest.clone());
+                        }
+                        HostHpoEvaluation::Pruned(evidence)
+                    }
                 });
                 let trial_status = if evaluated.is_err() || first_error.is_some() {
                     HostHpoSearchStatus::Failed
@@ -2021,7 +2047,7 @@ impl SequentialScheduler {
                                 "host_hpo:trial:{trial_index:010}"
                             ))?,
                             error: error.to_string(),
-                            generated_view_manifest: None,
+                            generated_view_manifest: batch_manifest.clone(),
                         },
                     };
                     let mut prepared = saved.clone();
