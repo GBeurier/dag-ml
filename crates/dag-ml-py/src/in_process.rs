@@ -1413,11 +1413,6 @@ pub fn run_host_hpo_search_in_process(
         .get("n_jobs")
         .and_then(serde_json::Value::as_i64)
         .unwrap_or(1);
-    if provider_factory.view_callback_factory.is_some() && n_jobs != 1 {
-        return Err(py_core_error(CoreDagMlError::RuntimeValidation(
-            "host HPO generated views require sequential candidate execution".into(),
-        )));
-    }
     if n_jobs != 1 {
         let workers = if n_jobs == -1 {
             std::thread::available_parallelism()

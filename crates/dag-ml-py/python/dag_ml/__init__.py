@@ -567,13 +567,15 @@ def run_host_hpo_search_in_process(
     retains single-target routing. Bindings are validated before callbacks and
     fingerprinted for resume; returned parameter keys remain public keys.
 
-    ``view_callback_factory(trial_index)`` is a sequential bridge
-    for candidate-local generated views. Its callback receives the native view
+    ``view_callback_factory(trial_index)`` creates candidate-local generated
+    views. Its callback receives the native view
     request and handle; the result and each terminal trial's checkpoint carry
     a generated-view manifest. On resume, ``resume_view_validator(record)``
     must regenerate each previously attested view and return its current
     ``schema_fingerprint`` and ``content_fingerprint`` before any new trial.
-    Parallel generated-view trials remain closed.
+    Parallel generated-view trials require candidate-local view and operator
+    callbacks. The host must isolate any process-global RNG used by operators;
+    the binding cannot infer that from a Python callback.
     """
     return json.loads(_native_run_host_hpo_search_in_process(
         _coerce_json(dsl), _coerce_json(envelope), _coerce_json(controller_manifests),
