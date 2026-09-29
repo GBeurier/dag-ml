@@ -42,18 +42,27 @@ def prepare(root: Path) -> tuple[str, str]:
     pyproject = pyproject_path.read_text(encoding="utf-8")
     lock = lock_path.read_text(encoding="utf-8")
 
-    if tomllib.loads(cargo)["package"]["version"] != released:
-        raise ValueError(
-            "Python Cargo package does not match the tagged workspace version"
-        )
-    if tomllib.loads(pyproject)["project"]["version"] != released:
-        raise ValueError("Python pyproject does not match the tagged workspace version")
+    cargo_version = tomllib.loads(cargo)["package"]["version"]
+    python_version = tomllib.loads(pyproject)["project"]["version"]
     locked = [
         package
         for package in tomllib.loads(lock)["package"]
         if package["name"] == "dag-ml-py"
     ]
-    if len(locked) != 1 or locked[0]["version"] != released:
+    if len(locked) != 1:
+        raise ValueError("Python Cargo.lock must contain exactly one dag-ml-py package")
+    if cargo_version == candidate_cargo:
+        if python_version != candidate_python or locked[0]["version"] != candidate_cargo:
+            raise ValueError("Python candidate metadata or Cargo.lock does not match the next-patch candidate")
+        return candidate_cargo, candidate_python
+
+    if cargo_version != released:
+        raise ValueError(
+            "Python Cargo package does not match the tagged workspace version"
+        )
+    if python_version != released:
+        raise ValueError("Python pyproject does not match the tagged workspace version")
+    if locked[0]["version"] != released:
         raise ValueError(
             "Python Cargo.lock package does not match the tagged workspace version"
         )
