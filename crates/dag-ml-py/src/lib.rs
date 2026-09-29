@@ -71,6 +71,12 @@ fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
+/// Feature probe for hosts that accept generated HPO on mixed installed versions.
+#[pyfunction]
+fn host_hpo_parallel_generated_views_supported() -> bool {
+    true
+}
+
 /// Configure the process-scoped Methods runtime from one explicit library
 /// path. This entry point performs no controller registration or model work;
 /// hosts must still register their native controllers before execution.
@@ -549,6 +555,10 @@ fn _dag_ml(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     )?;
     module.add("DagMlInternalError", py.get_type::<DagMlInternalError>())?;
     module.add_function(wrap_pyfunction!(version, module)?)?;
+    module.add_function(wrap_pyfunction!(
+        host_hpo_parallel_generated_views_supported,
+        module
+    )?)?;
     module.add_function(wrap_pyfunction!(configure_methods_runtime, module)?)?;
     module.add_function(wrap_pyfunction!(contract_manifest_json, module)?)?;
     module.add_function(wrap_pyfunction!(read_native_results_v2_json, module)?)?;
