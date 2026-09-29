@@ -1,12 +1,8 @@
 name: release-python
 
 on:
-  workflow_dispatch:
-    inputs:
-      publish:
-        description: "Publish to PyPI (true) or build only (false)"
-        type: boolean
-        default: false
+  # Manual dispatch builds next-patch .dev0 candidate artifacts only.
+  workflow_dispatch: {}
   push:
     tags:
       - "v[0-9]*.[0-9]*.[0-9]*"
@@ -57,6 +53,9 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
+      - name: Prepare distinct Python development candidate
+        if: github.event_name == 'workflow_dispatch'
+        run: python scripts/prepare_python_candidate.py
       - uses: PyO3/maturin-action@v1
         with:
           command: build
@@ -76,7 +75,7 @@ jobs:
           python scripts/smoke_python_bindings.py
       - uses: actions/upload-artifact@v7
         with:
-          name: wheels-${{ matrix.label }}
+          name: ${{ github.event_name == 'workflow_dispatch' && 'candidate-wheels' || 'wheels' }}-${{ matrix.label }}
           path: dist/*.whl
           if-no-files-found: error
 
@@ -88,6 +87,9 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
+      - name: Prepare distinct Python development candidate
+        if: github.event_name == 'workflow_dispatch'
+        run: python scripts/prepare_python_candidate.py
       - run: python -m pip install --upgrade maturin twine
       - name: Build source distribution
         run: maturin sdist --out dist --manifest-path ${{ env.PACKAGE_DIR }}/Cargo.toml
@@ -95,7 +97,7 @@ jobs:
         run: python -m twine check dist/*
       - uses: actions/upload-artifact@v7
         with:
-          name: sdist
+          name: ${{ github.event_name == 'workflow_dispatch' && 'candidate-sdist' || 'sdist' }}
           path: dist/*
           if-no-files-found: error
 
@@ -106,7 +108,7 @@ jobs:
       - build-wheels
       - build-sdist
     runs-on: ubuntu-22.04
-    if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish) }}
+    if: ${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-') && github.event_name != 'workflow_dispatch' }}
     environment:
       name: pypi
       url: https://pypi.org/p/dag-ml
@@ -118,6 +120,8 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
+      - name: Require matching release manifests
+        run: python scripts/validate_release_metadata.py --release
       - uses: actions/download-artifact@v8
         with:
           path: dist
@@ -131,12 +135,10 @@ jobs:
               print(tomllib.load(handle)["project"]["version"])
           PY
           )
-          if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
-            tag_version="${GITHUB_REF_NAME#v}"
-            if [[ "${tag_version}" != "${package_version}" ]]; then
-              echo "::error::Tag ${GITHUB_REF_NAME} does not match ${PACKAGE_NAME} ${package_version}."
-              exit 1
-            fi
+          tag_version="${GITHUB_REF_NAME#v}"
+          if [[ "${GITHUB_REF_TYPE:-}" != "tag" || "${tag_version}" != "${package_version}" ]]; then
+            echo "::error::Release tag ${GITHUB_REF_NAME} does not match ${PACKAGE_NAME} ${package_version}."
+            exit 1
           fi
           echo "Publishing ${PACKAGE_NAME} ${package_version} from ${GITHUB_REF_NAME}."
       - name: Validate distribution metadata

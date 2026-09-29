@@ -4,10 +4,11 @@
 from __future__ import annotations
 
 import re
-import tomllib
+import sys
 from pathlib import Path
 from typing import Any
 
+import tomllib
 
 EXPECTED_CLAP_VERSION = "=4.5.53"
 EXPECTED_CARGO_AUDIT_VERSION = "0.22.1"
@@ -48,7 +49,7 @@ def semver_to_pep440(version: str) -> str:
     pre = match["pre"]
     if pre is None:
         return base
-    pre_map = {"alpha": "a", "beta": "b", "rc": "rc"}
+    pre_map = {"alpha": "a", "beta": "b", "rc": "rc", "dev": ".dev"}
     pep_prefix = pre_map.get(pre)
     if pep_prefix is None:
         fail(f"unsupported SemVer prerelease label for Python package: {pre}")
@@ -70,7 +71,10 @@ def validate_workspace(repo: Path) -> tuple[str, str, list[str]]:
         package["rust-version"] == EXPECTED_RUST_VERSION,
         f"workspace MSRV must remain {EXPECTED_RUST_VERSION}",
     )
-    require(package["license"] == EXPECTED_LICENSE, f"workspace license must be {EXPECTED_LICENSE}")
+    require(
+        package["license"] == EXPECTED_LICENSE,
+        f"workspace license must be {EXPECTED_LICENSE}",
+    )
     require(package["readme"] == "README.md", "workspace readme must be README.md")
     members = workspace["members"]
     require(members, "workspace must declare members")
@@ -131,28 +135,49 @@ def validate_workspace(repo: Path) -> tuple[str, str, list[str]]:
     return package["repository"].removesuffix("/").split("/")[-1], version, members
 
 
-def validate_python(repo: Path, repo_name: str, version: str) -> None:
+def validate_python(
+    repo: Path, repo_name: str, version: str, *, release: bool = False
+) -> None:
     py_crate = repo / "crates" / f"{repo_name}-py"
 
     # The PyO3 crate is excluded from the workspace (its abi3-py311 floor would
     # force a Python>=3.11 host for `cargo test --workspace`/`cargo llvm-cov`),
     # so it carries literal metadata + pinned deps instead of inheriting from
-    # the workspace. Validate them here so they cannot drift out of sync — the
-    # native module embeds CARGO_PKG_VERSION, so the Cargo version must track
-    # the workspace version.
+    # the workspace. The only permitted development drift is the next patch's
+    # dev.0 wheel; a release must match the workspace exactly.
     cargo_path = py_crate / "Cargo.toml"
     require(cargo_path.is_file(), f"missing Python crate manifest: {cargo_path}")
     cargo = load_toml(cargo_path)
     cargo_package = cargo["package"]
+    version_parts = [int(part) for part in version.split(".")]
+    require(len(version_parts) == 3, "workspace version must be stable SemVer")
+    candidate = f"{version_parts[0]}.{version_parts[1]}.{version_parts[2] + 1}-dev.0"
+    binding_version = cargo_package.get("version")
     require(
-        cargo_package.get("version") == version,
-        f"{cargo_path}: package.version must match workspace version {version}",
+        binding_version == version or (not release and binding_version == candidate),
+        f"{cargo_path}: package.version must be {version}"
+        + (
+            " for a release" if release else f" or the next-patch candidate {candidate}"
+        ),
+    )
+    python_lock = load_toml(py_crate / "Cargo.lock")
+    locked_binding = [
+        package
+        for package in python_lock["package"]
+        if package["name"] == f"{repo_name}-py"
+    ]
+    require(
+        len(locked_binding) == 1 and locked_binding[0]["version"] == binding_version,
+        f"{py_crate / 'Cargo.lock'}: Python crate version must match its manifest",
     )
     require(
         cargo_package.get("rust-version") == EXPECTED_RUST_VERSION,
         f"{cargo_path}: package.rust-version must be {EXPECTED_RUST_VERSION}",
     )
-    require(cargo_package.get("edition") == "2021", f"{cargo_path}: package.edition must be 2021")
+    require(
+        cargo_package.get("edition") == "2021",
+        f"{cargo_path}: package.edition must be 2021",
+    )
     require(
         cargo_package.get("license") == EXPECTED_LICENSE,
         f"{cargo_path}: package.license must be {EXPECTED_LICENSE}",
@@ -173,7 +198,10 @@ def validate_python(repo: Path, repo_name: str, version: str) -> None:
         f"{cargo_path}: Python extension must use abi3-py311",
     )
     core_dep = cargo_deps.get(f"{repo_name}-core")
-    require(isinstance(core_dep, dict), f"{cargo_path}: {repo_name}-core dependency must be a table")
+    require(
+        isinstance(core_dep, dict),
+        f"{cargo_path}: {repo_name}-core dependency must be a table",
+    )
     require(
         core_dep.get("version") == version,
         f"{cargo_path}: {repo_name}-core dependency must pin version {version}",
@@ -187,13 +215,15 @@ def validate_python(repo: Path, repo_name: str, version: str) -> None:
     require(pyproject_path.is_file(), f"missing Python pyproject: {pyproject_path}")
     pyproject = load_toml(pyproject_path)
     project = pyproject["project"]
-    pep440_version = semver_to_pep440(version)
+    pep440_version = semver_to_pep440(binding_version)
     require(project["name"] == repo_name, f"{pyproject_path}: project.name mismatch")
     require(
         project["version"] == pep440_version,
         f"{pyproject_path}: project.version must be {pep440_version}",
     )
-    require(project["requires-python"] == ">=3.11", "Python package must require >=3.11")
+    require(
+        project["requires-python"] == ">=3.11", "Python package must require >=3.11"
+    )
     require(
         "maturin>=1.13,<2" in pyproject["build-system"]["requires"],
         "pyproject build-system must pin maturin>=1.13,<2",
@@ -202,7 +232,9 @@ def validate_python(repo: Path, repo_name: str, version: str) -> None:
         project["license"] == EXPECTED_LICENSE,
         f"Python package license must be {EXPECTED_LICENSE}",
     )
-    require(project["license-files"] == ["LICENSE"], "Python package must include LICENSE")
+    require(
+        project["license-files"] == ["LICENSE"], "Python package must include LICENSE"
+    )
     maturin = pyproject["tool"]["maturin"]
     module_prefix = repo_name.replace("-", "_")
     module_suffix = f"_{module_prefix}"
@@ -210,13 +242,20 @@ def validate_python(repo: Path, repo_name: str, version: str) -> None:
         maturin["module-name"] == f"{module_prefix}.{module_suffix}",
         "maturin module-name mismatch",
     )
-    require(maturin["python-source"] == "python", "maturin python-source must be python")
+    require(
+        maturin["python-source"] == "python", "maturin python-source must be python"
+    )
     require(
         "extension-module" in maturin["features"],
         "maturin features must include extension-module",
     )
-    require((py_crate / "python" / module_prefix / "py.typed").is_file(), "missing py.typed")
-    require((py_crate / "python" / module_prefix / "__init__.pyi").is_file(), "missing stub file")
+    require(
+        (py_crate / "python" / module_prefix / "py.typed").is_file(), "missing py.typed"
+    )
+    require(
+        (py_crate / "python" / module_prefix / "__init__.pyi").is_file(),
+        "missing stub file",
+    )
 
 
 def validate_ci(repo: Path) -> None:
@@ -264,14 +303,18 @@ def validate_ci(repo: Path) -> None:
         "CI must enforce ADR-11 error taxonomy metadata",
     )
     require(
-        'cargo install cargo-audit --version "$CARGO_AUDIT_VERSION" --locked' in workflow,
+        'cargo install cargo-audit --version "$CARGO_AUDIT_VERSION" --locked'
+        in workflow,
         "CI must install the pinned cargo-audit",
     )
     require(
         "cargo audit --deny warnings" in workflow,
         "CI must run cargo audit with warnings denied",
     )
-    require("cargo package --workspace --no-verify" in workflow, "CI must package Cargo crates")
+    require(
+        "cargo package --workspace --no-verify" in workflow,
+        "CI must package Cargo crates",
+    )
     require(
         "scripts/test_core_package_extract.sh" in workflow,
         "CI must test the extracted dag-ml-core package",
@@ -280,11 +323,21 @@ def validate_ci(repo: Path) -> None:
         "scripts/release/check_publish_plan.py --dry-run" in workflow,
         "CI must dry-run publishable Cargo root crates",
     )
-    require('RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps' in workflow, "CI must gate rustdoc warnings")
-    require("wasm-pack pack --pkg-dir pkg-web ." in workflow, "CI must pack web WASM packages")
-    require('RUSTFLAGS: "-Zsanitizer=address"' in workflow, "CI must run a C ABI AddressSanitizer lane")
     require(
-        "cargo test -p dag-ml-capi --lib -Zbuild-std --target x86_64-unknown-linux-gnu" in workflow,
+        'RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps' in workflow,
+        "CI must gate rustdoc warnings",
+    )
+    require(
+        "wasm-pack pack --pkg-dir pkg-web ." in workflow,
+        "CI must pack web WASM packages",
+    )
+    require(
+        'RUSTFLAGS: "-Zsanitizer=address"' in workflow,
+        "CI must run a C ABI AddressSanitizer lane",
+    )
+    require(
+        "cargo test -p dag-ml-capi --lib -Zbuild-std --target x86_64-unknown-linux-gnu"
+        in workflow,
         "CI must exercise dag-ml-capi unit tests under AddressSanitizer",
     )
 
@@ -307,7 +360,10 @@ def validate_governance(repo: Path, repo_name: str) -> None:
         "scripts/release/check_publish_plan.py",
     ]
     for relative_path in required_files:
-        require((repo / relative_path).is_file(), f"missing governance file: {relative_path}")
+        require(
+            (repo / relative_path).is_file(),
+            f"missing governance file: {relative_path}",
+        )
 
     codeowners = (repo / "CODEOWNERS").read_text(encoding="utf-8")
     require("* @GBeurier" in codeowners, "CODEOWNERS must assign default ownership")
@@ -323,7 +379,7 @@ def validate_governance(repo: Path, repo_name: str) -> None:
     dependabot = (repo / ".github" / "dependabot.yml").read_text(encoding="utf-8")
     for ecosystem in ['"cargo"', '"github-actions"', '"pip"']:
         require(
-            f'package-ecosystem: {ecosystem}' in dependabot,
+            f"package-ecosystem: {ecosystem}" in dependabot,
             f"dependabot must cover {ecosystem}",
         )
     require(
@@ -455,8 +511,7 @@ def validate_methods_hpo_docs(repo: Path) -> None:
     )
     ci = (repo / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     require(
-        "python -m maturin build --release --locked --features extension-module"
-        in ci,
+        "python -m maturin build --release --locked --features extension-module" in ci,
         "CI must build the standalone Python wheel from its tracked lockfile",
     )
     release = (repo / ".github" / "workflows" / "release-python.yml").read_text(
@@ -476,7 +531,9 @@ def validate_docs_site(repo: Path, repo_name: str) -> None:
         "docs/requirements.txt",
     ]
     for relative_path in required_files:
-        require((repo / relative_path).is_file(), f"missing docs site file: {relative_path}")
+        require(
+            (repo / relative_path).is_file(), f"missing docs site file: {relative_path}"
+        )
 
     requirements = (repo / "docs" / "requirements.txt").read_text(encoding="utf-8")
     for package in ["sphinx", "myst-parser", "sphinx-copybutton", "sphinx-design"]:
@@ -511,9 +568,14 @@ def validate_docs_site(repo: Path, repo_name: str) -> None:
 
 
 def main() -> None:
+    require(
+        sys.argv[1:] in ([], ["--release"]),
+        "usage: validate_release_metadata.py [--release]",
+    )
+    release = sys.argv[1:] == ["--release"]
     repo = Path(__file__).resolve().parents[1]
     repo_name, version, _members = validate_workspace(repo)
-    validate_python(repo, repo_name, version)
+    validate_python(repo, repo_name, version, release=release)
     validate_ci(repo)
     validate_governance(repo, repo_name)
     validate_docs_site(repo, repo_name)

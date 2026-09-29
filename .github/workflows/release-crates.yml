@@ -35,7 +35,7 @@ jobs:
           python-version: "3.11"
 
       - name: Validate release metadata
-        run: python scripts/validate_release_metadata.py
+        run: python scripts/validate_release_metadata.py --release
 
       - name: Validate publish plan
         run: python scripts/release/check_publish_plan.py
