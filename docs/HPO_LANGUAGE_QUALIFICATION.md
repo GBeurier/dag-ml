@@ -32,7 +32,9 @@ real Methods Median pruning decision. It checks selected refit/replay against th
 current DAG-ML WASM build. The manual, non-publishing
 `methods-wasm-hpo-candidate.yml` workflow builds both candidate WASM packages.
 This is a single-operator bridge, not yet parity for the four-source Python
-DAG or a packaged universal JS controller.
+DAG or a packaged universal JS controller. The smoke accepts both the Node
+CommonJS wasm-pack target and the npm ESM package; it initializes the latter
+from its packaged WASM bytes before running the same checks.
 
 Run the strict R oracle with `Rscript` and `jsonlite` installed:
 

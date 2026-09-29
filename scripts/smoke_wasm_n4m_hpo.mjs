@@ -13,7 +13,13 @@ const require = createRequire(import.meta.url);
 const repo = path.resolve(import.meta.dirname, "..");
 const dagPkg = path.resolve(process.argv[2] ?? path.join(repo, "target/wasm/dag-ml-wasm"));
 const methodsDist = path.resolve(process.argv[3] ?? path.join(repo, "../nirs4all-methods/bindings/js/dist"));
-const dagMl = require(path.join(dagPkg, "dag_ml_wasm.js"));
+const dagPackage = JSON.parse(fs.readFileSync(path.join(dagPkg, "package.json"), "utf8"));
+const dagMl = dagPackage.type === "module"
+  ? await import(pathToFileURL(path.join(dagPkg, "dag_ml_wasm.js")).href)
+  : require(path.join(dagPkg, "dag_ml_wasm.js"));
+if (dagPackage.type === "module") {
+  dagMl.initSync({ module: fs.readFileSync(path.join(dagPkg, "dag_ml_wasm_bg.wasm")) });
+}
 const { loadModule, Optimizer } = await import(pathToFileURL(path.join(methodsDist, "index.js")).href);
 await loadModule();
 const { ridgeNodeResult, assertRidgeHpoScores } = require("./hpo_ridge_operator.cjs");
