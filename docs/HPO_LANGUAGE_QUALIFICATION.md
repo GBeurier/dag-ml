@@ -29,8 +29,9 @@ statuses and scores, and reconciles a prepared terminal or an orphaned ask.
 `scripts/smoke_wasm_n4m_hpo.mjs` fits actual JS Ridge folds, compares resumed
 and continuous trials, and checks recovery both before and after preparing a
 real Methods Median pruning decision. It checks selected refit/replay against the
-current DAG-ML WASM build. The manual, non-publishing
-`methods-wasm-hpo-candidate.yml` workflow builds both candidate WASM packages.
+current DAG-ML WASM build. The non-publishing
+`methods-wasm-hpo-candidate.yml` workflow builds both candidate WASM packages
+on relevant `main` changes and can also be dispatched manually.
 This is a single-operator bridge, not yet parity for the four-source Python
 DAG or a packaged universal JS controller. The smoke accepts both the Node
 CommonJS wasm-pack target and the npm ESM package; it initializes the latter

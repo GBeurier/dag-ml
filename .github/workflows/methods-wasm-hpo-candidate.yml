@@ -2,6 +2,18 @@ name: Methods-backed WASM HPO candidate
 
 # Cross-repository qualification only. No npm or Python package is published.
 on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/methods-wasm-hpo-candidate.yml
+      - examples/adapters/hpo_n4m_wasm_adapter.mjs
+      - scripts/smoke_wasm_n4m_hpo.mjs
+      - scripts/wasm_ridge_refit_oracle.mjs
+      - crates/dag-ml-wasm/**
+      - crates/dag-ml-core/src/hpo.rs
+      - crates/dag-ml-core/src/runtime/host_hpo.rs
+      - crates/dag-ml-core/tests/fixtures/initial_full_refit/package.json
+      - Cargo.lock
   workflow_dispatch:
     inputs:
       methods_ref:
@@ -21,7 +33,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           repository: GBeurier/nirs4all-methods
-          ref: ${{ inputs.methods_ref }}
+          ref: ${{ inputs.methods_ref || '0ffe6f2339514ab71adfe6d60ae0d584e7a20902' }}
           path: external/nirs4all-methods
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-node@v6
