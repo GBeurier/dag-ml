@@ -48,6 +48,11 @@ def set_stable_python_version(root: Path) -> None:
     major, minor, patch = (int(part) for part in released.split("."))
     next_patch = f"{major}.{minor}.{patch + 1}"
     package = root / "crates" / "dag-ml-py"
+    with (package / "Cargo.toml").open("rb") as handle:
+        current = tomllib.load(handle)["package"]["version"]
+    if current == released:
+        return
+    assert current == f"{next_patch}-dev.0"
     for name, old, new in (
         ("Cargo.toml", f'name = "dag-ml-py"\ndescription = "Python bindings for DAG-ML JSON contracts."\nversion = "{next_patch}-dev.0"',
          f'name = "dag-ml-py"\ndescription = "Python bindings for DAG-ML JSON contracts."\nversion = "{released}"'),
