@@ -10,8 +10,8 @@ that a local model fits on the declared training fold.
 | C ABI | Parallel candidate callbacks and checkpoint recovery in `dag-ml-capi` tests | A caller must supply its own operator and optimizer callbacks. |
 | Python/CLI | Public nirs4all RandomForest and other model HPO oracles; CLI process tests | Python object artifacts remain Python-host. |
 | Node WASM and Chrome Web Workers | Real scalar Ridge fitted on each fold's train IDs; per-fold and pooled OOF RMSE, parallel work, pruning and resume | The example does not imply all JavaScript operator families are implemented. |
-| R/CLI | `r_hpo_ridge` fits Ridge in R using the signed plan FoldSet and an independent two-row numeric table, through `dagml_host_hpo_search()` and the CLI; it checks native scores, parallel trials, pruning, selection and resume | This qualifies the R host HPO path for one operator. REFIT and artifact replay require a separate operator and execution oracle. |
-| Octave/MATLAB/CLI | CI installs Octave and checks the wrapper, optimizer JSONL protocol and native scheduler with a synthetic Python operator | A real Octave/MATLAB operator with numeric fold evidence is still missing. MATLAB itself is not run in CI. |
+| R/CLI | `r_hpo_ridge` fits Ridge in R using the signed plan FoldSet and an independent numeric table, through `dagml_host_hpo_search()` and the CLI; it checks native scores, parallel trials, pruning, selection, resume, REFIT, fresh-process RDS replay and rejection of a corrupted sidecar | This qualifies one R-hosted operator, not every R model or a portable RDS artifact. |
+| Octave/CLI | `octave_hpo_ridge` fits Ridge in Octave from the signed plan FoldSet and a numeric table; CI checks fold evidence, native parallel HPO, pruning, resume, REFIT, fresh-process MAT replay and rejection of a corrupted sidecar | This qualifies one Octave-hosted operator. Licensed MATLAB execution is outside the active qualification scope. |
 
 The optional Python/CLI N4M adapter `examples/adapters/hpo_n4m_optimizer.sh`
 replaces the example's trial-index proposals with a persisted Methods
@@ -25,6 +25,12 @@ Run the strict R oracle with `Rscript` and `jsonlite` installed:
 
 ```sh
 DAGML_REQUIRE_HPO_R=1 cargo test -p dag-ml-cli --test r_hpo_ridge
+```
+
+Run the Octave oracle without a MATLAB licence:
+
+```sh
+DAGML_REQUIRE_HPO_OCTAVE=1 cargo test -p dag-ml-cli --test octave_hpo_ridge
 ```
 
 The core and bindings can carry signed Raw artifact bytes and ask the host to
