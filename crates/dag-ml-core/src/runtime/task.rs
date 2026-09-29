@@ -188,22 +188,43 @@ impl NodeTask {
         Ok(())
     }
 
-    /// Permit only supported model phases to reach a controller with dynamic views.
+    /// Permit only supported fit/predict phases to reach a controller with dynamic views.
     /// Admission still depends on the returned NodeResult's consumption proof.
     pub fn validate_dynamic_view_training_gate(&self) -> Result<()> {
         if self.data_view_receipts.is_empty() {
             return Ok(());
         }
-        if self.node_plan.kind != NodeKind::Model {
+        if !matches!(self.node_plan.kind, NodeKind::Model | NodeKind::Transform) {
             return Err(DagMlError::RuntimeValidation(format!(
-                "node `{}` cannot execute a dynamic data view outside a model task",
+                "node `{}` cannot execute a dynamic data view outside a model or transform task",
                 self.node_plan.node_id
             )));
         }
-        if !matches!(self.phase, Phase::FitCv | Phase::Refit | Phase::Predict) {
+        if !(matches!(self.phase, Phase::FitCv | Phase::Refit)
+            || self.node_plan.kind == NodeKind::Model && self.phase == Phase::Predict)
+        {
+            let kind = if self.node_plan.kind == NodeKind::Transform {
+                "transform"
+            } else {
+                "model"
+            };
             return Err(DagMlError::RuntimeValidation(format!(
-                "node `{}` has a dynamic data view in unsupported model phase {:?}",
+                "node `{}` has a dynamic data view in unsupported {kind} phase {:?}",
                 self.node_plan.node_id, self.phase
+            )));
+        }
+        if self.node_plan.kind == NodeKind::Transform
+            && !self.data_views.values().any(|view| {
+                matches!(
+                    (self.phase, view.partition),
+                    (Phase::FitCv, DataRequestPartition::FoldTrain)
+                        | (Phase::Refit, DataRequestPartition::FullTrain)
+                )
+            })
+        {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "node `{}` requires a dynamic transform training view",
+                self.node_plan.node_id
             )));
         }
         // A partially attested task could use an unreceipted sibling for
@@ -227,18 +248,34 @@ impl NodeTask {
                     self.node_plan.node_id
                 )));
             }
-            if !matches!(
-                (self.phase, view.partition),
-                (Phase::FitCv, DataRequestPartition::FoldTrain)
-                    | (Phase::FitCv, DataRequestPartition::FoldValidation)
-                    | (
-                        Phase::FitCv | Phase::Refit | Phase::Predict,
-                        DataRequestPartition::Predict
-                    )
-                    | (Phase::Refit, DataRequestPartition::FullTrain)
-            ) {
+            let supported = match self.node_plan.kind {
+                NodeKind::Transform => matches!(
+                    (self.phase, view.partition),
+                    (Phase::FitCv, DataRequestPartition::FoldTrain)
+                        | (Phase::FitCv, DataRequestPartition::FoldValidation)
+                        | (Phase::FitCv | Phase::Refit, DataRequestPartition::Predict)
+                        | (Phase::Refit, DataRequestPartition::FullTrain)
+                ),
+                NodeKind::Model => matches!(
+                    (self.phase, view.partition),
+                    (Phase::FitCv, DataRequestPartition::FoldTrain)
+                        | (Phase::FitCv, DataRequestPartition::FoldValidation)
+                        | (
+                            Phase::FitCv | Phase::Refit | Phase::Predict,
+                            DataRequestPartition::Predict
+                        )
+                        | (Phase::Refit, DataRequestPartition::FullTrain)
+                ),
+                _ => false,
+            };
+            if !supported {
+                let kind = if self.node_plan.kind == NodeKind::Transform {
+                    "transform"
+                } else {
+                    "model"
+                };
                 return Err(DagMlError::RuntimeValidation(format!(
-                    "node `{}` has unsupported dynamic model view `{key}` in phase {:?} with partition {:?}",
+                    "node `{}` has unsupported dynamic {kind} view `{key}` in phase {:?} with partition {:?}",
                     self.node_plan.node_id, self.phase, view.partition
                 )));
             }
@@ -1038,7 +1075,9 @@ impl NodeResult {
     /// prediction view. These are host-reported call-boundary facts, not native
     /// inspection of the estimator's internal consumption.
     pub fn validate_required_model_calls_for_task(&self, task: &NodeTask) -> Result<()> {
-        if task.node_plan.kind != NodeKind::Model || task.data_view_receipts.is_empty() {
+        if !matches!(task.node_plan.kind, NodeKind::Model | NodeKind::Transform)
+            || task.data_view_receipts.is_empty()
+        {
             return Ok(());
         }
         for (key, view) in &task.data_views {
@@ -1048,14 +1087,27 @@ impl NodeResult {
                     (ModelInputOperation::Fit, "training")
                 }
                 (Phase::FitCv, DataRequestPartition::FoldValidation)
-                | (Phase::FitCv | Phase::Refit | Phase::Predict, DataRequestPartition::Predict) => {
+                | (Phase::FitCv | Phase::Refit, DataRequestPartition::Predict)
+                    if task.node_plan.kind == NodeKind::Transform =>
+                {
+                    continue;
+                }
+                (Phase::FitCv, DataRequestPartition::FoldValidation)
+                | (Phase::FitCv | Phase::Refit | Phase::Predict, DataRequestPartition::Predict)
+                    if task.node_plan.kind == NodeKind::Model =>
+                {
                     (ModelInputOperation::Predict, "prediction")
                 }
                 _ => {
+                    let kind = if task.node_plan.kind == NodeKind::Transform {
+                        "transform"
+                    } else {
+                        "model"
+                    };
                     return Err(DagMlError::RuntimeValidation(format!(
-                        "node `{}` has unsupported dynamic model view `{key}` in phase {:?} with partition {:?}",
+                        "node `{}` has unsupported dynamic {kind} view `{key}` in phase {:?} with partition {:?}",
                         task.node_plan.node_id, task.phase, view.partition
-                    )))
+                    )));
                 }
             };
             if !task.data_view_receipts.contains_key(key) {

@@ -7088,11 +7088,7 @@ fn node_task_receipt_round_trips_and_refuses_an_unrelated_view() {
     assert_eq!(decoded, task);
     task.validate_dynamic_view_training_gate().unwrap();
     task.node_plan.kind = NodeKind::Transform;
-    assert!(task
-        .validate_dynamic_view_training_gate()
-        .unwrap_err()
-        .to_string()
-        .contains("outside a model task"));
+    task.validate_dynamic_view_training_gate().unwrap();
     let mut non_model_predict = task.clone();
     non_model_predict.phase = Phase::Predict;
     non_model_predict.fold_id = None;
@@ -7103,7 +7099,13 @@ fn node_task_receipt_round_trips_and_refuses_an_unrelated_view() {
         .validate_dynamic_view_training_gate()
         .unwrap_err()
         .to_string()
-        .contains("outside a model task"));
+        .contains("unsupported transform phase"));
+    task.node_plan.kind = NodeKind::FeatureJoin;
+    assert!(task
+        .validate_dynamic_view_training_gate()
+        .unwrap_err()
+        .to_string()
+        .contains("outside a model or transform task"));
     task.node_plan.kind = NodeKind::Model;
     let mut unsupported_phase = task.clone();
     unsupported_phase.phase = Phase::Explain;
@@ -7309,6 +7311,34 @@ fn node_result_consumption_binds_a_successful_read_to_its_native_receipt() {
         .validate_required_model_calls_for_task(&task)
         .unwrap();
     result.validate_for_task(&task).unwrap();
+
+    let mut transform_task = task.clone();
+    transform_task.node_plan.kind = NodeKind::Transform;
+    transform_task
+        .validate_dynamic_view_training_gate()
+        .unwrap();
+    result
+        .validate_required_model_calls_for_task(&transform_task)
+        .unwrap();
+    let mut no_transform_fit = result.clone();
+    no_transform_fit
+        .consumed_data_views
+        .get_mut(&key)
+        .unwrap()
+        .model_calls
+        .clear();
+    assert!(no_transform_fit
+        .validate_required_model_calls_for_task(&transform_task)
+        .unwrap_err()
+        .to_string()
+        .contains("no full ordered read and fit call"));
+    transform_task.data_views.get_mut(&key).unwrap().partition =
+        DataRequestPartition::FoldValidation;
+    assert!(transform_task
+        .validate_dynamic_view_training_gate()
+        .unwrap_err()
+        .to_string()
+        .contains("requires a dynamic transform training view"));
 
     let mut refit_task = task.clone();
     refit_task.phase = Phase::Refit;
