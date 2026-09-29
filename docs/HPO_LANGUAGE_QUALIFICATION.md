@@ -13,6 +13,14 @@ that a local model fits on the declared training fold.
 | R/CLI | `r_hpo_ridge` fits Ridge in R using the signed plan FoldSet and an independent two-row numeric table, through `dagml_host_hpo_search()` and the CLI; it checks native scores, parallel trials, pruning, selection and resume | This qualifies the R host HPO path for one operator. REFIT and artifact replay require a separate operator and execution oracle. |
 | Octave/MATLAB/CLI | CI installs Octave and checks the wrapper, optimizer JSONL protocol and native scheduler with a synthetic Python operator | A real Octave/MATLAB operator with numeric fold evidence is still missing. MATLAB itself is not run in CI. |
 
+The optional Python/CLI N4M adapter `examples/adapters/hpo_n4m_optimizer.sh`
+replaces the example's trial-index proposals with a persisted Methods
+optimizer. With `DAGML_N4M_PYTHON` pointing to a local n4m installation, the
+CLI integration test exercises native fold scores, Sobol continuation,
+Median pruning and two recovery windows. It uses the same simple DAG fixture
+as the stateless CLI adapters; comparison against the public nirs4all
+multimodal DAG, installed wheels and other language hosts remains separate.
+
 Run the strict R oracle with `Rscript` and `jsonlite` installed:
 
 ```sh

@@ -7778,6 +7778,176 @@ mod tests {
                 checkpoint.verify_seal().unwrap();
             }
         }
+        if std::env::var_os("DAGML_N4M_PYTHON").is_some() {
+            let optimizer = root.join("examples/adapters/hpo_n4m_optimizer.sh");
+            let checkpoint_path = directory.join("checkpoint-n4m.json");
+            let optimizer_state = directory.join("checkpoint-n4m.n4mopt.json");
+            for budget in [2, 3] {
+                std::fs::write(
+                    &request_path,
+                    serde_json::to_vec(&serde_json::json!({
+                        "target_node": "model:base", "trial_budget": budget,
+                        "metric": "rmse", "direction": "minimize",
+                        "optimizer_descriptor": {"n4m": {
+                            "state_path": optimizer_state, "sampler": "sobol",
+                            "pruner": "none", "seed": 19,
+                            "space": [
+                                {"name": "n_components", "kind": "int", "low": 1, "high": 3},
+                                {"name": "alpha", "kind": "float", "low": 0.1, "high": 1.0},
+                                {"name": "mode", "kind": "categorical", "choices": ["a", "b"]},
+                            ],
+                        }},
+                        "progressive_pruning": true,
+                    }))
+                    .unwrap(),
+                )
+                .unwrap();
+                run_host_hpo_cli(
+                    &plan_path,
+                    &envelope_path,
+                    &request_path,
+                    &operator,
+                    false,
+                    &optimizer,
+                    1,
+                    Some(&checkpoint_path),
+                    Some(&output_path),
+                    Duration::from_secs(10),
+                )
+                .unwrap();
+                let result: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(&output_path).unwrap()).unwrap();
+                assert_eq!(result["status"], "completed");
+                assert_eq!(result["trials"].as_array().unwrap().len(), budget);
+                assert!(result["trials"].as_array().unwrap().iter().all(|trial| {
+                    trial["params"]["n_components"]
+                        .as_i64()
+                        .is_some_and(|value| (1..=3).contains(&value))
+                        && trial["params"]["alpha"]
+                            .as_f64()
+                            .is_some_and(|value| (0.1..=1.0).contains(&value))
+                        && matches!(trial["params"]["mode"].as_str(), Some("a" | "b"))
+                }));
+                assert!(optimizer_state.exists());
+                let checkpoint: HostHpoCheckpoint =
+                    serde_json::from_slice(&std::fs::read(&checkpoint_path).unwrap()).unwrap();
+                assert_eq!(checkpoint.trials.len(), budget);
+                checkpoint.verify_seal().unwrap();
+            }
+            let native_before_interruption = std::fs::read(&checkpoint_path).unwrap();
+            let mut request: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&request_path).unwrap()).unwrap();
+            request["trial_budget"] = serde_json::json!(4);
+            std::fs::write(&request_path, serde_json::to_vec(&request).unwrap()).unwrap();
+            let mut child = ProcessCommand::new(&optimizer)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()
+                .unwrap();
+            {
+                let mut stdin = child.stdin.take().unwrap();
+                writeln!(
+                    stdin,
+                    "{}",
+                    serde_json::json!({
+                        "operation": "init", "request": request,
+                        "checkpoint": serde_json::from_slice::<serde_json::Value>(&native_before_interruption).unwrap(),
+                    })
+                )
+                .unwrap();
+                writeln!(
+                    stdin,
+                    "{}",
+                    serde_json::json!({"operation": "ask", "trial_index": 3})
+                )
+                .unwrap();
+            }
+            let output = child.wait_with_output().unwrap();
+            assert!(output.status.success());
+            let replies: Vec<serde_json::Value> = String::from_utf8(output.stdout)
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            assert_eq!(replies.len(), 2);
+            assert!(replies[1]["params"]["n_components"].as_i64().is_some());
+            run_host_hpo_cli(
+                &plan_path,
+                &envelope_path,
+                &request_path,
+                &operator,
+                false,
+                &optimizer,
+                1,
+                Some(&checkpoint_path),
+                Some(&output_path),
+                Duration::from_secs(10),
+            )
+            .unwrap();
+            let recovered = std::fs::read(&checkpoint_path).unwrap();
+            let checkpoint: HostHpoCheckpoint = serde_json::from_slice(&recovered).unwrap();
+            assert_eq!(checkpoint.trials.len(), 4);
+            assert!(matches!(
+                checkpoint.trials[3],
+                dag_ml_core::HostHpoTerminalTrial::Failed { .. }
+            ));
+            // Simulate death after the adapter acknowledged the recovered
+            // checkpoint but before the CLI published its native file.
+            std::fs::write(&checkpoint_path, native_before_interruption).unwrap();
+            run_host_hpo_cli(
+                &plan_path,
+                &envelope_path,
+                &request_path,
+                &operator,
+                false,
+                &optimizer,
+                1,
+                Some(&checkpoint_path),
+                Some(&output_path),
+                Duration::from_secs(10),
+            )
+            .unwrap();
+            assert_eq!(std::fs::read(&checkpoint_path).unwrap(), recovered);
+
+            let pruned_checkpoint_path = directory.join("checkpoint-n4m-pruned.json");
+            let pruned_state_path = directory.join("checkpoint-n4m-pruned.n4mopt.json");
+            std::fs::write(
+                &request_path,
+                serde_json::to_vec(&serde_json::json!({
+                    "target_node": "model:base", "trial_budget": 14,
+                    "metric": "rmse", "direction": "minimize",
+                    "optimizer_descriptor": {"n4m": {
+                        "state_path": pruned_state_path, "sampler": "random",
+                        "pruner": "median", "seed": 19, "n_startup_trials": 2,
+                        "space": [{"name": "n_components", "kind": "int", "low": 1, "high": 100}],
+                    }},
+                    "progressive_pruning": true,
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            run_host_hpo_cli(
+                &plan_path,
+                &envelope_path,
+                &request_path,
+                &operator,
+                false,
+                &optimizer,
+                1,
+                Some(&pruned_checkpoint_path),
+                Some(&output_path),
+                Duration::from_secs(10),
+            )
+            .unwrap();
+            let checkpoint: HostHpoCheckpoint =
+                serde_json::from_slice(&std::fs::read(&pruned_checkpoint_path).unwrap()).unwrap();
+            assert_eq!(checkpoint.trials.len(), 14);
+            assert!(checkpoint
+                .trials
+                .iter()
+                .any(|trial| matches!(trial, dag_ml_core::HostHpoTerminalTrial::Pruned { .. })));
+            checkpoint.verify_seal().unwrap();
+        }
         std::fs::remove_dir_all(directory).unwrap();
     }
 

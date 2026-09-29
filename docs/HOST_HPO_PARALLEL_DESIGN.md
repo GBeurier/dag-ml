@@ -72,6 +72,34 @@ replies, skipping only absent language runtimes. The CLI test runs two concurren
 trials with the Python adapter and fold feedback, then resumes to a third trial
 from the native checkpoint.
 
+For a real Methods optimizer, use `examples/adapters/hpo_n4m_optimizer.sh` with
+`DAGML_N4M_PYTHON` set to a Python interpreter that has `n4m` installed. The
+request must include an ordered native space and an absolute state path, for
+example:
+
+```json
+"optimizer_descriptor": {"n4m": {
+  "state_path": "/absolute/path/search.n4mopt.json",
+  "sampler": "sobol", "pruner": "median", "seed": 19,
+  "space": [{"name": "n_components", "kind": "int", "low": 1, "high": 3}]
+}}
+```
+
+Pass that request to `dag-ml-cli run-host-hpo` with `--optimizer-adapter
+examples/adapters/hpo_n4m_optimizer.sh`, `--checkpoint` for the distinct native
+DAG checkpoint, and `--output` for the result. The adapter supports ordered
+integer, float and categorical axes, all N4M samplers and the N4M pruning
+policies; `successive_halving` maps to ASHA. It persists N4MOPT bytes and the
+paired DAG transition atomically, refuses a changed optimizer contract, and
+returns interrupted proposals as failed trials without inventing scores.
+The optional integration gate runs with
+`DAGML_N4M_PYTHON=/absolute/path/to/python cargo test -p dag-ml-cli
+host_hpo_cli_runs_parallel_pruning_and_resumes_native_checkpoint`. It covers
+real native folds, Sobol continuation, an interrupted proposal, the CLI
+checkpoint-publication crash window and a Median-pruned trial. This is a
+sequential CLI host example; its operator is the synthetic process controller,
+not a portable multimodal model or a released nirs4all distribution.
+
 `host_hpo_search_parallel_json` accepts a dispatcher
 `(taskJson) => Promise<workerResultJson>` and a synchronous optimizer callback
 with the same operations as `host_hpo_search_json`. It dispatches all tasks in
