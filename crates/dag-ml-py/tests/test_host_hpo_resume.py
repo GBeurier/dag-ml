@@ -274,6 +274,64 @@ class HostHpoResumeTests(unittest.TestCase):
         self.assertEqual(resumed["generated_view_manifest"], result["generated_view_manifest"])
         self.assertEqual(resumed["checkpoint"]["trials"][1]["evidence"]["generated_view_manifest"],
                          result["generated_view_manifest"])
+        failed_progress: list[dict[str, Any]] = []
+        with self.assertRaisesRegex(dag_ml.DagMlRuntimeError, "encoder failure"):
+            self._run(
+                2, _Operators(), _Proposals(),
+                candidate_callback_factory=lambda _: _Operators(fail_first=True),
+                view_callback_factory=view_factory,
+                progress_callback=lambda message: failed_progress.append(message) or True,
+            )
+        failed_checkpoint = failed_progress[-1]["checkpoint"]
+        self.assertEqual(failed_checkpoint["trials"][0]["state"], "failed")
+        failed_manifest = failed_checkpoint["trials"][0]["generated_view_manifest"]
+        self.assertTrue(failed_manifest["views"])
+        self.assertTrue({view["view_key"] for view in failed_manifest["views"]}
+                        <= {view["view_key"] for view in saved_manifest["views"]})
+        requested.clear()
+        resumed_failed = self._run(
+            2, _Operators(), _Proposals(), resume_checkpoint=failed_checkpoint,
+            candidate_callback_factory=lambda _: GeneratedOperator(),
+            view_callback_factory=view_factory,
+            resume_view_validator=validate_saved_view,
+        )
+        self.assertEqual(resumed_failed["status"], "completed")
+        self.assertEqual(list(requested), [1])
+
+        def reject_first_view(_: dict[str, Any]) -> dict[str, Any]:
+            raise ValueError("view generation failed before a receipt")
+
+        empty_progress: list[dict[str, Any]] = []
+        with self.assertRaisesRegex(dag_ml.DagMlRuntimeError, "view generation failed before a receipt"):
+            self._run(
+                2, _Operators(), _Proposals(),
+                candidate_callback_factory=lambda _: GeneratedOperator(),
+                view_callback_factory=lambda _: reject_first_view,
+                progress_callback=lambda message: empty_progress.append(message) or True,
+            )
+        empty_checkpoint = empty_progress[-1]["checkpoint"]
+        self.assertEqual(empty_checkpoint["trials"][0]["state"], "failed")
+        self.assertEqual(empty_checkpoint["trials"][0]["generated_view_manifest"]["views"], [])
+        resumed_empty = self._run(
+            2, _Operators(), _Proposals(), resume_checkpoint=empty_checkpoint,
+            candidate_callback_factory=lambda _: GeneratedOperator(),
+            view_callback_factory=view_factory,
+            resume_view_validator=validate_saved_view,
+        )
+        self.assertEqual(resumed_empty["status"], "completed")
+
+        recovered = dag_ml.recover_host_hpo_checkpoint(
+            checkpoint, interrupted=[{"trial_index": 1, "params": {"offset": 2.0}}],
+        )
+        self.assertEqual(recovered["trials"][1]["error"], "interrupted_before_native_evaluation")
+        resumed_recovered = self._run(
+            3, _Operators(), _Proposals(), resume_checkpoint=recovered,
+            candidate_callback_factory=lambda _: GeneratedOperator(),
+            view_callback_factory=view_factory,
+            resume_view_validator=validate_saved_view,
+        )
+        self.assertEqual(resumed_recovered["status"], "completed")
+        self.assertEqual(resumed_recovered["checkpoint"]["trials"][1]["state"], "failed")
         request = _request(1, generated=True)
         request["optimizer_descriptor"]["n_jobs"] = 2
         with self.assertRaisesRegex(dag_ml.DagMlRuntimeError, "sequential candidate"):

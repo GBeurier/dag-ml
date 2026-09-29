@@ -262,6 +262,8 @@ pub enum HostHpoTerminalTrial {
         params: BTreeMap<String, serde_json::Value>,
         variant_id: VariantId,
         error: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        generated_view_manifest: Option<serde_json::Value>,
     },
 }
 
@@ -365,6 +367,7 @@ impl HostHpoCheckpoint {
                 params: orphan.params,
                 variant_id: VariantId::new(format!("host_hpo:trial:{:010}", orphan.trial_index))?,
                 error: "interrupted_before_native_evaluation".into(),
+                generated_view_manifest: None,
             });
         }
         self.seal()?;
@@ -1035,6 +1038,7 @@ pub fn complete_host_hpo_worker_window(
                     params: task.params.clone(),
                     variant_id: task.candidate_plan.variants[0].variant_id.clone(),
                     error: error.clone(),
+                    generated_view_manifest: None,
                 }
             }
         };
@@ -1491,6 +1495,8 @@ impl SequentialScheduler {
                             params: params.clone(),
                             variant_id: variant.variant_id.clone(),
                             error: error.to_string(),
+                            generated_view_manifest: provider
+                                .generated_view_manifest_on_failure()?,
                         });
                         prepared.seal()?;
                         progress.prepare_terminal(&prepared, HostHpoSearchStatus::Failed)?;
@@ -2015,6 +2021,7 @@ impl SequentialScheduler {
                                 "host_hpo:trial:{trial_index:010}"
                             ))?,
                             error: error.to_string(),
+                            generated_view_manifest: None,
                         },
                     };
                     let mut prepared = saved.clone();

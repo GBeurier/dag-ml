@@ -525,21 +525,28 @@ fn restore_host_hpo_generated_receipts(
     checkpoint.verify_seal()?;
     let mut previous = BTreeMap::new();
     for trial in &checkpoint.trials {
-        let value = match trial {
+        let (value, failed_before_evaluation) = match trial {
             dag_ml_core::HostHpoTerminalTrial::Complete { evidence } => {
-                evidence.generated_view_manifest.as_ref()
+                (evidence.generated_view_manifest.as_ref(), false)
             }
             dag_ml_core::HostHpoTerminalTrial::Pruned { evidence } => {
-                evidence.generated_view_manifest.as_ref()
+                (evidence.generated_view_manifest.as_ref(), false)
             }
-            dag_ml_core::HostHpoTerminalTrial::Failed { .. } => {
-                return Err(CoreDagMlError::RuntimeValidation(
-                    "generated host HPO cannot resume a failed trial without a view manifest"
-                        .into(),
-                ));
-            }
+            dag_ml_core::HostHpoTerminalTrial::Failed {
+                generated_view_manifest,
+                error,
+                ..
+            } => (
+                generated_view_manifest.as_ref(),
+                error == "interrupted_before_native_evaluation",
+            ),
+        };
+        if failed_before_evaluation && value.is_none() {
+            // Recovery discards this in-flight candidate without terminal
+            // evidence. Earlier terminal manifests remain authoritative.
+            continue;
         }
-        .ok_or_else(|| {
+        let value = value.ok_or_else(|| {
             CoreDagMlError::RuntimeValidation(
                 "generated host HPO checkpoint has a terminal trial without a view manifest".into(),
             )
@@ -550,7 +557,20 @@ fn restore_host_hpo_generated_receipts(
                     "generated host HPO checkpoint has an invalid view manifest: {error}"
                 ))
             })?;
-        validate_generated_view_manifest(&manifest)?;
+        if manifest.views.is_empty()
+            && matches!(trial, dag_ml_core::HostHpoTerminalTrial::Failed { .. })
+        {
+            if manifest.schema_version != 1
+                || manifest.fingerprint != generated_views_fingerprint(&[])?
+                || !previous.is_empty()
+            {
+                return Err(CoreDagMlError::RuntimeValidation(
+                    "generated host HPO failed trial has an invalid empty view manifest".into(),
+                ));
+            }
+        } else {
+            validate_generated_view_manifest(&manifest)?;
+        }
         let current = manifest
             .views
             .into_iter()
@@ -605,6 +625,15 @@ fn generated_view_manifest(
         schema_version: 1,
         fingerprint: generated_views_fingerprint(&views)?,
         views,
+    })
+    .map_err(Into::into)
+}
+
+fn empty_failed_generated_view_manifest() -> dag_ml_core::Result<serde_json::Value> {
+    serde_json::to_value(GeneratedViewManifest {
+        schema_version: 1,
+        fingerprint: generated_views_fingerprint(&[])?,
+        views: Vec::new(),
     })
     .map_err(Into::into)
 }
@@ -787,6 +816,15 @@ impl RuntimeDataProvider for PyViewDataProvider {
         Ok(Some(generated_view_manifest(&*lock_generated_receipts(
             &self.receipts,
         )?)?))
+    }
+
+    fn generated_view_manifest_on_failure(&self) -> dag_ml_core::Result<Option<serde_json::Value>> {
+        let receipts = lock_generated_receipts(&self.receipts)?;
+        Ok(Some(if receipts.is_empty() {
+            empty_failed_generated_view_manifest()?
+        } else {
+            generated_view_manifest(&receipts)?
+        }))
     }
 
     fn materialize(&self, request: &DataMaterializationRequest) -> dag_ml_core::Result<HandleRef> {
