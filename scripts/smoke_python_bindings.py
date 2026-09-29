@@ -4,14 +4,13 @@
 from __future__ import annotations
 
 import json
-from importlib import metadata
-from importlib import resources
+from importlib import metadata, resources
 from pathlib import Path
 
 import dag_ml
 import dag_ml._dag_ml as native
+import tomllib
 
-EXPECTED_NATIVE_VERSION = "0.3.30"
 SHARED_FOLD_SET_FINGERPRINT = (
     "54d3185d6c628ef0df848828a8d8ae650222a283a78bbd3ab3bc2256f222c05c"
 )
@@ -57,9 +56,11 @@ def main() -> None:
     ).read_text(encoding="utf-8")
 
     native_version = native.version()
-    if native_version != EXPECTED_NATIVE_VERSION:
+    with (repo / "crates" / "dag-ml-py" / "Cargo.toml").open("rb") as handle:
+        expected_native_version = tomllib.load(handle)["package"]["version"]
+    if native_version != expected_native_version:
         raise SystemExit(
-            f"native version drifted: {native_version} != {EXPECTED_NATIVE_VERSION}"
+            f"native version drifted: {native_version} != {expected_native_version}"
         )
     if dag_ml.__version__ != native_version or dag_ml.version() != native_version:
         raise SystemExit(
@@ -92,11 +93,17 @@ def main() -> None:
         raise SystemExit(
             "contract manifest is missing native Methods portable full-refit export"
         )
-    if "execute_methods_cv_refit_terminal_predict_json" not in manifest["python_exports"]:
+    if (
+        "execute_methods_cv_refit_terminal_predict_json"
+        not in manifest["python_exports"]
+    ):
         raise SystemExit(
             "contract manifest is missing strict native Methods terminal PREDICT export"
         )
-    if "execute_loaded_methods_portable_refit_replay_v3_json" not in manifest["python_exports"]:
+    if (
+        "execute_loaded_methods_portable_refit_replay_v3_json"
+        not in manifest["python_exports"]
+    ):
         raise SystemExit(
             "contract manifest is missing native Methods Package V3 replay export"
         )
@@ -104,9 +111,14 @@ def main() -> None:
         raise SystemExit("contract manifest is missing terminal PREDICT export")
     for export in ("read_native_results_v2_json", "write_native_results_v2_json"):
         if export not in manifest["python_exports"]:
-            raise SystemExit(f"contract manifest is missing native-results export {export}")
+            raise SystemExit(
+                f"contract manifest is missing native-results export {export}"
+            )
     for export in ("read_native_results_v2", "write_native_results_v2"):
-        if export not in manifest["python_facade_exports"] or export not in dag_ml.__all__:
+        if (
+            export not in manifest["python_facade_exports"]
+            or export not in dag_ml.__all__
+        ):
             raise SystemExit(f"Python facade is missing native-results export {export}")
     if "compile_pipeline_dsl_artifact_json" not in manifest["wasm_exports"]:
         raise SystemExit("contract manifest is missing WASM DSL export")
@@ -132,7 +144,10 @@ def main() -> None:
         raise SystemExit(
             "contract manifest is missing strict native Methods terminal PREDICT capability"
         )
-    if "execute_loaded_methods_portable_refit_replay_v3" not in manifest["capabilities"]:
+    if (
+        "execute_loaded_methods_portable_refit_replay_v3"
+        not in manifest["capabilities"]
+    ):
         raise SystemExit(
             "contract manifest is missing native Methods Package V3 replay capability"
         )
@@ -140,7 +155,10 @@ def main() -> None:
         raise SystemExit("contract manifest is missing terminal PREDICT capability")
     if "run_cv_refit_predict_in_process" not in manifest["python_facade_exports"]:
         raise SystemExit("contract manifest is missing terminal PREDICT facade export")
-    if "execute_methods_cv_refit_terminal_predict" not in manifest["python_facade_exports"]:
+    if (
+        "execute_methods_cv_refit_terminal_predict"
+        not in manifest["python_facade_exports"]
+    ):
         raise SystemExit(
             "contract manifest is missing strict Methods terminal PREDICT facade export"
         )
@@ -343,10 +361,19 @@ def main() -> None:
     else:
         raise SystemExit("invalid graph JSON was accepted")
     distribution_version = metadata.version("dag-ml")
+    with (repo / "crates" / "dag-ml-py" / "pyproject.toml").open("rb") as handle:
+        expected_distribution_version = tomllib.load(handle)["project"]["version"]
+    if distribution_version != expected_distribution_version:
+        raise SystemExit(
+            "installed dag_ml metadata does not match the source package: "
+            f"metadata={distribution_version}, expected={expected_distribution_version}"
+        )
     source_tree = (repo / "crates" / "dag-ml-py" / "python").resolve()
     imported_package = Path(dag_ml.__file__).resolve()
-    if distribution_version != native_version and not imported_package.is_relative_to(
-        source_tree
+    native_pep440_version = native_version.replace("-dev.", ".dev")
+    if (
+        distribution_version != native_pep440_version
+        and not imported_package.is_relative_to(source_tree)
     ):
         raise SystemExit(
             "installed dag_ml package metadata does not match its native extension: "
