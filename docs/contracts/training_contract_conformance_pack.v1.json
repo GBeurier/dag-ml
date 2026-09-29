@@ -511,7 +511,7 @@
     },
     {
       "path": "scripts/smoke_python_bindings.py",
-      "sha256": "c96183b8869db81b80ba229b8aadad75ff295dd27a4eadfe15d9cfe7a90a6407",
+      "sha256": "e80132fe0f057ba240a265f4b6980bb0b2ca7dccd494200369ab8745f4d21ef7",
       "kind": "binding_smoke"
     },
     {
@@ -604,5 +604,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "04137ac55d580b30b39c1ac8de8cd0f7f3dded2455f717451101b44049b8283b"
+  "pack_checksum": "998932cab38e274e8be4948a81803f77b6b081eb277d371e0ccda8c0e9d6a300"
 }
