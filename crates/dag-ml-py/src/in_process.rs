@@ -1042,6 +1042,21 @@ impl dag_ml_core::HostHpoCandidateControllerFactory for PyHostHpoControllerFacto
 }
 
 impl dag_ml_core::HostHpoCandidateProviderFactory for PyHostHpoProviderFactory {
+    fn batch_generated_view_manifest(
+        &self,
+        has_success: bool,
+    ) -> dag_ml_core::Result<Option<serde_json::Value>> {
+        if self.view_callback_factory.is_none() {
+            return Ok(None);
+        }
+        let receipts = lock_generated_receipts(&self.receipts)?;
+        Ok(Some(if receipts.is_empty() && !has_success {
+            empty_failed_generated_view_manifest()?
+        } else {
+            generated_view_manifest(&receipts)?
+        }))
+    }
+
     fn create(
         &self,
         trial_index: u32,
