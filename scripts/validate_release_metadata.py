@@ -10,6 +10,8 @@ from typing import Any
 
 import tomllib
 
+from validate_abi_snapshot import main as validate_abi_snapshot
+
 EXPECTED_CLAP_VERSION = "=4.5.53"
 EXPECTED_CARGO_AUDIT_VERSION = "0.22.1"
 EXPECTED_INDEXMAP_VERSION = "=2.13.1"
@@ -575,6 +577,7 @@ def main() -> None:
     release = sys.argv[1:] == ["--release"]
     repo = Path(__file__).resolve().parents[1]
     repo_name, version, _members = validate_workspace(repo)
+    validate_abi_snapshot()
     validate_python(repo, repo_name, version, release=release)
     validate_ci(repo)
     validate_governance(repo, repo_name)

@@ -9,7 +9,12 @@ deprecations follow [ADR-14](docs/adr/ADR-14-deprecation-policy.md).
 
 ## [Unreleased]
 
-## [0.3.31] - 2026-09-30
+## [0.3.32] - 2026-09-30
+
+Release 0.3.31 was blocked before publication by a stale ABI snapshot package
+version. This patch aligns that metadata; the C ABI header bytes are unchanged.
+
+## [0.3.31] - 2026-09-30 (unpublished)
 
 ### Added
 
