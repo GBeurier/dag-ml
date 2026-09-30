@@ -191,7 +191,7 @@
     },
     {
       "path": "crates/dag-ml-py/Cargo.lock",
-      "sha256": "e5f76f3c6240fca62b8a9cc632f1d22b5bed0d0260d29608c57b84818c00bb7f",
+      "sha256": "c5c230299a3a8d3a194d218238359673068072cdf93dce32d0f87536ab0975e0",
       "kind": "python_binding_lockfile"
     },
     {
@@ -604,5 +604,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "7c097eca0557a6e143e5bfcdafa2e51987045cd7f40652a2864ea580d46ea25a"
+  "pack_checksum": "b25cdf3dc0c62e0a519be34cb6ba6555615f0a1d67122227127d8c76a960d207"
 }

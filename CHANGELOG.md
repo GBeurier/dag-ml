@@ -9,12 +9,23 @@ deprecations follow [ADR-14](docs/adr/ADR-14-deprecation-policy.md).
 
 ## [Unreleased]
 
+## [0.3.31] - 2026-09-30
+
 ### Added
 
-- The Python in-process provider bridge records generated CV/refit views in a
-  TCV1-fingerprinted manifest and exposes a native validator for its closed
-  structure and content fingerprint. Dynamic training and archive replay remain
-  gated pending host provenance binding.
+- Scheduler-selected provider views with stable identities and native campaign
+  seeds, attested read receipts and fit witnesses, and generated CV/refit views
+  for model and fitted-transform nodes through the Python in-process bridge.
+- Sequential and candidate-local parallel host HPO with generated-view evidence,
+  checkpointed trials and archive replay using the recorded fitted states.
+- Durable native N4M host HPO CLI adapter and a Methods JS optimizer bridge for
+  packaged ESM WASM; R and Octave host oracles are qualified separately.
+
+### Fixed
+
+- Keep next-patch development wheels distinct from published distributions while
+  accepting checked-in candidates and keeping preparation tests release-safe.
+- Refresh the committed Python extension and W1/D4 source-bound training packs.
 
 ## [0.3.30] - 2026-09-27
 
