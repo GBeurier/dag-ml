@@ -257,6 +257,7 @@ impl HpoExecutionContext<'_> {
         Ok((
             RuntimeHpoExecutionContext {
                 operation_id: descriptor.operation_id.clone(),
+                portable_profile: descriptor.native_profile.clone(),
                 controller_id,
                 target_node_id: descriptor.target_node_id.clone(),
                 base_variant: self.projection.plan.variants[0].clone(),
@@ -320,6 +321,7 @@ impl HpoExecutionContext<'_> {
     fn selection_from_campaign(
         &self,
         context: &RuntimeHpoExecutionContext,
+        descriptor: &PortableMethodsHpoDescriptor,
         previous_resume_state: Option<MethodsHpoResumeState>,
         campaign: crate::runtime::RuntimeHpoCampaignResult,
     ) -> Result<(
@@ -415,7 +417,7 @@ impl HpoExecutionContext<'_> {
                         crate::hpo::HpoDirection::Maximize
                     }
                 }
-            || incumbent.variant_id != selected_variant_id
+            || (descriptor.schema_version != 2 && incumbent.variant_id != selected_variant_id)
         {
             return Err(DagMlError::RuntimeValidation(
                 "native Methods HPO incumbent does not exactly match DAG-ML selection metric, direction, and variant"
@@ -433,21 +435,41 @@ impl HpoExecutionContext<'_> {
             })?;
         if incumbent_report.variant_id != incumbent.variant_id
             || incumbent_report.score.to_bits() != incumbent.score.to_bits()
-            || candidate_scores
-                .iter()
-                .filter(|candidate| {
-                    candidate
-                        .metrics
-                        .get(&self.selection.metric.name)
-                        .is_some_and(|score| score.to_bits() == incumbent.score.to_bits())
-                })
-                .count()
-                != 1
+            || (descriptor.schema_version != 2
+                && candidate_scores
+                    .iter()
+                    .filter(|candidate| {
+                        candidate
+                            .metrics
+                            .get(&self.selection.metric.name)
+                            .is_some_and(|score| score.to_bits() == incumbent.score.to_bits())
+                    })
+                    .count()
+                    != 1)
         {
             return Err(DagMlError::RuntimeValidation(
                 "native Methods HPO incumbent score is tied, drifted, or not uniquely attested by scheduler evidence"
                     .to_string(),
             ));
+        }
+        // HPOv2 has finite categorical spaces, so repeated winning trials are
+        // expected. Preserve the native best trial/checkpoint unchanged and
+        // attest the DAG's deterministic tie winner independently.
+        if descriptor.schema_version == 2 {
+            let selected_report = resume_state
+                .completed_reports
+                .iter()
+                .find(|report| report.variant_id == selected_variant_id)
+                .ok_or_else(|| {
+                    DagMlError::RuntimeValidation(
+                        "native Methods HPO selected variant has no completed report".into(),
+                    )
+                })?;
+            if selected_report.score.to_bits() != incumbent.score.to_bits() {
+                return Err(DagMlError::RuntimeValidation(
+                    "native Methods HPO DAG winner differs from the native best score".into(),
+                ));
+            }
         }
         let validation_reports = resume_state
             .completed_reports
@@ -526,6 +548,10 @@ fn validate_methods_hpo_resume_state(
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PortableMethodsHpoDescriptor {
+    #[serde(default = "portable_methods_hpo_v1")]
+    schema_version: u32,
+    #[serde(default)]
+    native_profile: Option<String>,
     operation_id: String,
     study: MethodsHpoStudyConfig,
     trials: u32,
@@ -541,6 +567,10 @@ struct PortableMethodsHpoDescriptor {
     /// deliberately not accepted in v1: a candidate patch must remain a
     /// replayable ordinary model parameter override.
     parameter_paths: BTreeMap<String, String>,
+}
+
+fn portable_methods_hpo_v1() -> u32 {
+    1
 }
 
 impl HpoExecutionContext<'_> {
@@ -595,7 +625,9 @@ impl HpoExecutionContext<'_> {
             .node_plans
             .get(&descriptor.target_node_id)
             .expect("portable Methods HPO descriptor target was validated");
-        if target.controller_id.as_str() != crate::hpo::METHODS_PLS_CONTROLLER_ID {
+        if descriptor.schema_version == 1
+            && target.controller_id.as_str() != crate::hpo::METHODS_PLS_CONTROLLER_ID
+        {
             return Err(DagMlError::RuntimeValidation(format!(
                 "native Methods HPO target `{}` must resolve to `{}`; host/plugin model controllers are refused",
                 descriptor.target_node_id,
@@ -670,6 +702,30 @@ fn validate_portable_methods_hpo_descriptor(
                 descriptor.target_node_id
             ))
         })?;
+    if descriptor.schema_version == 2 {
+        use crate::methods_phase_controls::*;
+        if descriptor.native_profile.as_deref() != Some(METHODS_PLS_ROLE_PROFILE)
+            || target.controller_id.as_str() != METHODS_NATIVE_REGRESSION_CONTROLLER
+        {
+            return Err(DagMlError::RuntimeValidation("native Methods HPOv2 requires the explicit closed PLS RolePipeline profile/controller".into()));
+        }
+        validate_native_pls_phase_plan(plan)?;
+        validate_native_pls_hpo_space(&descriptor.study.search_space, &descriptor.parameter_paths)?;
+        let parsed = NativePlsRoleParams::from_params(&target.params)?;
+        if parsed.phase_controls.as_ref().is_some_and(|p| {
+            p.train_params
+                .keys()
+                .any(|key| descriptor.parameter_paths.contains_key(key))
+        }) {
+            return Err(DagMlError::RuntimeValidation("native PLS train/search parameter ownership collision before optimizer/data access".into()));
+        }
+        return Ok(());
+    }
+    if descriptor.schema_version != 1 || descriptor.native_profile.is_some() {
+        return Err(DagMlError::RuntimeValidation(
+            "unsupported portable Methods HPO descriptor version/profile".into(),
+        ));
+    }
     let portable_pls = graph_node
         .operator
         .as_ref()
@@ -1965,8 +2021,12 @@ pub fn execute_training(input: TrainingExecutionInput<'_>) -> Result<TrainingOut
             &campaign_context,
             &context,
         )?;
-        let (plan, selection, resume_state) =
-            hpo_execution.selection_from_campaign(&context, previous_resume_state, campaign)?;
+        let (plan, selection, resume_state) = hpo_execution.selection_from_campaign(
+            &context,
+            descriptor,
+            previous_resume_state,
+            campaign,
+        )?;
         projection.plan = plan;
         methods_hpo_resume_state = Some(resume_state);
         selection
@@ -2398,6 +2458,13 @@ fn materialize_request_parameter_patches(
                         .to_string(),
                 ));
             }
+            ParameterNamespace::Fit
+                if plan.node_plans.get(&patch.node_id).is_some_and(|n| {
+                    n.controller_id.as_str() == crate::METHODS_NATIVE_REGRESSION_CONTROLLER
+                }) =>
+            {
+                continue;
+            }
             ParameterNamespace::Fit | ParameterNamespace::Control => {
                 return Err(DagMlError::RuntimeValidation(format!(
                     "native training does not expose {:?} parameter patches to controllers yet; refusing to ignore them",
@@ -2411,6 +2478,14 @@ fn materialize_request_parameter_patches(
                 patch.node_id
             ))
         })?;
+        if node_plan.controller_id.as_str() == crate::METHODS_NATIVE_REGRESSION_CONTROLLER
+            && (patch.path.len() != 1
+                || !matches!(patch.path[0].as_str(), "n_components" | "scale"))
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "native PLS operator patches accept n_components/scale only".into(),
+            ));
+        }
         deep_set_plan_param(
             &mut node_plan.params,
             &patch.path,
@@ -2419,6 +2494,7 @@ fn materialize_request_parameter_patches(
         )?;
         node_plan.params_fingerprint = stable_json_fingerprint(&node_plan.params)?;
     }
+    crate::methods_phase_controls::materialize_native_pls_phase_controls(&mut plan, request)?;
     plan.validate()?;
     Ok(plan)
 }
@@ -3852,7 +3928,10 @@ impl TrainingOutcome {
             &self.parameter_patches,
             &expected_patches,
         )?;
-        if !self.parameter_patches.is_empty()
+        if self
+            .parameter_patches
+            .iter()
+            .any(|patch| patch.namespace == ParameterNamespace::Operator)
             && !self
                 .training_influence
                 .entries
@@ -4695,10 +4774,12 @@ fn sort_and_validate_training_parameter_patch_keys(
 ) -> Result<()> {
     for patch in patches.iter() {
         patch.validate()?;
-        if patch.namespace != ParameterNamespace::Operator {
-            return contract_error(
-                "training outcome parameter_patches must use operator namespace",
-            );
+        match patch.namespace {
+            ParameterNamespace::Operator => {},
+            ParameterNamespace::Fit => {
+                crate::methods_phase_controls::native_pls_fit_patch_values(patch)?;
+            },
+            _ => return contract_error("training outcome parameter_patches must use operator or closed native PLS fit namespace"),
         }
     }
     let original = patches.to_vec();
@@ -4758,6 +4839,11 @@ fn append_parameter_leaves(
 
 fn validate_materialized_patch(plan: &ExecutionPlan, patch: &ParameterPatch) -> Result<()> {
     patch.validate()?;
+    if patch.namespace == ParameterNamespace::Fit {
+        return crate::methods_phase_controls::validate_native_pls_materialized_fit_patch(
+            plan, patch,
+        );
+    }
     if patch.namespace != ParameterNamespace::Operator {
         return contract_error("selected variant patches must use operator namespace");
     }

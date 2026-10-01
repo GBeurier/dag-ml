@@ -3971,6 +3971,7 @@ mod hpo_scheduler_tests {
             }))
             .unwrap();
         let hpo = RuntimeHpoExecutionContext {
+            portable_profile: None,
             operation_id: "hpo:test".to_string(),
             controller_id: ControllerId::new("controller:tuner").unwrap(),
             target_node_id: target.clone(),

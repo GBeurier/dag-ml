@@ -1282,6 +1282,17 @@ impl crate::runtime::RuntimeController for MethodsHpoController {
                 "Methods HPO tuner task/context identity mismatch".to_string(),
             ));
         }
+        if let Some(profile) = &context.portable_profile {
+            if profile != crate::METHODS_PLS_ROLE_PROFILE {
+                return Err(crate::DagMlError::RuntimeValidation(
+                    "unsupported native Methods HPO profile".into(),
+                ));
+            }
+            crate::methods_phase_controls::validate_native_pls_hpo_space(
+                &context.study.search_space,
+                &context.parameter_paths,
+            )?;
+        }
         let study = if let Some(checkpoint) = &context.resume_checkpoint {
             MethodsHpoStudy::restore(context.study.clone(), checkpoint)
         } else {
@@ -1345,6 +1356,70 @@ impl crate::runtime::RuntimeTunerSession for MethodsHpoSession {
     }
 
     fn ask(&mut self) -> crate::Result<Option<crate::runtime::RuntimeHpoProposal>> {
+        if self.context.portable_profile.as_deref() == Some(crate::METHODS_PLS_ROLE_PROFILE) {
+            let trial = self
+                .study
+                .ask()
+                .map_err(|e| crate::DagMlError::RuntimeValidation(e.to_string()))?;
+            let mut overrides = BTreeMap::new();
+            for name in self.context.parameter_paths.keys() {
+                let p = trial.parameters.get(name).ok_or_else(|| {
+                    crate::DagMlError::RuntimeValidation(
+                        "native HPOv2 omitted an active axis".into(),
+                    )
+                })?;
+                if !p.active {
+                    return Err(crate::DagMlError::RuntimeValidation(
+                        "native HPOv2 axis inactive".into(),
+                    ));
+                }
+                let value = match name.as_str() {
+                    "n_components"
+                        if p.integer
+                            && p.value.fract() == 0.0
+                            && (1.0..=3.0).contains(&p.value) =>
+                    {
+                        serde_json::json!(p.value as i64)
+                    }
+                    "scale"
+                        if p.native_kind == Some(HpoNativeParameterKind::Categorical)
+                            && p.category_type == Some(HpoCategoryType::Boolean)
+                            && matches!(p.category_index, Some(0 | 1)) =>
+                    {
+                        serde_json::json!(p.category_index == Some(1))
+                    }
+                    _ => {
+                        return Err(crate::DagMlError::RuntimeValidation(
+                            "native HPOv2 emitted an invalid typed PLS control".into(),
+                        ))
+                    }
+                };
+                overrides.insert(name.clone(), value);
+            }
+            let mut variant = self.context.base_variant.clone();
+            variant.choices.insert(
+                "native_methods_hpo".into(),
+                crate::generation::GenerationChoice {
+                    label: format!("trial:{}", trial.id),
+                    value: serde_json::json!({"trial_id":trial.id}),
+                    param_overrides: vec![crate::generation::GenerationParamOverride {
+                        node_id: self.context.target_node_id.clone(),
+                        params: overrides,
+                    }],
+                    active_subsequence: None,
+                },
+            );
+            variant.variant_id = crate::VariantId::new(format!("hpo:trial:{}", trial.id))?;
+            variant.fingerprint = crate::campaign::stable_json_fingerprint(&(
+                self.context.base_variant.fingerprint.as_str(),
+                &variant.choices,
+                trial.id,
+            ))?;
+            return Ok(Some(crate::runtime::RuntimeHpoProposal {
+                trial_id: trial.id,
+                variant,
+            }));
+        }
         let trial = self
             .study
             .ask()
@@ -2803,15 +2878,19 @@ pub use pls_controller::{MethodsPlsController, MethodsRidgeController};
 /// executable role.
 #[cfg(feature = "methods-optimizer")]
 pub fn methods_native_controller_ids() -> Vec<crate::ControllerId> {
-    [METHODS_PLS_CONTROLLER_ID, METHODS_RIDGE_CONTROLLER_ID]
-        .into_iter()
-        .chain(
-            crate::methods_estimator::METHODS_ESTIMATOR_EXECUTABLE_ROLES
-                .iter()
-                .filter_map(|role| role.controller_id()),
-        )
-        .map(|id| crate::ControllerId::new(id).expect("fixed Methods controller ids are valid"))
-        .collect()
+    [
+        METHODS_PLS_CONTROLLER_ID,
+        METHODS_RIDGE_CONTROLLER_ID,
+        crate::METHODS_NATIVE_REGRESSION_CONTROLLER,
+    ]
+    .into_iter()
+    .chain(
+        crate::methods_estimator::METHODS_ESTIMATOR_EXECUTABLE_ROLES
+            .iter()
+            .filter_map(|role| role.controller_id()),
+    )
+    .map(|id| crate::ControllerId::new(id).expect("fixed Methods controller ids are valid"))
+    .collect()
 }
 
 /// Register every controller of [`methods_native_controller_ids`] for one
@@ -2831,6 +2910,9 @@ pub fn register_methods_native_controllers(
     }
     registry.register(Box::new(MethodsPlsController::new(runtime.clone())))?;
     registry.register(Box::new(MethodsRidgeController::new(runtime.clone())))?;
+    registry.register(Box::new(crate::MethodsNativeRegressionController::new(
+        runtime.clone(),
+    )))?;
     crate::methods_estimator::register_methods_estimator_controllers(registry, runtime)
 }
 
@@ -4074,6 +4156,7 @@ mod tests {
         )
         .unwrap();
         let context = RuntimeHpoExecutionContext {
+            portable_profile: None,
             operation_id: "hpo:methods".to_string(),
             controller_id: controller_id.clone(),
             target_node_id: target_node_id.clone(),
@@ -4126,6 +4209,71 @@ mod tests {
     #[cfg(feature = "methods-optimizer-local")]
     fn assert_runtime_refusal(error: crate::DagMlError) {
         assert!(matches!(error, crate::DagMlError::RuntimeValidation(_)));
+    }
+
+    #[cfg(feature = "methods-optimizer-local")]
+    #[test]
+    fn role_profile_native_boolean_projection_survives_checkpoint_restore() {
+        // Exercise the real optimizer codec, independently of model fitting.
+        // Full plan/preflight/REFIT qualification lives in the public SDK campaign.
+        let (_, mut context, task) = attested_native_hpo_context();
+        context.portable_profile = Some(crate::METHODS_PLS_ROLE_PROFILE.into());
+        context
+            .study
+            .search_space
+            .parameters
+            .push(HpoParameter::Categorical {
+                name: "scale".into(),
+                values: vec![HpoCategory::Boolean(false), HpoCategory::Boolean(true)],
+            });
+        context
+            .parameter_paths
+            .insert("scale".into(), "scale".into());
+        let controller = MethodsHpoController::new(task.controller_id.clone(), native_runtime());
+        let mut session = controller.create_tuner_session(&task, &context).unwrap();
+        let first = session.ask().unwrap().unwrap();
+        let projected = &first.variant.choices["native_methods_hpo"].param_overrides[0].params;
+        assert_eq!(projected.len(), 2);
+        assert!((1..=3).contains(&projected["n_components"].as_i64().unwrap()));
+        assert!(projected["scale"].is_boolean());
+        session
+            .tell(first.trial_id, RuntimeHpoTerminal::Completed { score: 1.0 })
+            .unwrap();
+        let checkpoint = session.checkpoint().unwrap();
+        let mut native = MethodsHpoStudy::restore(context.study.clone(), &checkpoint).unwrap();
+        let ledger = native.trials().unwrap();
+        assert_eq!(ledger.len(), 1);
+        let native_first = &ledger[0].parameters["scale"];
+        assert_eq!(native_first.category_type, Some(HpoCategoryType::Boolean));
+        assert_eq!(
+            projected["scale"].as_bool(),
+            Some(native_first.category_index == Some(1))
+        );
+        let expected = native.ask().unwrap();
+        context.resume_checkpoint = Some(checkpoint);
+        context.resume_terminal_trials = vec![crate::runtime::RuntimeHpoTerminalSnapshot {
+            trial: ledger[0].clone(),
+            variant_id: Some(first.variant.variant_id.clone()),
+        }];
+        let mut restored = controller.create_tuner_session(&task, &context).unwrap();
+        let next = restored.ask().unwrap().unwrap();
+        let actual = &next.variant.choices["native_methods_hpo"].param_overrides[0].params;
+        assert_eq!(next.trial_id, expected.id);
+        assert_eq!(
+            actual["n_components"].as_i64(),
+            Some(expected.parameters["n_components"].value as i64)
+        );
+        assert_eq!(
+            actual["scale"].as_bool(),
+            Some(expected.parameters["scale"].category_index == Some(1))
+        );
+        assert_ne!(first.variant.fingerprint, next.variant.fingerprint);
+        let mut invalid = context.clone();
+        invalid.study.search_space.parameters[1] = HpoParameter::Categorical {
+            name: "scale".into(),
+            values: vec![HpoCategory::Integer(0), HpoCategory::Integer(1)],
+        };
+        assert!(controller.create_tuner_session(&task, &invalid).is_err());
     }
 
     #[cfg(feature = "methods-optimizer-local")]

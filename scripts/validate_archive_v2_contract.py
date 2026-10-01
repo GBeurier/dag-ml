@@ -33,6 +33,7 @@ if str(ROOT) not in sys.path:
 from parity.conformal.oracle import (  # noqa: E402
     ContractError,
     fingerprint_without,
+    tcv1_sha256,
     validate_strict_json,
 )
 from scripts.validate_archive_v1_contract import (  # noqa: E402
@@ -666,7 +667,7 @@ def validate_role_pipeline_payload(record: dict[str, Any], payload: bytes) -> No
         and artifact.get("kind") == "methods_role_pipeline"
         and artifact.get("backend") == "raw"
         and artifact.get("plugin") in {
-            "dagml.methods.wasm.regression", "dagml.methods.r.regression",
+            "dagml.methods.wasm.regression", "dagml.methods.r.regression", "dagml.methods.native.regression",
         }
         and artifact.get("plugin_version") == "1.0.0"
         and artifact.get("native_predictor_descriptor") is None
@@ -675,6 +676,9 @@ def validate_role_pipeline_payload(record: dict[str, Any], payload: bytes) -> No
         "native_model_refusal",
         "RolePipeline must use its trusted RAW codec and content-addressed URI",
     )
+    if artifact.get("plugin") == "dagml.methods.native.regression":
+        require(artifact.get("controller_id") == record.get("controller_id") == "controller:methods.native.regression",
+                "native_model_refusal", "native PLS RAW plugin requires its native controller owner")
     wrapper = load_json_bytes(payload, artifact["uri"])
     def validate_depth(value: Any, depth: int = 0) -> None:
         require(depth <= 128, "native_model_refusal", "RolePipeline JSON exceeds its depth bound")
@@ -750,6 +754,48 @@ def validate_role_pipeline_recipe(record: dict[str, Any], payload: bytes, plan: 
     operator = graph_node.get("operator")
     require(isinstance(operator, dict), "native_model_refusal", "RolePipeline requires an explicit operator")
     kind = operator.get("type")
+    if record.get("controller_id") == "controller:methods.native.regression":
+        require(record["artifact"].get("plugin") == "dagml.methods.native.regression",
+                "native_model_refusal", "native PLS must retain its native owner")
+        def closed_recipe(params: Any, *, refit: bool) -> list[dict[str, Any]]:
+            require(isinstance(params, dict) and set(params) <= {"native_profile", "n_components", "scale", "pipeline", "phase_controls"}
+                    and params.get("native_profile") == "n4m.pls_role_pipeline.v1",
+                    "native_model_refusal", "closed PLS profile params required")
+            n, scale = params.get("n_components"), params.get("scale")
+            controls = params.get("phase_controls", {})
+            require(isinstance(controls, dict) and set(controls) <= {"train_params", "refit_params"},
+                    "native_model_refusal", "closed PLS phase controls required")
+            for phase in ("train_params", "refit_params"):
+                values = controls.get(phase, {})
+                require(isinstance(values, dict) and set(values) <= {"n_components", "scale"}
+                        and all((key == "n_components" and type(value) is int and 0 < value <= 2**31-1)
+                                or (key == "scale" and type(value) is bool) for key,value in values.items()),
+                        "native_model_refusal", "closed PLS executable controls required")
+            if refit:
+                n = controls.get("refit_params", {}).get("n_components", n)
+                scale = controls.get("refit_params", {}).get("scale", scale)
+            require(type(n) is int and 0 < n <= 2**31-1 and type(scale) is bool,
+                    "native_model_refusal", "closed PLS component/scale types required")
+            steps = []
+            pipeline = params.get("pipeline")
+            if pipeline is not None:
+                require(isinstance(pipeline, dict) and set(pipeline) == {"schema_version", "pipeline_type", "savgol_window", "savgol_poly_degree"}
+                        and pipeline["schema_version"] == 1 and pipeline["pipeline_type"] == "n4m.snv_savgol_smooth.v1"
+                        and type(pipeline["savgol_window"]) is int and 3 <= pipeline["savgol_window"] <= 501 and pipeline["savgol_window"] % 2 == 1
+                        and type(pipeline["savgol_poly_degree"]) is int and 0 <= pipeline["savgol_poly_degree"] < pipeline["savgol_window"],
+                        "native_model_refusal", "closed PLS SG bounds required")
+                steps = [{"methodId":"preprocessing.scatter.snv","params":{"with_mean":True,"with_std":True,"ddof":0}},
+                         {"methodId":"preprocessing.derivatives.savitzky_golay","params":{"window_length":pipeline["savgol_window"],"polyorder":pipeline["savgol_poly_degree"],"deriv":0,"delta":1.0,"mode":"interp","cval":0.0}}]
+            steps.append({"methodId":"models.pls.pls_regression","params":{"n_components":n,"solver":"nipals","center_x":True,"center_y":True,"scale_x":scale,"scale_y":scale}})
+            return steps
+        require("phase_controls" not in graph_node.get("params", {}), "native_model_refusal", "graph cannot inject internal phase controls")
+        require(tcv1_sha256(operator) == tcv1_sha256({"type":"N4mRolePipeline","steps":closed_recipe(graph_node["params"],refit=False)}),
+                "native_model_refusal", "native PLS graph differs from canonical base recipe")
+        saved = load_json_bytes(payload,record["artifact"]["uri"])
+        require(tcv1_sha256(saved["steps"]) == tcv1_sha256(closed_recipe(node["params"],refit=True))
+                and record["params_fingerprint"] == node["params_fingerprint"],
+                "native_model_refusal", "native PLS RAW differs from the effective REFIT recipe")
+        return
     if kind == "N4mRolePipeline":
         expected = copy.deepcopy(operator.get("steps"))
     else:

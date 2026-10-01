@@ -63,6 +63,21 @@ fn validate_methods_role_pipeline_recipe(
     let node = plan.node_plans.get(&record.node_id).ok_or_else(|| {
         DagMlError::RuntimeValidation("RolePipeline has no effective node plan".into())
     })?;
+    if record.controller_id.as_str() == crate::METHODS_NATIVE_REGRESSION_CONTROLLER {
+        if record.artifact.plugin.as_deref() != Some(crate::METHODS_NATIVE_REGRESSION_PLUGIN) {
+            return refuse("native PLS wrapper must retain its native owner identity");
+        }
+        crate::methods_phase_controls::validate_native_pls_phase_plan(plan)?;
+        let expected =
+            crate::NativePlsRoleParams::from_params(&node.params)?.recipe(crate::Phase::Refit);
+        let saved: MethodsRolePipelinePayload = serde_json::from_slice(bytes)?;
+        let expected: Vec<MethodsRolePipelineStep> =
+            serde_json::from_value(serde_json::to_value(expected)?)?;
+        if saved.steps != expected || record.params_fingerprint != node.params_fingerprint {
+            return refuse("native PLS RAW recipe differs from the signed effective REFIT phase");
+        }
+        return Ok(());
+    }
     let graph_node = plan
         .graph_plan
         .graph
@@ -125,7 +140,11 @@ pub fn validate_methods_role_pipeline_payload(
         || artifact.backend != Some(ArtifactBackend::Raw)
         || !matches!(
             artifact.plugin.as_deref(),
-            Some("dagml.methods.wasm.regression" | "dagml.methods.r.regression")
+            Some(
+                "dagml.methods.wasm.regression"
+                    | "dagml.methods.r.regression"
+                    | "dagml.methods.native.regression"
+            )
         )
         || artifact.plugin_version.as_deref() != Some("1.0.0")
         || artifact.native_predictor_descriptor.is_some()
@@ -134,6 +153,12 @@ pub fn validate_methods_role_pipeline_payload(
         || bytes.len() > 134_217_728
     {
         return refuse("Archive V2 requires the bounded trusted Methods RolePipeline RAW codec");
+    }
+    if artifact.plugin.as_deref() == Some(crate::METHODS_NATIVE_REGRESSION_PLUGIN)
+        && (artifact.controller_id.as_str() != crate::METHODS_NATIVE_REGRESSION_CONTROLLER
+            || record.controller_id.as_str() != crate::METHODS_NATIVE_REGRESSION_CONTROLLER)
+    {
+        return refuse("native PLS RAW plugin requires its exact native controller owner");
     }
     let raw = sha256(bytes);
     if artifact.content_fingerprint.as_deref() != Some(raw.as_str())

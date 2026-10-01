@@ -493,7 +493,10 @@ fn class_labels(data: &MethodsPlsDataset, method_id: &str) -> Result<Vec<i64>> {
 }
 
 /// Rows of `first` followed by the rows of `second` it does not already hold.
-fn union_rows(first: &MethodsPlsDataset, second: &MethodsPlsDataset) -> MethodsPlsDataset {
+pub(crate) fn union_rows(
+    first: &MethodsPlsDataset,
+    second: &MethodsPlsDataset,
+) -> MethodsPlsDataset {
     let seen = first.sample_ids.iter().collect::<BTreeSet<_>>();
     let extra = second
         .sample_ids
