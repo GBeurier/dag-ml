@@ -49,15 +49,15 @@ def _sha256(path: Path) -> str:
 
 
 def test_base_pack_remains_byte_current() -> None:
-    # Current W1 bytes and its 106 artifacts are pinned independently of D4.
+    # Current W1 bytes and its 107 artifacts are pinned independently of D4.
     pack = load_json(BASE_PACK)
     assert _sha256(BASE_PACK) == (
-        "b87ce0f1d76a8ac2112a8502ecdb77ac323cd049f4981a363e5f8db66d7d202b"
+        "4147d66b98cb58382ba180bd127361d589f9cc8c18005e21a92b99df6750618d"
     )
     assert pack["pack_checksum"] == (
-        "08b5c9fa2d15fa5ff1ef7515b4249e51d5c69876e37f9d7742aeb17243ccc82e"
+        "8b509d6e1dba0e7b110b24fad2ffebba99e47893ee0da4f7d3115174453c85a3"
     )
-    assert len(pack["artifacts"]) == 106
+    assert len(pack["artifacts"]) == 107
     assert all(
         _sha256(ROOT / artifact["path"]) == artifact["sha256"]
         for artifact in pack["artifacts"]
@@ -95,6 +95,7 @@ def test_temp_base_pack_byte_mutation_is_rejected_by_both_validators(
         "crates/dag-ml-core/src/conformal.rs",
         "crates/dag-ml-core/src/conformal_runtime.rs",
         "crates/dag-ml-core/src/runtime/scoring.rs",
+        "crates/dag-ml-wasm/src/training.rs",
     ),
 )
 def test_conformal_runtime_source_mutation_is_rejected_by_both_validators(

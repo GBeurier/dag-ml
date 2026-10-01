@@ -20,6 +20,7 @@ on:
       - crates/dag-ml-wasm/**
       - crates/dag-ml-core/src/hpo.rs
       - crates/dag-ml-core/src/runtime/host_hpo.rs
+      - crates/dag-ml-core/src/training_runtime.rs
       - crates/dag-ml-core/tests/fixtures/initial_full_refit/package.json
       - Cargo.lock
   workflow_dispatch:

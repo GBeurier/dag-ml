@@ -181,12 +181,12 @@
     },
     {
       "path": "crates/dag-ml-core/src/training_runtime.rs",
-      "sha256": "c300c8286540cc2e5cdb6f08295cb5adfa996b208dac2192d13e09125193b103",
+      "sha256": "a989f9d8010c896eb0d7c88b6333b34b823208880838229bb73c256235bf6b38",
       "kind": "native_runtime_contract"
     },
     {
       "path": "crates/dag-ml-core/tests/training_runtime_operation.rs",
-      "sha256": "beafe0ca2e85821aff9db241f22223a926aaa7e371457153ad52155ed29b89c8",
+      "sha256": "5121607014ad52afa27c11fc8b30a48f6ad9ef908ab1c3728368320a0034f759",
       "kind": "native_integration_test"
     },
     {
@@ -201,12 +201,12 @@
     },
     {
       "path": "crates/dag-ml-py/python/dag_ml/__init__.py",
-      "sha256": "1288cbeb9452df9345f03cc2f46cdb2481cdde4a4aeb3529ea8fe7d1a30742a7",
+      "sha256": "9f4dbe9336b9d5395800f71eee6943dcb5d449fb62d4557f6da5364abaf1eb90",
       "kind": "python_facade"
     },
     {
       "path": "crates/dag-ml-py/python/dag_ml/__init__.pyi",
-      "sha256": "1d678eaed3c3d832509808ebeda2755ff12a86a0e4d04ad801a389366934a776",
+      "sha256": "cfc8cc43ba17c286ea04223b6b0b4cab9f8b9d5541aa076d759735821f9788f6",
       "kind": "python_typing"
     },
     {
@@ -221,18 +221,23 @@
     },
     {
       "path": "crates/dag-ml-py/src/training.rs",
-      "sha256": "8b88cfc4ac66a17c230c896888da271f35eecf3e1b3621b44e3eae53ec9a5821",
+      "sha256": "8771813c5401fb806a963caa7ab2d130eb5920042c8b95ddb463ec4898f38c03",
       "kind": "python_training_binding"
     },
     {
       "path": "crates/dag-ml-py/tests/test_training_result.py",
-      "sha256": "f708872bed4cd3af20cbadae55f1a27ee7b4cb787ae84e49f972bd01e5d714d7",
+      "sha256": "8e8292af7b5df7835f96bcdaba35acd599e7ef07ed9c9cc47f210ebb2a861431",
       "kind": "python_binding_test"
     },
     {
       "path": "crates/dag-ml-wasm/src/lib.rs",
-      "sha256": "cde4d8baabbdc012a47106f9de36c7125a2331cb7d1cf9832f067c987a59e37f",
+      "sha256": "42d777f2fdd4a346bd7cd5090deba3f635628d295b0efa0012d5ab5dacba1c9c",
       "kind": "wasm_binding"
+    },
+    {
+      "path": "crates/dag-ml-wasm/src/training.rs",
+      "sha256": "9c967806b1cd17de12400f2cb7fadef4619f9357503f4c2febebef549dea18a8",
+      "kind": "wasm_training_binding"
     },
     {
       "path": "docs/HPO_METHODS_ADAPTER.md",
@@ -491,7 +496,7 @@
     },
     {
       "path": "parity/training/generate_fixtures.py",
-      "sha256": "9cc3e1dd3ff9b771f644bd9bf0f44241e2605c3b550975847006245eac9a2d7d",
+      "sha256": "c359e9ede1b21f8d6eb32f3d521cb976893364d28d52e73b6346b409d0deab8c",
       "kind": "generator"
     },
     {
@@ -604,5 +609,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "08b5c9fa2d15fa5ff1ef7515b4249e51d5c69876e37f9d7742aeb17243ccc82e"
+  "pack_checksum": "8b509d6e1dba0e7b110b24fad2ffebba99e47893ee0da4f7d3115174453c85a3"
 }

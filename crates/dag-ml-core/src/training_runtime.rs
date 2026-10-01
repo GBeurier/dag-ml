@@ -2141,18 +2141,18 @@ pub fn execute_training(input: TrainingExecutionInput<'_>) -> Result<TrainingOut
     #[cfg(feature = "methods-optimizer")]
     {
         execution_bundle.methods_hpo_resume_state = methods_hpo_resume_state.clone();
-        for record in &execution_bundle.refit_artifacts {
-            if record.artifact.kind != "n4m_model"
-                && record.artifact.kind != crate::runtime::NATIVE_ESTIMATOR_ARTIFACT_KIND
-            {
-                continue;
-            }
+    }
+    // RAW is a generic portable-artifact contract, not a Methods feature.
+    // Host controllers (including WASM) must transfer these payloads before
+    // the bundle's mandatory exact-coverage/hash validation.
+    for record in &execution_bundle.refit_artifacts {
+        if record.artifact.backend == Some(crate::runtime::ArtifactBackend::Raw) {
             let controller = input
                 .controllers
                 .get(&record.controller_id)
                 .ok_or_else(|| {
                     DagMlError::RuntimeValidation(format!(
-                        "missing controller `{}` for native Methods export",
+                        "missing controller `{}` for RAW artifact export",
                         record.controller_id
                     ))
                 })?;
@@ -2160,7 +2160,7 @@ pub fn execute_training(input: TrainingExecutionInput<'_>) -> Result<TrainingOut
                 .export_artifact_payload(&record.artifact.id)?
                 .ok_or_else(|| {
                     DagMlError::RuntimeValidation(format!(
-                        "Methods controller did not export durable native payload `{}`",
+                        "controller did not export durable RAW payload `{}`",
                         record.artifact.id
                     ))
                 })?;

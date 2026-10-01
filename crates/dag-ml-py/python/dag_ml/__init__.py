@@ -1346,6 +1346,7 @@ def execute_training_json(
     bundle_id: str,
     warnings_json: str = "[]",
     diagnostics_json: str = "{}",
+    artifact_callback: Any | None = None,
 ) -> TrainingResult:
     """Run native training from already serialized strict JSON contracts."""
 
@@ -1361,6 +1362,7 @@ def execute_training_json(
             bundle_id,
             warnings_json,
             diagnostics_json,
+            artifact_callback,
         )
     )
 
@@ -1747,6 +1749,7 @@ def execute_training(
     bundle_id: str,
     warnings: Any = (),
     diagnostics: Any = None,
+    artifact_callback: Any | None = None,
 ) -> TrainingResult:
     """Execute native DAG-ML training with an in-process Python controller.
 
@@ -1754,6 +1757,8 @@ def execute_training(
     to its signed coordinator envelope. ``op_callback`` receives one native
     ``NodeTask`` dictionary and returns its ``NodeResult`` dictionary. DAG-ML
     owns orchestration, OOF scoring, SELECT, optional REFIT and outcome binding.
+    RAW artifacts use the optional ``artifact_callback``: ``export`` returns
+    their bytes, while ``hydrate``/``release`` implement detached replay.
     """
 
     return execute_training_json(
@@ -1767,6 +1772,7 @@ def execute_training(
         bundle_id,
         _coerce_json(warnings),
         _coerce_json({} if diagnostics is None else diagnostics),
+        artifact_callback,
     )
 
 

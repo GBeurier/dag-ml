@@ -101,16 +101,23 @@ projections (NIR, image, series and metadata) and a meta-model, three group-held
 outer folds, two inner folds, native Methods Sobol proposals, and exact
 resumed/continuous trial equality. It also captures the selected NIR source
 estimator in a native archive and checks automatic hydration, prediction and
-release in a fresh controller with fit forbidden. These numerical data are
-test fixtures. Their relation identity comes from the native Python binding
-and is checked against the exact relation fixture before use.
+release in a fresh controller with fit forbidden. It then uses the generic
+native training runtime to capture all four source estimators and the OOF-trained
+meta-model in a complete native-portable predictor package. Fresh-controller
+replay checks five hydrations, five predictions and five releases without fit,
+including release after an injected failure. Tampered package/request content,
+untrusted manifests and a parallel WASM scheduler are refused before callbacks.
+These numerical data are test fixtures. Their relation identity is computed by
+the native WASM binding and compared with the frozen native Python receipt.
 
 `scripts/qualify_multimodal_methods_hpo_python.py` replays the same recorded
 proposals through native Python callbacks and compares all trial and per-fold
 scores, then independently fits the selected source estimator and checks its
 prediction against native archive replay. This isolates scheduler/operator
-parity; it does not qualify a new
-Python optimizer. `scripts/qualify_multimodal_methods_nirs4all.py` checks the
+parity; it does not qualify a new Python optimizer. It also hydrates the exact
+five-model WASM package in a separate Python process, checks held-out prediction
+parity and release of every native state while fit is forbidden.
+`scripts/qualify_multimodal_methods_nirs4all.py` checks the
 public SDK's corresponding four-source `by_source` pipeline, archive export
 and replay with `RolePipeline.fit` forbidden. The existing Python API is
 `from n4m.roles import RolePipeline`, usable as `{"model": pipeline}` in
@@ -120,6 +127,36 @@ This regression controller consumes already resolved numeric projections.
 Raw N-D encoders, classification, generated-view consumption attestations,
 custom losses, residual targets, additional FIT_CV test streams and nonuniform
 fit influence are not qualified
-by it. Specialized task requirements are refused. End-to-end portable
-four-source archive replay across languages and the corresponding R/Octave
-multimodal controllers remain separate backlog work.
+by it. Specialized task requirements are refused. The complete JSON predictor
+package is distinct from Core Archive V2 `.n4a`: that closed ZIP profile accepts
+only plugin-free `n4m_model` artifacts, not this controller's RolePipeline codec.
+Core `.n4a` transport of this complete recipe, raw N-D encoders and corresponding
+R/Octave multimodal controllers remain separate backlog work.
+
+## Native training and detached replay
+
+The root WASM module exposes `training_data_identity_json`,
+`sample_relation_set_fingerprint_json`, `sign_training_request_json` and
+`execute_training_json`. The latter consumes a signed generic `TrainingRequest`,
+an envelope map keyed by `node_id.input_name`, and sample relations. The core
+derives training influence, executes CV/SELECT/REFIT and captures RAW bytes.
+Require `scheduler.kind="sequential"`, `cv_artifacts="discard"`,
+`fitted_artifacts="portable_required"`, and null memory/time limits. Outputs
+include exact `training_outcome_json` and `portable_predictor_package_json`
+strings: preserve those bytes because parsing and reserializing u64 numbers
+in JavaScript can invalidate their seals.
+
+For inference, `attach_predict_cohort_to_envelope_json` derives V2 cohort
+evidence from independently identified rows, `sign_training_replay_request_json`
+seals the output/envelope authorization, and `replay_training_package_json`
+validates the package against caller-trusted manifests before executing native
+replay. No fitted handles are supplied: RAW payloads hydrate and release for
+this invocation only. Host resolvers still own actual feature buffers.
+
+Python has the same native training/replay contracts through
+`dag_ml.execute_training(..., artifact_callback=...)` and
+`dag_ml.replay_loaded_predictor_package_json(..., artifact_callback=...)`.
+Its bridge uses `export` (return byte values), `hydrate` (return `HandleRef`),
+and `release` (return `None`). Existing calls without RAW artifacts keep the
+optional callback default. RAW coverage, content hashes and sizes are checked
+generically in the core, even when the native Methods feature is disabled.

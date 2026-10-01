@@ -74,7 +74,8 @@ envelope.coordinator_relations.records = sampleIds.flatMap(sampleId => sourceNam
 const relationIdentity = JSON.parse(fs.readFileSync(path.join(repo,
   "scripts/fixtures/methods_four_source_relation_identity.json"), "utf8"));
 assert.equal(fingerprint(envelope.coordinator_relations), relationIdentity.relation_json_sha256);
-envelope.relation_fingerprint = relationIdentity.native_relation_fingerprint;
+envelope.relation_fingerprint = dagMl.sample_relation_set_fingerprint_json(JSON.stringify(envelope.coordinator_relations));
+assert.equal(envelope.relation_fingerprint, relationIdentity.native_relation_fingerprint);
 const fitLog = [];
 const resolvers = {
   resolveFeatures: ({ view, task }) => {
@@ -233,13 +234,156 @@ assert.deepEqual(selectedPrediction.sample_ids, [heldoutId]);
 assert.ok(selectedPrediction.values.flat().every(Number.isFinite));
 const nativeRefit = { alpha: selected.params["nir.alpha"], heldoutRow,
   prediction: selectedPrediction.values, operations: replayOperations };
+// Capture the complete selected topology, including its OOF-trained meta-model.
+// The generic native TrainingRequest owns CV/SELECT/REFIT and all closure checks.
+const completeDsl = structuredClone(dsl);
+for (const branch of completeDsl.steps[0].branches)
+  branch.steps[0].params.alpha = selected.params[branch.id + ".alpha"];
+completeDsl.steps[1].params.alpha = selected.params["meta.alpha"];
+const completeCompiled = JSON.parse(dagMl.compile_pipeline_dsl_artifact_with_controllers_json(
+  JSON.stringify(completeDsl), JSON.stringify([manifest])));
+const completeRequest = JSON.parse(fs.readFileSync(path.join(repo,
+  "examples/fixtures/training/training_request_refit.v1.json"), "utf8"));
+Object.assign(completeRequest, {
+  request_id: "training:methods.four-sources", plan_id: "plan:methods.four-sources.training",
+  graph: completeCompiled.graph, campaign: completeCompiled.campaign_template,
+  controller_manifests: [manifest], data_identities: sourceNames.map(source =>
+    JSON.parse(dagMl.training_data_identity_json(JSON.stringify(binding(source)), JSON.stringify(trainingEnvelope)))),
+  parameter_patches: [], patch_policies: [], influence_requirements: [],
+});
+completeRequest.data_identities.sort((a, b) => a.requirement_key.localeCompare(b.requirement_key));
+Object.assign(completeRequest.options, {
+  seed: 19, selection_output_id: "output:meta", outputs: [{
+    output_id: "output:meta", node_id: "model:meta", prediction_level: "sample",
+    unit_level: "physical_sample", prediction_kind: "regression_point", target_names: ["y"],
+    target_units: [null], class_labels: [[]], output_order: "target_order", target_space: "raw",
+  }],
+  artifacts: { cv_artifacts: "discard", prediction_caches: "retain", fitted_artifacts: "portable_required" },
+  resources: { cpu_threads: 1, memory_bytes: null, gpu_devices: [], wall_time_ms: null },
+});
+completeRequest.options.selection.evaluation_scope = "oof";
+const completeRequestJson = dagMl.sign_training_request_json(JSON.stringify(completeRequest));
+const trainingEnvelopes = Object.fromEntries(sourceNames.map(source => ["model:" + source + ".x", trainingEnvelope]));
+let preflightCallbacks = 0;
+const badRequest = JSON.parse(completeRequestJson);
+badRequest.options.seed++;
+assert.throws(() => dagMl.execute_training_json(JSON.stringify(badRequest), JSON.stringify(trainingEnvelopes),
+  JSON.stringify(envelope.coordinator_relations), "package:bad", "outcome:bad", "run:bad", "bundle:bad",
+  () => { preflightCallbacks++; }));
+const parallelRequest = structuredClone(completeRequest);
+parallelRequest.options.scheduler = { kind: "parallel", backend: "threads", workers: 2 };
+parallelRequest.options.resources.cpu_threads = 2;
+parallelRequest.controller_manifests[0].capabilities.push("thread_safe");
+const parallelRequestJson = dagMl.sign_training_request_json(JSON.stringify(parallelRequest));
+assert.throws(() => dagMl.execute_training_json(parallelRequestJson, JSON.stringify(trainingEnvelopes),
+  JSON.stringify(envelope.coordinator_relations), "package:parallel", "outcome:parallel", "run:parallel", "bundle:parallel",
+  () => { preflightCallbacks++; }));
+assert.equal(preflightCallbacks, 0);
+const searchFitViewCount = fitLog.length;
+const completeController = new N4mWasmRegressionController({ methods, operators, ...resolvers, digest: sha256 });
+let completeCapture;
+try {
+  completeCapture = JSON.parse(dagMl.execute_training_json(completeRequestJson,
+    JSON.stringify(trainingEnvelopes), JSON.stringify(envelope.coordinator_relations),
+    "package:methods.four-sources", "outcome:methods.four-sources", "run:methods.four-sources.training",
+    "bundle:methods.four-sources", completeController.callback));
+} finally { completeController.close(); }
+const completePackageJson = completeCapture.portable_predictor_package_json;
+const completePackage = JSON.parse(completePackageJson);
+const completeOutcome = JSON.parse(completeCapture.training_outcome_json);
+assert.equal(completePackage.artifact_bindings.length, 5);
+assert.equal(Object.keys(completePackage.execution_bundle.raw_artifact_payloads).length, 5);
+assert.deepEqual([...completePackage.predictor_node_ids].sort(), Object.keys(operators).sort());
+assert.ok(completePackage.artifact_bindings.every(binding => binding.load_mode === "native_portable"));
+assert.ok(completeOutcome.portable_prediction_caches.caches.length > 0);
+const heldoutRows = Object.fromEntries(sourceNames.map(source => [source,
+  sourceRows[source][0].map(value => value + 0.1)]));
+const completePredictEnvelope = JSON.parse(dagMl.attach_predict_cohort_to_envelope_json(
+  JSON.stringify({ ...trainingEnvelope, data_content_fingerprint: fingerprint(heldoutRows), target_content_fingerprint: null }),
+  JSON.stringify({ role: "inference", target_names: ["y"],
+    data_content_fingerprint: fingerprint(heldoutRows), target_content_fingerprint: null,
+    relations: { records: sourceNames.map(source => ({ observation_id: "obs.heldout." + source,
+      sample_id: heldoutId, target_id: null, group_id: "plant-heldout", source_id: source,
+      origin_sample_id: null, is_augmented: false })) },
+  })));
+const completePredictEnvelopes = Object.fromEntries(sourceNames.map(source =>
+  ["model:" + source + ".x", completePredictEnvelope]));
+const completeReplayRequestJson = dagMl.sign_training_replay_request_json(JSON.stringify({
+  schema_version: 1, request_id: "replay:methods.four-sources",
+  source_outcome_fingerprint: completePackage.training_outcome.outcome_fingerprint,
+  phase: "PREDICT", data_envelope_keys: Object.keys(completePredictEnvelopes).sort(),
+  output_binding_ids: ["output:meta"], request_fingerprint: "0".repeat(64),
+}));
+const makeReplayController = () => new N4mWasmRegressionController({ methods, operators, ...resolvers, digest: sha256,
+  resolveFeatures: ({ view }) => {
+    assert.deepEqual(view.sample_ids, [heldoutId]);
+    const [source] = view.source_ids;
+    return { sampleIds: [heldoutId], matrix: { data: Float64Array.from(heldoutRows[source]),
+      rows: 1, cols: heldoutRows[source].length } };
+  },
+  resolveTargets: () => { throw new Error("Inference must not request targets"); },
+});
+const completeReplayController = makeReplayController();
+const completeOperations = [];
+const invokeReplay = callback => dagMl.replay_training_package_json(completePackageJson,
+  completeReplayRequestJson, JSON.stringify(completePredictEnvelopes), JSON.stringify([manifest]),
+  "outcome:methods.four-sources.replay", "run:methods.four-sources.replay", callback);
+let completeReplay;
+methods.RolePipeline.prototype.fit = () => { throw new Error("Complete archive replay must not fit"); };
+try {
+  completeReplay = JSON.parse(invokeReplay((id, json, seed) => {
+    const task = JSON.parse(json);
+    completeOperations.push({ operation: task.operation ?? task.phase, node: task.node_plan?.node_id ?? task.request?.node_id });
+    return completeReplayController.callback(id, json, seed);
+  }));
+  assert.equal(completeReplayController.models.size, 0, "Every hydrated state must be released");
+  let callbacks = 0;
+  const tampered = JSON.parse(completePackageJson);
+  tampered.execution_bundle.raw_artifact_payloads[Object.keys(tampered.execution_bundle.raw_artifact_payloads)[0]][0] ^= 1;
+  assert.throws(() => dagMl.replay_training_package_json(JSON.stringify(tampered),
+    completeReplayRequestJson, JSON.stringify(completePredictEnvelopes), JSON.stringify([manifest]),
+    "outcome:tampered", "run:tampered", () => { callbacks++; }));
+  assert.equal(callbacks, 0);
+  const badManifest = { ...manifest, controller_version: "999.0.0" };
+  assert.throws(() => dagMl.replay_training_package_json(completePackageJson,
+    completeReplayRequestJson, JSON.stringify(completePredictEnvelopes), JSON.stringify([badManifest]),
+    "outcome:untrusted", "run:untrusted", () => { callbacks++; }));
+  assert.equal(callbacks, 0);
+  const failedController = makeReplayController();
+  try {
+    assert.throws(() => invokeReplay((id, json, seed) => {
+      if (JSON.parse(json).phase === "PREDICT") throw new Error("Injected prediction failure");
+      return failedController.callback(id, json, seed);
+    }));
+    assert.equal(failedController.models.size, 0, "Failed replay must release every hydrated state");
+  } finally { failedController.close(); }
+} finally {
+  methods.RolePipeline.prototype.fit = originalFit;
+  completeReplayController.close();
+}
+assert.equal(completeOperations.filter(task => task.operation === "hydrate_artifact_payload").length, 5);
+assert.equal(completeOperations.filter(task => task.operation === "release_hydrated_artifact_payload").length, 5);
+assert.deepEqual(completeOperations.filter(task => task.operation === "PREDICT").map(task => task.node).sort(),
+  Object.keys(operators).sort());
+const completePrediction = completeReplay.outputs[0].predictions[0];
+assert.deepEqual(completePrediction.sample_ids, [heldoutId]);
+assert.ok(completePrediction.values.flat().every(Number.isFinite));
+const completeArchive = { requestJson: completeRequestJson,
+  packageJson: completePackageJson, outcomeJson: completeCapture.training_outcome_json,
+  trainingEnvelopes, predictEnvelopes: completePredictEnvelopes,
+  replayRequestJson: completeReplayRequestJson, heldoutRows, replay: completeReplay,
+  operations: completeOperations, tamperedRefusedBeforeCallback: true, trustedManifestsChecked: true,
+  failedReplayReleasedStates: true,
+  trainingTamperRefusedBeforeCallback: true, parallelSchedulerRefusedBeforeCallback: true,
+};
 if (process.argv[4]) fs.writeFileSync(process.argv[4], JSON.stringify({
-  dsl, envelope, manifest, request, sourceRows, sampleIds, target, resumed, fitLog, nativeRefit,
+  dsl, envelope, manifest, request, sourceRows, sampleIds, target, resumed, fitLog, nativeRefit, completeArchive,
   dagml_version: dagMl.dag_ml_version(), methods_version: methods.version(), methods_abi: methods.abiVersion(),
 }, null, 2) + "\n");
 controller.close();
 console.log("METHODS_MULTIMODAL_HPO_OK", JSON.stringify({
   dagml: dagMl.dag_ml_version(), methods: methods.version(), sources: sourceNames,
-  trials: resumed.trials.length, sourceFitViews: fitLog.length, selected: resumed.selected_trial_index,
-  selectedSourceNativeArchiveReplay: true,
+  trials: resumed.trials.length, searchSourceFitViews: searchFitViewCount,
+  completeTrainingSourceFitViews: fitLog.length - searchFitViewCount, selected: resumed.selected_trial_index,
+  selectedSourceNativeArchiveReplay: true, completeFiveModelPortablePackageReplay: true,
 }));

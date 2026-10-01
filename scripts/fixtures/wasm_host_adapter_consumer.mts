@@ -10,6 +10,12 @@ import {
 import * as methods from "@nirs4all/methods";
 import * as dagMl from "dag-ml-wasm";
 
+// Generated declarations must expose the native training and replay entry points.
+const nativeTraining: typeof dagMl.execute_training_json = dagMl.execute_training_json;
+const nativeReplay: typeof dagMl.replay_training_package_json = dagMl.replay_training_package_json;
+void nativeTraining;
+void nativeReplay;
+
 const controllerOptions: MethodsRegressionControllerOptions = {
   methods,
   operators: { "model:ridge": { type: "n4m:models.regularized.ridge" } },

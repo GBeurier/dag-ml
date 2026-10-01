@@ -13,7 +13,6 @@ import dag_ml
 
 from parity.conformal.oracle import fingerprint_without
 
-
 REPO = Path(__file__).resolve().parents[3]
 
 
@@ -112,7 +111,9 @@ class ArchiveV3PythonSurfaceTests(unittest.TestCase):
         manifest = {
             "schema_version": 2,
             "engine": "dag-ml",
-            "score_set_hash": hashlib.sha256(canonical_score_set.encode("utf-8")).hexdigest(),
+            "score_set_hash": hashlib.sha256(
+                canonical_score_set.encode("utf-8")
+            ).hexdigest(),
             "files": {
                 "score_set": "score_set.json",
                 "predictions": "predictions.parquet",
@@ -154,7 +155,9 @@ class ArchiveV3PythonSurfaceTests(unittest.TestCase):
             self.assertEqual(view["score_set"], score_set)
             self.assertEqual(view["predictions"], [prediction])
             with self.assertRaises(dag_ml.DagMlValidationError):
-                dag_ml.write_native_results_v2(directory, manifest, score_set, [prediction])
+                dag_ml.write_native_results_v2(
+                    directory, manifest, score_set, [prediction]
+                )
 
 
 class _SuccessfulTrainingCallback:
@@ -183,7 +186,9 @@ class _SuccessfulTrainingCallback:
             task["fold_id"],
             ["sample:1", "sample:2", "sample:3", "sample:4"],
         )
-        partition = "final" if phase in {"REFIT", "PREDICT", "EXPLAIN"} else "validation"
+        partition = (
+            "final" if phase in {"REFIT", "PREDICT", "EXPLAIN"} else "validation"
+        )
         predictions = []
         if is_model and phase in {"FIT_CV", "REFIT", "PREDICT", "EXPLAIN"}:
             predictions.append(
@@ -192,11 +197,7 @@ class _SuccessfulTrainingCallback:
                         f"prediction:{node_id}:{phase}:{task['fold_id'] or 'full'}"
                     ),
                     "producer_node": node_id,
-                    **(
-                        {"producer_port": "oof"}
-                        if self._explicit_model_ports
-                        else {}
-                    ),
+                    **({"producer_port": "oof"} if self._explicit_model_ports else {}),
                     "partition": partition,
                     "fold_id": task["fold_id"] if phase == "FIT_CV" else None,
                     "sample_ids": sample_ids,
@@ -312,6 +313,72 @@ class _SuccessfulTrainingCallback:
 
 
 class TrainingResultTests(unittest.TestCase):
+    def test_public_training_exports_generic_raw_artifacts_and_refuses_bad_payloads(
+        self,
+    ) -> None:
+        fixture = json.loads(
+            (
+                REPO / "examples/fixtures/training/python_training_smoke.v1.json"
+            ).read_text()
+        )
+        payload = b"generic-raw-state"
+        for supplied in (payload, b"tampered", None):
+            callback = _SuccessfulTrainingCallback()
+
+            def operator(
+                task: dict[str, Any],
+                callback: _SuccessfulTrainingCallback = callback,
+            ) -> dict[str, Any]:
+                result = callback(task)
+                for artifact in result["artifacts"]:
+                    artifact.update(
+                        backend="raw",
+                        uri="artifacts/generic-test.bin",
+                        content_fingerprint=hashlib.sha256(payload).hexdigest(),
+                        size_bytes=len(payload),
+                    )
+                result["lineage"]["artifact_refs"] = result["artifacts"]
+                return result
+
+            exports: list[str] = []
+
+            def export(
+                message: dict[str, Any],
+                supplied: bytes | None = supplied,
+                exports: list[str] = exports,
+            ) -> list[int]:
+                self.assertEqual(message["operation"], "export")
+                exports.append(message["artifact_id"])
+                assert supplied is not None
+                return list(supplied)
+
+            def run(
+                artifact_callback: Any = export if supplied is not None else None,
+            ) -> dag_ml.TrainingResult:
+                return dag_ml.execute_training(
+                    fixture["request"],
+                    fixture["data_envelopes"],
+                    fixture["relations"],
+                    fixture["training_influence"],
+                    operator,
+                    outcome_id="outcome:python.raw",
+                    run_id="run:python.raw",
+                    bundle_id="bundle:python.raw",
+                    artifact_callback=artifact_callback,
+                )
+
+            if supplied == payload:
+                result = run()
+                try:
+                    raw = result.execution_bundle.to_dict()["raw_artifact_payloads"]
+                    self.assertEqual(len(exports), 1)
+                    self.assertEqual(raw[exports[0]], list(payload))
+                finally:
+                    result.detach()
+            else:
+                with self.assertRaises(dag_ml.DagMlError):
+                    run()
+
     def _predict_replay_request(
         self,
         outcome: dict[str, Any],
@@ -439,10 +506,15 @@ class TrainingResultTests(unittest.TestCase):
         output_id = package["output_bindings"][0]["binding_id"]
         selected_output = dag_ml.select_portable_output(package, output_id)
         self.assertEqual(selected_output["package_id"], package["package_id"])
-        self.assertEqual(selected_output["package_fingerprint"], package["package_fingerprint"])
-        self.assertEqual(selected_output["output_binding"], package["output_bindings"][0])
         self.assertEqual(
-            dag_ml.PortablePredictorPackage(package).select_output(output_id), selected_output,
+            selected_output["package_fingerprint"], package["package_fingerprint"]
+        )
+        self.assertEqual(
+            selected_output["output_binding"], package["output_bindings"][0]
+        )
+        self.assertEqual(
+            dag_ml.PortablePredictorPackage(package).select_output(output_id),
+            selected_output,
         )
         with self.assertRaises(dag_ml.DagMlError):
             dag_ml.select_portable_output(package, "output:missing")
@@ -481,7 +553,9 @@ class TrainingResultTests(unittest.TestCase):
             signed.to_dict()["request_fingerprint"],
             fixture["request"]["request_fingerprint"],
         )
-        self.assertEqual(signed.project().to_dict()["request_id"], unsigned["request_id"])
+        self.assertEqual(
+            signed.project().to_dict()["request_id"], unsigned["request_id"]
+        )
 
     def test_public_facade_serializes_conformal_policy_enums_as_json(self) -> None:
         outcome = json.loads(
@@ -710,7 +784,9 @@ class TrainingResultTests(unittest.TestCase):
             run_id="run:python.public.package.explain.source",
             bundle_id="bundle:python.public.package.explain.source",
         )
-        self.assertEqual(result.outcome.to_dict()["replayable_phases"], ["PREDICT", "EXPLAIN"])
+        self.assertEqual(
+            result.outcome.to_dict()["replayable_phases"], ["PREDICT", "EXPLAIN"]
+        )
         package = result.export_portable_predictor_package(
             "predictor:python.public.package.explain"
         ).to_dict()
