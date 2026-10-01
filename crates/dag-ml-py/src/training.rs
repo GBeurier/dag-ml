@@ -2775,7 +2775,8 @@ pub fn execute_loaded_methods_portable_refit_replay_v3_json(
     run_id,
     artifact_callback = None,
     warnings_json = "[]",
-    diagnostics_json = "{}"
+    diagnostics_json = "{}",
+    trusted_controller_manifests_json = None
 ))]
 #[allow(clippy::too_many_arguments)]
 pub fn execute_loaded_predictor_replay_json(
@@ -2790,6 +2791,7 @@ pub fn execute_loaded_predictor_replay_json(
     artifact_callback: Option<Py<PyAny>>,
     warnings_json: &str,
     diagnostics_json: &str,
+    trusted_controller_manifests_json: Option<&str>,
 ) -> PyResult<String> {
     if !op_callback.bind(py).is_callable() {
         return Err(py_core_error(dag_ml_core::DagMlError::RuntimeValidation(
@@ -2805,6 +2807,16 @@ pub fn execute_loaded_predictor_replay_json(
     }
 
     let package = PortablePredictorPackage::from_json(package_json).map_err(py_core_error)?;
+    if let Some(json) = trusted_controller_manifests_json {
+        let manifests = parse_strict_json::<Vec<dag_ml_core::ControllerManifest>>(
+            json, "trusted replay controller manifests")?;
+        let mut registry = dag_ml_core::ControllerRegistry::new();
+        for manifest in manifests {
+            registry.register(manifest).map_err(py_core_error)?;
+        }
+        dag_ml_core::validate_runtime_controller_manifests(&package.effective_plan, &registry)
+            .map_err(py_core_error)?;
+    }
     let request = TrainingReplayRequest::from_json(request_json).map_err(py_core_error)?;
     let envelopes = parse_strict_json::<BTreeMap<String, ExternalDataPlanEnvelope>>(
         data_envelopes_json,

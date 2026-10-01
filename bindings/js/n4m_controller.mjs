@@ -81,6 +81,14 @@ function recipe(node, operator) {
   return steps;
 }
 
+function sameRecipe(actual, expected) {
+  const ordered = value => Array.isArray(value) ? value.map(ordered) :
+    value && typeof value === "object" ? Object.fromEntries(
+      Object.keys(value).sort().map(key => [key, ordered(value[key])])) : value;
+  requireCondition(JSON.stringify(ordered(actual)) === JSON.stringify(ordered(expected)),
+    "Portable Methods recipe disagrees with the effective planned operator and parameters");
+}
+
 /** Construct after await methods.loadModule(). One controller owns its artifacts. */
 export class N4mWasmRegressionController {
   constructor({ methods, operators, resolveFeatures, resolveTargets, targetNames = ["y"],
@@ -207,6 +215,7 @@ export class N4mWasmRegressionController {
       saved.node_id === request.node_id && saved.params_fingerprint === request.params_fingerprint,
     "Portable Methods payload belongs to another node or parameter binding");
     sameIds(saved.target_names, this.targetNames, "Portable target names");
+    ids(saved.feature_names, "Portable feature names");
     requireCondition(Array.isArray(saved.states) && saved.states.length > 0 &&
       saved.states.every(state => Array.isArray(state) && state.length > 0 &&
         state.every(byte => Number.isInteger(byte) && byte >= 0 && byte <= 255)),
@@ -214,7 +223,8 @@ export class N4mWasmRegressionController {
     const model = this.methods.RolePipeline.fromStates(saved.steps,
       saved.states.map(state => Uint8Array.from(state)), { featureNames: saved.feature_names });
     return this._handle({ model, nodeId: saved.node_id, paramsFingerprint: saved.params_fingerprint,
-      artifactId: request.artifact.id, contentFingerprint: request.artifact.content_fingerprint });
+      artifactId: request.artifact.id, contentFingerprint: request.artifact.content_fingerprint,
+      steps: structuredClone(saved.steps), featureNames: [...saved.feature_names] });
   }
 
   invoke(controllerId, taskJson) {
@@ -291,7 +301,8 @@ export class N4mWasmRegressionController {
           // Prediction/export must succeed before publishing a retained model.
           const result = JSON.parse(this._result(task, valid, model, artifacts, {}));
           const handle = this._handle({ model, nodeId: node.node_id, paramsFingerprint: node.params_fingerprint,
-            artifactId, contentFingerprint: artifacts[0].content_fingerprint });
+            artifactId, contentFingerprint: artifacts[0].content_fingerprint,
+            steps: structuredClone(steps), featureNames: [...train.featureNames] });
           artifactHandles[artifactId] = handle;
           result.artifact_handles = artifactHandles;
           this.artifacts.set(artifactId, { payload, handle });
@@ -315,7 +326,11 @@ export class N4mWasmRegressionController {
       "PREDICT model binding mismatch");
       model = entry.model;
       kept = true;
+      sameRecipe(entry.steps, recipe(node, this.operators[node.node_id]));
       const features = meta ? this._predictions(task, true) : this._features(task, "predict");
+      requireCondition(entry.featureNames.length === features.featureNames.length &&
+        entry.featureNames.every((name, index) => name === features.featureNames[index]),
+      "Portable Methods feature order disagrees with the current resolved inputs");
       return this._result(task, features, model, [], {});
     } finally {
       if (model && !kept) model.dispose();

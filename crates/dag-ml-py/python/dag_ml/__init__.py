@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import secrets
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from os import PathLike
 from pathlib import Path
 from typing import Any
@@ -73,6 +73,9 @@ from ._dag_ml import (
 )
 from ._dag_ml import (
     build_archive_v2_native_portable_payloads_json as _native_build_archive_v2_native_portable_payloads_json,
+)
+from ._dag_ml import (
+    validate_archive_v2_portable_payloads_json as _native_validate_archive_v2_portable_payloads_json,
 )
 from ._dag_ml import (
     build_archive_v3_native_refit_payloads_json as _native_build_archive_v3_native_refit_payloads_json,
@@ -184,6 +187,7 @@ _FACADE_EXPORTS = [
     "attach_predict_cohort_to_envelope",
     "configure_methods_runtime",
     "build_archive_v2_native_portable_payloads",
+    "validate_archive_v2_portable_payloads",
     "build_archive_v3_native_refit_payloads",
     "compile_pipeline_dsl_artifact",
     "compile_pipeline_dsl_artifact_with_controllers",
@@ -1278,6 +1282,27 @@ def build_archive_v2_native_portable_payloads(
     return manifest, byte_members
 
 
+def validate_archive_v2_portable_payloads(
+    manifest: Mapping[str, Any],
+    package: Any,
+    members: Mapping[str, bytes],
+) -> None:
+    """Validate the complete DAG-ML archive transport before controller replay.
+
+    Core must first validate archive bounds and inventory. This native semantic
+    gate checks the original predictor/outcome, companion links and exact RAW
+    closure; it does not load models or invoke a controller.
+    """
+    wire_members: dict[str, list[int]] = {}
+    for path, payload in members.items():
+        if not isinstance(path, str) or not isinstance(payload, (bytes, bytearray, memoryview)):
+            raise _facade_contract_error("Archive V2 members must map paths to opaque byte buffers")
+        wire_members[path] = list(bytes(payload))
+    _native_validate_archive_v2_portable_payloads_json(
+        _coerce_json(manifest), _coerce_json(package), _coerce_json(wire_members)
+    )
+
+
 def build_conformal_presentation_v1(
     package: Any,
     request: Any,
@@ -1788,8 +1813,9 @@ def replay_loaded_predictor_package_json(
     artifact_callback: Any | None = None,
     warnings: Any = (),
     diagnostics: Any = None,
+    trusted_controller_manifests: Any = None,
 ) -> str:
-    """Run stateless PREDICT/EXPLAIN replay from a portable package plus host sidecars.
+    """Run stateless PREDICT/EXPLAIN replay with explicit current runtime inputs.
 
     ``package`` is a signed ``PortablePredictorPackage`` contract and must not
     contain process-local handles. ``artifact_handles`` is the host-side sidecar
@@ -1799,6 +1825,9 @@ def replay_loaded_predictor_package_json(
     for invocation-local handles. ``request.phase`` selects ``PREDICT`` or
     ``EXPLAIN``; an ``EXPLAIN`` request returns explanation blocks and may also
     return the final bound predictions emitted by the requested package binding.
+    When supplied, ``trusted_controller_manifests`` must exactly match every
+    signed package controller before callbacks. Archive facades require this
+    explicit trust set; omission preserves the existing direct replay API.
     """
 
     portable_package = PortablePredictorPackage(package)
@@ -1814,6 +1843,7 @@ def replay_loaded_predictor_package_json(
         artifact_callback,
         _coerce_json(warnings),
         _coerce_json({} if diagnostics is None else diagnostics),
+        None if trusted_controller_manifests is None else _coerce_json(trusted_controller_manifests),
     )
 
 
@@ -1829,6 +1859,7 @@ def replay_loaded_predictor_package(
     artifact_callback: Any | None = None,
     warnings: Any = (),
     diagnostics: Any = None,
+    trusted_controller_manifests: Any = None,
 ) -> TrainingReplayOutcome:
     """Run stateless PREDICT/EXPLAIN replay and return a validated replay outcome."""
 
@@ -1844,6 +1875,7 @@ def replay_loaded_predictor_package(
             artifact_callback=artifact_callback,
             warnings=warnings,
             diagnostics=diagnostics,
+            trusted_controller_manifests=trusted_controller_manifests,
         )
     )
 
@@ -1890,6 +1922,7 @@ __all__ = [
     "__version__",
     "attach_predict_cohort_to_envelope",
     "build_archive_v2_native_portable_payloads",
+    "validate_archive_v2_portable_payloads",
     "build_archive_v3_native_refit_payloads",
     "build_conformal_presentation_v1",
     "build_execution_plan",

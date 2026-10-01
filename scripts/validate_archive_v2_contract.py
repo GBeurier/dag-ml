@@ -30,7 +30,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from parity.conformal.oracle import fingerprint_without  # noqa: E402
+from parity.conformal.oracle import (  # noqa: E402
+    ContractError,
+    fingerprint_without,
+    validate_strict_json,
+)
 from scripts.validate_archive_v1_contract import (  # noqa: E402
     ARCHIVE_ROOT as ARCHIVE_V1_ROOT,
     ArchiveContractError as ArchiveV1ContractError,
@@ -428,25 +432,28 @@ def validate_semantics(document: Any) -> None:
                 "native_model_refusal",
                 "Methods reference has an invalid ABI minimum minor",
             )
+    role_pipelines = methods.get("role_pipelines", [])
     method_paths = [
         reference["member_path"]
-        for reference in methods["n4mm"] + methods["n4mopt"]
+        for reference in methods["n4mm"] + methods["n4mopt"] + role_pipelines
     ]
     require(
         len(method_paths) == len(set(method_paths)),
         "methods_alias_refusal",
-        "N4MM and N4MOPT members cannot alias",
+        "Methods payload members cannot alias",
     )
-    n4mm_artifact_ids = [reference["artifact_id"] for reference in methods["n4mm"]]
+    n4mm_artifact_ids = [
+        reference["artifact_id"] for reference in methods["n4mm"] + role_pipelines
+    ]
     require(
         len(n4mm_artifact_ids) == len(set(n4mm_artifact_ids)),
         "native_model_refusal",
-        "N4MM artifact ids must be unique",
+        "N4MM and RolePipeline artifact ids must be unique",
     )
     require(
-        bool(methods["n4mm"]),
+        bool(methods["n4mm"] or role_pipelines),
         "native_model_refusal",
-        "Archive V2 native replay requires at least one N4MM member",
+        "Archive V2 native replay requires at least one N4MM or RolePipeline member",
     )
 
     references = _refs({"replay": replay, "payloads": document["payloads"]})
@@ -647,6 +654,122 @@ def validate_package_schema_boundary(root: Path = ROOT) -> None:
     validate_package_portability(package_v2)
 
 
+ROLE_PIPELINE_PROFILE = "dagml_methods_role_pipeline_raw_sha256"
+
+
+def validate_role_pipeline_payload(record: dict[str, Any], payload: bytes) -> None:
+    """Independently validate the bounded declarative codec, never hydrate it."""
+    artifact = record["artifact"]
+    digest = hashlib.sha256(payload).hexdigest()
+    require(
+        0 < len(payload) <= 134_217_728
+        and artifact.get("kind") == "methods_role_pipeline"
+        and artifact.get("backend") == "raw"
+        and artifact.get("plugin") == "dagml.methods.wasm.regression"
+        and artifact.get("plugin_version") == "1.0.0"
+        and artifact.get("native_predictor_descriptor") is None
+        and artifact.get("native_estimator_descriptor") is None
+        and artifact.get("uri") == f"artifacts/{digest}.json",
+        "native_model_refusal",
+        "RolePipeline must use its trusted RAW codec and content-addressed URI",
+    )
+    wrapper = load_json_bytes(payload, artifact["uri"])
+    def validate_depth(value: Any, depth: int = 0) -> None:
+        require(depth <= 128, "native_model_refusal", "RolePipeline JSON exceeds its depth bound")
+        if isinstance(value, (dict, list)):
+            for child in value.values() if isinstance(value, dict) else value:
+                validate_depth(child, depth + 1)
+
+    validate_depth(wrapper)
+    try:
+        validate_strict_json(wrapper, "RolePipeline wrapper")
+    except ContractError as error:
+        raise ArchiveV2ContractError(f"native_model_refusal: {error}") from error
+    require(
+        isinstance(wrapper, dict)
+        and set(wrapper) == {
+            "schema", "node_id", "params_fingerprint", "target_names",
+            "steps", "feature_names", "states",
+        }
+        and wrapper["schema"] == "dagml.methods.regression.v1"
+        and wrapper["node_id"] == record["node_id"]
+        and wrapper["params_fingerprint"] == record["params_fingerprint"],
+        "native_model_refusal",
+        "RolePipeline wrapper must bind its exact node and parameters",
+    )
+    for field in ("target_names", "feature_names"):
+        names = wrapper[field]
+        require(
+            isinstance(names, list) and 0 < len(names) <= 65_536
+            and all(isinstance(name, str) and 0 < len(name.encode("utf-8")) <= 4096
+                    for name in names)
+            and len(set(names)) == len(names),
+            "native_model_refusal",
+            f"RolePipeline {field} must be ordered, nonempty and unique",
+        )
+    steps, states = wrapper["steps"], wrapper["states"]
+    require(
+        isinstance(steps, list) and 0 < len(steps) <= 256
+        and isinstance(states, list) and len(states) == len(steps),
+        "native_model_refusal",
+        "RolePipeline requires one native state per declared step",
+    )
+    for step, state in zip(steps, states, strict=True):
+        require(
+            isinstance(step, dict) and set(step) <= {"class", "methodId", "params"}
+            and isinstance(step.get("params", {}), dict)
+            and len(step.get("params", {})) <= 256,
+            "native_model_refusal", "RolePipeline step is outside the closed native recipe",
+        )
+        class_name, method_id = step.get("class"), step.get("methodId")
+        require(
+            (isinstance(class_name, str) and class_name.startswith("n4m:")
+             and 0 < len(class_name[4:].encode("utf-8")) <= 256 and method_id is None)
+            or (class_name is None and isinstance(method_id, str)
+                and 0 < len(method_id.encode("utf-8")) <= 256),
+            "native_model_refusal", "RolePipeline step must declare exactly one Methods ID",
+        )
+        require(
+            isinstance(state, list) and len(state) >= 4
+            and all(isinstance(byte, int) and not isinstance(byte, bool)
+                    and 0 <= byte <= 255 for byte in state)
+            and bytes(state[:4]) == b"N4ME",
+            "native_model_refusal", "RolePipeline state must be an opaque native N4ME byte array",
+        )
+
+
+def validate_role_pipeline_recipe(record: dict[str, Any], payload: bytes, plan: dict[str, Any]) -> None:
+    """Recompute the declarative native recipe from the effective signed plan."""
+    node = plan.get("node_plans", {}).get(record["node_id"])
+    graph_node = next((node for node in plan.get("graph_plan", {}).get("graph", {}).get("nodes", [])
+                       if node.get("id") == record["node_id"]), None)
+    require(isinstance(node, dict) and isinstance(graph_node, dict),
+            "native_model_refusal", "RolePipeline requires its effective node and graph operator")
+    operator = graph_node.get("operator")
+    require(isinstance(operator, dict), "native_model_refusal", "RolePipeline requires an explicit operator")
+    kind = operator.get("type")
+    if kind == "N4mRolePipeline":
+        expected = copy.deepcopy(operator.get("steps"))
+    else:
+        require(isinstance(kind, str) and kind.startswith("n4m:") and len(kind) > 4,
+                "native_model_refusal", "RolePipeline graph operator must be native Methods")
+        expected = [{"class": kind, "params": {}}]
+    require(isinstance(expected, list) and expected and isinstance(expected[-1], dict),
+            "native_model_refusal", "RolePipeline planned recipe must be nonempty")
+    last_params = expected[-1].get("params", {})
+    require(isinstance(last_params, dict), "native_model_refusal", "RolePipeline planned params must be an object")
+    expected[-1]["params"] = {**last_params, **node.get("params", {})}
+
+    def normalized(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [{"class": step.get("class"), "methodId": step.get("methodId"),
+                 "params": step.get("params", {})} for step in steps]
+
+    saved = load_json_bytes(payload, record["artifact"]["uri"])
+    require(normalized(saved["steps"]) == normalized(expected)
+            and record["params_fingerprint"] == node["params_fingerprint"],
+            "native_model_refusal", "RolePipeline saved recipe differs from its effective operator and parameters")
+
+
 def validate_package_portability(package: Any) -> None:
     require(
         isinstance(package, dict),
@@ -716,11 +839,14 @@ def validate_package_portability(package: Any) -> None:
             "Archive V2 refit artifact ids must be unique",
         )
         require(
-            artifact.get("kind") == "n4m_model"
+            artifact.get("kind") in {"n4m_model", "methods_role_pipeline"}
             and artifact.get("backend") == "raw",
             "native_model_refusal",
-            f"artifact `{artifact_id}` must be a raw n4m_model",
+            f"artifact `{artifact_id}` must use an accepted raw Methods codec",
         )
+        if artifact.get("kind") == "methods_role_pipeline":
+            records_by_id[artifact_id] = record
+            continue
         uri = artifact.get("uri")
         require(
             isinstance(uri, str)
@@ -763,6 +889,9 @@ def validate_package_portability(package: Any) -> None:
             "native_model_refusal",
             f"raw artifact payload `{artifact_id}` does not match its bundle reference",
         )
+        if artifact["kind"] == "methods_role_pipeline":
+            validate_role_pipeline_payload(records_by_id[artifact_id], payload)
+            validate_role_pipeline_recipe(records_by_id[artifact_id], payload, package["effective_plan"])
     require(
         package.get("package_fingerprint")
         == fingerprint_without(package, "package_fingerprint"),
@@ -784,7 +913,8 @@ def materialize_fixture(
     payloads[PACKAGE_MEMBER] = canonical_portable_package_v2_bytes(root)
     package = canonical_portable_package_v2(root)
     raw_artifact_payloads = package["execution_bundle"]["raw_artifact_payloads"]
-    for n4mm in document["payloads"]["methods"]["n4mm"]:
+    methods = document["payloads"]["methods"]
+    for n4mm in methods["n4mm"] + methods.get("role_pipelines", []):
         payloads[n4mm["member_path"]] = bytes(
             raw_artifact_payloads[n4mm["artifact_id"]]
         )
@@ -806,10 +936,10 @@ def materialize_fixture(
         reference["raw_sha256"] = hashes[reference["member_path"]]
         if reference["member_path"] == PACKAGE_MEMBER:
             reference["semantic_fingerprint"] = package_semantic_fingerprint
-        elif reference.get("semantic_profile") == "n4mm_raw_sha256":
+        elif reference.get("semantic_profile") in {"n4mm_raw_sha256", ROLE_PIPELINE_PROFILE}:
             reference["semantic_fingerprint"] = hashes[reference["member_path"]]
     for member in document["member_inventory"]:
-        if member.get("semantic_profile") == "n4mm_raw_sha256":
+        if member.get("semantic_profile") in {"n4mm_raw_sha256", ROLE_PIPELINE_PROFILE}:
             member["semantic_fingerprint"] = hashes[member["path"]]
     return document, payloads
 
@@ -899,42 +1029,56 @@ def validate_archive_v2_payloads(
         record["artifact"]["id"]: record["artifact"]
         for record in package["execution_bundle"]["refit_artifacts"]
     }
+    methods = document["payloads"]["methods"]
     n4mm_by_id = {
         reference["artifact_id"]: reference
-        for reference in document["payloads"]["methods"]["n4mm"]
+        for reference in methods["n4mm"] + methods.get("role_pipelines", [])
     }
     require(
         set(n4mm_by_id) == set(raw_artifact_payloads),
         "native_model_refusal",
-        "Archive V2 N4MM members must exactly cover package raw artifacts",
+        "Archive V2 N4MM and RolePipeline members must exactly cover package raw artifacts",
     )
     for artifact_id, raw_payload in raw_artifact_payloads.items():
         reference = n4mm_by_id[artifact_id]
-        artifact_abi = n4mm_abi_requirement(refit_by_id[artifact_id])
-        reference_abi = n4mm_reference_abi_requirement(
-            reference, refit_by_id[artifact_id]
-        )
-        require(
-            reference_abi == artifact_abi,
-            "native_model_refusal",
-            f"N4MM member `{artifact_id}` ABI minimum differs from package artifact",
-        )
+        artifact = refit_by_id[artifact_id]
+        is_role = artifact["kind"] == "methods_role_pipeline"
+        if is_role:
+            require(
+                reference in methods.get("role_pipelines", [])
+                and reference.get("kind") == "methods_role_pipeline"
+                and reference.get("owner") == "dag-ml"
+                and reference.get("format_version") == 1,
+                "native_model_refusal", "RolePipeline artifact must use its own manifest family",
+            )
+        else:
+            require(
+                reference in methods["n4mm"], "native_model_refusal",
+                "N4MM artifact must use its own manifest family",
+            )
+            artifact_abi = n4mm_abi_requirement(artifact)
+            reference_abi = n4mm_reference_abi_requirement(reference, artifact)
+            require(
+                reference_abi == artifact_abi,
+                "native_model_refusal",
+                f"N4MM member `{artifact_id}` ABI minimum differs from package artifact",
+            )
         require(
             reference["member_path"] == refit_by_id[artifact_id]["uri"],
             "native_model_refusal",
-            f"N4MM member path for `{artifact_id}` does not match package URI",
+            f"Methods member path for `{artifact_id}` does not match package URI",
         )
         require(
             payloads[reference["member_path"]] == bytes(raw_payload),
             "native_model_refusal",
-            f"N4MM member `{artifact_id}` differs from package raw bytes",
+            f"Methods member `{artifact_id}` differs from package raw bytes",
         )
         raw_sha256 = hashlib.sha256(payloads[reference["member_path"]]).hexdigest()
         require(
-            reference["semantic_profile"] == "n4mm_raw_sha256"
+            reference["semantic_profile"] == (ROLE_PIPELINE_PROFILE if is_role else "n4mm_raw_sha256")
             and reference["semantic_fingerprint"] == raw_sha256,
             "native_model_refusal",
-            f"N4MM member `{artifact_id}` must use its exact raw SHA-256 semantic profile",
+            f"Methods member `{artifact_id}` must use its exact raw SHA-256 semantic profile",
         )
 
 

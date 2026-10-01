@@ -31,6 +31,7 @@ Phase 0 of the nirs4all integration roadmap closes the load-bearing decisions be
 | 25 | [Native archive retrain ownership](ADR-25-native-archive-retrain-ownership.md) | accepted | API-004, Archive/Package V3 and retrain product flow |
 | 26 | [PREDICT cohort relation boundary](ADR-26-predict-cohort-relation-boundary.md) | proposed | holdout/vote aggregation and PREDICT relation evolution |
 | 27 | [Nested stacking OOF ownership](ADR-27-nested-stacking-oof-ownership.md) | proposed | API-001 stacking, R2 native-default flip |
+| 28 | [Methods RolePipeline archive transport](ADR-28-methods-role-pipeline-archive-v2.md) | accepted | HPO-01 complete native predictor-package persistence |
 
 ADR-19 onward extends the registry for feature roadmaps that build on this
 Phase-0 baseline; ADR-19 freezes the unit vocabulary and migration posture for
@@ -72,4 +73,5 @@ ADR-24-v1-four-release-rollback-mapping
 ADR-25-native-archive-retrain-ownership
 ADR-26-predict-cohort-relation-boundary
 ADR-27-nested-stacking-oof-ownership
+ADR-28-methods-role-pipeline-archive-v2
 ```

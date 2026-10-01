@@ -5,17 +5,20 @@
 //! and manifest references required by ADR-23; `nirs4all-core` remains the
 //! sole owner of bounded archive storage and inventory validation.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
+use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::bundle::{
-    BundlePredictionCachePayloadSet, ExecutionBundle, PREDICTION_CACHE_PAYLOAD_SCHEMA_VERSION,
+    BundlePredictionCachePayloadSet, ExecutionBundle, RefitArtifactRecord,
+    PREDICTION_CACHE_PAYLOAD_SCHEMA_VERSION,
 };
 use crate::canonical::parse_typed_json;
 use crate::error::{DagMlError, Result};
 use crate::graph::GraphSpec;
+use crate::plan::ExecutionPlan;
 use crate::runtime::ArtifactBackend;
 use crate::training::{ArtifactLoadMode, FittedArtifactMode, PortablePredictorPackage};
 use crate::training_runtime::{PortableRefitPackageV3, TrainingOutcome};
@@ -26,6 +29,166 @@ pub const ARCHIVE_V2_BUNDLE_MEMBER: &str = "dagml/execution_bundle.json";
 pub const ARCHIVE_V2_OUTCOME_MEMBER: &str = "dagml/training_outcome.json";
 pub const ARCHIVE_V2_CACHE_MEMBER: &str = "dagml/prediction_cache_payload_set.json";
 pub const ARCHIVE_V2_SCORE_MEMBER: &str = "dagml/score_set.json";
+/// Exact-byte identity profile for the bounded ADR-28 Methods wrapper.
+pub const METHODS_ROLE_PIPELINE_SEMANTIC_PROFILE: &str = "dagml_methods_role_pipeline_raw_sha256";
+
+#[derive(Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct MethodsRolePipelinePayload {
+    schema: String,
+    node_id: String,
+    params_fingerprint: String,
+    target_names: Vec<String>,
+    steps: Vec<MethodsRolePipelineStep>,
+    feature_names: Vec<String>,
+    states: Vec<Vec<u8>>,
+}
+
+#[derive(Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct MethodsRolePipelineStep {
+    #[serde(default)]
+    class: Option<String>,
+    #[serde(default, rename = "methodId")]
+    method_id: Option<String>,
+    #[serde(default)]
+    params: serde_json::Map<String, Value>,
+}
+
+fn validate_methods_role_pipeline_recipe(
+    record: &RefitArtifactRecord,
+    bytes: &[u8],
+    plan: &ExecutionPlan,
+) -> Result<()> {
+    let node = plan.node_plans.get(&record.node_id).ok_or_else(|| {
+        DagMlError::RuntimeValidation("RolePipeline has no effective node plan".into())
+    })?;
+    let graph_node = plan
+        .graph_plan
+        .graph
+        .nodes
+        .iter()
+        .find(|node| node.id == record.node_id)
+        .ok_or_else(|| {
+            DagMlError::RuntimeValidation("RolePipeline has no effective graph operator".into())
+        })?;
+    let operator = graph_node.operator.as_ref().ok_or_else(|| {
+        DagMlError::RuntimeValidation("RolePipeline has no explicit graph operator".into())
+    })?;
+    let kind = operator
+        .get("type")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            DagMlError::RuntimeValidation("RolePipeline graph operator has no native type".into())
+        })?;
+    let mut expected: Vec<MethodsRolePipelineStep> = if kind == "N4mRolePipeline" {
+        serde_json::from_value(operator.get("steps").cloned().ok_or_else(|| {
+            DagMlError::RuntimeValidation("RolePipeline graph operator has no steps".into())
+        })?)?
+    } else if kind.strip_prefix("n4m:").is_some_and(|id| !id.is_empty()) {
+        vec![MethodsRolePipelineStep {
+            class: Some(kind.into()),
+            method_id: None,
+            params: serde_json::Map::new(),
+        }]
+    } else {
+        return refuse("RolePipeline graph operator is outside the native Methods recipe profile");
+    };
+    let last = expected.last_mut().ok_or_else(|| {
+        DagMlError::RuntimeValidation("RolePipeline planned recipe is empty".into())
+    })?;
+    // This is the controller's declarative rule, not a numerical lowerer:
+    // selected effective node parameters override only the final recipe step.
+    last.params.extend(
+        node.params
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone())),
+    );
+    let saved: MethodsRolePipelinePayload = serde_json::from_slice(bytes)?;
+    if saved.steps != expected || record.params_fingerprint != node.params_fingerprint {
+        return refuse(
+            "RolePipeline saved recipe differs from its effective graph and selected parameters",
+        );
+    }
+    Ok(())
+}
+
+/// Validate the declarative wrapper without interpreting Methods estimator bytes.
+/// Model hydration and numerical validation remain controller/Methods-owned.
+pub fn validate_methods_role_pipeline_payload(
+    record: &RefitArtifactRecord,
+    bytes: &[u8],
+) -> Result<()> {
+    let artifact = &record.artifact;
+    artifact.validate_portable()?;
+    if artifact.kind != "methods_role_pipeline"
+        || artifact.backend != Some(ArtifactBackend::Raw)
+        || artifact.plugin.as_deref() != Some("dagml.methods.wasm.regression")
+        || artifact.plugin_version.as_deref() != Some("1.0.0")
+        || artifact.native_predictor_descriptor.is_some()
+        || artifact.native_estimator_descriptor.is_some()
+        || bytes.is_empty()
+        || bytes.len() > 134_217_728
+    {
+        return refuse("Archive V2 requires the bounded trusted Methods RolePipeline RAW codec");
+    }
+    let raw = sha256(bytes);
+    if artifact.content_fingerprint.as_deref() != Some(raw.as_str())
+        || artifact.size_bytes != Some(bytes.len() as u64)
+        || artifact.uri.as_deref() != Some(format!("artifacts/{raw}.json").as_str())
+    {
+        return refuse(
+            "Archive V2 RolePipeline URI, size and raw SHA-256 must exactly bind its bytes",
+        );
+    }
+    let text = std::str::from_utf8(bytes).map_err(|error| {
+        DagMlError::RuntimeValidation(format!("RolePipeline payload is not UTF-8: {error}"))
+    })?;
+    parse_typed_json(text).map_err(|error| {
+        DagMlError::RuntimeValidation(format!(
+            "RolePipeline payload is outside strict TCV1: {error}"
+        ))
+    })?;
+    let payload: MethodsRolePipelinePayload = serde_json::from_str(text)?;
+    let unique_text = |values: &[String]| {
+        !values.is_empty()
+            && values.len() <= 65_536
+            && values
+                .iter()
+                .all(|value| !value.is_empty() && value.len() <= 4096)
+            && values.iter().collect::<BTreeSet<_>>().len() == values.len()
+    };
+    if payload.schema != "dagml.methods.regression.v1"
+        || payload.node_id != record.node_id.as_str()
+        || payload.params_fingerprint != record.params_fingerprint
+        || !unique_text(&payload.target_names)
+        || !unique_text(&payload.feature_names)
+        || payload.steps.is_empty()
+        || payload.steps.len() > 256
+        || payload.steps.len() != payload.states.len()
+        || payload
+            .states
+            .iter()
+            .any(|state| !state.starts_with(b"N4ME"))
+    {
+        return refuse("Archive V2 RolePipeline wrapper does not bind a complete native recipe and state sequence");
+    }
+    for step in &payload.steps {
+        let valid = match (&step.class, &step.method_id) {
+            (Some(class), None) => class
+                .strip_prefix("n4m:")
+                .is_some_and(|id| !id.is_empty() && id.len() <= 256),
+            (None, Some(id)) => !id.is_empty() && id.len() <= 256,
+            _ => false,
+        };
+        if !valid || step.params.len() > 256 {
+            return refuse(
+                "Archive V2 RolePipeline steps must be explicit native Methods declarations",
+            );
+        }
+    }
+    Ok(())
+}
 
 /// Archive V3 keeps the V2 predictor family immutable and carries a distinct,
 /// target-bound full-refit child package defined by ADR-25.
@@ -310,8 +473,37 @@ pub fn build_archive_v2_native_portable_payloads(
     insert_json(&mut members, ARCHIVE_V2_SCORE_MEMBER, &outcome.score_set)?;
 
     let mut n4mm = Vec::new();
+    let mut role_pipelines = Vec::new();
+    let mut role_paths = BTreeSet::new();
     for record in &package.execution_bundle.refit_artifacts {
         let artifact = &record.artifact;
+        if artifact.kind == "methods_role_pipeline" {
+            let bytes = package
+                .execution_bundle
+                .raw_artifact_payloads
+                .get(&artifact.id)
+                .ok_or_else(|| {
+                    DagMlError::RuntimeValidation(format!(
+                        "Archive V2 lacks RolePipeline RAW payload `{}`",
+                        artifact.id
+                    ))
+                })?;
+            validate_methods_role_pipeline_payload(record, bytes)?;
+            validate_methods_role_pipeline_recipe(record, bytes, &package.effective_plan)?;
+            let path = artifact.uri.as_ref().expect("validated portable URI");
+            if members.insert(path.clone(), bytes.clone()).is_some() {
+                return refuse("Archive V2 native artifact paths must be unique");
+            }
+            role_paths.insert(path.clone());
+            let raw = sha256(bytes);
+            role_pipelines.push(json!({
+                "artifact_id": artifact.id, "kind": "methods_role_pipeline",
+                "owner": "dag-ml", "format_version": 1, "member_path": path,
+                "raw_sha256": raw, "semantic_fingerprint": raw,
+                "semantic_profile": METHODS_ROLE_PIPELINE_SEMANTIC_PROFILE
+            }));
+            continue;
+        }
         if artifact.kind != "n4m_model"
             || artifact.backend != Some(ArtifactBackend::Raw)
             || artifact.plugin.is_some()
@@ -376,11 +568,12 @@ pub fn build_archive_v2_native_portable_payloads(
             "semantic_profile": "n4mm_raw_sha256"
         }));
     }
-    if n4mm.is_empty()
-        || package.execution_bundle.raw_artifact_payloads.len() != n4mm.len()
-        || package.artifact_bindings.len() != n4mm.len()
+    let native_count = n4mm.len() + role_pipelines.len();
+    if native_count == 0
+        || package.execution_bundle.raw_artifact_payloads.len() != native_count
+        || package.artifact_bindings.len() != native_count
     {
-        return refuse("Archive V2 P0 N4MM members must exactly cover all package refit artifacts");
+        return refuse("Archive V2 native members must exactly cover all package refit artifacts");
     }
 
     let package_semantic = package.package_fingerprint.clone();
@@ -413,11 +606,16 @@ pub fn build_archive_v2_native_portable_payloads(
         "security": {"integrity_profile": "sha256_raw_member_inventory_v2", "signature": null},
         "workspace": null
     });
+    if !role_pipelines.is_empty() {
+        manifest["payloads"]["methods"]["role_pipelines"] = Value::Array(role_pipelines);
+    }
     let inventory = members
         .iter()
         .map(|(path, bytes)| {
             let (semantic_profile, semantic_fingerprint) = if path == ARCHIVE_V2_PACKAGE_MEMBER {
                 ("dagml_tcv1", package.package_fingerprint.clone())
+            } else if role_paths.contains(path) {
+                (METHODS_ROLE_PIPELINE_SEMANTIC_PROFILE, sha256(bytes))
             } else if path.ends_with(".n4mm") {
                 ("n4mm_raw_sha256", sha256(bytes))
             } else if path == ARCHIVE_V2_BUNDLE_MEMBER {
@@ -433,6 +631,36 @@ pub fn build_archive_v2_native_portable_payloads(
     manifest["member_inventory"] = Value::Array(inventory);
     bind_raw_hashes(&mut manifest, &members);
     Ok(ArchiveV2ReplayPayloads { manifest, members })
+}
+
+/// Validate the exact standalone predictor transport assembled by DAG-ML.
+///
+/// Core first validates container bounds and inventory. This independent
+/// semantic gate preserves the original package/outcome and checks every
+/// companion, reference and RAW member before any controller callback runs.
+pub fn validate_archive_v2_portable_payloads(
+    manifest: &Value,
+    package: &PortablePredictorPackage,
+    members: &BTreeMap<String, Vec<u8>>,
+) -> Result<()> {
+    let archive_id = manifest
+        .get("archive_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| DagMlError::RuntimeValidation("Archive V2 has no archive_id".into()))?;
+    let bytes = members.get(ARCHIVE_V2_OUTCOME_MEMBER).ok_or_else(|| {
+        DagMlError::RuntimeValidation("Archive V2 lacks its TrainingOutcome companion".into())
+    })?;
+    let text = std::str::from_utf8(bytes).map_err(|error| {
+        DagMlError::RuntimeValidation(format!("Archive V2 TrainingOutcome is not UTF-8: {error}"))
+    })?;
+    let outcome = TrainingOutcome::from_json(text)?;
+    let expected = build_archive_v2_native_portable_payloads(archive_id, &outcome, package)?;
+    if manifest != &expected.manifest || members != &expected.members {
+        return refuse(
+            "Archive V2 portable transport differs from its exact DAG-ML semantic closure",
+        );
+    }
+    Ok(())
 }
 
 /// Construct the only archive-only cache payload permitted for an outcome
@@ -582,6 +810,265 @@ mod tests {
             parse_typed_json(&plan_json).unwrap().fingerprint().unwrap();
         outcome.outcome_fingerprint = "0".repeat(64);
         outcome.outcome_fingerprint = outcome.compute_fingerprint().unwrap();
+    }
+
+    // These are opaque transport witnesses, not numerical N4ME qualification.
+    // The real five-model Methods campaign runs in the Node/web smoke script.
+    fn role_transport_fixture(mixed: bool) -> (TrainingOutcome, PortablePredictorPackage) {
+        let mut outcome = TrainingOutcome::from_json(include_str!(
+            "../tests/fixtures/package/archive/training_outcome_port_explicit.json"
+        ))
+        .unwrap();
+        outcome.execution_bundle.raw_artifact_payloads.clear();
+        for (index, record) in outcome
+            .execution_bundle
+            .refit_artifacts
+            .iter_mut()
+            .enumerate()
+        {
+            let role = !mixed || index % 2 == 0;
+            let payload = if role {
+                serde_json::to_vec(&json!({
+                    "schema": "dagml.methods.regression.v1", "node_id": record.node_id,
+                    "params_fingerprint": record.params_fingerprint,
+                    "target_names": ["y"], "feature_names": ["source:feature"],
+                    "steps": [{"class": "n4m:models.regularized.ridge",
+                        "params": outcome.effective_plan.node_plans[&record.node_id].params}],
+                    "states": [[78, 52, 77, 69, index as u8]]
+                }))
+                .unwrap()
+            } else {
+                format!("opaque N4MM transport witness {index}").into_bytes()
+            };
+            let fingerprint = sha256(&payload);
+            record.artifact.kind = if role {
+                "methods_role_pipeline"
+            } else {
+                "n4m_model"
+            }
+            .into();
+            record.artifact.backend = Some(ArtifactBackend::Raw);
+            record.artifact.uri = Some(if role {
+                format!("artifacts/{fingerprint}.json")
+            } else {
+                format!("methods/mixed-{index}.n4mm")
+            });
+            record.artifact.content_fingerprint = Some(fingerprint);
+            record.artifact.size_bytes = Some(payload.len() as u64);
+            record.artifact.plugin = role.then(|| "dagml.methods.wasm.regression".into());
+            record.artifact.plugin_version = role.then(|| "1.0.0".into());
+            record.artifact.abi_major = (!role).then_some(crate::hpo::METHODS_ABI_MAJOR);
+            record.artifact.abi_min_minor =
+                (!role).then_some(crate::hpo::METHODS_PLS_N4MM_MIN_ABI_MINOR);
+            record.artifact.native_predictor_descriptor = None;
+            record.artifact.native_estimator_descriptor = None;
+            outcome
+                .execution_bundle
+                .raw_artifact_payloads
+                .insert(record.artifact.id.clone(), payload);
+        }
+        let role_nodes = outcome
+            .execution_bundle
+            .refit_artifacts
+            .iter()
+            .filter(|record| record.artifact.kind == "methods_role_pipeline")
+            .map(|record| record.node_id.clone())
+            .collect::<BTreeSet<_>>();
+        for node in &mut outcome.effective_plan.graph_plan.graph.nodes {
+            if role_nodes.contains(&node.id) {
+                node.operator = Some(json!({"type": "n4m:models.regularized.ridge"}));
+            }
+        }
+        outcome.effective_plan.graph_fingerprint =
+            crate::campaign::stable_json_fingerprint(&outcome.effective_plan.graph_plan.graph)
+                .unwrap();
+        outcome.execution_bundle.graph_fingerprint =
+            outcome.effective_plan.graph_fingerprint.clone();
+        let artifacts = outcome
+            .execution_bundle
+            .refit_artifacts
+            .iter()
+            .map(|record| (record.artifact.id.clone(), record.artifact.clone()))
+            .collect::<BTreeMap<_, _>>();
+        for record in &mut outcome.lineage {
+            for artifact in &mut record.artifact_refs {
+                if let Some(portable) = artifacts.get(&artifact.id) {
+                    *artifact = portable.clone();
+                }
+            }
+        }
+        resign_outcome(&mut outcome);
+        outcome.validate().unwrap();
+        let package = outcome
+            .to_portable_predictor_package(
+                "predictor:archive.roles",
+                FittedArtifactMode::PortableRequired,
+                ArtifactLoadMode::NativePortable,
+            )
+            .unwrap();
+        (outcome, package)
+    }
+
+    #[test]
+    fn role_and_mixed_transport_preserve_exact_package_and_raw_closure() {
+        for mixed in [false, true] {
+            let (outcome, package) = role_transport_fixture(mixed);
+            let archive =
+                build_archive_v2_native_portable_payloads("archive:roles", &outcome, &package)
+                    .unwrap();
+            let methods = &archive.manifest["payloads"]["methods"];
+            let roles = methods["role_pipelines"].as_array().unwrap();
+            let n4mm = methods["n4mm"].as_array().unwrap();
+            assert!(!roles.is_empty());
+            assert_eq!(n4mm.is_empty(), !mixed);
+            assert_eq!(roles.len() + n4mm.len(), package.artifact_bindings.len());
+            assert_eq!(archive.members.len(), 6 + package.artifact_bindings.len());
+            assert_eq!(
+                archive.members[ARCHIVE_V2_PACKAGE_MEMBER],
+                serde_json::to_vec(&package).unwrap()
+            );
+            assert_eq!(
+                archive.members[ARCHIVE_V2_OUTCOME_MEMBER],
+                serde_json::to_vec(&outcome).unwrap()
+            );
+            validate_archive_v2_portable_payloads(&archive.manifest, &package, &archive.members)
+                .unwrap();
+            for reference in roles {
+                let path = reference["member_path"].as_str().unwrap();
+                let raw = sha256(&archive.members[path]);
+                assert_eq!(reference["raw_sha256"], raw);
+                assert_eq!(reference["semantic_fingerprint"], raw);
+                assert_eq!(
+                    reference["semantic_profile"],
+                    METHODS_ROLE_PIPELINE_SEMANTIC_PROFILE
+                );
+            }
+            let mut missing = archive.members.clone();
+            missing.remove(roles[0]["member_path"].as_str().unwrap());
+            assert!(
+                validate_archive_v2_portable_payloads(&archive.manifest, &package, &missing)
+                    .is_err()
+            );
+            let mut altered = archive.members.clone();
+            altered.get_mut(ARCHIVE_V2_GRAPH_MEMBER).unwrap().push(b' ');
+            assert!(
+                validate_archive_v2_portable_payloads(&archive.manifest, &package, &altered)
+                    .is_err()
+            );
+            let mut injected = archive.members.clone();
+            injected.insert("unexpected.json".into(), b"{}".to_vec());
+            assert!(
+                validate_archive_v2_portable_payloads(&archive.manifest, &package, &injected)
+                    .is_err()
+            );
+            let mut alias = archive.manifest.clone();
+            alias["payloads"]["methods"]["role_pipelines"][0]["artifact_id"] =
+                json!("artifact:unbound");
+            assert!(
+                validate_archive_v2_portable_payloads(&alias, &package, &archive.members).is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn role_wrapper_refuses_unknown_schema_identity_recipe_and_state() {
+        let (_, package) = role_transport_fixture(false);
+        let original = &package.execution_bundle.refit_artifacts[0];
+        let bytes = &package.execution_bundle.raw_artifact_payloads[&original.artifact.id];
+        validate_methods_role_pipeline_payload(original, bytes).unwrap();
+        let mut untrusted = original.clone();
+        untrusted.artifact.plugin_version = Some("999.0.0".into());
+        assert!(validate_methods_role_pipeline_payload(&untrusted, bytes).is_err());
+        let mut external = original.clone();
+        external.artifact.uri = Some("../external.json".into());
+        assert!(validate_methods_role_pipeline_payload(&external, bytes).is_err());
+        for (pointer, value) in [
+            ("/schema", json!("dagml.methods.regression.v999")),
+            ("/node_id", json!("model:another")),
+            ("/params_fingerprint", json!("f".repeat(64))),
+            ("/steps/0/class", json!("sklearn.Ridge")),
+            ("/states/0", json!([80, 73, 67, 75, 76, 69])),
+            ("/target_names", json!([])),
+            ("/feature_names", json!(["duplicate", "duplicate"])),
+        ] {
+            let mut wrapper: Value = serde_json::from_slice(bytes).unwrap();
+            if pointer == "/steps/0/class" {
+                wrapper["steps"][0]["class"] = value;
+            } else {
+                *wrapper.pointer_mut(pointer).unwrap() = value;
+            }
+            let modified = serde_json::to_vec(&wrapper).unwrap();
+            let mut record = original.clone();
+            let raw = sha256(&modified);
+            record.artifact.uri = Some(format!("artifacts/{raw}.json"));
+            record.artifact.content_fingerprint = Some(raw);
+            record.artifact.size_bytes = Some(modified.len() as u64);
+            assert!(
+                validate_methods_role_pipeline_payload(&record, &modified).is_err(),
+                "{pointer}"
+            );
+        }
+        let mut wrapper: Value = serde_json::from_slice(bytes).unwrap();
+        wrapper["unexpected"] = json!(true);
+        let modified = serde_json::to_vec(&wrapper).unwrap();
+        let mut record = original.clone();
+        let raw = sha256(&modified);
+        record.artifact.uri = Some(format!("artifacts/{raw}.json"));
+        record.artifact.content_fingerprint = Some(raw);
+        record.artifact.size_bytes = Some(modified.len() as u64);
+        assert!(validate_methods_role_pipeline_payload(&record, &modified).is_err());
+    }
+
+    #[test]
+    fn resealed_role_recipe_cannot_override_the_unchanged_effective_plan() {
+        for change_method in [false, true] {
+            let (mut outcome, _) = role_transport_fixture(false);
+            let record = &mut outcome.execution_bundle.refit_artifacts[0];
+            let mut wrapper: Value = serde_json::from_slice(
+                &outcome.execution_bundle.raw_artifact_payloads[&record.artifact.id],
+            )
+            .unwrap();
+            if change_method {
+                wrapper["steps"][0]["class"] = json!("n4m:models.pls");
+            } else {
+                wrapper["steps"][0]["params"]["unplanned_alpha"] = json!(9);
+            }
+            let bytes = serde_json::to_vec(&wrapper).unwrap();
+            let raw = sha256(&bytes);
+            record.artifact.uri = Some(format!("artifacts/{raw}.json"));
+            record.artifact.content_fingerprint = Some(raw);
+            record.artifact.size_bytes = Some(bytes.len() as u64);
+            validate_methods_role_pipeline_payload(record, &bytes).unwrap();
+            let changed = record.artifact.clone();
+            outcome
+                .execution_bundle
+                .raw_artifact_payloads
+                .insert(changed.id.clone(), bytes);
+            for lineage in &mut outcome.lineage {
+                for artifact in &mut lineage.artifact_refs {
+                    if artifact.id == changed.id {
+                        *artifact = changed.clone();
+                    }
+                }
+            }
+            resign_outcome(&mut outcome);
+            outcome.validate().unwrap();
+            let package = outcome
+                .to_portable_predictor_package(
+                    "predictor:resealed.recipe",
+                    FittedArtifactMode::PortableRequired,
+                    ArtifactLoadMode::NativePortable,
+                )
+                .unwrap();
+            assert!(build_archive_v2_native_portable_payloads(
+                "archive:resealed.recipe",
+                &outcome,
+                &package
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("saved recipe differs"));
+        }
     }
 
     #[cfg(dag_ml_workspace_contract_fixtures)]
@@ -792,6 +1279,11 @@ mod tests {
             &package,
         )
         .expect("Archive V2 preserves an existing retained nonempty cache set");
+        assert!(archive.manifest["payloads"]["methods"]
+            .get("role_pipelines")
+            .is_none());
+        validate_archive_v2_portable_payloads(&archive.manifest, &package, &archive.members)
+            .unwrap();
         for reference in archive.manifest["payloads"]["methods"]["n4mm"]
             .as_array()
             .expect("writer emits N4MM references")

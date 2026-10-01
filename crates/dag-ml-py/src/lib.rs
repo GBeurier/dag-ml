@@ -20,7 +20,8 @@ use dag_ml_core::{
     compile_pipeline_dsl, compile_pipeline_dsl_with_generation,
     compile_pipeline_dsl_with_generation_and_controller_registry, fan_out_data_aware_branches,
     fold_set_fingerprint, operator_variant_canonical_value, operator_variant_label_from_steps_json,
-    parse_pipeline_dsl_json, select_candidate, CacheNamespace, CampaignSpec, CandidateScore,
+    parse_pipeline_dsl_json, select_candidate, validate_archive_v2_portable_payloads,
+    CacheNamespace, CampaignSpec, CandidateScore,
     ControllerManifest, ControllerRegistry, DagMlError as CoreDagMlError, ExecutionBundle,
     ExecutionPlan, ExternalDataPlanEnvelope, FoldSet, GraphSpec, HostControllerSpec,
     NamedSourceAlignmentRequest, ParameterProjection, PortablePredictorPackage,
@@ -287,6 +288,21 @@ fn build_archive_v2_native_portable_payloads_json(
         "members": payloads.members,
     }))
     .map_err(py_serde_error)
+}
+
+#[pyfunction]
+fn validate_archive_v2_portable_payloads_json(
+    manifest_json: &str,
+    package_json: &str,
+    members_json: &str,
+) -> PyResult<String> {
+    let manifest = training::parse_strict_json::<serde_json::Value>(
+        manifest_json, "Archive V2 manifest")?;
+    let package = PortablePredictorPackage::from_json(package_json).map_err(py_core_error)?;
+    let members = training::parse_strict_json::<std::collections::BTreeMap<String, Vec<u8>>>(
+        members_json, "Archive V2 members")?;
+    validate_archive_v2_portable_payloads(&manifest, &package, &members).map_err(py_core_error)?;
+    Ok("{\"valid\":true}".to_string())
 }
 
 /// Assemble the opaque manifest and exact member bytes for a Core Archive V3.
@@ -594,6 +610,7 @@ fn _dag_ml(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
         build_archive_v2_native_portable_payloads_json,
         module
     )?)?;
+    module.add_function(wrap_pyfunction!(validate_archive_v2_portable_payloads_json, module)?)?;
     module.add_function(wrap_pyfunction!(
         build_archive_v3_native_refit_payloads_json,
         module
@@ -815,6 +832,7 @@ fn contract_manifest() -> serde_json::Value {
             "sign_training_request_json",
             "sign_training_replay_request_json",
             "build_archive_v2_native_portable_payloads_json",
+            "validate_archive_v2_portable_payloads_json",
             "build_archive_v3_native_refit_payloads_json",
             "build_conformal_presentation_v1_json",
             "project_training_request_json",
