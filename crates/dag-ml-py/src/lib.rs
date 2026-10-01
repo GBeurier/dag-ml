@@ -22,13 +22,13 @@ use dag_ml_core::{
     compile_pipeline_dsl_with_generation_and_controller_registry, fan_out_data_aware_branches,
     fold_set_fingerprint, operator_variant_canonical_value, operator_variant_label_from_steps_json,
     parse_pipeline_dsl_json, select_candidate, validate_archive_v2_portable_payloads,
-    CacheNamespace, CampaignSpec, CandidateScore,
-    ControllerManifest, ControllerRegistry, DagMlError as CoreDagMlError, ExecutionBundle,
-    ExecutionPlan, ExternalDataPlanEnvelope, FoldSet, GraphSpec, HostControllerSpec,
-    NamedSourceAlignmentRequest, ParameterProjection, PortablePredictorPackage,
-    PortableRefitPackageV3, PredictCohortConstructionRequest, SampleRelationSet, SelectionPolicy,
-    StackingFoldSelectionRequest, StackingProducerSelectionRequest, TrainingContractProjection,
-    TrainingOutcome, TrainingReplayOutcome, TrainingReplayRequest, TrainingRequest,
+    CacheNamespace, CampaignSpec, CandidateScore, ControllerManifest, ControllerRegistry,
+    DagMlError as CoreDagMlError, ExecutionBundle, ExecutionPlan, ExternalDataPlanEnvelope,
+    FoldSet, GraphSpec, HostControllerSpec, NamedSourceAlignmentRequest, ParameterProjection,
+    PortablePredictorPackage, PortableRefitPackageV3, PredictCohortConstructionRequest,
+    SampleRelationSet, SelectionPolicy, StackingFoldSelectionRequest,
+    StackingProducerSelectionRequest, TrainingContractProjection, TrainingOutcome,
+    TrainingReplayOutcome, TrainingReplayRequest, TrainingRequest,
     EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION_V2,
 };
 
@@ -297,11 +297,13 @@ fn validate_archive_v2_portable_payloads_json(
     package_json: &str,
     members_json: &str,
 ) -> PyResult<String> {
-    let manifest = training::parse_strict_json::<serde_json::Value>(
-        manifest_json, "Archive V2 manifest")?;
+    let manifest =
+        training::parse_strict_json::<serde_json::Value>(manifest_json, "Archive V2 manifest")?;
     let package = PortablePredictorPackage::from_json(package_json).map_err(py_core_error)?;
     let members = training::parse_strict_json::<std::collections::BTreeMap<String, Vec<u8>>>(
-        members_json, "Archive V2 members")?;
+        members_json,
+        "Archive V2 members",
+    )?;
     validate_archive_v2_portable_payloads(&manifest, &package, &members).map_err(py_core_error)?;
     Ok("{\"valid\":true}".to_string())
 }
@@ -427,6 +429,23 @@ fn validate_initial_full_refit_package_json(json: &str) -> PyResult<()> {
     dag_ml_core::InitialFullRefitPackage::from_json(json)
         .map(|_| ())
         .map_err(py_core_error)
+}
+
+/// Validate complete scope evidence in Rust, without Methods execution.
+#[pyfunction]
+fn validate_methods_hpo_fold_state_json(json: &str) -> PyResult<()> {
+    validate_json::<dag_ml_core::MethodsFoldHpoState>(
+        json,
+        dag_ml_core::MethodsFoldHpoState::validate,
+    )
+}
+
+/// Read scope evidence after complete containing-package validation.
+#[pyfunction]
+fn methods_hpo_fold_state_from_package_json(package_json: &str) -> PyResult<String> {
+    let state = dag_ml_core::methods_hpo_fold_state_from_package_json(package_json)
+        .map_err(py_core_error)?;
+    serde_json::to_string(&state).map_err(py_serde_error)
 }
 
 #[pyfunction]
@@ -611,9 +630,18 @@ fn _dag_ml(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
         build_archive_v2_native_portable_payloads_json,
         module
     )?)?;
-    module.add_function(wrap_pyfunction!(validate_archive_v2_portable_payloads_json, module)?)?;
-    module.add_function(wrap_pyfunction!(methods_role_pipeline::methods_pls_role_pipeline_contract_json,module)?)?;
-    module.add_function(wrap_pyfunction!(methods_role_pipeline::inspect_methods_role_pipeline_params_json,module)?)?;
+    module.add_function(wrap_pyfunction!(
+        validate_archive_v2_portable_payloads_json,
+        module
+    )?)?;
+    module.add_function(wrap_pyfunction!(
+        methods_role_pipeline::methods_pls_role_pipeline_contract_json,
+        module
+    )?)?;
+    module.add_function(wrap_pyfunction!(
+        methods_role_pipeline::inspect_methods_role_pipeline_params_json,
+        module
+    )?)?;
     module.add_function(wrap_pyfunction!(
         build_archive_v3_native_refit_payloads_json,
         module
@@ -643,6 +671,14 @@ fn _dag_ml(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     )?)?;
     module.add_function(wrap_pyfunction!(
         validate_initial_full_refit_package_json,
+        module
+    )?)?;
+    module.add_function(wrap_pyfunction!(
+        validate_methods_hpo_fold_state_json,
+        module
+    )?)?;
+    module.add_function(wrap_pyfunction!(
+        methods_hpo_fold_state_from_package_json,
         module
     )?)?;
     module.add_function(wrap_pyfunction!(validate_training_outcome_json, module)?)?;
@@ -776,6 +812,7 @@ fn contract_manifest() -> serde_json::Value {
             {"id": "cache_namespace", "version": 1},
             {"id": "portable_predictor_package", "version": 1},
             {"id": "training_outcome", "version": 1},
+            {"id": "methods_hpo_fold_state", "version": 1},
             {"id": "training_replay_request", "version": 1},
             {"id": "training_replay_outcome", "version": 1},
             {"id": "conformal_presentation", "version": 1},
@@ -793,6 +830,8 @@ fn contract_manifest() -> serde_json::Value {
             "fold_set_fingerprint",
             "project_training_request",
             "validate_portable_predictor_package",
+            "validate_methods_hpo_fold_state",
+            "read_methods_hpo_fold_state",
             "execute_training",
             "execute_training_replay",
             "execute_loaded_predictor_replay",
@@ -849,6 +888,8 @@ fn contract_manifest() -> serde_json::Value {
             "validate_portable_refit_package_v3_json",
             "validate_initial_full_refit_package_json",
             "validate_training_outcome_json",
+            "validate_methods_hpo_fold_state_json",
+            "methods_hpo_fold_state_from_package_json",
             "validate_training_replay_request_json",
             "validate_training_replay_outcome_json",
             "validate_fold_set_json",

@@ -100,6 +100,14 @@
       ],
       "default": null
     },
+    "methods_hpo_fold_state": {
+      "description": "Optional complete native fold-HPO state; identical in the containing outcome and bundle. Mutually exclusive with campaign methods_hpo_resume_state under native semantic validation.",
+      "anyOf": [
+        { "$ref": "https://github.com/GBeurier/dag-ml/schemas/methods_hpo_fold_state.v1.schema.json" },
+        { "type": "null" }
+      ],
+      "default": null
+    },
     "conformal_calibration": {
       "anyOf": [
         { "$ref": "#/$defs/conformal_calibration" },

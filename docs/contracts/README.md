@@ -5,6 +5,25 @@ DAG-ML-specific publication schemas. `dag-ml` remains the consumer and semantic
 validator: it checks fingerprints, campaign fold membership, OOF boundaries and
 leakage policies before any controller receives a handle.
 
+## Native PLS Fold HPO State V1
+
+`methods_hpo_fold_state.v1.schema.json` defines the optional closed
+`methods_hpo_fold_state` carried identically by TrainingOutcome V2 and
+ExecutionBundle V2. Existing V1 contracts and campaign HPO readers keep their
+wire shapes. The new state retains the root plan/provenance and each independent
+outer/REFIT study's complete checkpoint, trial ledger, inner folds and selected
+parameters. The required root `relations` table attests groups, origins and
+exclusions; scope subsets are derived by the native reader. It carries no X/y
+buffers. Phase JSON uses `FIT_CV` and `REFIT`; scope ID suffixes use
+`fit_cv` and `refit`.
+
+Schema validation checks transport shape. Native validation additionally checks
+scope authority, exact training universes/groups, globally unique fold IDs,
+checkpoint/provenance/ledger consistency and the independent REFIT winner.
+An exported state projection cannot authorize resume: the reader and resume
+path validate the complete containing Package V2. See
+[the Methods HPO contract](../HPO_METHODS_ADAPTER.md#native-pls-fold-scope).
+
 ## Finite Source Provider Preparation V1
 
 `data_provider_prepare.schema.json` publishes the native preparation receipt;

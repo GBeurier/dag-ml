@@ -2809,7 +2809,9 @@ pub fn execute_loaded_predictor_replay_json(
     let package = PortablePredictorPackage::from_json(package_json).map_err(py_core_error)?;
     if let Some(json) = trusted_controller_manifests_json {
         let manifests = parse_strict_json::<Vec<dag_ml_core::ControllerManifest>>(
-            json, "trusted replay controller manifests")?;
+            json,
+            "trusted replay controller manifests",
+        )?;
         let mut registry = dag_ml_core::ControllerRegistry::new();
         for manifest in manifests {
             registry.register(manifest).map_err(py_core_error)?;
@@ -2990,6 +2992,7 @@ mod tests {
             native,
             BTreeSet::from(
                 [
+                    dag_ml_core::METHODS_NATIVE_REGRESSION_CONTROLLER,
                     dag_ml_core::METHODS_PLS_CONTROLLER_ID,
                     dag_ml_core::METHODS_RIDGE_CONTROLLER_ID,
                     "controller:n4m.transformer",

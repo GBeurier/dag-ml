@@ -55,6 +55,8 @@ from ._dag_ml import (
     validate_initial_full_refit_package_json,
     validate_training_contract_projection_json,
     validate_training_outcome_json,
+    validate_methods_hpo_fold_state_json,
+    methods_hpo_fold_state_from_package_json,
     validate_training_replay_outcome_json,
     validate_training_replay_request_json,
     validate_training_request_json,
@@ -172,6 +174,8 @@ _FACADE_EXPORTS = [
     "FoldSet",
     "TrainingRequest",
     "TrainingOutcome",
+    "MethodsFoldHpoState",
+    "methods_hpo_fold_state_from_package",
     "TrainingReplayRequest",
     "TrainingReplayOutcome",
     "TrainingResult",
@@ -806,6 +810,30 @@ class TrainingOutcome(JsonContract):
     @classmethod
     def _validate_json(cls, json_text: str) -> None:
         validate_training_outcome_json(json_text)
+
+
+class MethodsFoldHpoState(JsonContract):
+    """Complete native fold-HPO evidence validated without numerical execution.
+
+    Read exported evidence through ``methods_hpo_fold_state_from_package``:
+    standalone state validation does not attest its containing package.
+    """
+
+    @classmethod
+    def _validate_json(cls, json_text: str) -> None:
+        validate_methods_hpo_fold_state_json(json_text)
+
+
+def methods_hpo_fold_state_from_package(package: Any) -> MethodsFoldHpoState:
+    """Read immutable scope evidence from a natively validated Package V2.
+
+    An invalid package or absent state raises the native contract error.
+    This metadata reader has no callbacks and never calls FIT or HPO.
+    Resume requires the complete package, not this standalone projection.
+    """
+    return MethodsFoldHpoState(
+        methods_hpo_fold_state_from_package_json(_coerce_json(package))
+    )
 
 
 class TrainingReplayRequest(JsonContract):
@@ -1917,6 +1945,8 @@ __all__ = [
     "PortableRefitReplayOutcomeV3",
     "TrainingContractProjection",
     "TrainingOutcome",
+    "MethodsFoldHpoState",
+    "methods_hpo_fold_state_from_package",
     "TrainingReplayOutcome",
     "TrainingReplayRequest",
     "TrainingRequest",
@@ -1992,6 +2022,8 @@ __all__ = [
     "validate_portable_predictor_package_json",
     "validate_training_contract_projection_json",
     "validate_training_outcome_json",
+    "validate_methods_hpo_fold_state_json",
+    "methods_hpo_fold_state_from_package_json",
     "validate_training_request_json",
     "version",
     "write_native_results_v2",

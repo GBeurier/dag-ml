@@ -358,7 +358,6 @@ pub(crate) fn validate_native_pls_hpo_space(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::training::{ParameterPatch, TrainingRequest};
     fn params(scale: bool) -> BTreeMap<String, Value> {
         serde_json::from_value(
             json!({"native_profile":METHODS_PLS_ROLE_PROFILE,"n_components":2,"scale":scale}),
@@ -488,6 +487,7 @@ mod tests {
         }
     }
 
+    #[cfg(dag_ml_workspace_contract_fixtures)]
     fn phase_fixture() -> (ExecutionPlan, TrainingRequest) {
         let request = TrainingRequest::from_json(include_str!(
             "../../../examples/fixtures/training/training_request_refit.v1.json"
@@ -516,6 +516,7 @@ mod tests {
         plan.graph_plan.graph.edges.clear();
         (plan, request)
     }
+    #[cfg(dag_ml_workspace_contract_fixtures)]
     #[test]
     fn signed_fit_materialization_retains_cv_values_and_binds_refit_to_resume_provenance() {
         let (mut plan, mut request) = phase_fixture();
@@ -553,6 +554,7 @@ mod tests {
             crate::hpo::campaign_provenance_fingerprint(&plan.campaign).unwrap()
         );
     }
+    #[cfg(dag_ml_workspace_contract_fixtures)]
     #[test]
     fn fit_duplicate_and_foreign_owners_are_not_silently_ignored() {
         let (mut plan, mut request) = phase_fixture();
@@ -576,6 +578,7 @@ mod tests {
         assert!(materialize_native_pls_phase_controls(&mut plan, &request).is_err());
     }
 
+    #[cfg(dag_ml_workspace_contract_fixtures)]
     #[test]
     fn materialized_fit_evidence_requires_exact_owner_values_and_provenance() {
         let (mut plan, mut request) = phase_fixture();

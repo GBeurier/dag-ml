@@ -1409,12 +1409,24 @@ impl crate::runtime::RuntimeTunerSession for MethodsHpoSession {
                     active_subsequence: None,
                 },
             );
-            variant.variant_id = crate::VariantId::new(format!("hpo:trial:{}", trial.id))?;
-            variant.fingerprint = crate::campaign::stable_json_fingerprint(&(
-                self.context.base_variant.fingerprint.as_str(),
-                &variant.choices,
-                trial.id,
-            ))?;
+            variant.variant_id = crate::VariantId::new(match &self.context.proposal_namespace {
+                Some(namespace) => format!("hpo:scope:{namespace}:trial:{}", trial.id),
+                None => format!("hpo:trial:{}", trial.id),
+            })?;
+            variant.fingerprint = if let Some(namespace) = &self.context.proposal_namespace {
+                crate::campaign::stable_json_fingerprint(&(
+                    self.context.base_variant.fingerprint.as_str(),
+                    namespace,
+                    &variant.choices,
+                    trial.id,
+                ))?
+            } else {
+                crate::campaign::stable_json_fingerprint(&(
+                    self.context.base_variant.fingerprint.as_str(),
+                    &variant.choices,
+                    trial.id,
+                ))?
+            };
             return Ok(Some(crate::runtime::RuntimeHpoProposal {
                 trial_id: trial.id,
                 variant,
@@ -4156,6 +4168,7 @@ mod tests {
         )
         .unwrap();
         let context = RuntimeHpoExecutionContext {
+            proposal_namespace: None,
             portable_profile: None,
             operation_id: "hpo:methods".to_string(),
             controller_id: controller_id.clone(),

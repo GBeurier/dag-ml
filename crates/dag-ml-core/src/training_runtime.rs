@@ -145,6 +145,8 @@ pub struct TrainingOutcome {
     pub conformal_calibration_replay: Option<TrainingReplayOutcome>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub methods_hpo_resume_state: Option<MethodsHpoResumeState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub methods_hpo_fold_state: Option<crate::methods_fold_hpo::MethodsFoldHpoState>,
     pub replayable_phases: Vec<Phase>,
     pub warnings: Vec<String>,
     pub diagnostics: BTreeMap<String, serde_json::Value>,
@@ -256,6 +258,7 @@ impl HpoExecutionContext<'_> {
         }
         Ok((
             RuntimeHpoExecutionContext {
+                proposal_namespace: None,
                 operation_id: descriptor.operation_id.clone(),
                 portable_profile: descriptor.native_profile.clone(),
                 controller_id,
@@ -545,6 +548,303 @@ fn validate_methods_hpo_resume_state(
     Ok(())
 }
 
+#[cfg(feature = "methods-optimizer")]
+impl HpoExecutionContext<'_> {
+    fn execute_fold_studies(
+        &self,
+        descriptor: &PortableMethodsHpoDescriptor,
+        metric: RegressionMetricKind,
+        producer: &NodeId,
+        port: &str,
+        run_id: &RunId,
+    ) -> Result<(
+        ExecutionPlan,
+        VariantSelectionOutcome,
+        crate::methods_fold_hpo::MethodsFoldHpoState,
+    )> {
+        use crate::methods_fold_hpo::*;
+        let mut base_plan = self.projection.plan.clone();
+        if let Some(raw) = base_plan
+            .campaign
+            .metadata
+            .get_mut("methods_hpo_operation")
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            raw.remove("resume_package_json");
+        }
+        base_plan.campaign_fingerprint = stable_json_fingerprint(&base_plan.campaign)?;
+        let mut base_projection = self.projection.clone();
+        base_projection.plan = base_plan.clone();
+        let base_execution = HpoExecutionContext {
+            projection: &base_projection,
+            ..*self
+        };
+        let mut clean_descriptor = descriptor.clone();
+        clean_descriptor.resume_package_json = None;
+        let (root_context, _) =
+            base_execution.runtime_context(&clean_descriptor, metric, producer, port)?;
+        let provenance = crate::bundle::MethodsHpoResumeProvenance {
+            graph_fingerprint: root_context.provenance.graph_fingerprint.clone(),
+            campaign_fingerprint: root_context.provenance.campaign_fingerprint.clone(),
+            controller_fingerprint: root_context.provenance.controller_fingerprint.clone(),
+            data_identities_fingerprint: root_context
+                .provenance
+                .data_identities_fingerprint
+                .clone(),
+            fold_set_fingerprint: root_context
+                .provenance
+                .fold_set_fingerprint
+                .clone()
+                .ok_or_else(|| {
+                    DagMlError::RuntimeValidation("fold HPO missing root fold fingerprint".into())
+                })?,
+            training_influence_fingerprint: root_context
+                .provenance
+                .training_influence_fingerprint
+                .clone(),
+            relation_fingerprint: root_context.provenance.relation_fingerprint.clone(),
+            selection: MethodsHpoResumeSelection {
+                selection_id: self.selection.id.clone(),
+                target_node_id: producer.clone(),
+                producer_port: port.into(),
+                metric: metric.name().into(),
+            },
+        };
+        let previous = descriptor
+            .resume_package_json
+            .as_deref()
+            .map(crate::replay::methods_hpo_fold_state_from_package_json)
+            .transpose()?;
+        if let Some(previous) = &previous {
+            let normalized = |plan: &ExecutionPlan| -> Result<String> {
+                let mut plan = plan.clone();
+                if let Some(raw) = plan
+                    .campaign
+                    .metadata
+                    .get_mut("methods_hpo_operation")
+                    .and_then(serde_json::Value::as_object_mut)
+                {
+                    raw.remove("trials");
+                    raw.remove("resume_package_json");
+                }
+                plan.campaign_fingerprint = stable_json_fingerprint(&plan.campaign)?;
+                stable_json_fingerprint(&plan)
+            };
+            if previous.provenance != provenance
+                || previous.operation_id != descriptor.operation_id
+                || normalized(&previous.base_plan)? != normalized(&base_plan)?
+            {
+                return Err(DagMlError::RuntimeValidation(
+                    "native fold HPO resume root plan/data/folds/influence differs".into(),
+                ));
+            }
+        }
+        let mut outer_scopes = Vec::new();
+        for (outer_id, nested) in &descriptor.inner_fold_sets {
+            let scope_id = methods_fold_hpo_scope_id(&descriptor.operation_id, Some(outer_id));
+            let prior = previous.as_ref().and_then(|p| {
+                p.outer_scopes
+                    .iter()
+                    .find(|s| s.outer_fold_id.as_ref() == Some(outer_id))
+            });
+            outer_scopes.push(
+                base_execution
+                    .execute_fold_study(
+                        &clean_descriptor,
+                        &scope_id,
+                        Some(outer_id),
+                        &nested.inner_fold_set,
+                        prior,
+                        metric,
+                        producer,
+                        port,
+                        run_id,
+                    )?
+                    .1,
+            );
+        }
+        let scope_id = methods_fold_hpo_scope_id(&descriptor.operation_id, None);
+        let (mut plan, refit_scope) = base_execution.execute_fold_study(
+            &clean_descriptor,
+            &scope_id,
+            None,
+            descriptor
+                .refit_inner_fold_set
+                .as_ref()
+                .expect("preflighted REFIT folds"),
+            previous.as_ref().map(|p| &p.refit_scope),
+            metric,
+            producer,
+            port,
+            run_id,
+        )?;
+        let selected_variant_id = refit_scope.winner_variant_id.clone();
+        // Inner candidate variants belong to their local ledger. Only the
+        // independently selected final predictor is a root candidate.
+        plan.fold_set = base_plan.fold_set.clone();
+        plan.campaign = base_plan.campaign.clone();
+        plan.campaign_fingerprint = base_plan.campaign_fingerprint.clone();
+        for (id, node) in &mut plan.node_plans {
+            node.inner_cv = base_plan.node_plans[id].inner_cv.clone();
+        }
+        plan.variants
+            .retain(|v| v.variant_id == selected_variant_id);
+        let state = MethodsFoldHpoState {
+            schema_version: 1,
+            operation_id: descriptor.operation_id.clone(),
+            target_node_id: descriptor.target_node_id.clone(),
+            base_plan,
+            selected_variant_id,
+            provenance,
+            relations: self.relations.clone(),
+            outer_scopes,
+            refit_scope,
+        };
+        state.validate()?;
+        let selection = select_best_variant_outcome_by_cv_for_target(
+            &plan,
+            run_id,
+            Some(self.request.options.seed),
+            metric,
+            producer,
+            Some(port),
+            PredictionLevel::Sample,
+            |candidate, ctx| {
+                ctx.resource_limits = Some(self.request.options.resources.clone());
+                SequentialScheduler
+                    .execute_fold_hpo_fit_cv(
+                        candidate,
+                        &state,
+                        self.controllers,
+                        self.data_provider,
+                        ctx,
+                    )
+                    .map(|_| ())
+            },
+        )?
+        .ok_or_else(|| {
+            DagMlError::RuntimeValidation(
+                "fold HPO outer evaluation emitted no selectable OOF score".into(),
+            )
+        })?;
+        Ok((plan, selection, state))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn execute_fold_study(
+        &self,
+        descriptor: &PortableMethodsHpoDescriptor,
+        scope_id: &str,
+        outer: Option<&FoldId>,
+        folds: &crate::fold::FoldSet,
+        previous: Option<&crate::methods_fold_hpo::MethodsFoldHpoScopeState>,
+        metric: RegressionMetricKind,
+        producer: &NodeId,
+        port: &str,
+        run_id: &RunId,
+    ) -> Result<(
+        ExecutionPlan,
+        crate::methods_fold_hpo::MethodsFoldHpoScopeState,
+    )> {
+        use crate::methods_fold_hpo::*;
+        let study_plan = methods_fold_hpo_study_plan(&self.projection.plan, scope_id, folds)?;
+        let relations = methods_fold_hpo_scope_relations(self.relations, folds);
+        relations.validate_against_fold_set(folds, &study_plan.campaign.leakage_policy)?;
+        if let Some(split) = &study_plan.campaign.split_invocation {
+            relations.validate_against_fold_set(folds, &split.leakage_policy)?;
+        }
+        let scope_plan_fingerprint = stable_json_fingerprint(&study_plan)?;
+        let local_descriptor: PortableMethodsHpoDescriptor =
+            serde_json::from_value(study_plan.campaign.metadata["methods_hpo_operation"].clone())?;
+        let mut projection = self.projection.clone();
+        projection.plan = study_plan;
+        let execution = HpoExecutionContext {
+            projection: &projection,
+            ..*self
+        };
+        let (mut context, _) =
+            execution.runtime_context(&local_descriptor, metric, producer, port)?;
+        context.proposal_namespace = Some(stable_json_fingerprint(&(
+            scope_id,
+            &self.projection.plan.variants[0].variant_id,
+        ))?);
+        if let Some(previous) = previous {
+            validate_methods_hpo_resume_state(
+                &previous.resume_state,
+                &projection.plan,
+                scope_id,
+                &context.controller_id,
+                &local_descriptor,
+                self.selection.id.as_str(),
+                metric,
+                producer,
+                port,
+                &context.provenance,
+            )?;
+            context.resume_checkpoint = Some(previous.resume_state.checkpoint.clone());
+            context.resume_variants = previous
+                .resume_state
+                .completed_proposals
+                .iter()
+                .map(|p| (p.trial_id, p.variant.variant_id.clone()))
+                .collect();
+            context.resume_terminal_trials = previous
+                .resume_state
+                .terminal_trials
+                .iter()
+                .map(|t| crate::runtime::RuntimeHpoTerminalSnapshot {
+                    trial: t.trial.clone(),
+                    variant_id: t.variant_id.clone(),
+                })
+                .collect();
+        }
+        let mut ctx = RunContext::new(run_id.clone(), Some(self.request.options.seed));
+        ctx.resource_limits = Some(self.request.options.resources.clone());
+        let campaign = SequentialScheduler.execute_hpo_campaign(
+            &projection.plan,
+            self.controllers,
+            self.data_provider,
+            &ctx,
+            &context,
+        )?;
+        let (plan, selection, resume_state) = execution.selection_from_campaign(
+            &context,
+            &local_descriptor,
+            previous.map(|s| s.resume_state.clone()),
+            campaign,
+        )?;
+        let winner_variant_id = selection.selection.selected_variant_id;
+        let variant = plan
+            .variants
+            .iter()
+            .find(|v| v.variant_id == winner_variant_id)
+            .expect("selected proposal present");
+        let winner_params = variant.choices["native_methods_hpo"].param_overrides[0]
+            .params
+            .clone();
+        let mut params = self.projection.plan.node_plans[&descriptor.target_node_id]
+            .params
+            .clone();
+        params.extend(winner_params.clone());
+        let state = MethodsFoldHpoScopeState {
+            scope_id: scope_id.into(),
+            phase: if outer.is_some() {
+                Phase::FitCv
+            } else {
+                Phase::Refit
+            },
+            outer_fold_id: outer.cloned(),
+            inner_fold_set: folds.clone(),
+            scope_plan_fingerprint,
+            winner_variant_id,
+            winner_params,
+            params_fingerprint: stable_json_fingerprint(&params)?,
+            resume_state,
+        };
+        Ok((plan, state))
+    }
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PortableMethodsHpoDescriptor {
@@ -567,6 +867,12 @@ struct PortableMethodsHpoDescriptor {
     /// deliberately not accepted in v1: a candidate patch must remain a
     /// replayable ordinary model parameter override.
     parameter_paths: BTreeMap<String, String>,
+    #[serde(default)]
+    scope: Option<String>,
+    #[serde(default)]
+    inner_fold_sets: BTreeMap<FoldId, crate::fold::NestedFoldSet>,
+    #[serde(default)]
+    refit_inner_fold_set: Option<crate::fold::FoldSet>,
 }
 
 fn portable_methods_hpo_v1() -> u32 {
@@ -596,6 +902,11 @@ impl HpoExecutionContext<'_> {
             })?;
         validate_portable_methods_hpo_descriptor(&descriptor, &self.projection.plan)?;
         validate_methods_hpo_selection_alignment(&descriptor, self.selection)?;
+        if descriptor.schema_version == 3 && !self.request.options.refit {
+            return Err(DagMlError::RuntimeValidation(
+                "native fold HPO requires independent REFIT".into(),
+            ));
+        }
 
         // Check the feature-owned native runtime before consulting controller
         // registration or any provider capability.  A portable HPO descriptor
@@ -660,6 +971,15 @@ fn validate_portable_methods_hpo_descriptor(
     descriptor: &PortableMethodsHpoDescriptor,
     plan: &ExecutionPlan,
 ) -> Result<()> {
+    if descriptor.schema_version != 3
+        && (descriptor.scope.is_some()
+            || !descriptor.inner_fold_sets.is_empty()
+            || descriptor.refit_inner_fold_set.is_some())
+    {
+        return Err(DagMlError::RuntimeValidation(
+            "campaign HPO cannot carry local fold fields".into(),
+        ));
+    }
     if descriptor.trials == 0 {
         return Err(DagMlError::RuntimeValidation(
             "native Methods HPO descriptor trials must be positive".to_string(),
@@ -702,7 +1022,7 @@ fn validate_portable_methods_hpo_descriptor(
                 descriptor.target_node_id
             ))
         })?;
-    if descriptor.schema_version == 2 {
+    if matches!(descriptor.schema_version, 2 | 3) {
         use crate::methods_phase_controls::*;
         if descriptor.native_profile.as_deref() != Some(METHODS_PLS_ROLE_PROFILE)
             || target.controller_id.as_str() != METHODS_NATIVE_REGRESSION_CONTROLLER
@@ -711,6 +1031,33 @@ fn validate_portable_methods_hpo_descriptor(
         }
         validate_native_pls_phase_plan(plan)?;
         validate_native_pls_hpo_space(&descriptor.study.search_space, &descriptor.parameter_paths)?;
+        if descriptor.schema_version == 3 {
+            if descriptor.trials > 256 || plan.variants.len() != 1 {
+                return Err(DagMlError::RuntimeValidation(
+                    "native fold HPO requires one unexpanded base and per-study budget 1..256"
+                        .into(),
+                ));
+            }
+            if descriptor.scope.as_deref() != Some("fold") {
+                return Err(DagMlError::RuntimeValidation(
+                    "native HPOv3 requires scope=fold".into(),
+                ));
+            }
+            crate::methods_fold_hpo::validate_methods_fold_hpo_folds(
+                plan,
+                &descriptor.inner_fold_sets,
+                descriptor.refit_inner_fold_set.as_ref().ok_or_else(|| {
+                    DagMlError::RuntimeValidation("native fold HPO lacks REFIT inner folds".into())
+                })?,
+            )?;
+        } else if descriptor.scope.is_some()
+            || !descriptor.inner_fold_sets.is_empty()
+            || descriptor.refit_inner_fold_set.is_some()
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "campaign HPO cannot carry fold-scope fields".into(),
+            ));
+        }
         let parsed = NativePlsRoleParams::from_params(&target.params)?;
         if parsed.phase_controls.as_ref().is_some_and(|p| {
             p.train_params
@@ -1994,6 +2341,10 @@ pub fn execute_training(input: TrainingExecutionInput<'_>) -> Result<TrainingOut
     #[cfg(feature = "methods-optimizer")]
     let mut methods_hpo_resume_state = None;
     #[cfg(feature = "methods-optimizer")]
+    let mut methods_hpo_fold_state = None;
+    #[cfg(not(feature = "methods-optimizer"))]
+    let methods_hpo_fold_state: Option<crate::methods_fold_hpo::MethodsFoldHpoState> = None;
+    #[cfg(feature = "methods-optimizer")]
     #[cfg(feature = "methods-optimizer")]
     let selection = if let Some(descriptor) = native_hpo_descriptor.as_ref() {
         let hpo_execution = HpoExecutionContext {
@@ -2005,31 +2356,44 @@ pub fn execute_training(input: TrainingExecutionInput<'_>) -> Result<TrainingOut
             training_influence: &runtime_training_influence,
             selection: &input.request.options.selection,
         };
-        let (context, previous_resume_state) = hpo_execution.runtime_context(
-            descriptor,
-            selection_metric,
-            &selection_producer,
-            &selection_producer_port,
-        )?;
-        let mut campaign_context =
-            RunContext::new(input.run_id.clone(), Some(input.request.options.seed));
-        campaign_context.resource_limits = Some(input.request.options.resources.clone());
-        let campaign = SequentialScheduler.execute_hpo_campaign(
-            &projection.plan,
-            input.controllers,
-            input.data_provider,
-            &campaign_context,
-            &context,
-        )?;
-        let (plan, selection, resume_state) = hpo_execution.selection_from_campaign(
-            &context,
-            descriptor,
-            previous_resume_state,
-            campaign,
-        )?;
-        projection.plan = plan;
-        methods_hpo_resume_state = Some(resume_state);
-        selection
+        if descriptor.schema_version == 3 {
+            let (plan, selection, state) = hpo_execution.execute_fold_studies(
+                descriptor,
+                selection_metric,
+                &selection_producer,
+                &selection_producer_port,
+                &input.run_id,
+            )?;
+            projection.plan = plan;
+            methods_hpo_fold_state = Some(state);
+            selection
+        } else {
+            let (context, previous_resume_state) = hpo_execution.runtime_context(
+                descriptor,
+                selection_metric,
+                &selection_producer,
+                &selection_producer_port,
+            )?;
+            let mut campaign_context =
+                RunContext::new(input.run_id.clone(), Some(input.request.options.seed));
+            campaign_context.resource_limits = Some(input.request.options.resources.clone());
+            let campaign = SequentialScheduler.execute_hpo_campaign(
+                &projection.plan,
+                input.controllers,
+                input.data_provider,
+                &campaign_context,
+                &context,
+            )?;
+            let (plan, selection, resume_state) = hpo_execution.selection_from_campaign(
+                &context,
+                descriptor,
+                previous_resume_state,
+                campaign,
+            )?;
+            projection.plan = plan;
+            methods_hpo_resume_state = Some(resume_state);
+            selection
+        }
     } else {
         select_best_variant_outcome_by_cv_for_target(
             &projection.plan,
@@ -2100,12 +2464,22 @@ pub fn execute_training(input: TrainingExecutionInput<'_>) -> Result<TrainingOut
     let mut selected_ctx = RunContext::new(input.run_id.clone(), Some(input.request.options.seed));
     selected_ctx.resource_limits = Some(input.request.options.resources.clone());
     selected_ctx.variant_id = Some(selected_variant_id.clone());
-    let fit_cv_results = scheduler.fit_cv(
-        &effective_plan,
-        input.controllers,
-        input.data_provider,
-        &mut selected_ctx,
-    )?;
+    let fit_cv_results = if let Some(state) = &methods_hpo_fold_state {
+        SequentialScheduler.execute_fold_hpo_fit_cv(
+            &effective_plan,
+            state,
+            input.controllers,
+            input.data_provider,
+            &mut selected_ctx,
+        )?
+    } else {
+        scheduler.fit_cv(
+            &effective_plan,
+            input.controllers,
+            input.data_provider,
+            &mut selected_ctx,
+        )?
+    };
     selected_ctx.collect_cross_fold_validation_scores(plan_oof_partition_mode(&effective_plan))?;
     validate_selected_rerun_reports(
         &selection.selection.validation_reports,
@@ -2137,8 +2511,8 @@ pub fn execute_training(input: TrainingExecutionInput<'_>) -> Result<TrainingOut
             &selected_variant_id,
             input.request.options.seed,
             &prediction_requirements,
-            &mut records,
-            &mut payloads,
+            (&mut records, &mut payloads),
+            methods_hpo_fold_state.as_ref(),
         )?;
         (
             records,
@@ -2202,6 +2576,7 @@ pub fn execute_training(input: TrainingExecutionInput<'_>) -> Result<TrainingOut
     {
         execution_bundle.methods_hpo_resume_state = methods_hpo_resume_state.clone();
     }
+    execution_bundle.methods_hpo_fold_state = methods_hpo_fold_state.clone();
     // RAW is a generic portable-artifact contract, not a Methods feature.
     // Host controllers (including WASM) must transfer these payloads before
     // the bundle's mandatory exact-coverage/hash validation.
@@ -2338,6 +2713,7 @@ pub fn execute_training(input: TrainingExecutionInput<'_>) -> Result<TrainingOut
         methods_hpo_resume_state,
         #[cfg(not(feature = "methods-optimizer"))]
         methods_hpo_resume_state: None,
+        methods_hpo_fold_state,
         replayable_phases,
         warnings: input.warnings,
         diagnostics: input.diagnostics,
@@ -2828,7 +3204,7 @@ fn bind_selection_decision(
     decision.validate()
 }
 
-fn materialize_selected_variant(
+pub(crate) fn materialize_selected_variant(
     mut plan: ExecutionPlan,
     selected_variant_id: &VariantId,
 ) -> Result<ExecutionPlan> {
@@ -3378,9 +3754,13 @@ fn attach_oof_prediction_cache_namespaces(
     selected_variant_id: &VariantId,
     seed: u64,
     requirements: &[BundlePredictionRequirement],
-    records: &mut [BundlePredictionCacheRecord],
-    payloads: &mut [BundlePredictionCachePayload],
+    caches: (
+        &mut [BundlePredictionCacheRecord],
+        &mut [BundlePredictionCachePayload],
+    ),
+    fold_hpo: Option<&crate::methods_fold_hpo::MethodsFoldHpoState>,
 ) -> Result<()> {
+    let (records, payloads) = caches;
     let requirements_by_key = requirements
         .iter()
         .map(|requirement| (requirement.key(), requirement))
@@ -3401,6 +3781,7 @@ fn attach_oof_prediction_cache_namespaces(
             seed,
             requirement,
             record,
+            fold_hpo,
         )?;
         record.cache_namespace_fingerprints = fingerprints.clone();
         let payload = payloads
@@ -3425,6 +3806,7 @@ fn oof_cache_namespace_fingerprints(
     seed: u64,
     requirement: &BundlePredictionRequirement,
     record: &BundlePredictionCacheRecord,
+    fold_hpo: Option<&crate::methods_fold_hpo::MethodsFoldHpoState>,
 ) -> Result<Vec<String>> {
     let producer_plan = plan
         .node_plans
@@ -3499,7 +3881,12 @@ fn oof_cache_namespace_fingerprints(
             requirement.source_port.clone(),
             requirement.consumer_node.clone(),
             requirement.target_port.clone(),
-            producer_plan.params_fingerprint.clone(),
+            match fold_hpo {
+                Some(state) if producer_plan.node_id == state.target_node_id => {
+                    state.cv_params_fingerprint(&fold_id)?
+                }
+                _ => producer_plan.params_fingerprint.clone(),
+            },
             identity.identity_fingerprint.clone(),
             fold_id,
             selected_variant_id.to_string(),
@@ -4025,6 +4412,25 @@ impl TrainingOutcome {
                 "training outcome Methods HPO resume state does not equal execution bundle state",
             );
         }
+        if self.execution_bundle.methods_hpo_fold_state != self.methods_hpo_fold_state {
+            return contract_error("training outcome fold HPO state differs from execution bundle");
+        }
+        if let Some(state) = &self.methods_hpo_fold_state {
+            if self.schema_version != TRAINING_OUTCOME_SCHEMA_VERSION || !self.refit.requested {
+                return contract_error("native fold HPO requires V2 completed REFIT outcome");
+            }
+            if state.provenance.data_identities_fingerprint
+                != tcv1_fingerprint(&self.data_identities, "fold HPO data identities")?
+                || state.provenance.training_influence_fingerprint
+                    != self.training_influence.manifest_fingerprint
+                || state.provenance.relation_fingerprint
+                    != self.training_influence.relation_fingerprint
+            {
+                return contract_error(
+                    "native fold HPO root data/influence/relation provenance differs",
+                );
+            }
+        }
         match (
             &self.conformal_calibration,
             &self.conformal_calibration_replay,
@@ -4522,9 +4928,21 @@ impl TrainingOutcome {
                 return contract_error("training outcome lineage contains a non-training phase");
             }
             let plan = &self.effective_plan.node_plans[&record.node_id];
+            let expected_params = match &self.methods_hpo_fold_state {
+                Some(state)
+                    if record.phase == Phase::FitCv && record.node_id == state.target_node_id =>
+                {
+                    state.cv_params_fingerprint(record.fold_id.as_ref().ok_or_else(|| {
+                        DagMlError::RuntimeValidation(
+                            "fold HPO CV lineage lacks external fold".into(),
+                        )
+                    })?)?
+                }
+                _ => plan.params_fingerprint.clone(),
+            };
             if record.controller_id != plan.controller_id
                 || record.controller_version != plan.controller_version
-                || record.params_fingerprint != plan.params_fingerprint
+                || record.params_fingerprint != expected_params
             {
                 return contract_error("training outcome lineage does not match node plan");
             }
