@@ -48,6 +48,7 @@ jobs:
           set -euo pipefail
           out_dir="$PWD/target/wasm-web/dag-ml-wasm"
           wasm-pack build crates/dag-ml-wasm --target web --out-dir "$out_dir" --release
+          node scripts/stage_wasm_host_adapters.mjs "$out_dir"
 
       - name: Pin npm metadata
         working-directory: target/wasm-web/dag-ml-wasm

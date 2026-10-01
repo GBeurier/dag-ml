@@ -7,6 +7,14 @@ on:
     paths:
       - .github/workflows/methods-wasm-hpo-candidate.yml
       - examples/adapters/hpo_n4m_wasm_adapter.mjs
+      - bindings/js/**
+      - scripts/stage_wasm_host_adapters.mjs
+      - scripts/fixtures/wasm_host_adapter_consumer.*
+      - scripts/fixtures/methods_four_source_relation_identity.json
+      - scripts/smoke_wasm_multimodal_methods_hpo.mjs
+      - scripts/test_wasm_n4m_controller.mjs
+      - scripts/qualify_multimodal_methods_hpo_python.py
+      - scripts/qualify_multimodal_methods_nirs4all.py
       - scripts/smoke_wasm_n4m_hpo.mjs
       - scripts/wasm_ridge_refit_oracle.mjs
       - crates/dag-ml-wasm/**
@@ -51,6 +59,13 @@ jobs:
         run: |
           cargo install wasm-pack --version 0.15.0 --locked
           wasm-pack build crates/dag-ml-wasm --target nodejs --out-dir "$PWD/target/wasm/dag-ml-wasm" --release
+          node scripts/stage_wasm_host_adapters.mjs "$PWD/target/wasm/dag-ml-wasm"
+          wasm-pack build crates/dag-ml-wasm --target web --out-dir "$PWD/target/wasm-web/dag-ml-wasm" --release
+          node scripts/stage_wasm_host_adapters.mjs "$PWD/target/wasm-web/dag-ml-wasm"
+          node scripts/smoke_wasm_bindings.cjs "$PWD/target/wasm/dag-ml-wasm"
+          node scripts/smoke_wasm_web_bindings.mjs "$PWD/target/wasm-web/dag-ml-wasm"
+          node scripts/smoke_wasm_tarball_metadata.mjs "$PWD/target/wasm/dag-ml-wasm"
+          node scripts/smoke_wasm_tarball_metadata.mjs "$PWD/target/wasm-web/dag-ml-wasm"
       - name: Build candidate Methods JS/WASM without publishing
         working-directory: external/nirs4all-methods
         run: |
@@ -60,8 +75,47 @@ jobs:
           npm ci
           npm run build
           npm run stage:wasm
+      - name: Check extracted package imports and TypeScript consumers
+        run: |
+          for target in wasm wasm-web; do
+            consumer="$RUNNER_TEMP/consumer-$target"
+            mkdir -p "$consumer/node_modules/dag-ml-wasm"
+            npm pack --pack-destination "$consumer" "$PWD/target/$target/dag-ml-wasm"
+            tar -xzf "$consumer"/dag-ml-wasm-*.tgz --strip-components=1 -C "$consumer/node_modules/dag-ml-wasm"
+            cp scripts/fixtures/wasm_host_adapter_consumer.mjs "$consumer/consumer.mjs"
+            node "$consumer/consumer.mjs"
+            mkdir -p "$consumer/node_modules/@nirs4all"
+            ln -s "$PWD/external/nirs4all-methods/bindings/js" "$consumer/node_modules/@nirs4all/methods"
+            cp scripts/fixtures/wasm_host_adapter_consumer.mts "$consumer/consumer.mts"
+            node external/nirs4all-methods/bindings/js/node_modules/typescript/lib/tsc.js \
+              --strict --noEmit --module NodeNext --moduleResolution NodeNext \
+              --target ES2022 --lib ESNext,DOM "$consumer/consumer.mts"
+          done
       - name: Fit Ridge with Methods proposals, resume and replay selected refit
         run: |
           node scripts/smoke_wasm_n4m_hpo.mjs \
             "$PWD/target/wasm/dag-ml-wasm" \
             "$PWD/external/nirs4all-methods/bindings/js/dist"
+      - name: Qualify the public controller and four-source nested OOF search
+        run: |
+          node scripts/test_wasm_n4m_controller.mjs \
+            "$PWD/target/wasm/dag-ml-wasm" \
+            "$PWD/external/nirs4all-methods/bindings/js/dist"
+          node scripts/smoke_wasm_multimodal_methods_hpo.mjs \
+            "$PWD/target/wasm/dag-ml-wasm" \
+            "$PWD/external/nirs4all-methods/bindings/js/dist" \
+            "$RUNNER_TEMP/four-source-receipt.json"
+          node scripts/test_wasm_n4m_controller.mjs \
+            "$PWD/target/wasm-web/dag-ml-wasm" \
+            "$PWD/external/nirs4all-methods/bindings/js/dist"
+          node scripts/smoke_wasm_multimodal_methods_hpo.mjs \
+            "$PWD/target/wasm-web/dag-ml-wasm" \
+            "$PWD/external/nirs4all-methods/bindings/js/dist"
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Compare native Python folds and scores with the WASM search
+        run: |
+          python -m pip install 'dag-ml==0.3.32' 'nirs4all-methods==1.2.1' 'pls4all==1.2.1' numpy
+          python scripts/qualify_multimodal_methods_hpo_python.py \
+            "$RUNNER_TEMP/four-source-receipt.json" "$RUNNER_TEMP/python-parity.json"

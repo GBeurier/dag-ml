@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "producer": "dag_ml.sample_relation_set_fingerprint_json",
+  "dagml_version": "0.3.32",
+  "relation_json_sha256": "134118e9c0e5fd5f2b94dc9865b5374325694b76133d279bd6279dc93a109b3a",
+  "native_relation_fingerprint": "f93cae578796381352230541b1f5f32b604410b2c68a392e5e2b2dd9f6c9d19a"
+}

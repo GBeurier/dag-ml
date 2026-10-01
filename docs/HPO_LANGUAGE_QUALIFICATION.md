@@ -10,6 +10,7 @@ that a local model fits on the declared training fold.
 | C ABI | Parallel candidate callbacks and checkpoint recovery in `dag-ml-capi` tests | A caller must supply its own operator and optimizer callbacks. |
 | Python/CLI | Public nirs4all RandomForest and other model HPO oracles; CLI process tests | Python object artifacts remain Python-host. |
 | Node WASM and Chrome Web Workers | Real scalar Ridge fitted on each fold's train IDs; per-fold and pooled OOF RMSE, parallel work, pruning and resume | The example does not imply all JavaScript operator families are implemented. |
+| Development Methods controller, Node and web packages | Four numeric source projections, nested group OOF, Sobol proposals, exact resume, Python score parity, native selected-source archive replay, and 22 controller guards | Web package tested in Node; four-source portable archive, raw N-D encoders and R/Octave multimodal controllers remain open. Adapters are not in the published 0.3.32 package. |
 | R/CLI | `r_hpo_ridge` fits Ridge in R using the signed plan FoldSet and an independent numeric table, through `dagml_host_hpo_search()` and the CLI; it checks native scores, parallel trials, pruning, selection, resume, REFIT, fresh-process RDS replay and rejection of a corrupted sidecar | This qualifies one R-hosted operator, not every R model or a portable RDS artifact. |
 | Octave/CLI | `octave_hpo_ridge` fits Ridge in Octave from the signed plan FoldSet and a numeric table; CI checks fold evidence, native parallel HPO, pruning, resume, REFIT, fresh-process MAT replay and rejection of a corrupted sidecar | This qualifies one Octave-hosted operator. Licensed MATLAB execution is outside the active qualification scope. |
 
@@ -32,8 +33,16 @@ real Methods Median pruning decision. It checks selected refit/replay against th
 current DAG-ML WASM build. The non-publishing
 `methods-wasm-hpo-candidate.yml` workflow builds both candidate WASM packages
 on relevant `main` changes and can also be dispatched manually.
-This is a single-operator bridge, not yet parity for the four-source Python
-DAG or a packaged universal JS controller. The smoke accepts both the Node
+The public `dag-ml-wasm/n4m-controller` and `dag-ml-wasm/n4m-optimizer`
+subpaths additionally provide a native Methods regression controller and this
+optimizer adapter. `smoke_wasm_multimodal_methods_hpo.mjs` qualifies four
+numeric source projections plus a meta-model, nested group OOF and exact
+resume. The Python callback oracle checks the same recorded proposals and
+all native per-fold scores; the SDK oracle checks four-source training and
+fit-free archive replay. See [the controller guide](N4M_WASM_CONTROLLERS.md).
+Raw N-D encoders and full four-source cross-language archive replay remain
+open; these proofs do not close the complete multimodal language matrix.
+The scalar smoke accepts both the Node
 CommonJS wasm-pack target and the npm ESM package; it initializes the latter
 from its packaged WASM bytes before running the same checks.
 
