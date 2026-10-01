@@ -277,7 +277,7 @@ class ArchiveV2ContractTests(unittest.TestCase):
         ).encode("utf-8")
         rebind_package_integrity(document, payloads)
 
-    def _role_fixture(self, role_count, mutate_wrapper=None):
+    def _role_fixture(self, role_count, mutate_wrapper=None, *, plugin="dagml.methods.wasm.regression"):
         """Convert transport records only; native hydration has separate tests."""
         document, payloads = materialize_fixture(self.manifest, ROOT)
         package = json.loads(payloads[PACKAGE_MEMBER])
@@ -306,7 +306,7 @@ class ArchiveV2ContractTests(unittest.TestCase):
             member_path = f"artifacts/{digest}.json"
             artifact.update(
                 kind="methods_role_pipeline", uri=member_path,
-                plugin="dagml.methods.wasm.regression", plugin_version="1.0.0",
+                plugin=plugin, plugin_version="1.0.0",
                 content_fingerprint=digest, size_bytes=len(raw),
             )
             replacements[artifact["id"]] = copy.deepcopy(artifact)
@@ -372,6 +372,13 @@ class ArchiveV2ContractTests(unittest.TestCase):
                     archive = Path(directory) / "roles.n4a"
                     write_fixture_zip(archive, document, payloads)
                     validate_archive_zip(archive, self.validator, root=ROOT)
+
+    def test_r_role_codec_is_explicit_and_unknown_plugins_remain_refused(self) -> None:
+        document, payloads = self._role_fixture(3, plugin="dagml.methods.r.regression")
+        validate_archive_v2_payloads(document, payloads, self.validator, root=ROOT)
+        document, payloads = self._role_fixture(3, plugin="dagml.methods.unknown.regression")
+        with self.assertRaisesRegex(ArchiveV2ContractError, r"^native_model_refusal:"):
+            validate_archive_v2_payloads(document, payloads, self.validator, root=ROOT)
 
     def test_resigned_role_wrapper_and_states_are_closed(self) -> None:
         mutations = {

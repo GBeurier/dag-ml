@@ -83,7 +83,8 @@ the closed ADR-28 fields, content-addressed `artifacts/<sha256>.json` member and
 `dagml_methods_role_pipeline_raw_sha256` semantic profile.
 
 The wrapper schema is `dagml.methods.regression.v1`, the accepted signed plugin
-is `dagml.methods.wasm.regression` version `1.0.0`, and the original package
+is `dagml.methods.wasm.regression` or `dagml.methods.r.regression`, version
+`1.0.0`; controller identities and explicit trust remain host-specific. The original package
 retains its controller trust and exact recipe/state identities. DAG-ML validates
 the bounded wrapper; Methods hydrates opaque N4ME states. Core checks storage
 bounds/inventory and exposes bytes. Consumers then call

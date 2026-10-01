@@ -123,7 +123,10 @@ pub fn validate_methods_role_pipeline_payload(
     artifact.validate_portable()?;
     if artifact.kind != "methods_role_pipeline"
         || artifact.backend != Some(ArtifactBackend::Raw)
-        || artifact.plugin.as_deref() != Some("dagml.methods.wasm.regression")
+        || !matches!(
+            artifact.plugin.as_deref(),
+            Some("dagml.methods.wasm.regression" | "dagml.methods.r.regression")
+        )
         || artifact.plugin_version.as_deref() != Some("1.0.0")
         || artifact.native_predictor_descriptor.is_some()
         || artifact.native_estimator_descriptor.is_some()
@@ -976,6 +979,11 @@ mod tests {
         let original = &package.execution_bundle.refit_artifacts[0];
         let bytes = &package.execution_bundle.raw_artifact_payloads[&original.artifact.id];
         validate_methods_role_pipeline_payload(original, bytes).unwrap();
+        let mut r_native = original.clone();
+        r_native.artifact.plugin = Some("dagml.methods.r.regression".into());
+        validate_methods_role_pipeline_payload(&r_native, bytes).unwrap();
+        r_native.artifact.plugin = Some("dagml.methods.unknown.regression".into());
+        assert!(validate_methods_role_pipeline_payload(&r_native, bytes).is_err());
         let mut untrusted = original.clone();
         untrusted.artifact.plugin_version = Some("999.0.0".into());
         assert!(validate_methods_role_pipeline_payload(&untrusted, bytes).is_err());
