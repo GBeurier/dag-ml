@@ -112,6 +112,13 @@ jobs:
           node scripts/smoke_wasm_multimodal_methods_hpo.mjs \
             "$PWD/target/wasm-web/dag-ml-wasm" \
             "$PWD/external/nirs4all-methods/bindings/js/dist"
+      - name: Preserve the unchanged four-source qualification capture
+        uses: actions/upload-artifact@v7
+        with:
+          name: methods-four-source-fixture
+          path: ${{ runner.temp }}/four-source-receipt.json
+          if-no-files-found: error
+          retention-days: 30
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"

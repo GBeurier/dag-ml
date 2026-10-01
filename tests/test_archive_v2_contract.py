@@ -380,6 +380,28 @@ class ArchiveV2ContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ArchiveV2ContractError, r"^native_model_refusal:"):
             validate_archive_v2_payloads(document, payloads, self.validator, root=ROOT)
 
+    def test_octave_role_plugin_requires_exact_owners_without_widening_codec(self) -> None:
+        from scripts.validate_archive_v2_contract import validate_role_pipeline_payload
+
+        _, payloads = self._role_fixture(1, plugin="dagml.methods.octave.regression")
+        package = json.loads(payloads[PACKAGE_MEMBER])
+        record = package["execution_bundle"]["refit_artifacts"][0]
+        raw = bytes(package["execution_bundle"]["raw_artifact_payloads"][record["artifact"]["id"]])
+        with self.assertRaisesRegex(ArchiveV2ContractError, "exact Octave controller owner"):
+            validate_role_pipeline_payload(record, raw)
+        record["controller_id"] = record["artifact"]["controller_id"] = "controller:methods.octave.regression"
+        validate_role_pipeline_payload(record, raw)
+        for location in (record, record["artifact"]):
+            location["controller_id"] = "controller:methods.r.regression"
+            with self.assertRaisesRegex(ArchiveV2ContractError, "exact Octave controller owner"):
+                validate_role_pipeline_payload(record, raw)
+            location["controller_id"] = "controller:methods.octave.regression"
+        for field, value in (("plugin", "dagml.methods.octave.unknown"), ("plugin_version", "1.0.1")):
+            changed = copy.deepcopy(record)
+            changed["artifact"][field] = value
+            with self.assertRaisesRegex(ArchiveV2ContractError, "trusted RAW codec"):
+                validate_role_pipeline_payload(changed, raw)
+
     def test_resigned_role_wrapper_and_states_are_closed(self) -> None:
         mutations = {
             "unknown_schema": lambda value: value.update(schema="foreign.v1"),

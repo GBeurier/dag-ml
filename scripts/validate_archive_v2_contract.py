@@ -667,7 +667,8 @@ def validate_role_pipeline_payload(record: dict[str, Any], payload: bytes) -> No
         and artifact.get("kind") == "methods_role_pipeline"
         and artifact.get("backend") == "raw"
         and artifact.get("plugin") in {
-            "dagml.methods.wasm.regression", "dagml.methods.r.regression", "dagml.methods.native.regression",
+            "dagml.methods.wasm.regression", "dagml.methods.r.regression",
+            "dagml.methods.octave.regression", "dagml.methods.native.regression",
         }
         and artifact.get("plugin_version") == "1.0.0"
         and artifact.get("native_predictor_descriptor") is None
@@ -679,6 +680,9 @@ def validate_role_pipeline_payload(record: dict[str, Any], payload: bytes) -> No
     if artifact.get("plugin") == "dagml.methods.native.regression":
         require(artifact.get("controller_id") == record.get("controller_id") == "controller:methods.native.regression",
                 "native_model_refusal", "native PLS RAW plugin requires its native controller owner")
+    if artifact.get("plugin") == "dagml.methods.octave.regression":
+        require(artifact.get("controller_id") == record.get("controller_id") == "controller:methods.octave.regression",
+                "native_model_refusal", "Octave Methods RAW plugin requires its exact Octave controller owner")
     wrapper = load_json_bytes(payload, artifact["uri"])
     def validate_depth(value: Any, depth: int = 0) -> None:
         require(depth <= 128, "native_model_refusal", "RolePipeline JSON exceeds its depth bound")

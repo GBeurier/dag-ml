@@ -143,6 +143,7 @@ pub fn validate_methods_role_pipeline_payload(
             Some(
                 "dagml.methods.wasm.regression"
                     | "dagml.methods.r.regression"
+                    | "dagml.methods.octave.regression"
                     | "dagml.methods.native.regression"
             )
         )
@@ -159,6 +160,12 @@ pub fn validate_methods_role_pipeline_payload(
             || record.controller_id.as_str() != crate::METHODS_NATIVE_REGRESSION_CONTROLLER)
     {
         return refuse("native PLS RAW plugin requires its exact native controller owner");
+    }
+    if artifact.plugin.as_deref() == Some("dagml.methods.octave.regression")
+        && (artifact.controller_id.as_str() != "controller:methods.octave.regression"
+            || record.controller_id.as_str() != "controller:methods.octave.regression")
+    {
+        return refuse("Octave Methods RAW plugin requires its exact Octave controller owner");
     }
     let raw = sha256(bytes);
     if artifact.content_fingerprint.as_deref() != Some(raw.as_str())
@@ -1050,6 +1057,35 @@ mod tests {
         record.artifact.content_fingerprint = Some(raw);
         record.artifact.size_bytes = Some(modified.len() as u64);
         assert!(validate_methods_role_pipeline_payload(&record, &modified).is_err());
+    }
+
+    #[test]
+    fn octave_role_plugin_requires_both_exact_controller_owners() {
+        let (_, package) = role_transport_fixture(false);
+        let original = &package.execution_bundle.refit_artifacts[0];
+        let bytes = &package.execution_bundle.raw_artifact_payloads[&original.artifact.id];
+        let mut octave = original.clone();
+        octave.artifact.plugin = Some("dagml.methods.octave.regression".into());
+        assert!(validate_methods_role_pipeline_payload(&octave, bytes).is_err());
+        octave.artifact.controller_id =
+            crate::ControllerId::new("controller:methods.octave.regression").unwrap();
+        assert!(validate_methods_role_pipeline_payload(&octave, bytes).is_err());
+        octave.controller_id = octave.artifact.controller_id.clone();
+        validate_methods_role_pipeline_payload(&octave, bytes).unwrap();
+        let mut foreign_artifact = octave.clone();
+        foreign_artifact.artifact.controller_id = original.artifact.controller_id.clone();
+        assert!(validate_methods_role_pipeline_payload(&foreign_artifact, bytes).is_err());
+        for plugin in [
+            "dagml.methods.octave.regression.v2",
+            "dagml.methods.octave.unknown",
+        ] {
+            let mut unknown = octave.clone();
+            unknown.artifact.plugin = Some(plugin.into());
+            assert!(validate_methods_role_pipeline_payload(&unknown, bytes).is_err());
+        }
+        let mut wrong_version = octave;
+        wrong_version.artifact.plugin_version = Some("1.0.1".into());
+        assert!(validate_methods_role_pipeline_payload(&wrong_version, bytes).is_err());
     }
 
     #[test]
