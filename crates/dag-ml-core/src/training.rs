@@ -3404,6 +3404,27 @@ fn validate_package_artifact_bindings(package: &PortablePredictorPackage) -> Res
     Ok(())
 }
 
+/// Compare caller-authorized runtime manifests with every embedded controller.
+/// This is a pre-callback trust boundary shared by Python and WASM replay.
+pub fn validate_runtime_controller_manifests(
+    plan: &ExecutionPlan,
+    trusted_manifests: &ControllerRegistry,
+) -> Result<()> {
+    for (controller_id, embedded_manifest) in &plan.controller_manifests {
+        let trusted_manifest = trusted_manifests.get(controller_id).ok_or_else(|| {
+            DagMlError::RuntimeValidation(format!(
+                "execution plan controller `{controller_id}` is absent from the trusted runtime manifests"
+            ))
+        })?;
+        if trusted_manifest != embedded_manifest {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "execution plan controller `{controller_id}` does not match the trusted runtime manifest"
+            )));
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn contains_runtime_handle(value: &serde_json::Value) -> bool {
     match value {
         serde_json::Value::Array(values) => values.iter().any(contains_runtime_handle),

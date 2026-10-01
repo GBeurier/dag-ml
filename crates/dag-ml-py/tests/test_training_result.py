@@ -725,6 +725,18 @@ class TrainingResultTests(unittest.TestCase):
 
         self.assertTrue(result.detach())
         replay_callback = _SuccessfulTrainingCallback(explicit_model_ports=True)
+        trusted = fixture["request"]["controller_manifests"]
+        for untrusted in ([], [{**manifest, "controller_version": "999.0.0"} for manifest in trusted]):
+            with self.subTest(trusted=untrusted):
+                with self.assertRaises(dag_ml.DagMlError):
+                    dag_ml.replay_loaded_predictor_package(
+                        dag_ml.PortablePredictorPackage(json.dumps(package)),
+                        replay_request, fixture["data_envelopes"], artifact_handles, replay_callback,
+                        outcome_id="outcome:python.public.package.untrusted",
+                        run_id="run:python.public.package.untrusted",
+                        trusted_controller_manifests=untrusted,
+                    )
+                self.assertEqual(replay_callback.call_count, 0)
         replay_outcome = dag_ml.replay_loaded_predictor_package(
             package,
             replay_request,
@@ -733,6 +745,7 @@ class TrainingResultTests(unittest.TestCase):
             replay_callback,
             outcome_id="outcome:python.public.package.predict",
             run_id="run:python.public.package.predict",
+            trusted_controller_manifests=trusted,
         ).to_dict()
 
         self.assertGreater(replay_callback.call_count, 0)

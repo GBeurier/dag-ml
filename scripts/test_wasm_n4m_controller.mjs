@@ -113,6 +113,31 @@ try {
   checked(() => assert.throws(() => restored.hydrate({ ...request, node_id: "model:other" }, payload), /another node/));
   checked(() => { const value = structuredClone(prediction); value.node_plan.params_fingerprint = "b".repeat(64); assert.throws(() => call(restored, value), /binding mismatch/); });
   checked(() => { const value = structuredClone(prediction); value.input_handles.model.owner_controller = "other"; assert.throws(() => call(restored, value), /owner/); });
+  checked(() => {
+    const forged = JSON.parse(new TextDecoder().decode(payload));
+    forged.feature_names.reverse();
+    assert.equal(forged.feature_names.length, JSON.parse(new TextDecoder().decode(payload)).feature_names.length);
+    const bytes = new TextEncoder().encode(JSON.stringify(forged));
+    const fingerprint = options.digest(bytes);
+    const forgedArtifact = { ...artifact, content_fingerprint: fingerprint,
+      size_bytes: bytes.length, uri: "artifacts/" + fingerprint + ".json" };
+    const fresh = new N4mWasmRegressionController(options);
+    let numericalPredictions = 0;
+    const originalPredict = methods.RolePipeline.prototype.predict;
+    methods.RolePipeline.prototype.predict = function (...args) {
+      numericalPredictions++; return originalPredict.apply(this, args);
+    };
+    try {
+      assert.throws(() => {
+        const forgedRequest = { ...request, artifact: forgedArtifact };
+        const forgedHandle = fresh.hydrate(forgedRequest, bytes);
+        call(fresh, { ...structuredClone(prediction), artifact_inputs: { model: forgedRequest },
+          input_handles: { model: forgedHandle } });
+      }, /feature.*(order|name)|order.*feature/i);
+      assert.equal(numericalPredictions, 0, "Re-sealed feature permutations must fail before Methods prediction");
+    } finally { methods.RolePipeline.prototype.predict = originalPredict; fresh.close(); }
+    assert.equal(fresh.models.size, 0);
+  });
   assert.equal(fitCalls, beforeReplay);
   restored.close();
   checked(() => assert.throws(() => call(restored, prediction), /closed/));

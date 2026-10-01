@@ -5,7 +5,9 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -177,7 +179,7 @@ for (const fit of fitLog) {
 }
 
 // Qualify native archive transport with a selected source estimator. Full
-// four-source stacking archive replay remains a separate qualification.
+// four-source stacking transport is qualified separately below.
 const selected = resumed.trials.find(trial => trial.trial_index === resumed.selected_trial_index);
 const refitDsl = structuredClone(dsl);
 delete refitDsl.split_invocation;
@@ -376,6 +378,40 @@ const completeArchive = { requestJson: completeRequestJson,
   failedReplayReleasedStates: true,
   trainingTamperRefusedBeforeCallback: true, parallelSchedulerRefusedBeforeCallback: true,
 };
+// Transport the original five signed RAW wrappers; no N4MM conversion or
+// synthetic estimator replaces any source or the OOF meta model.
+const portablePayloads = JSON.parse(dagMl.build_archive_v2_native_portable_payloads_json(
+  "archive:methods.four-sources", completeCapture.training_outcome_json, completePackageJson));
+assert.equal(portablePayloads.manifest.payloads.methods.n4mm.length, 0);
+assert.equal(portablePayloads.manifest.payloads.methods.role_pipelines.length, 5);
+assert.equal(Object.keys(portablePayloads.members).length, 11);
+assert.deepEqual(JSON.parse(dagMl.validate_archive_v2_portable_payloads_json(
+  JSON.stringify(portablePayloads.manifest), completePackageJson,
+  JSON.stringify(portablePayloads.members))), { valid: true });
+const coreModules = (process.env.NIRS4ALL_CORE_WASM_MODULE ?? "").split(",").filter(Boolean);
+const archiveConsumers = [];
+if (coreModules.length) {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "dagml-five-model-archive-"));
+  try {
+    const capturePath = path.join(directory, "current-inputs.json");
+    fs.writeFileSync(capturePath, JSON.stringify({ ...completeArchive, manifest }));
+    for (const coreModule of coreModules) {
+      const core = await import(pathToFileURL(path.resolve(coreModule)).href);
+      const bytes = await core.writePortableArchiveV2(portablePayloads.manifest,
+        Object.fromEntries(Object.entries(portablePayloads.members).map(
+          ([member, payload]) => [member, Uint8Array.from(payload)])));
+      const archivePath = path.join(directory, "five-models.n4a");
+      fs.writeFileSync(archivePath, bytes);
+      const consumer = spawnSync(process.execPath, [path.join(repo, "scripts/replay_wasm_role_pipeline_archive.mjs"),
+        packageDir, methodsDist, path.resolve(coreModule), archivePath, capturePath],
+      { encoding: "utf8", timeout: 120_000 });
+      assert.equal(consumer.status, 0, consumer.stderr || consumer.stdout || String(consumer.error));
+      archiveConsumers.push(JSON.parse(consumer.stdout.trim()));
+    }
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+}
+completeArchive.archiveV2 = { manifest: portablePayloads.manifest, consumers: archiveConsumers,
+  semanticClosureValidated: true, coreTransportQualified: archiveConsumers.length > 0 };
 if (process.argv[4]) fs.writeFileSync(process.argv[4], JSON.stringify({
   dsl, envelope, manifest, request, sourceRows, sampleIds, target, resumed, fitLog, nativeRefit, completeArchive,
   dagml_version: dagMl.dag_ml_version(), methods_version: methods.version(), methods_abi: methods.abiVersion(),
@@ -386,4 +422,5 @@ console.log("METHODS_MULTIMODAL_HPO_OK", JSON.stringify({
   trials: resumed.trials.length, searchSourceFitViews: searchFitViewCount,
   completeTrainingSourceFitViews: fitLog.length - searchFitViewCount, selected: resumed.selected_trial_index,
   selectedSourceNativeArchiveReplay: true, completeFiveModelPortablePackageReplay: true,
+  completeFiveModelArchiveSemanticClosure: true, coreArchiveConsumers: archiveConsumers,
 }));

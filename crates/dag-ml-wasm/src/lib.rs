@@ -17,11 +17,12 @@ use dag_ml_core::{
     build_execution_plan, compile_pipeline_dsl, compile_pipeline_dsl_with_generation,
     compile_pipeline_dsl_with_generation_and_controller_registry, deserialize_external_contract,
     fold_set_fingerprint, n4m_host_controller_specs, parse_pipeline_dsl_json, select_candidate,
-    select_candidate_groups, CampaignSpec, CandidateScore, ControllerManifest, ControllerRegistry,
-    DagMlError as CoreDagMlError, ExecutionBundle, ExecutionPlan, FoldSet, GraphSpec,
-    HostControllerSpec, InitialFullRefitPackage, KFoldSpec, PortablePredictorPackage,
-    PredictCohortConstructionRequest, SampleId, SelectionPolicy, StackingFoldSelectionRequest,
-    StackingProducerSelectionRequest, StratifiedKFoldSpec, TrainingLossRoleReference,
+    select_candidate_groups, validate_runtime_controller_manifests, CampaignSpec, CandidateScore,
+    ControllerManifest, ControllerRegistry, DagMlError as CoreDagMlError, ExecutionBundle,
+    ExecutionPlan, FoldSet, GraphSpec, HostControllerSpec, InitialFullRefitPackage, KFoldSpec,
+    PortablePredictorPackage, PredictCohortConstructionRequest, SampleId, SelectionPolicy,
+    StackingFoldSelectionRequest, StackingProducerSelectionRequest, StratifiedKFoldSpec,
+    TrainingLossRoleReference,
 };
 use dag_ml_core::{
     ArtifactId, ArtifactMaterializationRequest, ControllerId, HandleRef, NodeResult, NodeTask,
@@ -42,9 +43,10 @@ pub use host_hpo::{
 pub use initial_refit::{execute_initial_full_refit_json, replay_initial_full_refit_json};
 pub use local_implementation::{loss_execution_attestation_json, LocalImplementationRegistry};
 pub use training::{
-    attach_predict_cohort_to_envelope_json, execute_training_json, replay_training_package_json,
-    sample_relation_set_fingerprint_json, sign_training_replay_request_json,
-    sign_training_request_json, training_data_identity_json,
+    attach_predict_cohort_to_envelope_json, build_archive_v2_native_portable_payloads_json,
+    execute_training_json, replay_training_package_json, sample_relation_set_fingerprint_json,
+    sign_training_replay_request_json, sign_training_request_json, training_data_identity_json,
+    validate_archive_v2_portable_payloads_json,
 };
 
 const SHARED_FOLD_SET_FINGERPRINT: &str =
@@ -707,25 +709,6 @@ fn execute_plan_phase(
     let run = RunId::new(run_id)?;
     let mut ctx = RunContext::new(run, Some(u64::from(root_seed)));
     SequentialScheduler.execute_campaign_phase(plan, &controllers, &mut ctx, phase)
-}
-
-fn validate_runtime_controller_manifests(
-    plan: &ExecutionPlan,
-    trusted_manifests: &ControllerRegistry,
-) -> CoreResult<()> {
-    for (controller_id, embedded_manifest) in &plan.controller_manifests {
-        let trusted_manifest = trusted_manifests.get(controller_id).ok_or_else(|| {
-            CoreDagMlError::RuntimeValidation(format!(
-                "execution plan controller `{controller_id}` is absent from the trusted runtime manifests"
-            ))
-        })?;
-        if trusted_manifest != embedded_manifest {
-            return Err(CoreDagMlError::RuntimeValidation(format!(
-                "execution plan controller `{controller_id}` does not match the trusted runtime manifest"
-            )));
-        }
-    }
-    Ok(())
 }
 
 /// Execute one phase of a campaign with the in-process [`SequentialScheduler`],

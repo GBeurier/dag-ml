@@ -32,6 +32,41 @@ fn provider_for_plan(
     EnvelopeAttestedRuntimeDataProvider::new(inner, bindings, envelopes)
 }
 
+/// Assemble the canonical opaque payload set consumed by Core's bounded ZIP writer.
+#[wasm_bindgen]
+pub fn build_archive_v2_native_portable_payloads_json(
+    archive_id: &str,
+    outcome_json: &str,
+    package_json: &str,
+) -> Result<String, JsValue> {
+    let outcome = dag_ml_core::TrainingOutcome::from_json(outcome_json).map_err(js_core_error)?;
+    let package = PortablePredictorPackage::from_json(package_json).map_err(js_core_error)?;
+    let payloads =
+        dag_ml_core::build_archive_v2_native_portable_payloads(archive_id, &outcome, &package)
+            .map_err(js_core_error)?;
+    serde_json::to_string(&serde_json::json!({
+        "manifest": payloads.manifest, "members": payloads.members
+    }))
+    .map_err(js_serde_error)
+}
+
+/// Validate opaque archive members before replay can invoke a controller.
+#[wasm_bindgen]
+pub fn validate_archive_v2_portable_payloads_json(
+    manifest_json: &str,
+    package_json: &str,
+    members_json: &str,
+) -> Result<String, JsValue> {
+    let manifest = parse_contract::<serde_json::Value>(manifest_json, "Archive V2 manifest")
+        .map_err(js_core_error)?;
+    let package = PortablePredictorPackage::from_json(package_json).map_err(js_core_error)?;
+    let members = parse_contract::<BTreeMap<String, Vec<u8>>>(members_json, "Archive V2 members")
+        .map_err(js_core_error)?;
+    dag_ml_core::validate_archive_v2_portable_payloads(&manifest, &package, &members)
+        .map_err(js_core_error)?;
+    Ok("{\"valid\":true}".to_string())
+}
+
 /// Sign an unsigned declaration using the same TCV1 contract as Python/C ABI.
 /// Fingerprints are content seals, not cryptographic authorization signatures.
 #[wasm_bindgen]

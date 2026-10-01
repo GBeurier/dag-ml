@@ -1,7 +1,8 @@
 # Archive V2 native-portable replay contract
 
-Status: contract freeze only. This directory does not ship an archive writer,
-reader, migration tool, binding, or Core runtime implementation.
+Status: ADR-23 native-portable contract with the additive ADR-28 Methods
+RolePipeline profile. DAG-ML assembles and validates the replay closure; Core
+owns the archive writer and bounded reader.
 
 Archive V2 is the strict native-only successor to the frozen Archive V1 wire.
 Its dispatch identity is exact:
@@ -54,7 +55,8 @@ a raw, plugin-free `n4m_model`. `payloads.host_artifacts` is exactly empty. A
 host sidecar, external reference, Python fallback, or non-Methods refit artifact
 is a pre-write refusal, not a degraded replay mode. This does not declare that
 all future native-portable archive profiles must be Methods-only; widening the
-P0 policy requires a later policy ADR/profile.
+P0 policy requires a later policy ADR/profile. ADR-28 adds the bounded
+RolePipeline family described below; it does not loosen the N4MM declarations.
 
 At least one N4MM member is required. Each N4MM reference is format version 1
 for historical/raw PLS or version 2 for the native SNV -> SG smooth -> PLS pipeline,
@@ -70,6 +72,39 @@ semantic identifier never substitutes for the raw model payload.
 Writers derive the minimum from the payload capability: historical PLS N4MM is
 2.0+, imported-linear/Ridge N4MM is 2.3+, and pipeline N4MM v2 is 2.5+. An absent minor remains readable
 only for the historical PLS profile; it never defaults a Ridge payload to 2.3.
+
+## Additive RolePipeline transport
+
+`payloads.methods.role_pipelines` is optional and absent on N4MM-only exports.
+The nonempty union of N4MM and RolePipeline declarations exactly covers every
+package artifact binding, refit record and raw payload. Pure RolePipeline exports
+use `n4mm: []`; no placeholder N4MM is created. Each RolePipeline reference uses
+the closed ADR-28 fields, content-addressed `artifacts/<sha256>.json` member and
+`dagml_methods_role_pipeline_raw_sha256` semantic profile.
+
+The wrapper schema is `dagml.methods.regression.v1`, the accepted signed plugin
+is `dagml.methods.wasm.regression` version `1.0.0`, and the original package
+retains its controller trust and exact recipe/state identities. DAG-ML validates
+the bounded wrapper; Methods hydrates opaque N4ME states. Core checks storage
+bounds/inventory and exposes bytes. Consumers then call
+`validate_archive_v2_portable_payloads(manifest, package, members)` before any
+callbacks. It accepts only the exact standalone canonical transport, including
+all six companions. Python `replay_loaded_predictor_package` additionally accepts
+`trusted_controller_manifests`; archive consumers supply them explicitly.
+
+The process-separated Node/web qualification is:
+
+```bash
+NIRS4ALL_CORE_WASM_MODULE=/path/to/core-wasm/src/index.js \
+  node scripts/smoke_wasm_multimodal_methods_hpo.mjs \
+  /path/to/dagml/pkg-node /path/to/methods/dist /tmp/five-model-proof.json
+```
+
+Repeat with `/path/to/dagml/pkg-web`. A comma-separated Core module list also
+qualifies extracted public package consumers. The proof records whether Core
+transport actually ran; without the environment variable the campaign checks
+DAG closure and package replay only. Its four numeric projections plus OOF meta
+model are five genuine fitted models, not a canonical N-D qualification.
 
 ## Contract artifacts and gate
 

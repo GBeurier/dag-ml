@@ -15,9 +15,11 @@ from scripts.validate_archive_v2_contract import (
     PACKAGE_MEMBER,
     PACKAGE_V1_SCHEMA_ID,
     PACKAGE_V2_SCHEMA_ID,
+    ROLE_PIPELINE_PROFILE,
     ArchiveV2ContractError,
     canonical_portable_package_v2,
     contract_schema_registry,
+    fingerprint_without,
     load_json,
     materialize_fixture,
     n4mm_reference_abi_requirement,
@@ -264,6 +266,189 @@ class ArchiveV2ContractTests(unittest.TestCase):
                 ArchiveV2ContractError, r"^member_integrity_refusal:"
             ):
                 validate_archive_zip(tampered_archive, self.validator, root=ROOT)
+
+    @staticmethod
+    def _resign_package(document, payloads, package) -> None:
+        package["package_fingerprint"] = fingerprint_without(
+            package, "package_fingerprint"
+        )
+        payloads[PACKAGE_MEMBER] = json.dumps(
+            package, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        rebind_package_integrity(document, payloads)
+
+    def _role_fixture(self, role_count, mutate_wrapper=None):
+        """Convert transport records only; native hydration has separate tests."""
+        document, payloads = materialize_fixture(self.manifest, ROOT)
+        package = json.loads(payloads[PACKAGE_MEMBER])
+        bundle = package["execution_bundle"]
+        methods = document["payloads"]["methods"]
+        methods["role_pipelines"] = []
+        replacements = {}
+        for record in bundle["refit_artifacts"][:role_count]:
+            artifact = record["artifact"]
+            old_path = artifact["uri"]
+            wrapper = {
+                "schema": "dagml.methods.regression.v1",
+                "node_id": record["node_id"],
+                "params_fingerprint": record["params_fingerprint"],
+                "target_names": ["y"],
+                "feature_names": ["x0", "x1"],
+                "steps": [{"class": "n4m:PLSRegression", "params": copy.deepcopy(
+                    package["effective_plan"]["node_plans"][record["node_id"]].get("params", {}))}],
+                # Opaque codec boundary bytes, not a numerically fitted model.
+                "states": [list(b"N4ME\x01\x02\x03\x04")],
+            }
+            if mutate_wrapper is not None:
+                mutate_wrapper(wrapper)
+            raw = json.dumps(wrapper, sort_keys=True, separators=(",", ":")).encode()
+            digest = hashlib.sha256(raw).hexdigest()
+            member_path = f"artifacts/{digest}.json"
+            artifact.update(
+                kind="methods_role_pipeline", uri=member_path,
+                plugin="dagml.methods.wasm.regression", plugin_version="1.0.0",
+                content_fingerprint=digest, size_bytes=len(raw),
+            )
+            replacements[artifact["id"]] = copy.deepcopy(artifact)
+            graph_node = next(node for node in package["effective_plan"]["graph_plan"]["graph"]["nodes"]
+                              if node["id"] == record["node_id"])
+            graph_node["operator"] = {"type": "n4m:PLSRegression"}
+            bundle["raw_artifact_payloads"][artifact["id"]] = list(raw)
+            del payloads[old_path]
+            payloads[member_path] = raw
+            methods["n4mm"] = [
+                ref for ref in methods["n4mm"] if ref["artifact_id"] != artifact["id"]
+            ]
+            methods["role_pipelines"].append({
+                "artifact_id": artifact["id"], "kind": "methods_role_pipeline",
+                "owner": "dag-ml", "format_version": 1, "member_path": member_path,
+                "raw_sha256": digest, "semantic_fingerprint": digest,
+                "semantic_profile": ROLE_PIPELINE_PROFILE,
+            })
+            member = next(
+                item for item in document["member_inventory"] if item["path"] == old_path
+            )
+            member.update(
+                path=member_path, raw_sha256=digest, uncompressed_size_bytes=len(raw),
+                semantic_fingerprint=digest, semantic_profile=ROLE_PIPELINE_PROFILE,
+            )
+
+        def rebind_artifact_refs(value):
+            if isinstance(value, dict):
+                if value.get("id") in replacements:
+                    value.update(replacements[value["id"]])
+                for child in value.values():
+                    rebind_artifact_refs(child)
+            elif isinstance(value, list):
+                for child in value:
+                    rebind_artifact_refs(child)
+
+        rebind_artifact_refs(package)
+        self._resign_package(document, payloads, package)
+        return document, payloads
+
+    def test_mixed_and_pure_role_transport_accepts_exact_raw_union(self) -> None:
+        original_package = canonical_portable_package_v2(ROOT)
+        for count in (1, 3):
+            with self.subTest(role_count=count):
+                document, payloads = self._role_fixture(count)
+                methods = document["payloads"]["methods"]
+                self.assertEqual(len(methods["role_pipelines"]), count)
+                self.assertEqual(len(methods["n4mm"]), 3 - count)
+                package = json.loads(payloads[PACKAGE_MEMBER])
+                for ref in methods["n4mm"]:
+                    self.assertEqual(payloads[ref["member_path"]], bytes(
+                        original_package["execution_bundle"]["raw_artifact_payloads"]
+                        [ref["artifact_id"]]
+                    ))
+                for ref in methods["role_pipelines"]:
+                    raw = payloads[ref["member_path"]]
+                    self.assertEqual(raw, bytes(
+                        package["execution_bundle"]["raw_artifact_payloads"]
+                        [ref["artifact_id"]]
+                    ))
+                    self.assertEqual(ref["semantic_fingerprint"], hashlib.sha256(raw).hexdigest())
+                with tempfile.TemporaryDirectory() as directory:
+                    archive = Path(directory) / "roles.n4a"
+                    write_fixture_zip(archive, document, payloads)
+                    validate_archive_zip(archive, self.validator, root=ROOT)
+
+    def test_resigned_role_wrapper_and_states_are_closed(self) -> None:
+        mutations = {
+            "unknown_schema": lambda value: value.update(schema="foreign.v1"),
+            "unknown_field": lambda value: value.update(python_pickle="model.pkl"),
+            "wrong_node": lambda value: value.update(node_id="unbound:model"),
+            "wrong_params": lambda value: value.update(params_fingerprint="0" * 64),
+            "changed_method": lambda value: value["steps"][0].update(**{"class": "n4m:models.regularized.ridge"}),
+            "changed_recipe_params": lambda value: value["steps"][0]["params"].update(unplanned_alpha=1.0),
+            "empty_targets": lambda value: value.update(target_names=[]),
+            "duplicate_features": lambda value: value.update(feature_names=["x", "x"]),
+            "host_step": lambda value: value.update(steps=[{"class": "sklearn.PLSRegression"}]),
+            "ambiguous_step": lambda value: value["steps"][0].update(methodId="pls"),
+            "unknown_step_field": lambda value: value["steps"][0].update(pickle="model.pkl"),
+            "missing_state": lambda value: value.update(states=[]),
+            "foreign_state": lambda value: value.update(states=[list(b"N4MMdata")]),
+            "boolean_byte": lambda value: value["states"][0].append(True),
+            "out_of_range_byte": lambda value: value["states"][0].append(256),
+        }
+        for name, mutate in mutations.items():
+            with self.subTest(mutation=name):
+                document, payloads = self._role_fixture(1, mutate)
+                with self.assertRaisesRegex(ArchiveV2ContractError, r"^native_model_refusal:"):
+                    validate_archive_v2_payloads(document, payloads, self.validator, root=ROOT)
+
+    def test_resigned_role_plugin_and_content_address_are_trusted(self) -> None:
+        for field, value in (
+            ("plugin", "python.untrusted"), ("plugin_version", "9.0.0"),
+            ("uri", "artifacts/" + "0" * 64 + ".json"),
+        ):
+            with self.subTest(field=field):
+                document, payloads = self._role_fixture(1)
+                package = json.loads(payloads[PACKAGE_MEMBER])
+                package["execution_bundle"]["refit_artifacts"][0]["artifact"][field] = value
+                self._resign_package(document, payloads, package)
+                with self.assertRaisesRegex(ArchiveV2ContractError, r"^native_model_refusal:"):
+                    validate_archive_v2_payloads(document, payloads, self.validator, root=ROOT)
+
+    def test_role_reference_schema_is_closed_and_paths_are_relative(self) -> None:
+        for field, value in (
+            ("unknown", True), ("owner", "nirs4all-methods"), ("format_version", 2),
+            ("semantic_profile", "n4mm_raw_sha256"),
+            ("member_path", "../artifacts/" + "0" * 64 + ".json"),
+            ("member_path", "/artifacts/" + "0" * 64 + ".json"),
+        ):
+            with self.subTest(field=field, value=value):
+                document, _ = self._role_fixture(1)
+                document["payloads"]["methods"]["role_pipelines"][0][field] = value
+                with self.assertRaisesRegex(ArchiveV2ContractError, r"^schema_refusal:"):
+                    schema_validate(document, self.validator)
+
+    def test_role_union_requires_complete_unique_nonempty_coverage(self) -> None:
+        document, payloads = self._role_fixture(1)
+        reference = document["payloads"]["methods"]["role_pipelines"].pop()
+        document["member_inventory"] = [
+            item for item in document["member_inventory"]
+            if item["path"] != reference["member_path"]
+        ]
+        del payloads[reference["member_path"]]
+        with self.assertRaisesRegex(ArchiveV2ContractError, r"^native_model_refusal:"):
+            validate_archive_v2_payloads(document, payloads, self.validator, root=ROOT)
+
+        document, payloads = self._role_fixture(1)
+        duplicate = copy.deepcopy(document["payloads"]["methods"]["role_pipelines"][0])
+        duplicate["artifact_id"] = document["payloads"]["methods"]["n4mm"][0]["artifact_id"]
+        document["payloads"]["methods"]["role_pipelines"][0] = duplicate
+        with self.assertRaisesRegex(ArchiveV2ContractError, r"^native_model_refusal:"):
+            validate_archive_v2_payloads(document, payloads, self.validator, root=ROOT)
+
+        for explicit_roles in (False, True):
+            with self.subTest(explicit_empty_roles=explicit_roles):
+                document, _ = materialize_fixture(self.manifest, ROOT)
+                document["payloads"]["methods"]["n4mm"] = []
+                if explicit_roles:
+                    document["payloads"]["methods"]["role_pipelines"] = []
+                with self.assertRaisesRegex(ArchiveV2ContractError, r"^schema_refusal:"):
+                    schema_validate(document, self.validator)
 
 
 if __name__ == "__main__":

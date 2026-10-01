@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from os import PathLike
 from typing import Any, Self
 
@@ -432,6 +433,8 @@ def replay_loaded_predictor_package_json(
     *,
     outcome_id: str,
     run_id: str,
+    artifact_callback: Any | None = None,
+    trusted_controller_manifests: Any = None,
     warnings: Any = (),
     diagnostics: Any = None,
 ) -> str: ...
@@ -444,9 +447,17 @@ def replay_loaded_predictor_package(
     *,
     outcome_id: str,
     run_id: str,
+    artifact_callback: Any | None = None,
+    trusted_controller_manifests: Any = None,
     warnings: Any = (),
     diagnostics: Any = None,
 ) -> TrainingReplayOutcome: ...
+def build_archive_v2_native_portable_payloads(
+    archive_id: str, outcome: Any, package: Any
+) -> tuple[dict[str, Any], dict[str, bytes]]: ...
+def validate_archive_v2_portable_payloads(
+    manifest: Mapping[str, Any], package: Any, members: Mapping[str, bytes]
+) -> None: ...
 def build_conformal_presentation_v1(
     package: Any,
     request: Any,
