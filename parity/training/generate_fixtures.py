@@ -45,6 +45,7 @@ BASE_PACK_ARTIFACTS = {
     "crates/dag-ml-capi/tests/training_execute.rs": "c_training_test",
     "crates/dag-ml-core/src/bundle.rs": "native_bundle_contract",
     "crates/dag-ml-core/src/hpo.rs": "native_hpo_controller",
+    "crates/dag-ml-core/src/methods_fold_hpo.rs": "typed_runtime_dependency",
     "crates/dag-ml-core/src/aggregation.rs": "typed_cache_dependency",
     "crates/dag-ml-core/src/campaign.rs": "historical_fingerprint_source",
     "crates/dag-ml-core/src/canonical.rs": "native_canonical_fingerprint",

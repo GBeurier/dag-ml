@@ -49,15 +49,15 @@ def _sha256(path: Path) -> str:
 
 
 def test_base_pack_remains_byte_current() -> None:
-    # Current W1 bytes and its 107 artifacts are pinned independently of D4.
+    # Current W1 bytes and its 108 artifacts are pinned independently of D4.
     pack = load_json(BASE_PACK)
     assert _sha256(BASE_PACK) == (
-        "1e4955da61fc7b1aeecf1ef8321ece2799ea11dafa9fda6170959501dc8f08bc"
+        "789538a5a437a4d5e2e9a5dbb859f218f5209f7daa68bccba6f4834d052ad47a"
     )
     assert pack["pack_checksum"] == (
-        "2f3e5d2b65a826e03807224e5f21f45fb2ac1f6a07524fd39ee7120a380ec203"
+        "050946b0e31620a1c220bb5115e6e6dd52ef38a958a5f29fc21d836a7797cfb7"
     )
-    assert len(pack["artifacts"]) == 107
+    assert len(pack["artifacts"]) == 108
     assert all(
         _sha256(ROOT / artifact["path"]) == artifact["sha256"]
         for artifact in pack["artifacts"]
@@ -403,6 +403,16 @@ def test_all_v2_schema_families_preserve_v1_constraints_exactly() -> None:
         v1_document = load_json(ROOT / "docs/contracts" / v1_name)
         v2_document = load_json(ROOT / "docs/contracts" / v2_name)
         v1_root = _json_pointer(v1_document, v1_pointer) if v1_pointer else v1_document
+        if v2_name in {"execution_bundle.v2.schema.json", "training_outcome.v2.schema.json"}:
+            # This additive evidence stays optional so existing V2 payloads
+            # retain their meaning, and non-null state uses the complete DTO.
+            field = "methods_hpo_fold_state"
+            assert field not in v1_root["properties"]
+            assert field not in v2_document["required"]
+            assert v2_document["properties"][field]["anyOf"] == [
+                {"$ref": "https://github.com/GBeurier/dag-ml/schemas/methods_hpo_fold_state.v1.schema.json"},
+                {"type": "null"},
+            ]
         v1 = _normalize_v2_schema_delta(
             _dereference_schema(v1_root, v1_document, schemas, frozenset())
         )
@@ -702,6 +712,7 @@ def _normalize_v2_schema_delta(value: Any) -> Any:
         "schema_version",
         "producer_port",
         "cache_namespace_fingerprints",
+        "methods_hpo_fold_state",
         "conformal_calibration",
         "conformal_calibration_replay",
     }

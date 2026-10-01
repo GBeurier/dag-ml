@@ -253,14 +253,22 @@ impl MethodsNativeRegressionController {
         let bytes = serde_json::to_vec(&saved)?;
         inspect_methods_role_pipeline_params(&bytes, &self.runtime)?;
         let raw = format!("{:x}", Sha256::digest(&bytes));
-        let scope = format!(
-            "{}:{}",
-            task.node_plan.node_id,
-            task.variant_id
-                .as_ref()
-                .map(|v| v.as_str())
-                .unwrap_or("base")
-        );
+        let scope = if task
+            .variant_id
+            .as_ref()
+            .is_some_and(|v| v.as_str().starts_with("hpo:scope:"))
+        {
+            crate::campaign::stable_json_fingerprint(&(&task.node_plan.node_id, &task.variant_id))?
+        } else {
+            format!(
+                "{}:{}",
+                task.node_plan.node_id,
+                task.variant_id
+                    .as_ref()
+                    .map(|v| v.as_str())
+                    .unwrap_or("base")
+            )
+        };
         let artifact = ArtifactRef {
             id: ArtifactId::new(format!("artifact:native_roles:{scope}:refit"))?,
             kind: "methods_role_pipeline".into(),
@@ -433,16 +441,35 @@ impl RuntimeController for MethodsNativeRegressionController {
                 });
             }
             predictions.push(PredictionBlock {
-                prediction_id: Some(format!(
-                    "native_roles:{}:{}:{}:{}:{partition:?}",
-                    task.node_plan.node_id,
-                    task.phase.as_str(),
-                    task.variant_id
+                prediction_id: Some(
+                    if task
+                        .variant_id
                         .as_ref()
-                        .map(|v| v.as_str())
-                        .unwrap_or("base"),
-                    task.fold_id.as_ref().map(|f| f.as_str()).unwrap_or("full")
-                )),
+                        .is_some_and(|v| v.as_str().starts_with("hpo:scope:"))
+                    {
+                        format!(
+                            "native_roles:{}",
+                            crate::campaign::stable_json_fingerprint(&(
+                                &task.node_plan.node_id,
+                                task.phase,
+                                &task.variant_id,
+                                &task.fold_id,
+                                &partition,
+                            ))?
+                        )
+                    } else {
+                        format!(
+                            "native_roles:{}:{}:{}:{}:{partition:?}",
+                            task.node_plan.node_id,
+                            task.phase.as_str(),
+                            task.variant_id
+                                .as_ref()
+                                .map(|v| v.as_str())
+                                .unwrap_or("base"),
+                            task.fold_id.as_ref().map(|f| f.as_str()).unwrap_or("full")
+                        )
+                    },
+                ),
                 producer_node: task.node_plan.node_id.clone(),
                 producer_port: Some("oof".into()),
                 partition,
@@ -464,16 +491,34 @@ impl RuntimeController for MethodsNativeRegressionController {
             .map(|(a, h)| (vec![a.clone()], BTreeMap::from([(a.id, h)])))
             .unwrap_or_default();
         let lineage = LineageRecord {
-            record_id: LineageId::new(format!(
-                "lineage:native_roles:{}:{}:{}:{}",
-                task.node_plan.node_id,
-                task.phase.as_str(),
-                task.variant_id
+            record_id: LineageId::new(
+                if task
+                    .variant_id
                     .as_ref()
-                    .map(|v| v.as_str())
-                    .unwrap_or("base"),
-                task.fold_id.as_ref().map(|f| f.as_str()).unwrap_or("full")
-            ))?,
+                    .is_some_and(|v| v.as_str().starts_with("hpo:scope:"))
+                {
+                    format!(
+                        "lineage:native_roles:{}",
+                        crate::campaign::stable_json_fingerprint(&(
+                            &task.node_plan.node_id,
+                            task.phase,
+                            &task.variant_id,
+                            &task.fold_id,
+                        ))?
+                    )
+                } else {
+                    format!(
+                        "lineage:native_roles:{}:{}:{}:{}",
+                        task.node_plan.node_id,
+                        task.phase.as_str(),
+                        task.variant_id
+                            .as_ref()
+                            .map(|v| v.as_str())
+                            .unwrap_or("base"),
+                        task.fold_id.as_ref().map(|f| f.as_str()).unwrap_or("full")
+                    )
+                },
+            )?,
             run_id: task.run_id.clone(),
             node_id: task.node_plan.node_id.clone(),
             phase: task.phase,

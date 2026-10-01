@@ -359,6 +359,8 @@ pub struct RuntimeHpoCampaignTask {
 /// state, but this context contains only portable coordinator facts.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RuntimeHpoExecutionContext {
+    /// Optional additive identity namespace for independent local studies.
+    pub proposal_namespace: Option<String>,
     /// Explicit additive closed Methods profile; None retains HPOv1.
     pub portable_profile: Option<String>,
     /// Stable identity of this scheduler-owned campaign operation.  This is
@@ -420,6 +422,16 @@ pub struct RuntimeHpoProvenance {
 
 impl RuntimeHpoExecutionContext {
     pub fn validate_for_plan(&self, plan: &ExecutionPlan) -> Result<()> {
+        if self.proposal_namespace.as_ref().is_some_and(|value| {
+            value.len() != 64
+                || !value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        }) {
+            return Err(DagMlError::RuntimeValidation(
+                "runtime HPO proposal namespace must be lowercase SHA-256".into(),
+            ));
+        }
         if self.trial_budget_total == 0 {
             return Err(DagMlError::RuntimeValidation(
                 "runtime HPO trial_budget_total must be positive".to_string(),

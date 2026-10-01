@@ -1836,6 +1836,8 @@ pub struct ExecutionBundle {
     pub prediction_caches: Vec<BundlePredictionCacheRecord>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub methods_hpo_resume_state: Option<MethodsHpoResumeState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub methods_hpo_fold_state: Option<crate::methods_fold_hpo::MethodsFoldHpoState>,
     /// Typed reference to the outcome-owned conformal state.  Keeping only a
     /// reference here prevents stale duplicate quantiles in a replay package.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1886,6 +1888,21 @@ impl ExecutionBundle {
     pub fn validate(&self) -> Result<()> {
         execution_bundle_schema_migration_policy()
             .validate_read_version(self.schema_version, &format!("bundle `{}`", self.bundle_id))?;
+        if let Some(state) = &self.methods_hpo_fold_state {
+            if self.schema_version != EXECUTION_BUNDLE_SCHEMA_VERSION
+                || self.methods_hpo_resume_state.is_some()
+            {
+                return Err(DagMlError::RuntimeValidation(
+                    "fold HPO requires V2 bundle and excludes campaign HPO state".into(),
+                ));
+            }
+            state.validate()?;
+            if self.selected_variant_id.as_ref() != Some(&state.selected_variant_id) {
+                return Err(DagMlError::RuntimeValidation(
+                    "fold HPO selected variant differs from bundle".into(),
+                ));
+            }
+        }
         if self.plan_id.trim().is_empty() {
             return Err(DagMlError::RuntimeValidation(format!(
                 "bundle `{}` has empty plan_id",
@@ -2119,6 +2136,19 @@ impl ExecutionBundle {
         };
         self.validate_selections_against_plan(plan)?;
         if let Some(state) = &self.methods_hpo_resume_state {
+            state.validate_against_plan(plan)?;
+        }
+        let declared_fold = plan
+            .campaign
+            .metadata
+            .get("methods_hpo_operation")
+            .is_some_and(|raw| raw["schema_version"] == 3 && raw["scope"] == "fold");
+        if declared_fold != self.methods_hpo_fold_state.is_some() {
+            return Err(DagMlError::RuntimeValidation(
+                "signed fold HPO descriptor and scoped evidence presence disagree".into(),
+            ));
+        }
+        if let Some(state) = &self.methods_hpo_fold_state {
             state.validate_against_plan(plan)?;
         }
         let expected_requirements = collect_data_requirements(plan)?;
@@ -2912,6 +2942,7 @@ pub fn build_execution_bundle_with_prediction_contracts(
         prediction_requirements,
         prediction_caches,
         methods_hpo_resume_state: None,
+        methods_hpo_fold_state: None,
         conformal_calibration: None,
         raw_artifact_payloads: BTreeMap::new(),
         scores: None,

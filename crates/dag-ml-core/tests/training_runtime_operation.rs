@@ -1262,6 +1262,443 @@ fn native_pls_fixed_phase_controls_validate_without_hpo_selection_influence() {
 }
 
 #[cfg(feature = "methods-optimizer-local")]
+fn native_fold_hpo_fixture(trials: u32) -> Fixture {
+    let mut fixture = fixture(true, false);
+    use_native_pls_phase_profile(&mut fixture, Some(trials));
+    give_methods_hpo_four_train_rows(&mut fixture);
+    rebuild(&mut fixture);
+    let outer = fixture.request.project().unwrap().plan.fold_set.unwrap();
+    let spec = NestedCvSpec::KFold(KFoldSpec {
+        n_splits: 2,
+        shuffle: false,
+        seed: None,
+    });
+    let inner = outer
+        .folds
+        .iter()
+        .map(|fold| {
+            (
+                fold.fold_id.clone(),
+                outer.nested_fold_set(&spec, fold).unwrap(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut refit = KFoldSpec {
+        n_splits: 2,
+        shuffle: false,
+        seed: None,
+    }
+    .split("refit.inner", &outer.sample_ids)
+    .unwrap();
+    for fold in &mut refit.folds {
+        fold.fold_id = FoldId::new(format!("refit.inner.{}", fold.fold_id)).unwrap();
+    }
+    let operation = methods_hpo_descriptor_mut(&mut fixture);
+    operation["schema_version"] = serde_json::json!(3);
+    operation["scope"] = serde_json::json!("fold");
+    operation["inner_fold_sets"] = serde_json::to_value(inner).unwrap();
+    operation["refit_inner_fold_set"] = serde_json::to_value(refit).unwrap();
+    rebuild(&mut fixture);
+    fixture
+}
+
+#[cfg(feature = "methods-optimizer-local")]
+fn fold_hpo_witness_provider(fixture: &Fixture) -> AttestedProvider {
+    let mut provider = provider(fixture);
+    // Opposite target mechanisms in the two outer training scopes require
+    // different scale choices; the feature buffers remain provider-owned.
+    for (id, row) in &mut provider.methods_rows {
+        let index = id
+            .as_str()
+            .strip_prefix("sample:")
+            .unwrap()
+            .parse::<usize>()
+            .unwrap();
+        row[3] = if index <= 4 { row[0] } else { row[1] };
+    }
+    provider
+}
+
+#[cfg(feature = "methods-optimizer-local")]
+#[test]
+fn native_fold_hpo_uses_distinct_outer_winners_and_independent_refit_raw() {
+    let fixture = native_fold_hpo_fixture(12);
+    let mut store = InMemoryArtifactStore::new();
+    let outcome = run(
+        &fixture,
+        Arc::new(CallState::default()),
+        &fold_hpo_witness_provider(&fixture),
+        &mut store,
+    )
+    .unwrap();
+    outcome.validate().unwrap();
+    let state = outcome.methods_hpo_fold_state.as_ref().unwrap();
+    assert!(outcome.methods_hpo_resume_state.is_none());
+    assert_eq!(state.outer_scopes.len(), 2);
+    assert_eq!(
+        state.outer_scopes[0].winner_params["scale"],
+        serde_json::json!(false)
+    );
+    assert_eq!(
+        state.outer_scopes[1].winner_params["scale"],
+        serde_json::json!(true)
+    );
+    assert_eq!(state.refit_scope.phase, Phase::Refit);
+    assert_eq!(
+        state.refit_scope.winner_variant_id,
+        outcome.selected_variant_id
+    );
+    let study_ids = state
+        .outer_scopes
+        .iter()
+        .chain(std::iter::once(&state.refit_scope))
+        .map(|s| &s.resume_state.checkpoint.binding.study_id)
+        .collect::<BTreeSet<_>>();
+    assert_eq!(study_ids.len(), 3);
+    let variants = state
+        .outer_scopes
+        .iter()
+        .chain(std::iter::once(&state.refit_scope))
+        .flat_map(|s| {
+            s.resume_state
+                .completed_proposals
+                .iter()
+                .map(|p| &p.variant.variant_id)
+        })
+        .collect::<BTreeSet<_>>();
+    assert_eq!(variants.len(), 36);
+    for scope in &state.outer_scopes {
+        let record = outcome
+            .lineage
+            .iter()
+            .find(|r| {
+                r.node_id == state.target_node_id
+                    && r.phase == Phase::FitCv
+                    && r.fold_id == scope.outer_fold_id
+            })
+            .unwrap();
+        assert_eq!(record.params_fingerprint, scope.params_fingerprint);
+        assert_eq!(
+            record.variant_id.as_ref(),
+            Some(&outcome.selected_variant_id)
+        );
+    }
+    assert_eq!(outcome.execution_bundle.refit_artifacts.len(), 1);
+    let artifact = &outcome.execution_bundle.refit_artifacts[0];
+    let inspected = inspect_methods_role_pipeline_params(
+        &outcome.execution_bundle.raw_artifact_payloads[&artifact.artifact.id],
+        &methods_runtime(),
+    )
+    .unwrap();
+    assert_eq!(
+        inspected["model_params"]["scale"],
+        state.refit_scope.winner_params["scale"]
+    );
+    TrainingOutcome::from_json(&serde_json::to_string(&outcome).unwrap()).unwrap();
+    let mut tampered = outcome.clone();
+    tampered
+        .methods_hpo_fold_state
+        .as_mut()
+        .unwrap()
+        .outer_scopes[0]
+        .params_fingerprint = "0".repeat(64);
+    tampered.execution_bundle.methods_hpo_fold_state = tampered.methods_hpo_fold_state.clone();
+    resign_outcome(&mut tampered);
+    assert!(tampered.validate().is_err());
+}
+
+#[cfg(feature = "methods-optimizer-local")]
+#[test]
+fn native_fold_hpo_outer_validation_targets_cannot_choose_its_inner_winner() {
+    let fixture = native_fold_hpo_fixture(8);
+    let execute = |provider: &AttestedProvider| {
+        let mut store = InMemoryArtifactStore::new();
+        run(
+            &fixture,
+            Arc::new(CallState::default()),
+            provider,
+            &mut store,
+        )
+        .unwrap()
+    };
+    let mut provider = fold_hpo_witness_provider(&fixture);
+    let first = execute(&provider);
+    for index in 1..=4 {
+        provider
+            .methods_rows
+            .get_mut(&sample(&format!("sample:{index}")))
+            .unwrap()[3] += 10000.0;
+    }
+    let second = execute(&provider);
+    let a = &first.methods_hpo_fold_state.as_ref().unwrap().outer_scopes[0];
+    let b = &second.methods_hpo_fold_state.as_ref().unwrap().outer_scopes[0];
+    assert_eq!(a.winner_params, b.winner_params);
+    assert_eq!(
+        a.resume_state.completed_reports,
+        b.resume_state.completed_reports
+    );
+    assert_ne!(first.score_set, second.score_set);
+}
+
+#[cfg(feature = "methods-optimizer-local")]
+#[test]
+fn native_fold_hpo_refit_override_changes_raw_recipe_without_changing_inner_selection() {
+    let mut fixture = native_fold_hpo_fixture(8);
+    let execute = |fixture: &Fixture| {
+        let mut store = InMemoryArtifactStore::new();
+        run(
+            fixture,
+            Arc::new(CallState::default()),
+            &fold_hpo_witness_provider(fixture),
+            &mut store,
+        )
+        .unwrap()
+    };
+    let baseline = execute(&fixture);
+    let winner = baseline
+        .methods_hpo_fold_state
+        .as_ref()
+        .unwrap()
+        .refit_scope
+        .winner_params["scale"]
+        .as_bool()
+        .unwrap();
+    fixture.request.parameter_patches = vec![ParameterPatch {
+        schema_version: 1,
+        node_id: node("model:base"),
+        namespace: ParameterNamespace::Fit,
+        path: vec!["refit_params".into()],
+        value: serde_json::json!({"scale":!winner}),
+    }];
+    fixture.request.patch_policies = vec![NodePatchPolicy {
+        node_id: node("model:base"),
+        allowed_namespaces: BTreeSet::from([ParameterNamespace::Fit]),
+    }];
+    rebuild(&mut fixture);
+    let overridden = execute(&fixture);
+    let state = overridden.methods_hpo_fold_state.as_ref().unwrap();
+    assert_eq!(
+        state.refit_scope.winner_params["scale"],
+        serde_json::json!(winner)
+    );
+    let artifact = &overridden.execution_bundle.refit_artifacts[0];
+    assert_eq!(
+        state.refit_scope.params_fingerprint,
+        artifact.params_fingerprint
+    );
+    let inspected = inspect_methods_role_pipeline_params(
+        &overridden.execution_bundle.raw_artifact_payloads[&artifact.artifact.id],
+        &methods_runtime(),
+    )
+    .unwrap();
+    assert_eq!(
+        inspected["model_params"]["scale"],
+        serde_json::json!(!winner)
+    );
+    overridden.validate().unwrap();
+}
+
+#[cfg(feature = "methods-optimizer-local")]
+#[test]
+fn native_fold_hpo_missing_root_target_is_a_contract_error_without_panicking() {
+    let fixture = native_fold_hpo_fixture(2);
+    let mut store = InMemoryArtifactStore::new();
+    let outcome = run(
+        &fixture,
+        Arc::new(CallState::default()),
+        &fold_hpo_witness_provider(&fixture),
+        &mut store,
+    )
+    .unwrap();
+    let mut package = outcome
+        .to_portable_predictor_package(
+            "predictor:fold.missing.target",
+            FittedArtifactMode::PortableRequired,
+            ArtifactLoadMode::NativePortable,
+        )
+        .unwrap();
+    let state = package
+        .execution_bundle
+        .methods_hpo_fold_state
+        .as_mut()
+        .unwrap();
+    state.target_node_id = node("model:absent");
+    state
+        .base_plan
+        .campaign
+        .metadata
+        .get_mut("methods_hpo_operation")
+        .unwrap()["target_node_id"] = serde_json::json!("model:absent");
+    state.base_plan.campaign_fingerprint = legacy_serde_fingerprint(&state.base_plan.campaign);
+    state.provenance.selection.target_node_id = state.target_node_id.clone();
+    // Re-seal immutable campaign authority and scoped plans, while each resume
+    // ledger still names its real model. The missing root is a semantic error,
+    // not a stale JSON fingerprint that can hide an unchecked map access.
+    let campaign_fingerprint = |plan: &ExecutionPlan| {
+        let mut campaign = plan.campaign.clone();
+        let operation = campaign
+            .metadata
+            .get_mut("methods_hpo_operation")
+            .unwrap()
+            .as_object_mut()
+            .unwrap();
+        operation.remove("resume_package_json");
+        operation.remove("trials");
+        legacy_serde_fingerprint(&campaign)
+    };
+    state.provenance.campaign_fingerprint = campaign_fingerprint(&state.base_plan);
+    for scope in state
+        .outer_scopes
+        .iter_mut()
+        .chain(std::iter::once(&mut state.refit_scope))
+    {
+        let plan =
+            methods_fold_hpo_study_plan(&state.base_plan, &scope.scope_id, &scope.inner_fold_set)
+                .unwrap();
+        scope.scope_plan_fingerprint = legacy_serde_fingerprint(&plan);
+        scope.resume_state.provenance.campaign_fingerprint = campaign_fingerprint(&plan);
+    }
+    let validation = std::panic::catch_unwind(|| state.validate());
+    let error = validation
+        .expect("missing target must not panic")
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("root target is absent"), "{error}");
+    package.package_fingerprint = package.compute_fingerprint().unwrap();
+    let json = serde_json::to_string(&package).unwrap();
+    let read = std::panic::catch_unwind(|| methods_hpo_fold_state_from_package_json(&json));
+    let error = read
+        .expect("public package reader must not panic")
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("root target is absent"), "{error}");
+}
+
+#[cfg(feature = "methods-optimizer-local")]
+#[test]
+fn native_fold_hpo_complete_package_resume_matches_fresh_studies_and_refuses_scope_swap() {
+    let execute = |trials, package: Option<&PortablePredictorPackage>| {
+        let mut fixture = native_fold_hpo_fixture(trials);
+        if let Some(package) = package {
+            methods_hpo_descriptor_mut(&mut fixture)["resume_package_json"] =
+                serde_json::json!(serde_json::to_string(package).unwrap());
+            rebuild(&mut fixture);
+        }
+        let mut store = InMemoryArtifactStore::new();
+        run(
+            &fixture,
+            Arc::new(CallState::default()),
+            &fold_hpo_witness_provider(&fixture),
+            &mut store,
+        )
+        .unwrap()
+    };
+    let first = execute(2, None);
+    let package = first
+        .to_portable_predictor_package(
+            "predictor:fold.resume",
+            FittedArtifactMode::PortableRequired,
+            ArtifactLoadMode::NativePortable,
+        )
+        .unwrap();
+    let resumed = execute(8, Some(&package));
+    let fresh = execute(8, None);
+    assert_eq!(resumed.selected_variant_id, fresh.selected_variant_id);
+    assert_eq!(resumed.oof_averages, fresh.oof_averages);
+    for (a, b) in resumed
+        .methods_hpo_fold_state
+        .as_ref()
+        .unwrap()
+        .outer_scopes
+        .iter()
+        .chain(std::iter::once(
+            &resumed.methods_hpo_fold_state.as_ref().unwrap().refit_scope,
+        ))
+        .zip(
+            fresh
+                .methods_hpo_fold_state
+                .as_ref()
+                .unwrap()
+                .outer_scopes
+                .iter()
+                .chain(std::iter::once(
+                    &fresh.methods_hpo_fold_state.as_ref().unwrap().refit_scope,
+                )),
+        )
+    {
+        assert_eq!(a.resume_state.trial_history_len, 8);
+        assert_eq!(a.winner_params, b.winner_params);
+        assert_eq!(
+            a.resume_state.completed_reports,
+            b.resume_state.completed_reports
+        );
+        assert_eq!(a.resume_state.incumbent, b.resume_state.incumbent);
+    }
+    let mut swapped = package.clone();
+    let state = swapped
+        .execution_bundle
+        .methods_hpo_fold_state
+        .as_mut()
+        .unwrap();
+    let previous = state.outer_scopes[0].resume_state.clone();
+    state.outer_scopes[0].resume_state = state.outer_scopes[1].resume_state.clone();
+    state.outer_scopes[1].resume_state = previous;
+    swapped.package_fingerprint = swapped.compute_fingerprint().unwrap();
+    let error = methods_hpo_fold_state_from_package_json(&serde_json::to_string(&swapped).unwrap())
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("scope") || error.contains("provenance"),
+        "{error}"
+    );
+}
+
+#[cfg(feature = "methods-optimizer-local")]
+#[test]
+fn native_fold_hpo_explicit_folds_refuse_leak_group_drift_and_identity_collisions() {
+    let fixture = native_fold_hpo_fixture(2);
+    let plan = fixture.request.project().unwrap().plan;
+    let raw = &plan.campaign.metadata["methods_hpo_operation"];
+    let inner: BTreeMap<FoldId, NestedFoldSet> =
+        serde_json::from_value(raw["inner_fold_sets"].clone()).unwrap();
+    let refit: FoldSet = serde_json::from_value(raw["refit_inner_fold_set"].clone()).unwrap();
+    validate_methods_fold_hpo_folds(&plan, &inner, &refit).unwrap();
+    let mut leaking = inner.clone();
+    leaking
+        .values_mut()
+        .next()
+        .unwrap()
+        .inner_fold_set
+        .sample_ids
+        .push(sample("sample:1"));
+    assert!(validate_methods_fold_hpo_folds(&plan, &leaking, &refit).is_err());
+    let mut collision = inner.clone();
+    let existing = collision.values().next().unwrap().inner_fold_set.folds[0]
+        .fold_id
+        .clone();
+    collision.values_mut().nth(1).unwrap().inner_fold_set.folds[0].fold_id = existing;
+    assert!(validate_methods_fold_hpo_folds(&plan, &collision, &refit).is_err());
+    let mut grouped = plan.clone();
+    let root = grouped.fold_set.as_mut().unwrap();
+    root.sample_groups = root
+        .sample_ids
+        .iter()
+        .enumerate()
+        .map(|(i, id)| (id.clone(), GroupId::new(format!("group:{i}")).unwrap()))
+        .collect();
+    assert!(validate_methods_fold_hpo_folds(&grouped, &inner, &refit).is_err());
+    let first = inner.values().next().unwrap();
+    let scope_id = methods_fold_hpo_scope_id(
+        raw["operation_id"].as_str().unwrap(),
+        Some(&first.parent_outer_fold_id),
+    );
+    let scoped = methods_fold_hpo_study_plan(&plan, &scope_id, &first.inner_fold_set).unwrap();
+    scoped.validate().unwrap();
+    assert_eq!(scoped.fold_set.as_ref(), Some(&first.inner_fold_set));
+    assert_ne!(scoped.campaign_fingerprint, plan.campaign_fingerprint);
+}
+
+#[cfg(feature = "methods-optimizer-local")]
 #[test]
 fn native_pls_scale_ties_preserve_native_incumbent_and_resume_matches_full_budget() {
     let execute = |trials, resume: Option<&PortablePredictorPackage>| {
@@ -6222,6 +6659,7 @@ fn standalone_contract_readers_reject_serde_positional_struct_wires() {
         ("prediction_requirements", serde_json::json!([])),
         ("prediction_caches", serde_json::json!([])),
         ("methods_hpo_resume_state", serde_json::Value::Null),
+        ("methods_hpo_fold_state", serde_json::Value::Null),
         ("conformal_calibration", serde_json::Value::Null),
         ("raw_artifact_payloads", serde_json::json!({})),
         ("scores", serde_json::Value::Null),

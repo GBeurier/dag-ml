@@ -89,6 +89,21 @@ pub fn methods_hpo_resume_state_from_package_json(json: &str) -> Result<MethodsH
     Ok(state)
 }
 
+/// Fold HPO restores only complete package-validated scoped state.
+pub fn methods_hpo_fold_state_from_package_json(
+    json: &str,
+) -> Result<crate::methods_fold_hpo::MethodsFoldHpoState> {
+    let package = PortablePredictorPackage::from_json(json)?;
+    let state = package
+        .execution_bundle
+        .methods_hpo_fold_state
+        .ok_or_else(|| {
+            DagMlError::RuntimeValidation("package has no typed native fold HPO state".into())
+        })?;
+    state.validate()?;
+    Ok(state)
+}
+
 pub struct AttachedTrainingReplayInput<'a> {
     pub source: &'a TrainingOutcome,
     pub request: &'a TrainingReplayRequest,
@@ -1803,6 +1818,18 @@ fn replay_plan_and_bundle_for_current_cohort(
     // by the training descriptor; it must never be carried into this derived
     // replay bundle or validated against a different cohort.
     replay_bundle.methods_hpo_resume_state = None;
+    replay_bundle.methods_hpo_fold_state = None;
+    if replay_plan
+        .campaign
+        .metadata
+        .get("methods_hpo_operation")
+        .is_some_and(|raw| raw["schema_version"] == 3 && raw["scope"] == "fold")
+    {
+        replay_plan
+            .campaign
+            .metadata
+            .remove("methods_hpo_operation");
+    }
     for requirement in &mut replay_bundle.data_requirements {
         let key = requirement.key();
         if request.data_envelope_keys.contains(&key) {

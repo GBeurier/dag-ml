@@ -1,8 +1,9 @@
 # Methods HPO adapter boundary
 
 `dag-ml-core::hpo` is the controller contract for the native Methods optimizer.
-It does not implement an optimizer, emulate ask/tell, use a Python manager, or
-perform nested-CV selection.
+It does not implement an optimizer, emulate ask/tell or use a Python manager.
+The native coordinator owns the independent study boundaries and their
+selection; the Methods adapter supplies each study's optimizer state.
 
 DAG-ML retains ownership of fold identity, influence evidence, lineage,
 selection, and refit.  The Methods adapter owns only numeric optimization state
@@ -23,6 +24,62 @@ that published feature and supplies a compiler-only native-test selector; the
 selector is not a Cargo dependency or a production route. There is no sibling
 manifest or sibling source dependency, and the registered official adapter
 remains mandatory.
+
+## Native PLS fold scope
+
+The explicit `n4m.pls_role_pipeline.v1` profile accepts an additive
+`metadata.methods_hpo_operation` schema 3 descriptor with `scope: "fold"`.
+Existing schema 1/2 campaign operations remain unchanged. This first fold
+slice requires REFIT and partition CV. The descriptor attests one
+`inner_fold_sets[outer_fold_id]` entry, with an explicit parent ID and complete
+FoldSet, per outer fold; `refit_inner_fold_set` covers the full training pool.
+Each inner universe must equal its parent's training identities and restricted
+group map/exclusion authority. All fold IDs are globally distinct. Feature
+matrices remain host-owned.
+
+The coordinator runs a separate Methods study in each outer training pool,
+chooses that pool's winner from inner OOF, then freshly fits the winner on
+outer training rows and evaluates outer validation rows. Outer validation
+targets never influence this inner selection. A separate REFIT study selects
+the durable RAW RolePipeline recipe; explicit REFIT overrides are then applied.
+No study transfers fitted weights to another. `trials` is the total budget
+per study, including resumed history. Methods retains bool categorical kinds
+and indices, while `winner_params` exposes actual bool/int values for searched
+axes only.
+
+Outcome V2 and Bundle V2 carry the same optional
+[`methods_hpo_fold_state`](contracts/methods_hpo_fold_state.v1.schema.json).
+Campaign `methods_hpo_resume_state` is absent in fold mode. The state preserves
+the unexpanded `base_plan`, root provenance, coordinator `relations` and
+`selected_variant_id`, plus
+`outer_scopes` sorted by outer fold ID and a required `refit_scope`. Each scope
+includes its inner FoldSet, plan/parameter fingerprints, complete resume
+ledger and local winner. Scope `phase` is `FIT_CV`/`REFIT`, while scope IDs
+are `<operation>:scope:fit_cv:<outer-fold>` and `<operation>:scope:refit`.
+The root selected variant names the independent REFIT winner; outer OOF rows
+retain their own fold-local effective parameter fingerprints. The root
+ScoreSet evaluates honest outer OOF, not the REFIT study's inner score.
+
+The Python JSON functions `validate_methods_hpo_fold_state_json` and
+`methods_hpo_fold_state_from_package_json` delegate validation to Rust.
+The typed facade supports:
+
+```python
+state = dag_ml.methods_hpo_fold_state_from_package(package)
+outer = state.to_dict()["outer_scopes"]
+refit = state.to_dict()["refit_scope"]
+```
+
+The reader validates the containing package before returning a
+`MethodsFoldHpoState`; a missing state is an error. Its snapshots are independent
+copies, and reading performs neither FIT nor HPO. Direct standalone state
+validation is useful for metadata checks but cannot authorize resume. Resume
+requires the complete Package V2 and unchanged data, fold, group, controller,
+phase-control and selection authorities. Swapping checkpoints between scopes
+is refused even when the containing package fingerprint is recomputed.
+Saved RAW replay likewise uses native package/trust validation and never fits
+or starts an optimizer. Warmstart and the broader canonical ND profile remain
+separate work.
 
 The tracked root workspace and standalone `dag-ml-py` maturin workspace both
 lock that binding from the registry with its published checksum. A local path

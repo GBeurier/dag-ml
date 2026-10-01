@@ -2118,6 +2118,21 @@ impl PortablePredictorPackage {
         }
         self.execution_bundle
             .validate_against_plan(&self.effective_plan)?;
+        if let Some(state) = &self.execution_bundle.methods_hpo_fold_state {
+            if self.schema_version != PORTABLE_PREDICTOR_PACKAGE_SCHEMA_VERSION
+                || state.provenance.data_identities_fingerprint
+                    != tcv1_fingerprint(&self.data_identities, "fold HPO package data identities")?
+                || state.provenance.training_influence_fingerprint
+                    != self.training_influence.manifest_fingerprint
+                || state.provenance.relation_fingerprint
+                    != self.training_influence.relation_fingerprint
+            {
+                return contract_error(
+                    "native fold HPO package data/influence/relation provenance differs"
+                        .to_string(),
+                );
+            }
+        }
         if self.schema_version == PORTABLE_PREDICTOR_PACKAGE_SCHEMA_VERSION
             && self.execution_bundle.schema_version
                 != crate::bundle::EXECUTION_BUNDLE_SCHEMA_VERSION

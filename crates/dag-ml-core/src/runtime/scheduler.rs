@@ -1064,6 +1064,74 @@ impl SequentialScheduler {
         Ok(results)
     }
 
+    /// Evaluate each external validation fold using its attested inner-study
+    /// winner. The root variant identity is retained; differing fit parameters
+    /// are explicit scope evidence rather than invented root variants.
+    pub fn execute_fold_hpo_fit_cv(
+        &self,
+        plan: &ExecutionPlan,
+        state: &crate::methods_fold_hpo::MethodsFoldHpoState,
+        controllers: &RuntimeControllerRegistry,
+        data_provider: &dyn RuntimeDataProvider,
+        ctx: &mut RunContext,
+    ) -> Result<Vec<NodeResult>> {
+        state.validate()?;
+        plan.validate()?;
+        let variant = plan
+            .variants
+            .iter()
+            .find(|v| v.variant_id == state.selected_variant_id)
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(
+                    "local HPO outer evaluation lacks selected variant".into(),
+                )
+            })?;
+        ctx.configure_global_oof_aggregation(plan, data_provider)?;
+        let mut results = Vec::new();
+        for scope in &state.outer_scopes {
+            let mut scoped_plan = plan.clone();
+            let node = scoped_plan
+                .node_plans
+                .get_mut(&state.target_node_id)
+                .ok_or_else(|| DagMlError::RuntimeValidation("local HPO target absent".into()))?;
+            node.params = scope.effective_params(&state.base_plan, &state.target_node_id)?;
+            node.params_fingerprint = scope.params_fingerprint.clone();
+            let mut execution = VariantExecutionSpec::from_plan(variant);
+            let choice = execution
+                .choices
+                .get_mut("native_methods_hpo")
+                .ok_or_else(|| {
+                    DagMlError::RuntimeValidation(
+                        "local HPO selected variant lacks proposal".into(),
+                    )
+                })?;
+            choice.param_overrides[0].params = scope.winner_params.clone();
+            execution.fingerprint = stable_json_fingerprint(&(
+                &variant.fingerprint,
+                &scope.scope_id,
+                &scope.params_fingerprint,
+            ))?;
+            results.extend(self.execute_phase_scope(
+                &scoped_plan,
+                controllers,
+                ctx,
+                PhaseScope {
+                    phase: Phase::FitCv,
+                    variant_id: Some(variant.variant_id.clone()),
+                    variant: Some(execution),
+                    fold_id: scope.outer_fold_id.clone(),
+                    seed_root: variant.seed.or(ctx.root_seed),
+                },
+                PhaseScopeResources {
+                    data_provider: Some(data_provider),
+                    suppress_inner_cv: true,
+                    ..Default::default()
+                },
+            )?);
+        }
+        Ok(results)
+    }
+
     pub fn execute_campaign_phase_with_data_provider(
         &self,
         plan: &ExecutionPlan,
@@ -3971,6 +4039,7 @@ mod hpo_scheduler_tests {
             }))
             .unwrap();
         let hpo = RuntimeHpoExecutionContext {
+            proposal_namespace: None,
             portable_profile: None,
             operation_id: "hpo:test".to_string(),
             controller_id: ControllerId::new("controller:tuner").unwrap(),
