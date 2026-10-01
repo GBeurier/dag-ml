@@ -28,6 +28,9 @@ pub mod implementation_registry;
 pub mod initial_refit;
 #[cfg(feature = "methods-optimizer")]
 pub mod methods_estimator;
+pub mod methods_phase_controls;
+#[cfg(feature = "methods-optimizer")]
+pub mod methods_role_pipeline;
 pub mod metric_provider;
 pub mod metrics;
 pub mod n4m_roles;
@@ -91,3 +94,7 @@ pub use source_alignment::*;
 pub use terminal_prediction::*;
 pub use training::*;
 pub use training_runtime::*;
+
+pub use methods_phase_controls::*;
+#[cfg(feature = "methods-optimizer")]
+pub use methods_role_pipeline::*;

@@ -76,6 +76,8 @@ from ._dag_ml import (
 )
 from ._dag_ml import (
     validate_archive_v2_portable_payloads_json as _native_validate_archive_v2_portable_payloads_json,
+    methods_pls_role_pipeline_contract_json as _native_methods_pls_role_pipeline_contract_json,
+    inspect_methods_role_pipeline_params_json as _native_inspect_methods_role_pipeline_params_json,
 )
 from ._dag_ml import (
     build_archive_v3_native_refit_payloads_json as _native_build_archive_v3_native_refit_payloads_json,
@@ -1994,3 +1996,22 @@ __all__ = [
     "version",
     "write_native_results_v2",
 ]
+
+
+def methods_pls_role_pipeline_contract(params: Mapping[str, Any]) -> dict[str, Any]:
+    """Compile the explicit closed PLS role profile without accessing data or Methods."""
+    return json.loads(_native_methods_pls_role_pipeline_contract_json(_coerce_json(params)))
+
+
+def inspect_methods_role_pipeline_params(payload_bytes: bytes, methods_library_path: str | PathLike[str]) -> dict[str, Any]:
+    """Import closed PLS RAW N4ME states and return native-verified parameters, without fit.
+
+    This does not grant controller trust or validate a surrounding archive;
+    callers must use the signed package/container validator first.
+    """
+    if not isinstance(payload_bytes, bytes):
+        raise TypeError("Methods RAW inspection requires bytes")
+    return json.loads(_native_inspect_methods_role_pipeline_params_json(payload_bytes, str(methods_library_path)))
+
+
+__all__ += ["methods_pls_role_pipeline_contract", "inspect_methods_role_pipeline_params"]

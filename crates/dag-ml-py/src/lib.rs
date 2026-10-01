@@ -12,6 +12,7 @@ use serde::de::DeserializeOwned;
 
 mod in_process;
 mod local_implementation;
+mod methods_role_pipeline;
 mod training;
 
 use dag_ml_core::{
@@ -611,6 +612,8 @@ fn _dag_ml(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
         module
     )?)?;
     module.add_function(wrap_pyfunction!(validate_archive_v2_portable_payloads_json, module)?)?;
+    module.add_function(wrap_pyfunction!(methods_role_pipeline::methods_pls_role_pipeline_contract_json,module)?)?;
+    module.add_function(wrap_pyfunction!(methods_role_pipeline::inspect_methods_role_pipeline_params_json,module)?)?;
     module.add_function(wrap_pyfunction!(
         build_archive_v3_native_refit_payloads_json,
         module
@@ -833,6 +836,8 @@ fn contract_manifest() -> serde_json::Value {
             "sign_training_replay_request_json",
             "build_archive_v2_native_portable_payloads_json",
             "validate_archive_v2_portable_payloads_json",
+            "methods_pls_role_pipeline_contract_json",
+            "inspect_methods_role_pipeline_params_json",
             "build_archive_v3_native_refit_payloads_json",
             "build_conformal_presentation_v1_json",
             "project_training_request_json",

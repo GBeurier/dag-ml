@@ -359,6 +359,8 @@ pub struct RuntimeHpoCampaignTask {
 /// state, but this context contains only portable coordinator facts.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RuntimeHpoExecutionContext {
+    /// Explicit additive closed Methods profile; None retains HPOv1.
+    pub portable_profile: Option<String>,
     /// Stable identity of this scheduler-owned campaign operation.  This is
     /// deliberately not a graph node: HPO controls variants of a predictor,
     /// it is not part of the predictor topology.
@@ -482,6 +484,15 @@ impl RuntimeHpoExecutionContext {
                 self.target_node_id
             ))
         })?;
+        if let Some(profile) = &self.portable_profile {
+            if profile != crate::METHODS_PLS_ROLE_PROFILE
+                || target.controller_id.as_str() != crate::METHODS_NATIVE_REGRESSION_CONTROLLER
+            {
+                return Err(DagMlError::RuntimeValidation(
+                    "runtime HPO portable profile/target controller mismatch".into(),
+                ));
+            }
+        }
         if target.kind != crate::graph::NodeKind::Model {
             return Err(DagMlError::RuntimeValidation(format!(
                 "runtime HPO target `{}` must be a model node",

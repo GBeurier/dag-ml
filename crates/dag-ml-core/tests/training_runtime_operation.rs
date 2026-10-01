@@ -1092,6 +1092,19 @@ fn controllers(
             .request
             .controller_manifests
             .iter()
+            .any(|manifest| manifest.controller_id.as_str() == METHODS_NATIVE_REGRESSION_CONTROLLER)
+    {
+        #[cfg(feature = "methods-optimizer-local")]
+        controllers
+            .register(Box::new(MethodsNativeRegressionController::new(
+                methods_runtime(),
+            )))
+            .unwrap();
+    } else if complete
+        && fixture
+            .request
+            .controller_manifests
+            .iter()
             .any(|manifest| manifest.controller_id.as_str() == METHODS_PLS_CONTROLLER_ID)
     {
         #[cfg(feature = "methods-optimizer-local")]
@@ -1136,6 +1149,200 @@ fn controllers(
     controllers
 }
 
+#[cfg(feature = "methods-optimizer-local")]
+fn use_native_pls_phase_profile(fixture: &mut Fixture, trials: Option<u32>) {
+    use_portable_methods_pipeline(fixture);
+    let params = BTreeMap::from([
+        (
+            "native_profile".into(),
+            serde_json::json!(METHODS_PLS_ROLE_PROFILE),
+        ),
+        ("n_components".into(), serde_json::json!(1)),
+        ("scale".into(), serde_json::json!(true)),
+    ]);
+    let contract = methods_pls_role_pipeline_contract(&params).unwrap();
+    let model = fixture.request.graph.nodes.first_mut().unwrap();
+    model.operator = Some(contract["operator"].clone());
+    model.params = params;
+    let manifest: ControllerManifest =
+        serde_json::from_value(contract["manifest"].clone()).unwrap();
+    fixture.request.controller_manifests = vec![manifest.clone()];
+    if let Some(trials) = trials {
+        let mut old = self::fixture(true, false);
+        add_portable_methods_hpo(&mut old);
+        let mut operation = methods_hpo_descriptor_mut(&mut old).clone();
+        operation["schema_version"] = serde_json::json!(2);
+        operation["native_profile"] = serde_json::json!(METHODS_PLS_ROLE_PROFILE);
+        operation["trials"] = serde_json::json!(trials);
+        operation["study"]["methods_abi"] = serde_json::json!("n4m-abi-2.14");
+        operation["study"]["search_space"] = serde_json::json!({"parameters":[{"kind":"categorical","name":"scale","values":[false,true]}]});
+        operation["parameter_paths"] = serde_json::json!({"scale":"scale"});
+        fixture
+            .request
+            .campaign
+            .metadata
+            .insert("methods_hpo_operation".into(), operation);
+        let mut tuner = manifest;
+        tuner.controller_id = ControllerId::new("controller:tuner.methods").unwrap();
+        tuner.operator_kind = NodeKind::Tuner;
+        tuner.input_ports.clear();
+        tuner.output_ports.clear();
+        fixture.request.controller_manifests.push(tuner);
+    }
+    rebuild(fixture);
+}
+
+#[cfg(feature = "methods-optimizer-local")]
+#[test]
+fn native_pls_fixed_phase_controls_validate_without_hpo_selection_influence() {
+    let mut fixture = fixture(true, false);
+    use_native_pls_phase_profile(&mut fixture, None);
+    fixture.request.parameter_patches = vec![
+        ParameterPatch {
+            schema_version: 1,
+            node_id: node("model:base"),
+            namespace: ParameterNamespace::Fit,
+            path: vec!["refit_params".into()],
+            value: serde_json::json!({"scale":true}),
+        },
+        ParameterPatch {
+            schema_version: 1,
+            node_id: node("model:base"),
+            namespace: ParameterNamespace::Fit,
+            path: vec!["train_params".into()],
+            value: serde_json::json!({"scale":false}),
+        },
+    ];
+    fixture.request.patch_policies = vec![NodePatchPolicy {
+        node_id: node("model:base"),
+        allowed_namespaces: BTreeSet::from([ParameterNamespace::Fit]),
+    }];
+    rebuild(&mut fixture);
+    let mut store = InMemoryArtifactStore::new();
+    let outcome = run(
+        &fixture,
+        Arc::new(CallState::default()),
+        &provider(&fixture),
+        &mut store,
+    )
+    .unwrap();
+    outcome.validate().unwrap();
+    assert!(outcome.methods_hpo_resume_state.is_none());
+    // Generic SELECT records selection influence even for a fixed recipe.
+    // A Fit-only patch does not independently require an HPO attestation.
+    let mut without_hpo = outcome.clone();
+    without_hpo
+        .training_influence
+        .entries
+        .retain(|entry| entry.kind != TrainingInfluenceKind::HpoSelection);
+    without_hpo.training_influence.manifest_fingerprint = without_hpo
+        .training_influence
+        .compute_fingerprint()
+        .unwrap();
+    resign_outcome(&mut without_hpo);
+    without_hpo.validate().unwrap();
+    assert_eq!(outcome.parameter_patches, fixture.request.parameter_patches);
+    let artifact = &outcome.execution_bundle.refit_artifacts[0].artifact;
+    let inspected = inspect_methods_role_pipeline_params(
+        &outcome.execution_bundle.raw_artifact_payloads[&artifact.id],
+        &methods_runtime(),
+    )
+    .unwrap();
+    assert_eq!(inspected["model_params"]["scale"], serde_json::json!(true));
+    TrainingOutcome::from_json(&serde_json::to_string(&outcome).unwrap()).unwrap();
+    let mut tampered = outcome;
+    tampered
+        .parameter_patches
+        .iter_mut()
+        .find(|p| p.path[0] == "train_params")
+        .unwrap()
+        .value["scale"] = serde_json::json!(true);
+    resign_outcome(&mut tampered);
+    assert!(tampered.validate().is_err());
+}
+
+#[cfg(feature = "methods-optimizer-local")]
+#[test]
+fn native_pls_scale_ties_preserve_native_incumbent_and_resume_matches_full_budget() {
+    let execute = |trials, resume: Option<&PortablePredictorPackage>| {
+        let mut fixture = fixture(true, false);
+        use_native_pls_phase_profile(&mut fixture, Some(trials));
+        if let Some(package) = resume {
+            methods_hpo_descriptor_mut(&mut fixture)["resume_package_json"] =
+                serde_json::json!(serde_json::to_string(package).unwrap());
+            rebuild(&mut fixture);
+        }
+        let mut store = InMemoryArtifactStore::new();
+        run(
+            &fixture,
+            Arc::new(CallState::default()),
+            &provider(&fixture),
+            &mut store,
+        )
+        .unwrap()
+    };
+    let first = execute(2, None);
+    let package = first
+        .to_portable_predictor_package(
+            "predictor:scale.resume",
+            FittedArtifactMode::PortableRequired,
+            ArtifactLoadMode::NativePortable,
+        )
+        .unwrap();
+    let resumed = execute(6, Some(&package));
+    let full = execute(6, None);
+    for outcome in [&resumed, &full] {
+        outcome.validate().unwrap();
+        let state = outcome.methods_hpo_resume_state.as_ref().unwrap();
+        state.validate().unwrap();
+        assert_eq!(state.trial_history_len, 6);
+        assert_eq!(state.completed_reports.len(), 6);
+        assert!(
+            state
+                .completed_reports
+                .iter()
+                .filter(|report| report.score.to_bits() == state.incumbent.score.to_bits())
+                .count()
+                > 1
+        );
+        let native_best = state
+            .completed_reports
+            .iter()
+            .find(|report| report.trial_id == state.incumbent.trial_id)
+            .unwrap();
+        assert_eq!(native_best.variant_id, state.incumbent.variant_id);
+        assert_eq!(native_best.score.to_bits(), state.incumbent.score.to_bits());
+        let selected = state
+            .completed_reports
+            .iter()
+            .find(|report| report.variant_id == outcome.selected_variant_id)
+            .unwrap();
+        assert_eq!(selected.score.to_bits(), native_best.score.to_bits());
+        TrainingOutcome::from_json(&serde_json::to_string(outcome).unwrap()).unwrap();
+    }
+    assert_eq!(resumed.selected_variant_id, full.selected_variant_id);
+    assert_eq!(resumed.oof_averages, full.oof_averages);
+    let resumed_state = resumed.methods_hpo_resume_state.as_ref().unwrap();
+    let full_state = full.methods_hpo_resume_state.as_ref().unwrap();
+    assert_eq!(resumed_state.incumbent, full_state.incumbent);
+    let normalize_durations = |entries: &[MethodsHpoTerminalEvidence]| {
+        let mut entries = entries.to_vec();
+        for entry in &mut entries {
+            assert!(entry.trial.duration.is_finite() && entry.trial.duration >= 0.0);
+            entry.trial.duration = 0.0;
+        }
+        entries
+    };
+    assert_eq!(
+        normalize_durations(&resumed_state.terminal_trials),
+        normalize_durations(&full_state.terminal_trials)
+    );
+    assert_eq!(
+        resumed_state.completed_reports,
+        full_state.completed_reports
+    );
+}
+
 fn provider(fixture: &Fixture) -> AttestedProvider {
     AttestedProvider {
         identity: Some(fixture.request.data_identities[0].clone()),
@@ -1143,11 +1350,10 @@ fn provider(fixture: &Fixture) -> AttestedProvider {
         contradictory_relations: None,
         omit_relations: false,
         next_handle: AtomicU64::new(0),
-        methods_pls_enabled: fixture
-            .request
-            .controller_manifests
-            .iter()
-            .any(|manifest| manifest.controller_id.as_str() == METHODS_PLS_CONTROLLER_ID),
+        methods_pls_enabled: fixture.request.controller_manifests.iter().any(|manifest| {
+            manifest.controller_id.as_str() == METHODS_PLS_CONTROLLER_ID
+                || manifest.controller_id.as_str() == "controller:methods.native.regression"
+        }),
         methods_rows: BTreeMap::from([
             (SampleId::new("sample:1").unwrap(), [1.0, 1.0, 2.0, 2.0]),
             (SampleId::new("sample:2").unwrap(), [2.0, 4.0, -1.0, 1.0]),
