@@ -21,7 +21,9 @@ The existing signed package retains plugin identity, controller manifests and
 trust requirements. The archive declaration does not duplicate or override them.
 
 DAG-ML accepts only the RAW wrapper `dagml.methods.regression.v1`, produced by
-plugin `dagml.methods.wasm.regression` version `1.0.0`. It validates the exact
+plugins `dagml.methods.wasm.regression` and `dagml.methods.r.regression`, each
+version `1.0.0`. Their controller identities and explicit trust manifests remain
+distinct; sharing a native state codec does not authorize another host. It validates the exact
 node and parameter identity, unique ordered feature/target names, bounded native
 Methods recipe and one opaque N4ME state per step. It never interprets estimator
 bytes. Native Methods hydration owns state compatibility and numerical behavior.

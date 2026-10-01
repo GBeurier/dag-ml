@@ -665,7 +665,9 @@ def validate_role_pipeline_payload(record: dict[str, Any], payload: bytes) -> No
         0 < len(payload) <= 134_217_728
         and artifact.get("kind") == "methods_role_pipeline"
         and artifact.get("backend") == "raw"
-        and artifact.get("plugin") == "dagml.methods.wasm.regression"
+        and artifact.get("plugin") in {
+            "dagml.methods.wasm.regression", "dagml.methods.r.regression",
+        }
         and artifact.get("plugin_version") == "1.0.0"
         and artifact.get("native_predictor_descriptor") is None
         and artifact.get("native_estimator_descriptor") is None
