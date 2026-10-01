@@ -117,6 +117,6 @@ jobs:
           python-version: "3.11"
       - name: Compare native Python folds and scores with the WASM search
         run: |
-          python -m pip install 'dag-ml==0.3.32' 'nirs4all-methods==1.2.1' 'pls4all==1.2.1' numpy
+          python -m pip install 'dag-ml==0.3.32' 'nirs4all-methods==1.2.1' 'pls4all==1.2.1' numpy scikit-learn
           python scripts/qualify_multimodal_methods_hpo_python.py \
             "$RUNNER_TEMP/four-source-receipt.json" "$RUNNER_TEMP/python-parity.json"
