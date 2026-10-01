@@ -12,5 +12,9 @@ if (typeof dagMl.initSync === "function") {
 }
 assert.equal(typeof N4mWasmRegressionController, "function");
 assert.equal(typeof N4mWasmHostOptimizer, "function");
+for (const name of ["training_data_identity_json", "sample_relation_set_fingerprint_json",
+  "sign_training_request_json", "execute_training_json", "attach_predict_cohort_to_envelope_json",
+  "sign_training_replay_request_json", "replay_training_package_json"])
+  assert.equal(typeof dagMl[name], "function", "Missing packaged native training export: " + name);
 assert.equal(dagMl.dag_ml_version(), JSON.parse(dagMl.contract_manifest_json()).version);
 console.log("PACKAGED_HOST_ADAPTER_IMPORTS_OK", dagMl.dag_ml_version());

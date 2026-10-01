@@ -10,7 +10,7 @@ use dag_ml_core::{
     InitialRefitScheduler,
 };
 
-fn controllers_for_plan(
+pub(super) fn controllers_for_plan(
     plan: &ExecutionPlan,
     js_invoke: &js_sys::Function,
 ) -> CoreResult<RuntimeControllerRegistry> {

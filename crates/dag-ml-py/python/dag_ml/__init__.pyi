@@ -269,6 +269,7 @@ def execute_training_json(
     bundle_id: str,
     warnings_json: str = "[]",
     diagnostics_json: str = "{}",
+    artifact_callback: Any | None = None,
 ) -> TrainingResult: ...
 def execute_methods_training_json(
     request_json: str,
@@ -420,6 +421,7 @@ def execute_training(
     bundle_id: str,
     warnings: Any = (),
     diagnostics: Any = None,
+    artifact_callback: Any | None = None,
 ) -> TrainingResult: ...
 def replay_loaded_predictor_package_json(
     package: Any,

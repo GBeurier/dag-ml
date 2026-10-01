@@ -334,7 +334,9 @@ class HostHpoResumeTests(unittest.TestCase):
         self.assertEqual(resumed_recovered["checkpoint"]["trials"][1]["state"], "failed")
         request = _request(1, generated=True)
         request["optimizer_descriptor"]["n_jobs"] = 2
-        with self.assertRaisesRegex(dag_ml.DagMlRuntimeError, "sequential candidate"):
+        # Parallel candidates require isolated operator callbacks before any
+        # generated view is requested; that preflight precedes view execution.
+        with self.assertRaisesRegex(dag_ml.DagMlRuntimeError, "candidate-local operator callbacks"):
             dag_ml.run_host_hpo_search_in_process(
                 _terminal_dsl(), _terminal_envelope(), _terminal_manifest(), request,
                 _Operators(), _Proposals(), view_callback_factory=view_factory,

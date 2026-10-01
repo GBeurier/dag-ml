@@ -283,8 +283,10 @@ export class N4mWasmRegressionController {
           }));
           const artifactId = ["artifact:methods", task.run_id, node.node_id, task.variant_id ?? "base", "refit"].join(":");
           requireCondition(!this.artifacts.has(artifactId), "Duplicate Methods REFIT artifact");
+          const contentFingerprint = this._hash(payload);
           artifacts = [{ id: artifactId, kind: "methods_role_pipeline", controller_id: controllerId,
-            backend: "raw", uri: null, content_fingerprint: this._hash(payload), size_bytes: payload.length,
+            backend: "raw", uri: "artifacts/" + contentFingerprint + ".json",
+            content_fingerprint: contentFingerprint, size_bytes: payload.length,
             plugin: "dagml.methods.wasm.regression", plugin_version: this.controllerVersion }];
           // Prediction/export must succeed before publishing a retained model.
           const result = JSON.parse(this._result(task, valid, model, artifacts, {}));

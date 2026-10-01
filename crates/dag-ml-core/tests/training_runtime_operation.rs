@@ -1725,6 +1725,102 @@ fn node(value: &str) -> NodeId {
     NodeId::new(value).unwrap()
 }
 
+/// A generic host-owned RAW artifact, deliberately not a built-in Methods kind.
+struct RawTrainingController {
+    inner: TrainingController,
+    export: Option<Vec<u8>>,
+}
+
+impl RuntimeController for RawTrainingController {
+    fn controller_id(&self) -> &ControllerId {
+        self.inner.controller_id()
+    }
+
+    fn invoke(&self, task: &NodeTask) -> Result<NodeResult> {
+        let mut result = self.inner.invoke(task)?;
+        for artifact in &mut result.artifacts {
+            artifact.backend = Some(ArtifactBackend::Raw);
+            artifact.content_fingerprint = Some(format!("{:x}", Sha256::digest(b"raw-test")));
+            artifact.uri = Some("artifacts/generic-test.bin".into());
+            artifact.size_bytes = Some(8);
+        }
+        result.lineage.artifact_refs = result.artifacts.clone();
+        Ok(result)
+    }
+
+    fn export_artifact_payload(&self, _id: &ArtifactId) -> Result<Option<Vec<u8>>> {
+        Ok(self.export.clone())
+    }
+}
+
+#[test]
+fn generic_raw_training_exports_and_validates_payloads_without_methods_feature() {
+    for (export, succeeds) in [
+        (Some(b"raw-test".to_vec()), true),
+        (None, false),
+        (Some(b"tampered".to_vec()), false),
+    ] {
+        let fixture = fixture(true, false);
+        let state = Arc::new(CallState::default());
+        *state.preferred.lock().unwrap() = Some(fixture.preferred.clone());
+        let mut controllers = controllers(&fixture, state.clone(), false);
+        controllers
+            .register(Box::new(RawTrainingController {
+                inner: TrainingController {
+                    id: ControllerId::new("controller:model.mock").unwrap(),
+                    state,
+                    emits_predictions: true,
+                    emits_artifact: true,
+                    prediction_name: "protein".into(),
+                },
+                export,
+            }))
+            .unwrap();
+        let provider = provider(&fixture);
+        let mut store = InMemoryArtifactStore::new();
+        let result = execute_training(TrainingExecutionInput {
+            request: &fixture.request,
+            outcome_id: "outcome:raw.generic".into(),
+            run_id: RunId::new("run:raw.generic").unwrap(),
+            bundle_id: BundleId::new("bundle:raw.generic").unwrap(),
+            controllers: &controllers,
+            data_provider: &provider,
+            relations: &fixture.relations,
+            training_influence: &fixture.influence,
+            artifact_store: &mut store,
+            warnings: Vec::new(),
+            diagnostics: BTreeMap::new(),
+        });
+        if succeeds {
+            let outcome = result.unwrap();
+            outcome.validate().unwrap();
+            assert_eq!(outcome.execution_bundle.raw_artifact_payloads.len(), 1);
+            assert_eq!(
+                outcome
+                    .execution_bundle
+                    .raw_artifact_payloads
+                    .values()
+                    .next()
+                    .unwrap(),
+                b"raw-test"
+            );
+            outcome
+                .to_portable_predictor_package(
+                    "package:raw.generic",
+                    FittedArtifactMode::PortableRequired,
+                    ArtifactLoadMode::NativePortable,
+                )
+                .unwrap();
+        } else {
+            assert!(result.is_err());
+            assert!(
+                store.is_empty(),
+                "failed payload transfer must not publish fitted artifacts"
+            );
+        }
+    }
+}
+
 #[test]
 fn native_training_refit_and_no_refit_are_deterministic_and_auditable() {
     let refit = fixture(true, false);

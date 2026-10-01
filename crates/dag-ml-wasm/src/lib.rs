@@ -33,6 +33,7 @@ use dag_ml_core::{
 mod host_hpo;
 mod initial_refit;
 mod local_implementation;
+mod training;
 
 pub use host_hpo::{
     host_hpo_evaluate_worker_fold_json, host_hpo_evaluate_worker_task_json, host_hpo_search_json,
@@ -40,6 +41,11 @@ pub use host_hpo::{
 };
 pub use initial_refit::{execute_initial_full_refit_json, replay_initial_full_refit_json};
 pub use local_implementation::{loss_execution_attestation_json, LocalImplementationRegistry};
+pub use training::{
+    attach_predict_cohort_to_envelope_json, execute_training_json, replay_training_package_json,
+    sample_relation_set_fingerprint_json, sign_training_replay_request_json,
+    sign_training_request_json, training_data_identity_json,
+};
 
 const SHARED_FOLD_SET_FINGERPRINT: &str =
     "54d3185d6c628ef0df848828a8d8ae650222a283a78bbd3ab3bc2256f222c05c";

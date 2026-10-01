@@ -6,6 +6,7 @@ scheduler parity. It does not substitute a Python CV loop or a new optimizer.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -196,11 +197,156 @@ def main() -> None:
         rtol=1e-10,
         atol=1e-12,
     )
+    # Import the actual five-model WASM package through the same native replay
+    # API exposed to Python. Heavy model state stays in Methods N4ME binaries.
+    archive = fixture["completeArchive"]
+    package = json.loads(archive["packageJson"])
+    states = {}
+    operations = []
+    next_handle = 0
+
+    def artifact_bridge(message):
+        nonlocal next_handle
+        operation = message["operation"]
+        operations.append(operation)
+        if operation == "release":
+            del states[message["handle"]["handle"]]
+            return None
+        assert operation == "hydrate"
+        request = message["request"]
+        payload = bytes(message["payload"])
+        assert (
+            hashlib.sha256(payload).hexdigest()
+            == request["artifact"]["content_fingerprint"]
+        )
+        saved = json.loads(payload)
+        assert saved["schema"] == "dagml.methods.regression.v1"
+        assert saved["node_id"] == request["node_id"]
+        assert saved["params_fingerprint"] == request["params_fingerprint"]
+        model = RolePipeline.from_states(
+            saved["steps"], saved["states"], feature_names=saved["feature_names"]
+        )
+        next_handle += 1
+        states[next_handle] = (model, saved, request["artifact"])
+        return {
+            "handle": next_handle,
+            "kind": "model",
+            "owner_controller": request["controller_id"],
+        }
+
+    def predict_operator(task):
+        assert task["phase"] == "PREDICT"
+        operations.append("PREDICT")
+        node = task["node_plan"]
+        [(key, artifact)] = task["artifact_inputs"].items()
+        handle = task["input_handles"][key]
+        model, saved, expected_artifact = states[handle["handle"]]
+        assert saved["node_id"] == node["node_id"]
+        assert saved["params_fingerprint"] == node["params_fingerprint"]
+        assert artifact["artifact"]["id"] == expected_artifact["id"]
+        if task["prediction_inputs"]:
+            inputs = [
+                value
+                for key, value in sorted(task["prediction_inputs"].items())
+                if key.endswith(":predict")
+            ]
+            replay_ids = inputs[0]["sample_ids"]
+            assert all(value["sample_ids"] == replay_ids for value in inputs)
+            x = np.column_stack([value["values"] for value in inputs])
+        else:
+            [view] = task["data_views"].values()
+            replay_ids = view["sample_ids"]
+            [source] = view["source_ids"]
+            x = np.asarray([archive["heldoutRows"][source]], dtype=float)
+        values = np.asarray(model.predict(x), dtype=float).reshape(-1, 1).tolist()
+        return {
+            "node_id": node["node_id"],
+            "outputs": {},
+            "artifacts": [],
+            "artifact_handles": {},
+            "predictions": [
+                {
+                    "producer_node": node["node_id"],
+                    "partition": "final",
+                    "fold_id": None,
+                    "sample_ids": replay_ids,
+                    "values": values,
+                    "target_names": ["y"],
+                }
+            ],
+            "lineage": {
+                "record_id": "lineage:python-replay:" + node["node_id"],
+                "run_id": task["run_id"],
+                "node_id": node["node_id"],
+                "phase": "PREDICT",
+                "controller_id": node["controller_id"],
+                "controller_version": node["controller_version"],
+                "variant_id": task["variant_id"],
+                "fold_id": None,
+                "branch_path": task["branch_path"],
+                "input_lineage": [],
+                "artifact_refs": [],
+                "params_fingerprint": node["params_fingerprint"],
+                "seed": task["seed"],
+                "unsafe_flags": [],
+                "metrics": {},
+                "loss_attestations": [],
+                "early_stopping_records": [],
+            },
+        }
+
+    original_fit = RolePipeline.fit
+    RolePipeline.fit = lambda *a, **k: (_ for _ in ()).throw(
+        AssertionError("Detached replay cannot fit")
+    )
+    try:
+        replay = json.loads(
+            dag_ml.replay_loaded_predictor_package_json(
+                archive["packageJson"],
+                archive["replayRequestJson"],
+                json.dumps(archive["predictEnvelopes"]),
+                "{}",
+                predict_operator,
+                outcome_id="outcome:python.four-source.replay",
+                run_id="run:python.four-source.replay",
+                artifact_callback=artifact_bridge,
+            )
+        )
+    finally:
+        RolePipeline.fit = original_fit
+    assert not states
+    assert (
+        operations.count("hydrate")
+        == operations.count("release")
+        == operations.count("PREDICT")
+        == 5
+    )
+    assert len(package["execution_bundle"]["refit_artifacts"]) == 5
+    actual = replay["outputs"][0]["predictions"][0]
+    expected = archive["replay"]["outputs"][0]["predictions"][0]
+    assert actual["sample_ids"] == expected["sample_ids"]
+    np.testing.assert_allclose(
+        actual["values"], expected["values"], rtol=1e-10, atol=1e-12
+    )
     if len(sys.argv) > 2:
         Path(sys.argv[2]).write_text(
-            json.dumps({"result": result, "fits": fits}, indent=2) + "\n"
+            json.dumps(
+                {
+                    "result": result,
+                    "fits": fits,
+                    "completeArchiveReplay": replay,
+                    "replayOperations": operations,
+                },
+                indent=2,
+            )
+            + "\n"
         )
-    print("PYTHON_WASM_MULTIMODAL_PARITY_OK", len(fits), result["selected_trial_index"])
+    print(
+        "PYTHON_WASM_MULTIMODAL_PARITY_OK",
+        len(fits),
+        result["selected_trial_index"],
+        "five-model replay without fit",
+    )
 
 
 if __name__ == "__main__":

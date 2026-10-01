@@ -82,6 +82,7 @@ BASE_PACK_ARTIFACTS = {
     "crates/dag-ml-py/src/training.rs": "python_training_binding",
     "crates/dag-ml-py/tests/test_training_result.py": "python_binding_test",
     "crates/dag-ml-wasm/src/lib.rs": "wasm_binding",
+    "crates/dag-ml-wasm/src/training.rs": "wasm_training_binding",
     "docs/TRAINING_CONTRACTS.md": "documentation",
     "docs/HPO_METHODS_ADAPTER.md": "hpo_documentation",
     "docs/contracts/abi_snapshot.v1.json": "c_abi_snapshot",

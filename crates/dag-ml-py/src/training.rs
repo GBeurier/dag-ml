@@ -43,9 +43,7 @@ use serde::Serialize;
 #[cfg(feature = "methods-optimizer")]
 use sha2::{Digest, Sha256};
 
-use crate::in_process::{
-    build_runtime_controllers, build_runtime_controllers_with_artifact_callback,
-};
+use crate::in_process::build_runtime_controllers_with_artifact_callback;
 use crate::{py_core_error, py_serde_error};
 
 const PY_DATA_PROVIDER_CONTROLLER_ID: &str = "controller:python.data.provider";
@@ -866,6 +864,7 @@ impl MethodsTerminalPredictionResult {
 /// back into Python through the existing in-process bridge and reattach only
 /// for each callback; this also prevents a parallel scheduler from deadlocking
 /// while worker threads wait to enter Python.
+/// RAW artifacts require the explicit portable `artifact_callback` bridge.
 #[pyfunction]
 #[pyo3(signature = (
     request_json,
@@ -877,7 +876,8 @@ impl MethodsTerminalPredictionResult {
     run_id,
     bundle_id,
     warnings_json = "[]",
-    diagnostics_json = "{}"
+    diagnostics_json = "{}",
+    artifact_callback = None
 ))]
 #[allow(clippy::too_many_arguments)]
 pub fn execute_training_json(
@@ -892,10 +892,19 @@ pub fn execute_training_json(
     bundle_id: &str,
     warnings_json: &str,
     diagnostics_json: &str,
+    artifact_callback: Option<Py<PyAny>>,
 ) -> PyResult<TrainingResult> {
     if !op_callback.bind(py).is_callable() {
         return Err(py_core_error(dag_ml_core::DagMlError::RuntimeValidation(
             "training op_callback must be callable".to_string(),
+        )));
+    }
+    if artifact_callback
+        .as_ref()
+        .is_some_and(|callback| !callback.bind(py).is_callable())
+    {
+        return Err(py_core_error(dag_ml_core::DagMlError::RuntimeValidation(
+            "training artifact_callback must be callable".to_string(),
         )));
     }
     // TrainingRequest::from_json performs raw-token TCV1 verification before
@@ -940,8 +949,13 @@ pub fn execute_training_json(
         EnvelopeAttestedRuntimeDataProvider::new(inner_provider, bindings, envelopes)
             .map_err(py_core_error)?,
     );
-    let controllers =
-        build_runtime_controllers(py, &projection.plan, &op_callback).map_err(py_core_error)?;
+    let controllers = build_runtime_controllers_with_artifact_callback(
+        py,
+        &projection.plan,
+        &op_callback,
+        artifact_callback.as_ref(),
+    )
+    .map_err(py_core_error)?;
     let run_id = RunId::new(run_id).map_err(py_core_error)?;
     let bundle_id = BundleId::new(bundle_id).map_err(py_core_error)?;
     let outcome_id = outcome_id.to_string();
@@ -4321,6 +4335,7 @@ mod tests {
                 "bundle:python.native",
                 "[]",
                 r#"{"binding":"pyo3"}"#,
+                None,
             )
             .expect("native PyO3 training succeeds");
 
@@ -4403,6 +4418,7 @@ mod tests {
                 "bundle:python.native.multiport",
                 "[]",
                 r#"{"binding":"pyo3_multiport"}"#,
+                None,
             )
             .expect("native PyO3 multi-port training succeeds");
             let outputs: Vec<serde_json::Value> =
@@ -4447,6 +4463,7 @@ mod tests {
                 "bundle:duplicate",
                 "[]",
                 "{}",
+                None,
             ) {
                 Ok(_) => panic!("duplicate requirement keys are rejected"),
                 Err(error) => error,
@@ -4573,6 +4590,7 @@ mod tests {
                     "bundle:strict.contract",
                     "[]",
                     "{}",
+                    None,
                 ) {
                     Ok(_) => panic!("{label} must be rejected"),
                     Err(error) => error,
