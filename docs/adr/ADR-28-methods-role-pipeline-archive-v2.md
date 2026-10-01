@@ -21,7 +21,8 @@ The existing signed package retains plugin identity, controller manifests and
 trust requirements. The archive declaration does not duplicate or override them.
 
 DAG-ML accepts only the RAW wrapper `dagml.methods.regression.v1`, produced by
-plugins `dagml.methods.wasm.regression` and `dagml.methods.r.regression`, each
+plugins `dagml.methods.wasm.regression`, `dagml.methods.r.regression`,
+`dagml.methods.octave.regression` and `dagml.methods.native.regression`, each
 version `1.0.0`. Their controller identities and explicit trust manifests remain
 distinct; sharing a native state codec does not authorize another host. It validates the exact
 node and parameter identity, unique ordered feature/target names, bounded native
@@ -63,4 +64,8 @@ qualify canonical N-D encoding, every estimator, R or Octave transport.
 
 N4MM is not relabeled, and no dummy N4MM is inserted. Generic RolePipeline RAW
 states are not silently converted to the narrow N4MM descriptor profile.
+The authored Octave adapter uses the same wrapper through the public Methods
+RolePipeline MEX. Its plugin is bound to `controller:methods.octave.regression`;
+its native runtime qualification remains pending. See
+[the adapter guide](../OCTAVE_METHODS_ROLE_ADAPTER.md).
 Published package versions and tags remain immutable.

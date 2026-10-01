@@ -22,6 +22,7 @@ wire nirs4all directly.
 | Map nirs4all parity capabilities | [Capability matrix](CAPABILITY_MATRIX.md) |
 | Plan R parity and cross-language model transfer | [R binding parity and interoperability](R_BINDING_PARITY_AND_INTEROP.md) |
 | Inspect shared contracts | [Contract manifests](contracts/README.md) |
+| Run the native Octave Methods process adapter | [Octave role adapter](OCTAVE_METHODS_ROLE_ADAPTER.md) |
 | Use native training/fine-tuning contracts | [Training contracts](TRAINING_CONTRACTS.md) |
 | Review public training replay syntax and migration | [Training replay contracts](TRAINING_REPLAY_CONTRACTS.md) |
 | Review conformal/robustness W0 contracts | [Conformal contract foundation](contracts/README.md#conformal-prediction-and-robustness-foundation-v1) |
@@ -105,6 +106,7 @@ HOST_HPO_PARALLEL_DESIGN
 HPO_LANGUAGE_QUALIFICATION
 qualification/multimodal-methods-hpo-r
 N4M_WASM_CONTROLLERS
+OCTAVE_METHODS_ROLE_ADAPTER
 INNER_CV_CAPACITY_CONTRACT
 MULTI_OUTPUT_PREDICTOR_CONTRACT
 MULTI_OUTPUT_CAPTURE_MIGRATION
