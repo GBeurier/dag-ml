@@ -691,11 +691,14 @@ def validate_multimodal_pipeline_payload(record: dict[str, Any], payload: bytes,
     order = ["nir", "image", "series", "metadata"]
     recipe, schemas = saved["recipe"], saved["source_schemas"]
     require(isinstance(recipe, dict) and set(recipe) == {"schema_version", "fusion", "source_order", "encoders", "source_weights", "model"}
-            and type(recipe["schema_version"]) is int and recipe["schema_version"] == 1 and recipe["fusion"] == "early" and recipe["source_order"] == order
+            and type(recipe["schema_version"]) is int and recipe["schema_version"] == 1 and recipe["fusion"] == "early"
+            and isinstance(recipe["source_order"], list) and 1 <= len(recipe["source_order"]) <= len(order)
+            and all(isinstance(name, str) and name in order for name in recipe["source_order"])
+            and len(set(recipe["source_order"])) == len(recipe["source_order"])
             and isinstance(schemas, dict) and set(schemas) == set(order)
-            and isinstance(recipe["encoders"], dict) and set(recipe["encoders"]) == set(order)
-            and isinstance(recipe["source_weights"], dict) and set(recipe["source_weights"]) == set(order),
-            "native_model_refusal", "Canonical U07 source order and complete recipe required")
+            and isinstance(recipe["encoders"], dict) and set(recipe["encoders"]) == set(recipe["source_order"])
+            and isinstance(recipe["source_weights"], dict) and set(recipe["source_weights"]) == set(recipe["source_order"]),
+            "native_model_refusal", "Distinct ordered U07 subset and complete raw source schemas required")
     for name, representation in zip(order, ("signal_1d", "rgb_image", "series_mv", "tabular_mixed"), strict=True):
         schema = schemas[name]
         require(isinstance(schema, dict) and set(schema) == {"representation_id", "input_shape", "dtype", "identity"}
@@ -713,11 +716,13 @@ def validate_multimodal_pipeline_payload(record: dict[str, Any], payload: bytes,
     weights = recipe["source_weights"].values()
     require(all(type(value) in (int, float) and value >= 0 and value < float("inf") for value in weights),
             "native_model_refusal", "Finite nonnegative source weights required")
-    require(tcv1_sha256(recipe["encoders"]["nir"]) == tcv1_sha256({"kind":"standard_scaler", "with_mean":True, "with_std":True})
-            and tcv1_sha256(recipe["encoders"]["metadata"]) == tcv1_sha256({"kind":"column_transformer", "numeric_columns":[0], "categorical_columns":[1],
-                "with_mean":True, "with_std":True, "handle_unknown":"ignore", "sparse_output":False, "drop":None}),
+    require(("nir" not in recipe["encoders"] or tcv1_sha256(recipe["encoders"]["nir"]) == tcv1_sha256({"kind":"standard_scaler", "with_mean":True, "with_std":True}))
+            and ("metadata" not in recipe["encoders"] or tcv1_sha256(recipe["encoders"]["metadata"]) == tcv1_sha256({"kind":"column_transformer", "numeric_columns":[0], "categorical_columns":[1],
+                "with_mean":True, "with_std":True, "handle_unknown":"ignore", "sparse_output":False, "drop":None})),
             "native_model_refusal", "Closed native population scaler/mixed column recipe required")
     for name in ("image", "series"):
+        if name not in recipe["source_order"]:
+            continue
         encoder = recipe["encoders"][name]
         require(isinstance(encoder, dict) and set(encoder) == {"kind", "n_components", "whiten", "random_state"}
                 and encoder["kind"] == "tensor_pca" and type(encoder["n_components"]) is int
@@ -740,11 +745,22 @@ def validate_multimodal_pipeline_payload(record: dict[str, Any], payload: bytes,
             "native_model_refusal", "Explicit complete multimodal graph operator required")
     expected = copy.deepcopy(operator["recipe"])
     params = node["params"]
-    require(set(params) <= {"model__alpha", "source_weights__image", "transformers__image__n_components"},
+    declarations = {"recipe", "source_schemas"}
+    require(set(params) <= {"model__alpha", "source_weights__image", "transformers__image__n_components"} | declarations,
             "native_model_refusal", "Unknown effective multimodal tuning parameter")
+    require(not set(params) & declarations or set(params) & declarations == declarations,
+            "native_model_refusal", "Both immutable multimodal declarations required")
+    if set(params) & declarations:
+        require(set(params) <= declarations | {"model__alpha"}, "native_model_refusal", "Structural multimodal tuning permits alpha only")
+        require(all(tcv1_sha256(params[key]) == tcv1_sha256(operator[key]) for key in declarations),
+                "native_model_refusal", "Immutable declarations differ from the signed graph operator")
     if "model__alpha" in params: expected["model"]["params"]["alpha"] = params["model__alpha"]
-    if "source_weights__image" in params: expected["source_weights"]["image"] = params["source_weights__image"]
-    if "transformers__image__n_components" in params: expected["encoders"]["image"]["n_components"] = params["transformers__image__n_components"]
+    if "source_weights__image" in params:
+        require("image" in expected["source_order"], "native_model_refusal", "Image weight is inactive")
+        expected["source_weights"]["image"] = params["source_weights__image"]
+    if "transformers__image__n_components" in params:
+        require("image" in expected["source_order"], "native_model_refusal", "Image PCA is inactive")
+        expected["encoders"]["image"]["n_components"] = params["transformers__image__n_components"]
     require(recipe == expected and schemas == operator["source_schemas"] and saved["params_fingerprint"] == node["params_fingerprint"],
             "native_model_refusal", "Saved multimodal recipe/source schema differs from selected effective plan")
 

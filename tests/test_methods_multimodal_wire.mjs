@@ -1,6 +1,29 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {multimodalManifest, strictJson, utf8Cell} from "../bindings/js/n4m_multimodal_controller.mjs";
+import {createHash} from "node:crypto";
+import {boundedIdentifier, multimodalManifest, strictJson, utf8Cell} from "../bindings/js/n4m_multimodal_controller.mjs";
+
+const digest = bytes => createHash("sha256").update(bytes).digest("hex");
+
+test("native identifier boundary preserves short lineage and artifact identities", () => {
+  for (const prefix of ["lineage:methods-multimodal", "artifact:methods.multimodal"]) {
+    const coordinate = "r".repeat(127 - prefix.length), original = `${prefix}:${coordinate}`;
+    assert.equal(new TextEncoder().encode(original).length, 128);
+    assert.equal(boundedIdentifier([prefix, coordinate], digest), original);
+    assert.ok(new TextEncoder().encode(boundedIdentifier([prefix, coordinate + "r"], digest)).length <= 128);
+  }
+});
+
+test("long native identities match Python vectors and preserve complete coordinate scope", () => {
+  const prefix = "lineage:methods-multimodal", run = "run:" + "r".repeat(100);
+  const first = boundedIdentifier([prefix, run, "model:a", "PREDICT", "base", "full"], digest);
+  const second = boundedIdentifier([prefix, run + ":model", "a", "PREDICT", "base", "full"], digest);
+  assert.equal(first, `${prefix}:22407a3baa33ed60aad13b2a8bcde292d69e0e1cfd2f17c0c5e145bed261a681`);
+  assert.equal(second, `${prefix}:566707755525c2a470aa50d6b58d7c3137a885f884d1e6b740240cbc0bb473bd`);
+  assert.notEqual(first, second);
+  assert.equal(boundedIdentifier(["artifact:methods.multimodal", run, "model:a", "base", "refit"], digest),
+    "artifact:methods.multimodal:4a2b4526eefcf65d51ca84386b191702af8245079ff0f47ee9b19957f1a9d96b");
+});
 
 test("raw category validation preserves empty strings and enforces UTF-8 byte bounds", () => {
   assert.equal(utf8Cell("", 0), true);
