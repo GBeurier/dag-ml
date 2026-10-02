@@ -107,12 +107,16 @@ def test_manifest_additive_composite_family_is_closed() -> None:
 
 
 @pytest.mark.parametrize("host", ["python", "wasm", "r", "octave"])
-def test_native_plan_preserves_four_raw_sources_and_refuses_implicit_fusion(host: str) -> None:
+@pytest.mark.parametrize("order", [["nir", "image", "series", "metadata"], ["nir"], ["series", "nir"], ["metadata", "image"]])
+def test_native_plan_preserves_four_raw_sources_and_refuses_implicit_fusion(host: str, order: list[str]) -> None:
     """Exercise the real compiler/planner without fitting a transport witness."""
     import dag_ml
     from dag_ml.multimodal_methods import manifest_for_host
 
     _, saved, _ = transport_fixture(host)
+    saved["recipe"]["source_order"] = order
+    for field in ("encoders", "source_weights"):
+        saved["recipe"][field] = {name: saved["recipe"][field][name] for name in order}
     node_id = "model:raw-u07.v1"
     operator = {"type": "N4mMultimodalPipeline", "recipe": saved["recipe"], "source_schemas": saved["source_schemas"]}
     binding = {"node_id": node_id, "input_name": "x", "request_id": "request:/raw-u07.v1",
@@ -134,6 +138,79 @@ def test_native_plan_preserves_four_raw_sources_and_refuses_implicit_fusion(host
     implicit["data_requirements"]["default_fusion"] = None
     with pytest.raises(Exception, match="dagml.data_requirement.missing_multisource_fusion"):
         dag_ml.build_execution_plan("plan:/implicit-u07.v1", compiled.graph, compiled.campaign_template, [implicit])
+
+
+@pytest.mark.parametrize("order", [["nir"], ["series", "nir"], ["metadata", "image"], ["metadata", "series", "image", "nir"]])
+def test_selected_recipe_declarations_keep_full_schemas_and_apply_only_alpha(order: list[str]) -> None:
+    from dag_ml.multimodal_methods import recipe_for_node, validate_recipe
+
+    record, saved, plan = transport_fixture()
+    recipe = saved["recipe"]
+    recipe["source_order"] = order
+    for field in ("encoders", "source_weights"):
+        recipe[field] = {name: recipe[field][name] for name in order}
+    recipe["source_weights"][order[0]] = 0.0
+    operator = plan["graph_plan"]["graph"]["nodes"][0]["operator"]
+    operator["recipe"] = copy.deepcopy(recipe)
+    params = {"recipe": copy.deepcopy(recipe), "source_schemas": copy.deepcopy(saved["source_schemas"]), "model__alpha": 2.0}
+    plan["node_plans"][saved["node_id"]]["params"] = params
+    effective = recipe_for_node(operator, params)
+    validate_recipe(effective, saved["source_schemas"])
+    assert effective["source_order"] == order and set(saved["source_schemas"]) == {"nir", "image", "series", "metadata"}
+    assert effective["model"]["params"]["alpha"] == 2.0 and operator["recipe"]["model"]["params"]["alpha"] == .1
+    saved["recipe"] = effective
+    validate_multimodal_pipeline_payload(record, seal(record, saved), plan)
+    saved["source_schemas"]["image"]["identity"] = '{"changed":true}'
+    with pytest.raises(ArchiveV2ContractError, match="selected effective plan"):
+        validate_multimodal_pipeline_payload(record, seal(record, saved), plan)
+
+
+@pytest.mark.parametrize("mutation", ["partial", "recipe", "schemas", "legacy_weight", "legacy_pca"])
+def test_structural_declarations_refuse_mutations_and_legacy_numeric_knobs(mutation: str) -> None:
+    from dag_ml.multimodal_methods import recipe_for_node
+
+    record, saved, plan = transport_fixture()
+    operator = plan["graph_plan"]["graph"]["nodes"][0]["operator"]
+    params = {"recipe": copy.deepcopy(operator["recipe"]), "source_schemas": copy.deepcopy(operator["source_schemas"]), "model__alpha": .1}
+    if mutation == "partial": del params["source_schemas"]
+    elif mutation == "recipe": params["recipe"]["source_weights"]["nir"] = .5
+    elif mutation == "schemas": params["source_schemas"]["series"]["identity"] = "{}"
+    elif mutation == "legacy_weight": params["source_weights__image"] = .5
+    else: params["transformers__image__n_components"] = 3
+    plan["node_plans"][saved["node_id"]]["params"] = params
+    with pytest.raises(ValueError): recipe_for_node(operator, params)
+    with pytest.raises(ArchiveV2ContractError, match="native_model_refusal"):
+        validate_multimodal_pipeline_payload(record, seal(record, saved), plan)
+
+
+def test_controller_projects_selected_raw_rows_but_validates_excluded_sources() -> None:
+    import numpy as np
+    from dag_ml.multimodal_methods import MethodsMultimodalController
+
+    _, saved, plan = transport_fixture()
+    operator = plan["graph_plan"]["graph"]["nodes"][0]["operator"]
+    operator["recipe"]["source_order"] = ["series", "nir"]
+    for field in ("encoders", "source_weights"):
+        operator["recipe"][field] = {name: operator["recipe"][field][name] for name in ("series", "nir")}
+    sources = {}
+    for name, schema in saved["source_schemas"].items():
+        values = (np.array([[1., "α"], [2., ""], [3., "β"]], dtype=object) if name == "metadata"
+                  else np.arange(3 * np.prod(schema["input_shape"]), dtype=np.dtype(schema["dtype"])).reshape(3, *schema["input_shape"]))
+        sources[name] = {"sample_ids": ["s0", "s1", "s2"], "values": values, "descriptor": schema}
+    controller = MethodsMultimodalController(operators={saved["node_id"]: operator}, sources=sources, allow_fit=False)
+    task = {"node_plan": {"node_id": saved["node_id"]}, "data_views": {"x": {
+        "partition": "predict", "source_ids": ["nir", "image", "series", "metadata"], "sample_ids": ["s2", "s0"],
+        "include_augmented": False, "include_excluded": False, "columns": []}}}
+    try:
+        samples, blocks = controller._features(task, "predict")
+        assert samples == ["s2", "s0"] and list(blocks) == ["series", "nir"]
+        assert list(controller._selected_schemas(saved["node_id"])) == ["series", "nir"]
+        np.testing.assert_array_equal(blocks["series"], sources["series"]["values"][[2, 0]])
+        sources["image"]["values"].flat[0] = np.nan
+        with pytest.raises(ValueError, match="finite raw"):
+            MethodsMultimodalController(operators={saved["node_id"]: operator}, sources=sources, allow_fit=False)
+    finally:
+        controller.close()
 
 
 def test_native_replay_transport_aligns_exact_ids_to_requested_order() -> None:

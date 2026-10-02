@@ -38,6 +38,8 @@ for i = 1:4
             row = rows{j}; if ischar(row), row = cellstr(row); else, row = cells(row); end
             assert(numel(row) == 2 && ischar(row{2}) && ...
                 numel(unicode2native(row{2}, 'UTF-8')) <= 1048576, 'Raw UTF-8 categorical cell required');
+            numeric = row{1}; if ischar(numeric), numeric = str2double(numeric); end
+            assert(number(numeric, -Inf, Inf, false), 'Finite raw numeric metadata required');
             values(j, :) = row;
         end
         source.values = values;
@@ -142,12 +144,15 @@ end
         assert(isequal(ids(view.source_ids), config.source_ids) && ~view.include_augmented && ...
             (any(strcmp(partition, {'fold_validation', 'predict'})) || ~view.include_excluded) && isempty(view.columns), 'Native raw source view mismatch');
         blocks = struct();
+        chosen = ids(config.operators.(task.node_plan.node_id).recipe.source_order);
         for k = 1:4
             name = source_order{k}; s = config.sources.(name); [present, rows] = ismember(samples, s.sample_ids);
             assert(all(present), 'Unknown raw sample ID');
+            if ~any(strcmp(name, chosen)), continue; end
             indices = repmat({':'}, 1, numel(s.descriptor.input_shape) + 1); indices{1} = rows;
             blocks.(name) = s.values(indices{:});
         end
+        blocks = selected_schemas(config.operators.(task.node_plan.node_id).recipe, blocks);
         block = struct('sample_ids', {samples}, 'blocks', blocks);
     end
     function y = targets(samples)
@@ -158,12 +163,12 @@ end
     function out = result(task, block, model, refs)
         if nargin < 4, refs = {}; end
         node = task.node_plan; values = matrix_rows(model.predict(block.blocks, ...
-            config.operators.(node.node_id).source_schemas), numel(block.sample_ids), 1);
+            selected_schemas(config.operators.(node.node_id).recipe, config.operators.(node.node_id).source_schemas)), numel(block.sample_ids), 1);
         prediction = struct('producer_node', node.node_id, 'partition', 'final', 'fold_id', nullable(task.fold_id), ...
             'sample_ids', {block.sample_ids}, 'values', {json_rows(values)}, 'target_names', {config.target_names});
         if strcmp(task.phase, 'FIT_CV'), prediction.partition = 'validation'; end
-        lineage = struct('record_id', ['lineage:methods-multimodal:' task.run_id ':' node.node_id ':' task.phase ':' ...
-            fallback(task.variant_id, 'base') ':' fallback(task.fold_id, 'full')], 'run_id', task.run_id, ...
+        lineage = struct('record_id', bounded_identifier({'lineage:methods-multimodal', task.run_id, node.node_id, task.phase, ...
+            fallback(task.variant_id, 'base'), fallback(task.fold_id, 'full')}), 'run_id', task.run_id, ...
             'node_id', node.node_id, 'phase', task.phase, 'controller_id', controller, 'controller_version', '1.0.0', ...
             'variant_id', nullable(task.variant_id), 'fold_id', nullable(task.fold_id), 'branch_path', {cells(task.branch_path)}, ...
             'input_lineage', {{}}, 'artifact_refs', {refs}, 'params_fingerprint', node.params_fingerprint, ...
@@ -179,7 +184,7 @@ end
         views = struct2cell(task.data_views);
         if any(strcmp(task.phase, {'FIT_CV', 'REFIT'})) && any(cellfun(@(v) strcmp(v.partition, 'predict'), views))
             test = features(task, 'predict'); values = matrix_rows(model.predict(test.blocks, ...
-                config.operators.(node.node_id).source_schemas), numel(test.sample_ids), 1);
+                selected_schemas(config.operators.(node.node_id).recipe, config.operators.(node.node_id).source_schemas)), numel(test.sample_ids), 1);
             out.predictions{end + 1} = struct('producer_node', node.node_id, 'partition', 'test', ...
                 'fold_id', nullable(task.fold_id), 'sample_ids', {test.sample_ids}, 'values', {json_rows(values)}, ...
                 'target_names', {config.target_names});
@@ -217,7 +222,7 @@ end
                 assert(strcmp(saved.node_id, request.node_id) && strcmp(saved.params_fingerprint, request.params_fingerprint) && ...
                     isequal(ids(saved.target_names), config.target_names) && same_json(saved.source_schemas, op.source_schemas) && ...
                     same_json(saved.recipe, recipe_for(op, params)), 'Selected recipe/schema/node mismatch before hydration');
-                model = n4m.MultimodalPipeline.fromState(state, native_recipe(saved.recipe), native_schemas(saved.source_schemas));
+                model = n4m.MultimodalPipeline.fromState(state, native_recipe(saved.recipe), native_schemas(selected_schemas(saved.recipe, saved.source_schemas)));
                 try, handle = keep(struct('model', model, 'saved', saved, 'artifact', ref));
                 catch problem, model.close(); rethrow(problem); end
                 audit('hydrate'); out = struct('operation', 'hydrated_artifact_payload', 'schema_version', 1, 'handle', handle);
@@ -249,7 +254,7 @@ end
         if strcmp(task.phase, 'FIT_CV'), train = features(task, 'fold_train'); valid = features(task, 'fold_validation');
         else, train = features(task, 'full_train'); valid = train; end
         assert(~strcmp(task.phase, 'FIT_CV') || isempty(intersect(train.sample_ids, valid.sample_ids)), 'Training validation overlap');
-        model = n4m.MultimodalPipeline(native_recipe(recipe), native_schemas(op.source_schemas)); retained = false;
+        model = n4m.MultimodalPipeline(native_recipe(recipe), native_schemas(selected_schemas(recipe, op.source_schemas))); retained = false;
         try
             model.fit(train.blocks, targets(train.sample_ids)); audit('fit', node.node_id, train.sample_ids);
             if strcmp(task.phase, 'FIT_CV'), out = result(task, valid, model);
@@ -261,7 +266,7 @@ end
                 wire_saved.recipe = wire_recipe(saved.recipe); wire_saved.source_schemas = native_schemas(saved.source_schemas);
                 payload = unicode2native(jsonencode(wire_saved, 'ConvertInfAndNaN', true), 'UTF-8');
                 assert(numel(payload) <= 134217728, 'Complete payload budget exceeded'); digest = hash('sha256', char(payload));
-                id = ['artifact:methods.multimodal:' task.run_id ':' node.node_id ':' fallback(task.variant_id, 'base') ':refit'];
+                id = bounded_identifier({'artifact:methods.multimodal', task.run_id, node.node_id, fallback(task.variant_id, 'base'), 'refit'});
                 assert(~isKey(artifacts, id), 'Duplicate REFIT artifact');
                 ref = struct('id', id, 'kind', 'methods_multimodal_pipeline', 'controller_id', controller, ...
                     'backend', 'raw', 'uri', ['artifacts/' digest '.json'], 'content_fingerprint', digest, ...
@@ -279,14 +284,20 @@ end
 function out = wire_recipe(recipe)
 % JSON null differs from the empty no-drop argument required by the MEX.
 out = native_recipe(recipe);
-out.encoders.metadata.drop = NaN;
+if isfield(out.encoders, 'metadata'), out.encoders.metadata.drop = NaN; end
 end
 function out = native_recipe(recipe)
 % Restore wire arrays collapsed by jsondecode; values/semantics are unchanged.
 out = recipe;
-out.encoders.metadata.numeric_columns = num2cell(double(recipe.encoders.metadata.numeric_columns(:)'));
-out.encoders.metadata.categorical_columns = num2cell(double(recipe.encoders.metadata.categorical_columns(:)'));
-out.encoders.metadata.drop = [];
+if isfield(recipe.encoders, 'metadata')
+    out.encoders.metadata.numeric_columns = num2cell(double(recipe.encoders.metadata.numeric_columns(:)'));
+    out.encoders.metadata.categorical_columns = num2cell(double(recipe.encoders.metadata.categorical_columns(:)'));
+    out.encoders.metadata.drop = [];
+end
+end
+function out = selected_schemas(recipe, schemas)
+out = struct(); names = ids(recipe.source_order);
+for i = 1:numel(names), out.(names{i}) = schemas.(names{i}); end
 end
 function out = native_schemas(schemas)
 out = schemas; names = fieldnames(schemas);
@@ -300,20 +311,26 @@ ok = isnumeric(value) && isscalar(value) && isfinite(value) && value >= lower &&
 end
 function recipe = recipe_for(operator, params)
 assert(closed_keys(operator, {'type', 'recipe', 'source_schemas'}) && strcmp(operator.type, 'N4mMultimodalPipeline') && ...
-    isstruct(params) && all(ismember(fieldnames(params), {'model__alpha', 'source_weights__image', 'transformers__image__n_components'})), ...
+    isstruct(params) && all(ismember(fieldnames(params), {'model__alpha', 'source_weights__image', 'transformers__image__n_components', 'recipe', 'source_schemas'})), ...
     'Explicit native operator/effective parameters required');
+assert(isfield(params, 'recipe') == isfield(params, 'source_schemas'), 'Both immutable declarations required');
+assert(~isfield(params, 'recipe') || all(ismember(fieldnames(params), {'recipe', 'source_schemas', 'model__alpha'})), 'Structural multimodal tuning permits alpha only');
+for name = {'recipe', 'source_schemas'}
+    if isfield(params, name{1}), assert(same_json(params.(name{1}), operator.(name{1})), 'Structural declaration differs from signed operator'); end
+end
 recipe = operator.recipe;
 if isfield(params, 'model__alpha'), recipe.model.params.alpha = params.model__alpha; end
-if isfield(params, 'source_weights__image'), recipe.source_weights.image = params.source_weights__image; end
-if isfield(params, 'transformers__image__n_components'), recipe.encoders.image.n_components = params.transformers__image__n_components; end
+if isfield(params, 'source_weights__image'), assert(isfield(recipe.source_weights, 'image'), 'Inactive image parameter'); recipe.source_weights.image = params.source_weights__image; end
+if isfield(params, 'transformers__image__n_components'), assert(isfield(recipe.encoders, 'image'), 'Inactive image parameter'); recipe.encoders.image.n_components = params.transformers__image__n_components; end
 validate_recipe(recipe, operator.source_schemas);
 end
 function validate_recipe(recipe, schemas)
 names = {'nir', 'image', 'series', 'metadata'}; representations = {'signal_1d', 'rgb_image', 'series_mv', 'tabular_mixed'};
+selected = ids(recipe.source_order);
 assert(closed_keys(recipe, {'schema_version', 'fusion', 'source_order', 'encoders', 'source_weights', 'model'}) && ...
-    number(recipe.schema_version, 1, 1, true) && strcmp(recipe.fusion, 'early') && isequal(ids(recipe.source_order), names) && ...
-    closed_keys(schemas, names) && closed_keys(recipe.encoders, names) && closed_keys(recipe.source_weights, names), ...
-    'Closed complete early fusion recipe required');
+    number(recipe.schema_version, 1, 1, true) && strcmp(recipe.fusion, 'early') && all(ismember(selected, names)) && ...
+    closed_keys(schemas, names) && closed_keys(recipe.encoders, selected) && closed_keys(recipe.source_weights, selected), ...
+    'Closed selected recipe and complete raw schemas required');
 for i = 1:4
     s = schemas.(names{i}); assert(closed_keys(s, {'representation_id', 'input_shape', 'dtype', 'identity'}));
     shape = double(s.input_shape(:));
@@ -323,15 +340,20 @@ for i = 1:4
     assert(ischar(s.dtype) && numel(unicode2native(s.dtype, 'UTF-8')) >= 1 && numel(unicode2native(s.dtype, 'UTF-8')) <= 128 && ...
         ischar(s.identity) && numel(unicode2native(s.identity, 'UTF-8')) >= 1 && numel(unicode2native(s.identity, 'UTF-8')) <= 1048576, ...
         'Source identity budget exceeded'); decode(s.identity);
-    assert(number(recipe.source_weights.(names{i}), 0, Inf, false), 'Finite nonnegative source weight required');
 end
-assert(same_json(recipe.encoders.nir, struct('kind', 'standard_scaler', 'with_mean', true, 'with_std', true)), 'Closed population scaler required');
+for i = 1:numel(selected), assert(number(recipe.source_weights.(selected{i}), 0, Inf, false), 'Finite nonnegative source weight required'); end
+if isfield(recipe.encoders, 'nir')
+    assert(same_json(recipe.encoders.nir, struct('kind', 'standard_scaler', 'with_mean', true, 'with_std', true)), 'Closed population scaler required');
+end
+if isfield(recipe.encoders, 'metadata')
 m = recipe.encoders.metadata;
 assert(closed_keys(m, {'kind', 'numeric_columns', 'categorical_columns', 'with_mean', 'with_std', 'handle_unknown', 'sparse_output', 'drop'}) && ...
     strcmp(m.kind, 'column_transformer') && isequal(m.numeric_columns, 0) && isequal(m.categorical_columns, 1) && ...
     isequal(m.with_mean, true) && isequal(m.with_std, true) && strcmp(m.handle_unknown, 'ignore') && ...
     isequal(m.sparse_output, false) && empty_value(m.drop), 'Closed native mixed encoder required');
+end
 for name = {'image', 'series'}
+    if ~isfield(recipe.encoders, name{1}), continue; end
     e = recipe.encoders.(name{1}); assert(closed_keys(e, {'kind', 'n_components', 'whiten', 'random_state'}) && ...
         strcmp(e.kind, 'tensor_pca') && number(e.n_components, 1, min(2^31 - 1, prod(schemas.(name{1}).input_shape)), true) && ...
         isequal(e.whiten, false) && number(e.random_state, 0, 2^32 - 1, true), 'Declared unwhitened PCA required');
@@ -375,6 +397,12 @@ end
 function ok = empty_value(value)
 if isstruct(value), ok = isempty(fieldnames(value));
 else, ok = isempty(value) || (isnumeric(value) && isscalar(value) && isnan(value)); end
+end
+function identifier = bounded_identifier(parts)
+identifier = strjoin(parts, ':');
+if numel(unicode2native(identifier, 'UTF-8')) <= 128, return; end
+payload = unicode2native(jsonencode(parts), 'UTF-8');
+identifier = [parts{1} ':' hash('sha256', char(payload))];
 end
 function value = nullable(value)
 if isempty(value), value = NaN; end

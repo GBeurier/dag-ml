@@ -140,6 +140,15 @@ def test_real_host_singleton_u64_keys_and_failed_request_cleanup(capture: dict, 
             assert result["predictions"][0]["sample_ids"] == [sample]
             assert len(result["predictions"][0]["values"]) == len(result["predictions"][0]["values"][0]) == 1
             assert result["lineage"]["seed"] == seed
+        long_scope = copy.deepcopy(task)
+        long_scope["run_id"] = "run:" + "r" * 100
+        result = worker.operator(long_scope)
+        parts = ["lineage:methods-multimodal", long_scope["run_id"], node_id, "PREDICT", "base", "full"]
+        expected = "lineage:methods-multimodal:" + hashlib.sha256(json.dumps(parts, separators=(",", ":")).encode()).hexdigest()
+        assert len(result["lineage"]["record_id"].encode()) <= 128
+        assert result["lineage"]["record_id"] == expected
+        assert result["lineage"]["run_id"] == long_scope["run_id"]
+        assert result["lineage"]["node_id"] == node_id
         for seed in (True, -1, 1.5, 2**64):
             invalid_seed = copy.deepcopy(task)
             invalid_seed["seed"] = seed

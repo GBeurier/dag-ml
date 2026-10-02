@@ -68,26 +68,28 @@ fn refuse<T>(message: &str) -> Result<T> {
 fn validate_recipe(recipe: &Recipe, schemas: &BTreeMap<String, SourceSchema>) -> Result<()> {
     let order = ["nir", "image", "series", "metadata"];
     let names = order.into_iter().collect::<BTreeSet<_>>();
+    let selected = recipe
+        .source_order
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
     if recipe.schema_version != 1
         || recipe.fusion != "early"
-        || recipe
-            .source_order
-            .iter()
-            .map(String::as_str)
-            .collect::<Vec<_>>()
-            != order
+        || selected.is_empty()
+        || selected.len() != recipe.source_order.len()
+        || !selected.is_subset(&names)
         || recipe
             .encoders
             .keys()
             .map(String::as_str)
             .collect::<BTreeSet<_>>()
-            != names
+            != selected
         || recipe
             .source_weights
             .keys()
             .map(String::as_str)
             .collect::<BTreeSet<_>>()
-            != names
+            != selected
         || schemas.keys().map(String::as_str).collect::<BTreeSet<_>>() != names
         || recipe
             .source_weights
@@ -100,16 +102,27 @@ fn validate_recipe(recipe: &Recipe, schemas: &BTreeMap<String, SourceSchema>) ->
         || !recipe.model.params.center_y
         || recipe.model.params.scale_x
     {
-        return refuse("Methods multimodal requires the closed ordered U07 early-fusion recipe");
+        return refuse("Methods multimodal requires a declared ordered U07 subset and complete raw source schemas");
     }
     let standard = serde_json::json!({"kind":"standard_scaler", "with_mean":true, "with_std":true});
     let mixed = serde_json::json!({"kind":"column_transformer", "numeric_columns":[0],
         "categorical_columns":[1], "with_mean":true, "with_std":true,
         "handle_unknown":"ignore", "sparse_output":false, "drop":null});
-    if recipe.encoders["nir"] != standard || recipe.encoders["metadata"] != mixed {
+    if recipe
+        .encoders
+        .get("nir")
+        .is_some_and(|encoder| *encoder != standard)
+        || recipe
+            .encoders
+            .get("metadata")
+            .is_some_and(|encoder| *encoder != mixed)
+    {
         return refuse("Methods multimodal scaler and mixed-column recipe is unsupported");
     }
     for source in ["image", "series"] {
+        if !selected.contains(source) {
+            continue;
+        }
         let encoder = recipe.encoders[source].as_object().ok_or_else(|| {
             DagMlError::RuntimeValidation("Methods tensor PCA encoder is not an object".into())
         })?;
@@ -268,22 +281,44 @@ pub fn validate_methods_multimodal_pipeline_recipe(
                 "Methods multimodal graph operator has no source schemas".into(),
             )
         })?)?;
+    if node.params.contains_key("recipe") != node.params.contains_key("source_schemas") {
+        return refuse(
+            "Methods multimodal structural parameters require both immutable declarations",
+        );
+    }
+    if node.params.contains_key("recipe")
+        && node
+            .params
+            .keys()
+            .any(|key| !matches!(key.as_str(), "recipe" | "source_schemas" | "model__alpha"))
+    {
+        return refuse("Methods multimodal structural tuning permits alpha only");
+    }
     for (key, value) in &node.params {
         match key.as_str() {
+            "recipe" | "source_schemas" => {
+                if operator.get(key) != Some(value) {
+                    return refuse(
+                        "Methods multimodal structural declarations differ from the signed graph operator",
+                    );
+                }
+            }
             "model__alpha" => {
                 expected.model.params.alpha = value.as_f64().ok_or_else(|| {
                     DagMlError::RuntimeValidation("Methods multimodal alpha must be numeric".into())
                 })?
             }
             "source_weights__image" => {
-                expected.source_weights.insert(
-                    "image".into(),
-                    value.as_f64().ok_or_else(|| {
-                        DagMlError::RuntimeValidation(
-                            "Methods multimodal image weight must be numeric".into(),
-                        )
-                    })?,
-                );
+                let weight = expected.source_weights.get_mut("image").ok_or_else(|| {
+                    DagMlError::RuntimeValidation(
+                        "Methods multimodal image weight is inactive".into(),
+                    )
+                })?;
+                *weight = value.as_f64().ok_or_else(|| {
+                    DagMlError::RuntimeValidation(
+                        "Methods multimodal image weight must be numeric".into(),
+                    )
+                })?;
             }
             "transformers__image__n_components" => {
                 let count = value.as_u64().ok_or_else(|| {
@@ -459,6 +494,79 @@ mod tests {
             .params
             .insert("unsupported".into(), Value::from(1));
         assert!(validate_methods_multimodal_pipeline_recipe(&record, &bytes, &plan).is_err());
+    }
+
+    #[test]
+    fn selected_modalities_bind_full_raw_schemas_and_immutable_base_recipe() {
+        for order in [
+            vec!["nir"],
+            vec!["series", "nir"],
+            vec!["metadata", "image"],
+        ] {
+            let (mut record, mut saved, mut plan) = fixture();
+            saved["recipe"]["source_order"] = serde_json::json!(order);
+            for field in ["encoders", "source_weights"] {
+                saved["recipe"][field]
+                    .as_object_mut()
+                    .unwrap()
+                    .retain(|name, _| order.contains(&name.as_str()));
+            }
+            saved["recipe"]["source_weights"][order[0]] = Value::from(0.0);
+            let operator = plan
+                .graph_plan
+                .graph
+                .nodes
+                .iter_mut()
+                .find(|node| node.id == record.node_id)
+                .unwrap()
+                .operator
+                .as_mut()
+                .unwrap();
+            operator["recipe"] = saved["recipe"].clone();
+            let base = saved["recipe"].clone();
+            plan.node_plans.get_mut(&record.node_id).unwrap().params = BTreeMap::from([
+                ("recipe".into(), base),
+                ("source_schemas".into(), saved["source_schemas"].clone()),
+                ("model__alpha".into(), Value::from(0.25)),
+            ]);
+            saved["recipe"]["model"]["params"]["alpha"] = Value::from(0.25);
+            let bytes = seal(&mut record, &saved);
+            validate_methods_multimodal_pipeline_recipe(&record, &bytes, &plan).unwrap();
+            saved["source_schemas"]["image"]["identity"] = Value::from("{\"excluded\":true}");
+            let changed = seal(&mut record, &saved);
+            assert!(validate_methods_multimodal_pipeline_recipe(&record, &changed, &plan).is_err());
+        }
+    }
+
+    #[test]
+    fn structural_declarations_refuse_partial_mutated_and_legacy_numeric_profiles() {
+        for mutation in ["partial", "recipe", "schemas", "legacy"] {
+            let (mut record, saved, mut plan) = fixture();
+            let params = &mut plan.node_plans.get_mut(&record.node_id).unwrap().params;
+            params.insert("recipe".into(), saved["recipe"].clone());
+            params.insert("source_schemas".into(), saved["source_schemas"].clone());
+            match mutation {
+                "partial" => {
+                    params.remove("source_schemas");
+                }
+                "recipe" => {
+                    params.get_mut("recipe").unwrap()["source_weights"]["nir"] = Value::from(0.5)
+                }
+                "schemas" => {
+                    params.get_mut("source_schemas").unwrap()["series"]["identity"] =
+                        Value::from("{}")
+                }
+                "legacy" => {
+                    params.insert("source_weights__image".into(), Value::from(1.0));
+                }
+                _ => unreachable!(),
+            }
+            let bytes = seal(&mut record, &saved);
+            assert!(
+                validate_methods_multimodal_pipeline_recipe(&record, &bytes, &plan).is_err(),
+                "{mutation}"
+            );
+        }
     }
 
     #[test]
