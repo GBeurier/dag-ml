@@ -515,6 +515,91 @@ fn fan_out_data_aware_branches_json(dsl_json: &str, envelope_json: &str) -> PyRe
     serde_json::to_string(&expanded).map_err(py_serde_error)
 }
 
+/// Prepare sealed structural recipes using the native generator and compiler.
+/// This entry point validates declarations/data identity and performs no fit.
+#[pyfunction]
+#[pyo3(signature = (dsl_json, envelope_json, controller_manifests_json, parameter_paths_json, selector_path="__recipe__"))]
+fn prepare_host_hpo_structural_catalogue_json(
+    dsl_json: &str,
+    envelope_json: &str,
+    controller_manifests_json: &str,
+    parameter_paths_json: &str,
+    selector_path: &str,
+) -> PyResult<String> {
+    let envelope: ExternalDataPlanEnvelope = dag_ml_core::canonical::deserialize_external_contract(
+        envelope_json,
+        "structural HPO envelope",
+        CoreDagMlError::CampaignValidation,
+    )
+    .map_err(py_core_error)?;
+    envelope.validate().map_err(py_core_error)?;
+    let dsl = parse_pipeline_dsl_json(dsl_json.as_bytes()).map_err(py_core_error)?;
+    let dsl = fan_out_data_aware_branches(&dsl, &envelope).map_err(py_core_error)?;
+    let registry = controller_registry_from_json(controller_manifests_json)?;
+    let parameter_paths: std::collections::BTreeMap<String, String> =
+        dag_ml_core::canonical::deserialize_external_contract(
+            parameter_paths_json,
+            "structural HPO parameter paths",
+            CoreDagMlError::CampaignValidation,
+        )
+        .map_err(py_core_error)?;
+    let catalogue = dag_ml_core::prepare_host_hpo_structural_catalogue(
+        &dsl,
+        &registry,
+        parameter_paths,
+        selector_path.to_owned(),
+    )
+    .map_err(py_core_error)?;
+    let compiled = compile_pipeline_dsl_with_generation_and_controller_registry(
+        &catalogue.source_dsl,
+        &registry,
+    )
+    .map_err(py_core_error)?;
+    let plan = build_execution_plan(
+        format!("plan:{}:host_hpo", catalogue.source_dsl.id),
+        compiled.graph,
+        compiled.campaign_template,
+        &registry,
+    )
+    .map_err(py_core_error)?;
+    plan.campaign
+        .validate_data_envelope_relations(&envelope)
+        .map_err(py_core_error)?;
+    serde_json::to_string(&catalogue).map_err(py_serde_error)
+}
+
+/// Resolve native SELECT to the winner's ordinary signed training request.
+#[pyfunction]
+fn resolve_host_hpo_structural_winner_json(
+    request_json: &str,
+    result_json: &str,
+    training_request_json: &str,
+) -> PyResult<String> {
+    let request: dag_ml_core::HostHpoSearchRequest =
+        dag_ml_core::canonical::deserialize_external_contract(
+            request_json,
+            "structural HPO search request",
+            CoreDagMlError::CampaignValidation,
+        )
+        .map_err(py_core_error)?;
+    let result: dag_ml_core::HostHpoSearchResult =
+        dag_ml_core::canonical::deserialize_external_contract(
+            result_json,
+            "structural HPO search result",
+            CoreDagMlError::CampaignValidation,
+        )
+        .map_err(py_core_error)?;
+    let template: TrainingRequest = dag_ml_core::canonical::deserialize_external_contract(
+        training_request_json,
+        "structural HPO training template",
+        CoreDagMlError::CampaignValidation,
+    )
+    .map_err(py_core_error)?;
+    let winner = dag_ml_core::resolve_host_hpo_structural_winner(&request, &result, &template)
+        .map_err(py_core_error)?;
+    serde_json::to_string(&winner).map_err(py_serde_error)
+}
+
 #[pyfunction]
 fn select_candidate_json(policy_json: &str, candidates_json: &str) -> PyResult<String> {
     let policy: SelectionPolicy = serde_json::from_str(policy_json).map_err(py_serde_error)?;
@@ -702,6 +787,14 @@ fn _dag_ml(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
         module
     )?)?;
     module.add_function(wrap_pyfunction!(fan_out_data_aware_branches_json, module)?)?;
+    module.add_function(wrap_pyfunction!(
+        prepare_host_hpo_structural_catalogue_json,
+        module
+    )?)?;
+    module.add_function(wrap_pyfunction!(
+        resolve_host_hpo_structural_winner_json,
+        module
+    )?)?;
     module.add_function(wrap_pyfunction!(select_candidate_json, module)?)?;
     module.add_function(wrap_pyfunction!(build_execution_plan_json, module)?)?;
     module.add_function(wrap_pyfunction!(canonical_operator_variant_label, module)?)?;

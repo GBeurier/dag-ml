@@ -76,6 +76,7 @@ mod artifact;
 mod data_provider_bootstrap;
 mod dataview;
 mod host_hpo;
+mod host_hpo_structural;
 mod merge;
 mod methods_replay;
 mod oof;
@@ -89,6 +90,7 @@ pub use artifact::*;
 pub use data_provider_bootstrap::*;
 pub use dataview::*;
 pub use host_hpo::*;
+pub use host_hpo_structural::*;
 pub(crate) use merge::*;
 #[cfg(feature = "methods-optimizer")]
 pub use methods_replay::*;

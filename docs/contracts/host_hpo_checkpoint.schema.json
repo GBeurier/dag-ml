@@ -1,0 +1,228 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GBeurier/dag-ml/schemas/host_hpo_checkpoint.v1.schema.json",
+  "title": "DAG-ML sealed host HPO checkpoint v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "binding",
+    "trials",
+    "fingerprint"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "objective_fingerprint",
+        "graph_fingerprint",
+        "controller_fingerprint",
+        "campaign_fingerprint",
+        "fold_set_fingerprint",
+        "data_fingerprint"
+      ],
+      "properties": {
+        "objective_fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "graph_fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "controller_fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "campaign_fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "fold_set_fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "data_fingerprint": {
+          "type": "string",
+          "minLength": 1
+        },
+        "structural_catalogue_fingerprint": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "trials": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "state",
+              "evidence"
+            ],
+            "properties": {
+              "state": {
+                "const": "complete"
+              },
+              "evidence": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "trial_index",
+                  "params",
+                  "variant_id",
+                  "scores",
+                  "score"
+                ],
+                "properties": {
+                  "trial_index": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 4294967295
+                  },
+                  "params": {
+                    "type": "object",
+                    "additionalProperties": {}
+                  },
+                  "variant_id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "scores": {
+                    "anyOf": [
+                      {
+                        "$ref": "https://github.com/GBeurier/dag-ml/schemas/score_set.v1.schema.json"
+                      },
+                      {
+                        "$ref": "score_set.v2.schema.json"
+                      }
+                    ]
+                  },
+                  "generated_view_manifest": {},
+                  "score": {
+                    "type": "number"
+                  },
+                  "objective_fold_scores": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "number"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "state",
+              "evidence"
+            ],
+            "properties": {
+              "state": {
+                "const": "pruned"
+              },
+              "evidence": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "trial_index",
+                  "params",
+                  "variant_id",
+                  "scores",
+                  "intermediate_scores"
+                ],
+                "properties": {
+                  "trial_index": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 4294967295
+                  },
+                  "params": {
+                    "type": "object",
+                    "additionalProperties": {}
+                  },
+                  "variant_id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "scores": {
+                    "anyOf": [
+                      {
+                        "$ref": "https://github.com/GBeurier/dag-ml/schemas/score_set.v1.schema.json"
+                      },
+                      {
+                        "$ref": "score_set.v2.schema.json"
+                      }
+                    ]
+                  },
+                  "generated_view_manifest": {},
+                  "intermediate_scores": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": "number"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "state",
+              "trial_index",
+              "params",
+              "variant_id",
+              "error"
+            ],
+            "properties": {
+              "state": {
+                "const": "failed"
+              },
+              "trial_index": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 4294967295
+              },
+              "params": {
+                "type": "object",
+                "additionalProperties": {}
+              },
+              "variant_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "error": {
+                "type": "string",
+                "minLength": 1
+              },
+              "generated_view_manifest": {}
+            }
+          }
+        ]
+      }
+    },
+    "fingerprint": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}

@@ -140,6 +140,12 @@ from ._dag_ml import (
     recover_host_hpo_checkpoint_json as _native_recover_host_hpo_checkpoint_json,
 )
 from ._dag_ml import (
+    prepare_host_hpo_structural_catalogue_json as _native_prepare_host_hpo_structural_catalogue_json,
+)
+from ._dag_ml import (
+    resolve_host_hpo_structural_winner_json as _native_resolve_host_hpo_structural_winner_json,
+)
+from ._dag_ml import (
     sign_training_replay_request_json as _native_sign_training_replay_request_json,
 )
 from ._dag_ml import (
@@ -223,6 +229,8 @@ _FACADE_EXPORTS = [
     "replay_initial_full_refit_in_process",
     "run_host_hpo_search_in_process",
     "recover_host_hpo_checkpoint",
+    "prepare_host_hpo_structural_catalogue",
+    "resolve_host_hpo_structural_winner",
     "replay_loaded_predictor_package",
     "replay_loaded_predictor_package_json",
     "run_cv_refit_predict_in_process",
@@ -551,6 +559,38 @@ def loss_execution_attestation(training_loss_role: Any, phase: str) -> dict[str,
     )
 
 
+def prepare_host_hpo_structural_catalogue(
+    dsl: Any, envelope: Any, controller_manifests: Any,
+    parameter_paths: Mapping[str, str], *, selector_path: str = "__recipe__",
+) -> dict[str, Any]:
+    """Compile native recipes and their active model-parameter bindings.
+
+    ``parameter_paths`` maps public search keys to declared top-level model
+    parameters. Native generation supplies recipe IDs, graphs, content labels
+    and active bindings; a parameter must occur on at least one recipe. The
+    returned catalogue is sealed and recompiled before search callbacks.
+    This preparation performs no operator fit or optimizer work.
+    """
+    return json.loads(_native_prepare_host_hpo_structural_catalogue_json(
+        _coerce_json(dsl), _coerce_json(envelope), _coerce_json(controller_manifests),
+        _coerce_json(parameter_paths), selector_path,
+    ))
+
+
+def resolve_host_hpo_structural_winner(
+    request: Any, result: Any, training_request: Any,
+) -> dict[str, Any]:
+    """Produce the signed REFIT/export request for native SELECT's recipe.
+
+    The template supplies data, output and resource declarations. Rust checks
+    the search/template identity, selects the observed winner, prunes its
+    graph and applies only active parameters. No fit or replay occurs here.
+    """
+    return json.loads(_native_resolve_host_hpo_structural_winner_json(
+        _coerce_json(request), _coerce_json(result), _coerce_json(training_request),
+    ))
+
+
 def run_host_hpo_search_in_process(
     dsl: Any, envelope: Any, controller_manifests: Any, request: Any,
     op_callback: Any, optimizer_callback: Any,
@@ -586,6 +626,11 @@ def run_host_hpo_search_in_process(
     Parallel generated-view trials require candidate-local view and operator
     callbacks. The host must isolate any process-global RNG used by operators;
     the binding cannot infer that from a Python callback.
+
+    ``request.structural_catalogue`` optionally selects native operator
+    recipes per trial. It must match the resolved caller DSL; candidate-local
+    operator callbacks are required even for sequential structural searches.
+    Catalogue and checkpoint identities are validated before callbacks.
     """
     return json.loads(_native_run_host_hpo_search_in_process(
         _coerce_json(dsl), _coerce_json(envelope), _coerce_json(controller_manifests),
@@ -2004,6 +2049,8 @@ __all__ = [
     "run_cv_refit_predict_in_process",
     "run_host_hpo_search_in_process",
     "recover_host_hpo_checkpoint",
+    "prepare_host_hpo_structural_catalogue",
+    "resolve_host_hpo_structural_winner",
     "sample_relation_set_fingerprint_json",
     "sign_training_replay_request",
     "sign_training_replay_request_json",

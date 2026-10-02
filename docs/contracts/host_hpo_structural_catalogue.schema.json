@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GBeurier/dag-ml/schemas/host_hpo_structural_catalogue.v1.schema.json",
+  "title": "DAG-ML compiler-owned structural HPO catalogue v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "selector_path",
+    "source_dsl",
+    "parameter_paths",
+    "entries",
+    "catalogue_fingerprint"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "selector_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source_dsl": {
+      "$ref": "https://github.com/GBeurier/dag-ml/schemas/pipeline_dsl.v1.schema.json"
+    },
+    "parameter_paths": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "entries": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4096,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "recipe_id",
+          "variant",
+          "variant_label",
+          "target_node",
+          "graph_fingerprint",
+          "controller_fingerprint",
+          "graph",
+          "parameter_bindings"
+        ],
+        "properties": {
+          "recipe_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "variant": {
+            "$ref": "https://github.com/GBeurier/dag-ml/schemas/execution_plan.v1.schema.json#/$defs/variant_plan"
+          },
+          "variant_label": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "target_node": {
+            "type": "string",
+            "minLength": 1
+          },
+          "graph_fingerprint": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "controller_fingerprint": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "graph": {
+            "$ref": "https://github.com/GBeurier/dag-ml/schemas/graph_spec.v1.schema.json"
+          },
+          "parameter_bindings": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "node_id",
+                "param_path"
+              ],
+              "properties": {
+                "node_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "param_path": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "catalogue_fingerprint": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}

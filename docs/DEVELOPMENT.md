@@ -17,6 +17,7 @@ does not depend on private files being present in a fresh clone.
 | Accepted architecture decisions | [ADR index](adr/README.md) |
 | Schemas and shared fixtures | [Contracts](contracts/README.md) |
 | Native training and replay | [Training](TRAINING_CONTRACTS.md), [Replay](TRAINING_REPLAY_CONTRACTS.md) |
+| Host search over declared operator recipes | [Structural HPO](HOST_STRUCTURAL_HPO.md) |
 | Validation gates | `CONTRIBUTING.md`, `.github/workflows/ci.yml`, `scripts/`, crate tests |
 | Runnable examples | `examples/README.md` at repository root |
 

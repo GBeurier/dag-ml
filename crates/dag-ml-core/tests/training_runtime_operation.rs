@@ -22,6 +22,7 @@ const PACKAGE_FIXTURE: &str =
 #[derive(Default)]
 struct CallState {
     calls: Mutex<Vec<(Phase, NodeId)>>,
+    scoped_calls: Mutex<Vec<(Phase, NodeId, Option<FoldId>)>>,
     observed_resources: Mutex<Vec<Option<TrainingResourceLimits>>>,
     fit_counts: Mutex<BTreeMap<VariantId, usize>>,
     next_handle: AtomicU64,
@@ -294,6 +295,11 @@ impl RuntimeController for TrainingController {
             .lock()
             .unwrap()
             .push((task.phase, task.node_plan.node_id.clone()));
+        self.state.scoped_calls.lock().unwrap().push((
+            task.phase,
+            task.node_plan.node_id.clone(),
+            task.fold_id.clone(),
+        ));
         let is_model = task.node_plan.node_id.as_str() == "model:base";
         if is_model {
             self.state
@@ -2459,6 +2465,139 @@ fn generic_raw_training_exports_and_validates_payloads_without_methods_feature()
             assert!(
                 store.is_empty(),
                 "failed payload transfer must not publish fitted artifacts"
+            );
+        }
+    }
+}
+
+#[test]
+fn singleton_training_retains_one_cv_execution_per_fold_and_exports_complete_state() {
+    for refit in [false, true] {
+        for scheduler_kind in [
+            TrainingSchedulerKind::Sequential,
+            TrainingSchedulerKind::Parallel,
+        ] {
+            let mut fixture = fixture(refit, true);
+            for dimension in &mut fixture.request.campaign.generation.dimensions {
+                dimension.choices.truncate(1);
+            }
+            fixture.request.campaign.generation.max_variants = Some(1);
+            fixture.request.options.scheduler.kind = scheduler_kind;
+            fixture.request.options.scheduler.backend = (scheduler_kind
+                == TrainingSchedulerKind::Parallel)
+                .then_some(TrainingSchedulerBackend::Threads);
+            fixture.request.options.scheduler.workers =
+                if scheduler_kind == TrainingSchedulerKind::Parallel {
+                    2
+                } else {
+                    1
+                };
+            fixture.request.options.resources.cpu_threads =
+                fixture.request.options.scheduler.workers;
+            rebuild(&mut fixture);
+            assert_eq!(fixture.request.project().unwrap().plan.variants.len(), 1);
+            let state = Arc::new(CallState::default());
+            // A second execution would emit different scores and fail the
+            // existing retained-report guard, as well as the exact call counts.
+            *state.divergent_rerun.lock().unwrap() = true;
+            *state.score_auxiliary.lock().unwrap() = true;
+            let mut store = InMemoryArtifactStore::new();
+            let outcome = run(&fixture, state.clone(), &provider(&fixture), &mut store).unwrap();
+            outcome.validate().unwrap();
+            let calls = state.scoped_calls.lock().unwrap();
+            for producer in [node("transform:snv"), node("model:base")] {
+                for fold in ["fold:0", "fold:1"] {
+                    let fold_id = FoldId::new(fold).unwrap();
+                    assert_eq!(
+                        calls
+                            .iter()
+                            .filter(|(phase, node_id, actual_fold)| {
+                                *phase == Phase::FitCv
+                                    && *node_id == producer
+                                    && actual_fold.as_ref() == Some(&fold_id)
+                            })
+                            .count(),
+                        1
+                    );
+                }
+                assert_eq!(
+                    state.count(Phase::Refit, producer.as_str()),
+                    usize::from(refit)
+                );
+                for fold in ["avg", "w_avg"] {
+                    assert_eq!(
+                        outcome
+                            .oof_averages
+                            .iter()
+                            .filter(|average| {
+                                average.predictions.producer_node == producer
+                                    && average.predictions.fold_id.as_ref().unwrap().as_str()
+                                        == fold
+                            })
+                            .count(),
+                        1
+                    );
+                }
+            }
+            assert_eq!(calls.len(), 4 + 2 * usize::from(refit));
+            assert_eq!(outcome.lineage.len(), calls.len());
+            assert_eq!(outcome.selected_variant_id, fixture.preferred);
+            assert_eq!(outcome.execution_bundle.selections.len(), 1);
+            assert_eq!(outcome.data_identities, fixture.request.data_identities);
+            assert_eq!(outcome.training_influence, fixture.influence);
+            assert_eq!(
+                outcome.execution_bundle.scores.as_ref(),
+                Some(&outcome.score_set)
+            );
+            let report_scopes = outcome
+                .score_set
+                .reports
+                .iter()
+                .map(|report| {
+                    (
+                        report.producer_node.clone(),
+                        report.producer_port.clone(),
+                        report.partition.clone(),
+                        report.fold_id.clone(),
+                        report.variant_id.clone(),
+                        report.level,
+                    )
+                })
+                .collect::<BTreeSet<_>>();
+            assert_eq!(report_scopes.len(), outcome.score_set.reports.len());
+            assert_eq!(outcome.execution_bundle.prediction_caches.len(), 1);
+            let caches = outcome.portable_prediction_caches.as_ref().unwrap();
+            caches
+                .validate_against_bundle(&outcome.execution_bundle)
+                .unwrap();
+            assert_eq!(caches.caches.len(), 1);
+            validate_prediction_cache_payload_matches_record(
+                &caches.caches[0],
+                &outcome.execution_bundle.prediction_caches[0],
+            )
+            .unwrap();
+            assert_eq!(store.len(), usize::from(refit));
+            assert_eq!(
+                outcome.execution_bundle.refit_artifacts.len(),
+                usize::from(refit)
+            );
+            if refit {
+                let package = outcome
+                    .to_portable_predictor_package(
+                        "predictor:singleton.retained",
+                        FittedArtifactMode::AllowHostSidecar,
+                        ArtifactLoadMode::HostSidecar,
+                    )
+                    .unwrap();
+                package.validate().unwrap();
+                assert_eq!(package.artifact_bindings.len(), 1);
+                assert_eq!(package.output_bindings[0], outcome.outputs[0].binding);
+                PortablePredictorPackage::from_json(&serde_json::to_string(&package).unwrap())
+                    .unwrap();
+            }
+            assert_eq!(
+                TrainingOutcome::from_json(&serde_json::to_string(&outcome).unwrap()).unwrap(),
+                outcome
             );
         }
     }

@@ -49,15 +49,15 @@ def _sha256(path: Path) -> str:
 
 
 def test_base_pack_remains_byte_current() -> None:
-    # Current W1 bytes and its 108 artifacts are pinned independently of D4.
+    # Current W1 bytes and its 115 artifacts are pinned independently of D4.
     pack = load_json(BASE_PACK)
     assert _sha256(BASE_PACK) == (
-        "435a56a2d795141a55dc15aa610a964930422907aacbcb8d0e561871c5ada2c5"
+        "152be56a7274a35cabaca7e539b15e58cb512a6ae5f5af082d90aaad9e60f305"
     )
     assert pack["pack_checksum"] == (
-        "64ce6c5b397b993fb48a608a95ccae26a29bae42ed3467b67805a5000b9d66de"
+        "0198d50200f358d619fc9ffad67ba4419375c713b8dc68844d787c843bf9c30b"
     )
-    assert len(pack["artifacts"]) == 108
+    assert len(pack["artifacts"]) == 115
     assert all(
         _sha256(ROOT / artifact["path"]) == artifact["sha256"]
         for artifact in pack["artifacts"]

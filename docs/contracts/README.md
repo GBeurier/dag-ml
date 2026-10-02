@@ -5,6 +5,17 @@ DAG-ML-specific publication schemas. `dag-ml` remains the consumer and semantic
 validator: it checks fingerprints, campaign fold membership, OOF boundaries and
 leakage policies before any controller receives a handle.
 
+## Structural Host HPO V1
+
+`host_hpo_search_request.schema.json`, `host_hpo_structural_catalogue.schema.json`
+and `host_hpo_checkpoint.schema.json` publish the closed transport shapes for
+fixed and structural host search. The optional catalogue contains declarations
+and native-derived recipe graphs, with no feature buffers or fitted state. Rust
+recompiles its entries and validates their exact ordering, activation, target and
+bindings before callbacks. An absent catalogue and structural checkpoint binding
+are omitted, preserving existing fixed-topology fingerprints. See
+[structural host HPO](../HOST_STRUCTURAL_HPO.md) for execution and winner export.
+
 ## Native PLS Fold HPO State V1
 
 `methods_hpo_fold_state.v1.schema.json` defines the optional closed
