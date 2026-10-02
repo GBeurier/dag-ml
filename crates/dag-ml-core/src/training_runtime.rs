@@ -2223,10 +2223,11 @@ pub fn execute_portable_full_refit(
 /// Execute COMPILE/PLAN -> FIT_CV -> SELECT -> optional REFIT and return the
 /// complete portable W0 outcome.
 ///
-/// Variant candidates are evaluated by the existing native selection helper;
-/// the winner is then rerun once in a retained context so its lineage, OOF
-/// caches, bound outputs, and optional refit artifacts all originate from one
-/// auditable execution. `SELECT` is called exactly once and `REFIT` at most once.
+/// Variant candidates are evaluated by the existing native selection helper.
+/// An ordinary singleton keeps its candidate execution; other winners are
+/// rerun once in a retained context. Their lineage, OOF caches, bound outputs,
+/// and optional refit artifacts all originate from one auditable execution.
+/// `SELECT` is called exactly once and `REFIT` at most once.
 pub fn execute_training(input: TrainingExecutionInput<'_>) -> Result<TrainingOutcome> {
     if !input.artifact_store.is_empty() {
         return Err(DagMlError::RuntimeValidation(
@@ -2338,6 +2339,26 @@ pub fn execute_training(input: TrainingExecutionInput<'_>) -> Result<TrainingOut
     let selection_producer = selection_output.node_id.clone();
     let selection_producer_port = selection_output.port_name.clone();
     validate_selection_prediction_kind(selection_metric, selection_output.prediction_kind)?;
+    let retain_singleton_cv =
+        native_hpo_descriptor.is_none() && projection.plan.variants.len() == 1;
+    let mut singleton_cv = None;
+    let mut run_candidate_fit_cv =
+        |candidate_plan: &ExecutionPlan, candidate_ctx: &mut RunContext| -> Result<()> {
+            candidate_ctx.resource_limits = Some(input.request.options.resources.clone());
+            let results = scheduler.fit_cv(
+                candidate_plan,
+                input.controllers,
+                input.data_provider,
+                candidate_ctx,
+            )?;
+            if retain_singleton_cv {
+                // SELECT appends cross-fold scores after this callback. Capture
+                // the complete execution first so the retained context finalizes
+                // those scores exactly once below, retaining its opaque handles.
+                singleton_cv = Some((candidate_ctx.clone(), results));
+            }
+            Ok(())
+        };
     #[cfg(feature = "methods-optimizer")]
     let mut methods_hpo_resume_state = None;
     #[cfg(feature = "methods-optimizer")]
@@ -2403,12 +2424,7 @@ pub fn execute_training(input: TrainingExecutionInput<'_>) -> Result<TrainingOut
             &selection_producer,
             Some(selection_producer_port.as_str()),
             metric_level,
-            |candidate_plan, candidate_ctx| {
-                candidate_ctx.resource_limits = Some(input.request.options.resources.clone());
-                scheduler
-                    .fit_cv(candidate_plan, input.controllers, input.data_provider, candidate_ctx)
-                    .map(|_| ())
-            },
+            &mut run_candidate_fit_cv,
         )?
         .ok_or_else(|| DagMlError::RuntimeValidation(
             "native training SELECT received no scored candidate; controllers must emit targets".to_string(),
@@ -2425,12 +2441,7 @@ pub fn execute_training(input: TrainingExecutionInput<'_>) -> Result<TrainingOut
             &selection_producer,
             Some(selection_producer_port.as_str()),
             metric_level,
-            |candidate_plan, candidate_ctx| {
-                candidate_ctx.resource_limits = Some(input.request.options.resources.clone());
-                scheduler
-                    .fit_cv(candidate_plan, input.controllers, input.data_provider, candidate_ctx)
-                    .map(|_| ())
-            },
+            &mut run_candidate_fit_cv,
         )?
         .ok_or_else(|| DagMlError::RuntimeValidation(
             "native training SELECT received no scored candidate; controllers must emit targets".to_string(),
@@ -2461,24 +2472,34 @@ pub fn execute_training(input: TrainingExecutionInput<'_>) -> Result<TrainingOut
         })?;
     effective_plan.validate()?;
 
-    let mut selected_ctx = RunContext::new(input.run_id.clone(), Some(input.request.options.seed));
-    selected_ctx.resource_limits = Some(input.request.options.resources.clone());
-    selected_ctx.variant_id = Some(selected_variant_id.clone());
-    let fit_cv_results = if let Some(state) = &methods_hpo_fold_state {
-        SequentialScheduler.execute_fold_hpo_fit_cv(
-            &effective_plan,
-            state,
-            input.controllers,
-            input.data_provider,
-            &mut selected_ctx,
-        )?
+    let (mut selected_ctx, fit_cv_results) = if let Some((ctx, results)) = singleton_cv {
+        if ctx.variant_id.as_ref() != Some(&selected_variant_id) {
+            return Err(DagMlError::RuntimeValidation(
+                "retained singleton CV does not match native SELECT".to_string(),
+            ));
+        }
+        (ctx, results)
     } else {
-        scheduler.fit_cv(
-            &effective_plan,
-            input.controllers,
-            input.data_provider,
-            &mut selected_ctx,
-        )?
+        let mut ctx = RunContext::new(input.run_id.clone(), Some(input.request.options.seed));
+        ctx.resource_limits = Some(input.request.options.resources.clone());
+        ctx.variant_id = Some(selected_variant_id.clone());
+        let results = if let Some(state) = &methods_hpo_fold_state {
+            SequentialScheduler.execute_fold_hpo_fit_cv(
+                &effective_plan,
+                state,
+                input.controllers,
+                input.data_provider,
+                &mut ctx,
+            )?
+        } else {
+            scheduler.fit_cv(
+                &effective_plan,
+                input.controllers,
+                input.data_provider,
+                &mut ctx,
+            )?
+        };
+        (ctx, results)
     };
     selected_ctx.collect_cross_fold_validation_scores(plan_oof_partition_mode(&effective_plan))?;
     validate_selected_rerun_reports(

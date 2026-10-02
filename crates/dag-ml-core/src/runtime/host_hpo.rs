@@ -49,6 +49,10 @@ pub struct HostHpoSearchRequest {
     /// the original single-target routing and its serialized fingerprints.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub parameter_bindings: BTreeMap<String, HostHpoParameterBinding>,
+    /// Compiler-owned immutable recipes. Absent preserves fixed-topology wire
+    /// bytes, objective hashes and schema-1 checkpoints.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub structural_catalogue: Option<HostHpoStructuralCatalogue>,
 }
 
 impl HostHpoSearchRequest {
@@ -66,7 +70,21 @@ impl HostHpoSearchRequest {
         None
     }
 
-    fn validate_parameter_bindings(&self, plan: &ExecutionPlan) -> Result<()> {
+    pub(super) fn validate_parameter_bindings(&self, plan: &ExecutionPlan) -> Result<()> {
+        if let Some(catalogue) = &self.structural_catalogue {
+            if !self.parameter_bindings.is_empty()
+                || catalogue
+                    .entries
+                    .first()
+                    .is_none_or(|entry| entry.target_node != self.target_node)
+            {
+                return Err(DagMlError::RuntimeValidation(
+                    "structural HPO requires its first recipe target and recipe-local bindings"
+                        .into(),
+                ));
+            }
+            return catalogue.validate_for_plan(plan);
+        }
         let mut destinations = BTreeSet::new();
         for (path, binding) in &self.parameter_bindings {
             if path.trim().is_empty() || binding.param_path.trim().is_empty() {
@@ -99,6 +117,22 @@ impl HostHpoSearchRequest {
         &self,
         params: &BTreeMap<String, serde_json::Value>,
     ) -> Result<Vec<crate::generation::GenerationParamOverride>> {
+        if let Some(catalogue) = &self.structural_catalogue {
+            let recipe = catalogue.recipe(params)?;
+            let active = params
+                .iter()
+                .filter(|(path, _)| *path != &catalogue.selector_path)
+                .map(|(path, value)| (path.clone(), value.clone()))
+                .collect();
+            let mut routed = self.clone();
+            routed.structural_catalogue = None;
+            routed.target_node = recipe.target_node.clone();
+            routed.parameter_bindings = recipe.parameter_bindings.clone();
+            if recipe.parameter_bindings.is_empty() {
+                return Ok(Vec::new());
+            }
+            return routed.parameter_overrides(&active);
+        }
         if params.is_empty() || params.keys().any(|key| key.trim().is_empty()) {
             return Err(DagMlError::RuntimeValidation(
                 "host HPO proposal parameters must be nonempty".into(),
@@ -126,6 +160,36 @@ impl HostHpoSearchRequest {
             .into_iter()
             .map(|(node_id, params)| crate::generation::GenerationParamOverride { node_id, params })
             .collect())
+    }
+
+    pub(super) fn target_for_plan<'a>(&'a self, plan: &ExecutionPlan) -> Result<&'a NodeId> {
+        let Some(catalogue) = &self.structural_catalogue else {
+            return Ok(&self.target_node);
+        };
+        let recipe_id = plan
+            .variants
+            .first()
+            .and_then(|variant| variant.choices.get("host_hpo"))
+            .and_then(|choice| choice.value.get("recipe_id"))
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(
+                    "structural HPO candidate lacks recipe identity".into(),
+                )
+            })?;
+        let recipe = catalogue
+            .entries
+            .iter()
+            .find(|entry| entry.recipe_id.as_str() == recipe_id)
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation("structural HPO candidate recipe is unknown".into())
+            })?;
+        if !plan.node_plans.contains_key(&recipe.target_node) {
+            return Err(DagMlError::RuntimeValidation(
+                "structural HPO target is outside candidate plan".into(),
+            ));
+        }
+        Ok(&recipe.target_node)
     }
 }
 
@@ -298,6 +362,8 @@ pub struct HostHpoCheckpointBinding {
     /// Canonical host-data envelope including schemas, identities and relations.
     /// Host content-version descriptors belong in that envelope or the request.
     pub data_fingerprint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub structural_catalogue_fingerprint: Option<String>,
 }
 
 /// Native score evidence, independent of opaque host optimizer bytes.
@@ -460,27 +526,91 @@ fn host_hpo_worker_candidate_plan(
     trial_index: u32,
     params: &BTreeMap<String, serde_json::Value>,
 ) -> Result<ExecutionPlan> {
+    host_hpo_candidate_plan(
+        plan,
+        request,
+        trial_index,
+        params,
+        Some(&checkpoint.binding.objective_fingerprint),
+    )
+}
+
+fn host_hpo_candidate_plan(
+    plan: &ExecutionPlan,
+    request: &HostHpoSearchRequest,
+    trial_index: u32,
+    params: &BTreeMap<String, serde_json::Value>,
+    objective_fingerprint: Option<&str>,
+) -> Result<ExecutionPlan> {
     let param_overrides = request.parameter_overrides(params)?;
-    let mut variant = plan.variants[0].clone();
+    let mut candidate_plan = match &request.structural_catalogue {
+        Some(catalogue) => catalogue.candidate_plan(plan, params)?,
+        None => plan.clone(),
+    };
+    let base_fingerprint = candidate_plan.variants[0].fingerprint.clone();
+    let mut variant = candidate_plan.variants[0].clone();
     variant.variant_id = VariantId::new(format!("host_hpo:trial:{trial_index:010}"))?;
     variant.choices.insert(
         "host_hpo".into(),
         GenerationChoice {
             label: format!("trial:{trial_index}"),
-            value: serde_json::json!({"trial_index": trial_index}),
+            value: if let Some(catalogue) = &request.structural_catalogue {
+                serde_json::json!({"trial_index": trial_index,
+                    "recipe_id": catalogue.recipe(params)?.recipe_id,
+                    "catalogue_fingerprint": catalogue.catalogue_fingerprint})
+            } else {
+                serde_json::json!({"trial_index": trial_index})
+            },
             param_overrides,
             active_subsequence: None,
         },
     );
-    variant.fingerprint = stable_json_fingerprint(&(
-        &plan.variants[0].fingerprint,
-        &variant.choices,
-        &checkpoint.binding.objective_fingerprint,
-    ))?;
-    let mut candidate_plan = plan.clone();
+    variant.fingerprint = match objective_fingerprint {
+        Some(fingerprint) => {
+            stable_json_fingerprint(&(&base_fingerprint, &variant.choices, fingerprint))?
+        }
+        None => stable_json_fingerprint(&(&base_fingerprint, &variant.choices, request))?,
+    };
     candidate_plan.variants = vec![variant];
     candidate_plan.validate()?;
     Ok(candidate_plan)
+}
+
+fn validate_structural_worker_task(
+    task: &HostHpoWorkerTask,
+    request: &HostHpoSearchRequest,
+) -> Result<()> {
+    let Some(catalogue) = &request.structural_catalogue else {
+        return Ok(());
+    };
+    let mut registry = crate::ControllerRegistry::new();
+    for manifest in task.candidate_plan.controller_manifests.values() {
+        registry.register(manifest.clone())?;
+    }
+    let compiled = crate::compile_pipeline_dsl_with_generation_and_controller_registry(
+        &catalogue.source_dsl,
+        &registry,
+    )?;
+    let union = crate::build_execution_plan(
+        task.candidate_plan.id.clone(),
+        compiled.graph,
+        compiled.campaign_template,
+        &registry,
+    )?;
+    request.validate_parameter_bindings(&union)?;
+    let expected = host_hpo_candidate_plan(
+        &union,
+        request,
+        task.trial_index,
+        &task.params,
+        Some(&host_hpo_objective_fingerprint(request)?),
+    )?;
+    if stable_json_fingerprint(&expected)? != stable_json_fingerprint(&task.candidate_plan)? {
+        return Err(DagMlError::RuntimeValidation(
+            "structural HPO worker candidate declaration/plan mismatch".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Prepare one phase-bounded browser worker window. This is intentionally a
@@ -571,6 +701,7 @@ pub fn evaluate_host_hpo_worker_task(
     controllers: &RuntimeControllerRegistry,
     provider: &dyn RuntimeDataProvider,
 ) -> Result<HostHpoTrialEvidence> {
+    validate_structural_worker_task(task, request)?;
     task.candidate_plan.validate()?;
     let [variant] = task.candidate_plan.variants.as_slice() else {
         return Err(DagMlError::RuntimeValidation(
@@ -639,6 +770,7 @@ pub fn evaluate_host_hpo_worker_fold(
     provider: &dyn RuntimeDataProvider,
     data_fingerprint: &str,
 ) -> Result<HostHpoWorkerFoldResult> {
+    validate_structural_worker_task(task, request)?;
     task.candidate_plan.validate()?;
     let [variant] = task.candidate_plan.variants.as_slice() else {
         return Err(DagMlError::RuntimeValidation(
@@ -685,6 +817,7 @@ pub fn validate_host_hpo_worker_fold_result(
     data_fingerprint: &str,
     result: &HostHpoWorkerFoldResult,
 ) -> Result<()> {
+    let target_node = request.target_for_plan(&task.candidate_plan)?;
     let fold = task
         .candidate_plan
         .fold_set
@@ -717,7 +850,7 @@ pub fn validate_host_hpo_worker_fold_result(
         .reports
         .iter()
         .filter(|report| {
-            report.producer_node == request.target_node
+            report.producer_node == *target_node
                 && report.partition == PredictionPartition::Validation
                 && report.fold_id.as_ref() == Some(&fold.fold_id)
         })
@@ -891,6 +1024,7 @@ pub fn complete_host_hpo_worker_window(
     }
     // Validate every worker response before mutating optimizer state.
     for task in &window.tasks {
+        let target_node = request.target_for_plan(&task.candidate_plan)?;
         match keyed
             .get(&task.trial_index)
             .expect("checked result coverage")
@@ -934,7 +1068,7 @@ pub fn complete_host_hpo_worker_window(
                             .reports
                             .iter()
                             .filter(|report| {
-                                report.producer_node == request.target_node
+                                report.producer_node == *target_node
                                     && report.partition == PredictionPartition::Validation
                                     && report.fold_id.as_ref() == Some(&fold.fold_id)
                             })
@@ -1002,7 +1136,7 @@ pub fn complete_host_hpo_worker_window(
                         .reports
                         .iter()
                         .filter(|report| {
-                            report.producer_node == request.target_node
+                            report.producer_node == *target_node
                                 && report.partition == PredictionPartition::Validation
                                 && report.fold_id.as_ref() == Some(&fold.fold_id)
                         })
@@ -1374,34 +1508,16 @@ impl SequentialScheduler {
                 status = HostHpoSearchStatus::Exhausted;
                 break;
             };
-            let param_overrides = request.parameter_overrides(&params)?;
-            let mut variant = plan.variants[0].clone();
-            variant.variant_id = VariantId::new(format!("host_hpo:trial:{trial_index:010}"))?;
-            variant.choices.insert(
-                "host_hpo".into(),
-                GenerationChoice {
-                    label: format!("trial:{trial_index}"),
-                    value: serde_json::json!({"trial_index": trial_index}),
-                    param_overrides,
-                    active_subsequence: None,
-                },
-            );
-            variant.fingerprint = if let Some(checkpoint) = &checkpoint {
-                stable_json_fingerprint(&(
-                    &plan.variants[0].fingerprint,
-                    &variant.choices,
-                    &checkpoint.binding.objective_fingerprint,
-                ))?
-            } else {
-                stable_json_fingerprint(&(
-                    &plan.variants[0].fingerprint,
-                    &variant.choices,
-                    request,
-                ))?
-            };
-            let mut candidate_plan = plan.clone();
-            candidate_plan.variants = vec![variant.clone()];
-            candidate_plan.validate()?;
+            let candidate_plan = host_hpo_candidate_plan(
+                plan,
+                request,
+                trial_index,
+                &params,
+                checkpoint
+                    .as_ref()
+                    .map(|saved| saved.binding.objective_fingerprint.as_str()),
+            )?;
+            let variant = candidate_plan.variants[0].clone();
             let mut context = RunContext::new(
                 RunId::new(format!("run:host_hpo:{trial_index}"))?,
                 variant.seed.or(plan.campaign.root_seed),
@@ -1480,7 +1596,7 @@ impl SequentialScheduler {
                         DagMlError::RuntimeValidation("host HPO lost native score evidence".into())
                     })?;
                 let (score, objective_fold_scores, candidate) =
-                    host_hpo_score(plan, request, &variant.variant_id, &scores)?;
+                    host_hpo_score(&candidate_plan, request, &variant.variant_id, &scores)?;
                 Ok(HostHpoEvaluation::Complete(
                     HostHpoTrialEvidence {
                         trial_index,
@@ -1844,34 +1960,16 @@ impl SequentialScheduler {
                     exhausted = true;
                     break;
                 };
-                let param_overrides = request.parameter_overrides(&params)?;
-                let mut variant = plan.variants[0].clone();
-                variant.variant_id = VariantId::new(format!("host_hpo:trial:{next:010}"))?;
-                variant.choices.insert(
-                    "host_hpo".into(),
-                    GenerationChoice {
-                        label: format!("trial:{next}"),
-                        value: serde_json::json!({"trial_index": next}),
-                        param_overrides,
-                        active_subsequence: None,
-                    },
-                );
-                variant.fingerprint = if let Some(saved) = &checkpoint {
-                    stable_json_fingerprint(&(
-                        &plan.variants[0].fingerprint,
-                        &variant.choices,
-                        &saved.binding.objective_fingerprint,
-                    ))?
-                } else {
-                    stable_json_fingerprint(&(
-                        &plan.variants[0].fingerprint,
-                        &variant.choices,
-                        request,
-                    ))?
-                };
-                let mut candidate_plan = plan.clone();
-                candidate_plan.variants = vec![variant.clone()];
-                candidate_plan.validate()?;
+                let candidate_plan = host_hpo_candidate_plan(
+                    plan,
+                    request,
+                    next,
+                    &params,
+                    checkpoint
+                        .as_ref()
+                        .map(|saved| saved.binding.objective_fingerprint.as_str()),
+                )?;
+                let variant = candidate_plan.variants[0].clone();
                 let mut context = RunContext::new(
                     RunId::new(format!("run:host_hpo:{next}"))?,
                     variant.seed.or(plan.campaign.root_seed),
@@ -1946,7 +2044,7 @@ impl SequentialScheduler {
                                 .ok_or_else(|| DagMlError::RuntimeValidation(
                                     "host HPO lost native score evidence".into()))?;
                             let (score, objective_fold_scores, candidate) =
-                                host_hpo_score(plan, request, &variant.variant_id, &scores)?;
+                                host_hpo_score(&candidate_plan, request, &variant.variant_id, &scores)?;
                             Ok(HostHpoEvaluation::Complete(HostHpoTrialEvidence {
                                 trial_index, params, score, variant_id: variant.variant_id,
                                 scores, objective_fold_scores,
@@ -2169,6 +2267,7 @@ pub fn prepare_host_hpo_checkpoint(
     request: &HostHpoSearchRequest,
     options: &HostHpoResumeOptions,
 ) -> Result<HostHpoCheckpoint> {
+    request.validate_parameter_bindings(plan)?;
     if options.data_fingerprint.trim().is_empty() {
         return Err(DagMlError::RuntimeValidation(
             "durable host HPO requires a data fingerprint".into(),
@@ -2181,6 +2280,10 @@ pub fn prepare_host_hpo_checkpoint(
         campaign_fingerprint: stable_json_fingerprint(&plan.campaign)?,
         fold_set_fingerprint: stable_json_fingerprint(&plan.fold_set)?,
         data_fingerprint: options.data_fingerprint.clone(),
+        structural_catalogue_fingerprint: request
+            .structural_catalogue
+            .as_ref()
+            .map(|catalogue| catalogue.catalogue_fingerprint.clone()),
     };
     let mut checkpoint = options.checkpoint.clone().unwrap_or(HostHpoCheckpoint {
         schema_version: 1,
@@ -2223,6 +2326,10 @@ pub fn prepare_host_hpo_checkpoint(
                 (&evidence.params, &evidence.variant_id)
             }
             HostHpoTerminalTrial::Pruned { evidence } => {
+                let target_node = match &request.structural_catalogue {
+                    Some(catalogue) => &catalogue.recipe(&evidence.params)?.target_node,
+                    None => &request.target_node,
+                };
                 evidence.scores.validate()?;
                 if evidence.scores.plan_id != plan.id
                     || evidence.intermediate_scores.is_empty()
@@ -2262,7 +2369,7 @@ pub fn prepare_host_hpo_checkpoint(
                         .reports
                         .iter()
                         .filter(|report| {
-                            report.producer_node == request.target_node
+                            report.producer_node == *target_node
                                 && report.partition == PredictionPartition::Validation
                                 && report.fold_id.as_ref() == Some(&fold.fold_id)
                         })
@@ -2311,11 +2418,18 @@ pub fn prepare_host_hpo_checkpoint(
     Ok(checkpoint)
 }
 
-fn host_hpo_candidate(
+pub(super) fn host_hpo_candidate(
     plan: &ExecutionPlan,
     request: &HostHpoSearchRequest,
     trial: &HostHpoTrialEvidence,
 ) -> Result<crate::selection::CandidateScore> {
+    if trial.trial_index >= request.trial_budget
+        || trial.variant_id.as_str() != format!("host_hpo:trial:{:010}", trial.trial_index)
+    {
+        return Err(DagMlError::RuntimeValidation(
+            "host HPO trial/variant identity mismatch".into(),
+        ));
+    }
     trial.scores.validate()?;
     if trial.scores.plan_id != plan.id
         || trial.scores.reports.iter().any(|report| {
@@ -2329,8 +2443,26 @@ fn host_hpo_candidate(
             "host HPO checkpoint score plan/variant mismatch".into(),
         ));
     }
+    let candidate_plan = if request.structural_catalogue.is_some() {
+        host_hpo_candidate_plan(plan, request, trial.trial_index, &trial.params, None)?
+    } else {
+        plan.clone()
+    };
+    if request.structural_catalogue.is_some() {
+        let target = request.target_for_plan(&candidate_plan)?;
+        if trial
+            .scores
+            .reports
+            .iter()
+            .any(|report| report.producer_node != *target)
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "structural HPO score producer is outside selected recipe".into(),
+            ));
+        }
+    }
     let (score, fold_scores, candidate) =
-        host_hpo_score(plan, request, &trial.variant_id, &trial.scores)?;
+        host_hpo_score(&candidate_plan, request, &trial.variant_id, &trial.scores)?;
     if !trial.score.is_finite()
         || score != trial.score
         || fold_scores != trial.objective_fold_scores
@@ -2348,12 +2480,13 @@ fn host_hpo_score(
     variant: &VariantId,
     scores: &ScoreSet,
 ) -> Result<(f64, BTreeMap<String, f64>, crate::selection::CandidateScore)> {
+    let target_node = request.target_for_plan(plan)?;
     let folds = plan.fold_set.as_ref().expect("validated host HPO FoldSet");
     let reports = scores
         .reports
         .iter()
         .filter(|report| {
-            report.producer_node == request.target_node
+            report.producer_node == *target_node
                 && report.partition == PredictionPartition::Validation
                 && report.fold_id.as_ref().is_some_and(|fold| {
                     if request.fold_score_reduction.is_some() {

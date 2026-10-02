@@ -14,6 +14,10 @@ and its trial state machine:
 - `best` and `trials`;
 - in-memory `N4MOPT` save/load through the official binding (not bundle persistence).
 
+Host ask/tell search can also select recipes compiled from the existing DSL
+generators. See [structural host HPO](HOST_STRUCTURAL_HPO.md) for the immutable
+catalogue, active parameter axes, checkpoint identities and winner REFIT path.
+
 The `dag-ml-core` crate exposes the opt-in public `methods-optimizer` Cargo
 feature through the published dynamic `n4m` 0.3.0 binding (Methods ABI 2.14,
 generic estimator roles). Default builds leave

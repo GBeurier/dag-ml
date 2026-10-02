@@ -51,6 +51,783 @@ use crate::policy::{
 use crate::relation::{SampleRelation, SampleRelationSet};
 use serde_json::json;
 
+fn structural_host_fixture() -> (ExecutionPlan, HostHpoSearchRequest) {
+    let dsl: crate::PipelineDslSpec = serde_json::from_value(json!({
+        "id": "dsl:structural.hpo", "root_seed": 17,
+        "split_invocation": {"id": "split:shared", "fold_set": two_fold_set()},
+        "steps": [{"kind": "generator", "id": "generator:preproc", "mode": "cartesian", "stages": [
+            {"id": "stage0", "branches": [
+                {"id": "raw", "steps": []},
+                {"id": "scaled", "steps": [{"kind": "transform", "id": "scale", "operator": {"class": "sklearn.preprocessing.StandardScaler"}}]}
+            ]},
+            {"id": "stage1", "branches": [
+                {"id": "ridge", "steps": [{"kind": "model", "id": "ridge", "operator": {"class": "sklearn.linear_model.Ridge"}, "params": {"alpha": 1.0}}]},
+                {"id": "pls", "steps": [{"kind": "model", "id": "pls", "operator": {"class": "sklearn.cross_decomposition.PLSRegression"}, "params": {"n_components": 2, "scale": false}}]}
+            ]}
+        ]}]
+    })).unwrap();
+    let registry = manifests();
+    let catalogue = prepare_host_hpo_structural_catalogue(
+        &dsl,
+        &registry,
+        BTreeMap::from([
+            ("model.alpha".into(), "alpha".into()),
+            ("model.n_components".into(), "n_components".into()),
+        ]),
+        "__recipe__".into(),
+    )
+    .unwrap();
+    let compiled = crate::compile_pipeline_dsl_with_generation_and_controller_registry(
+        &catalogue.source_dsl,
+        &registry,
+    )
+    .unwrap();
+    let plan = build_execution_plan(
+        "plan:dsl:structural.hpo:host_hpo",
+        compiled.graph,
+        compiled.campaign_template,
+        &registry,
+    )
+    .unwrap();
+    let request = HostHpoSearchRequest {
+        target_node: catalogue.entries[0].target_node.clone(),
+        trial_budget: 4,
+        metric: RegressionMetricKind::Rmse,
+        direction: crate::selection::MetricObjective::Minimize,
+        optimizer_descriptor: BTreeMap::from([("owner".into(), json!("structural.fixture"))]),
+        phase_trial_budgets: Vec::new(),
+        progressive_pruning: false,
+        fold_score_reduction: Some(HostHpoFoldReduction::Mean),
+        parameter_bindings: BTreeMap::new(),
+        structural_catalogue: Some(catalogue),
+    };
+    (plan, request)
+}
+
+struct StructuralHostProposals {
+    params: Vec<BTreeMap<String, serde_json::Value>>,
+    asked: Vec<u32>,
+    told: Vec<(u32, f64)>,
+}
+
+impl StructuralHostProposals {
+    fn from_request(request: &HostHpoSearchRequest) -> Self {
+        let catalogue = request.structural_catalogue.as_ref().unwrap();
+        let params = catalogue
+            .entries
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| {
+                let mut params =
+                    BTreeMap::from([(catalogue.selector_path.clone(), json!(entry.recipe_id))]);
+                for path in entry.parameter_bindings.keys() {
+                    params.insert(path.clone(), json!(index as f64 + 1.0));
+                }
+                params
+            })
+            .collect();
+        Self {
+            params,
+            asked: Vec::new(),
+            told: Vec::new(),
+        }
+    }
+}
+
+impl HostHpoProposalSource for StructuralHostProposals {
+    fn ask(&mut self, index: u32) -> Result<Option<BTreeMap<String, serde_json::Value>>> {
+        self.asked.push(index);
+        Ok(self.params.get(index as usize).cloned())
+    }
+    fn tell(&mut self, index: u32, score: f64) -> Result<()> {
+        self.told.push((index, score));
+        Ok(())
+    }
+}
+
+struct StructuralScoreController {
+    inner: VariantScoringController,
+    calls: Arc<Mutex<Vec<(NodeId, VariantId)>>>,
+}
+
+impl RuntimeController for StructuralScoreController {
+    fn controller_id(&self) -> &ControllerId {
+        self.inner.controller_id()
+    }
+    fn invoke(&self, task: &NodeTask) -> Result<NodeResult> {
+        self.calls.lock().unwrap().push((
+            task.node_plan.node_id.clone(),
+            task.variant_id.clone().unwrap(),
+        ));
+        let mut result = self.inner.invoke(task)?;
+        if let Some(alpha) = task
+            .node_plan
+            .params
+            .get("alpha")
+            .and_then(serde_json::Value::as_f64)
+        {
+            for block in &mut result.predictions {
+                for row in &mut block.values {
+                    row[0] += alpha;
+                }
+            }
+        }
+        let prediction_handle = result.outputs.remove("pred").unwrap();
+        result.outputs.insert("oof".into(), prediction_handle);
+        Ok(result)
+    }
+}
+
+fn structural_score_controllers(
+    calls: Arc<Mutex<Vec<(NodeId, VariantId)>>>,
+) -> RuntimeControllerRegistry {
+    let mut registry = RuntimeControllerRegistry::new();
+    registry
+        .register(Box::new(MockController {
+            id: ControllerId::new("controller:transform").unwrap(),
+            handle: 1,
+            emit_prediction: false,
+        }))
+        .unwrap();
+    registry
+        .register(Box::new(StructuralScoreController {
+            inner: VariantScoringController {
+                id: ControllerId::new("controller:model").unwrap(),
+                handle: 2,
+                emit_targets: true,
+            },
+            calls,
+        }))
+        .unwrap();
+    registry
+}
+
+fn reseal_structural_catalogue(catalogue: &mut HostHpoStructuralCatalogue) {
+    catalogue.catalogue_fingerprint = stable_json_fingerprint(&(
+        catalogue.schema_version,
+        &catalogue.selector_path,
+        &catalogue.source_dsl,
+        &catalogue.parameter_paths,
+        &catalogue.entries,
+    ))
+    .unwrap();
+}
+
+#[test]
+fn structural_host_catalogue_reuses_native_cartesian_ids_labels_and_pruned_graphs() {
+    let (plan, request) = structural_host_fixture();
+    let catalogue = request.structural_catalogue.as_ref().unwrap();
+    catalogue.validate_for_plan(&plan).unwrap();
+    let models = crate::compile_operator_variant_models(&catalogue.source_dsl).unwrap();
+    let variants = enumerate_operator_variants(&models, plan.campaign.root_seed).unwrap();
+    assert_eq!(variants.len(), 4);
+    for (index, (entry, variant)) in catalogue.entries.iter().zip(variants).enumerate() {
+        assert_eq!(entry.variant, variant);
+        assert_eq!(entry.recipe_id, entry.variant.variant_id);
+        let pruned = pruned_plan_for_operator_models(&plan, &models, &entry.variant).unwrap();
+        assert_eq!(entry.graph, pruned.graph_plan.graph);
+        assert_eq!(entry.graph_fingerprint, pruned.graph_fingerprint);
+        assert_eq!(
+            entry
+                .graph
+                .nodes
+                .iter()
+                .filter(|node| node.kind == NodeKind::Model)
+                .count(),
+            1
+        );
+        assert_eq!(
+            entry
+                .graph
+                .nodes
+                .iter()
+                .filter(|node| node.kind == NodeKind::Transform)
+                .count(),
+            usize::from(index >= 2)
+        );
+        let key = if index % 2 == 0 {
+            "model.alpha"
+        } else {
+            "model.n_components"
+        };
+        assert_eq!(
+            entry
+                .parameter_bindings
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            [key]
+        );
+    }
+}
+
+#[test]
+fn structural_host_rejects_resealed_catalogue_order_nodes_labels_and_binding_changes() {
+    let (plan, request) = structural_host_fixture();
+    for mutation in 0..5 {
+        let mut catalogue = request.structural_catalogue.clone().unwrap();
+        match mutation {
+            0 => catalogue.entries.swap(0, 1),
+            1 => catalogue.entries[0].target_node = catalogue.entries[1].target_node.clone(),
+            2 => catalogue.entries[0].variant_label = "f".repeat(64),
+            3 => {
+                catalogue.entries[0]
+                    .parameter_bindings
+                    .get_mut("model.alpha")
+                    .unwrap()
+                    .param_path = "n_components".into()
+            }
+            _ => catalogue.entries[0].graph.nodes.clear(),
+        }
+        reseal_structural_catalogue(&mut catalogue);
+        assert!(catalogue
+            .validate_for_plan(&plan)
+            .unwrap_err()
+            .to_string()
+            .contains("binding mismatch"));
+    }
+}
+
+#[test]
+fn structural_host_invalid_proposals_refuse_before_operator_callback() {
+    let (plan, request) = structural_host_fixture();
+    for mutation in 0..3 {
+        let mut proposals = StructuralHostProposals::from_request(&request);
+        match mutation {
+            0 => {
+                proposals.params[0].insert("__recipe__".into(), json!("variant:unknown"));
+            }
+            1 => {
+                proposals.params[0].insert("model.n_components".into(), json!(2));
+            }
+            _ => {
+                proposals.params[0].remove("model.alpha");
+            }
+        }
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let controllers = structural_score_controllers(calls.clone());
+        let provider = InMemoryDataProvider::new(ControllerId::new("controller:data").unwrap());
+        assert!(SequentialScheduler
+            .execute_host_hpo_search(&plan, &controllers, &provider, &request, &mut proposals)
+            .is_err());
+        assert!(calls.lock().unwrap().is_empty());
+        assert!(proposals.told.is_empty());
+    }
+}
+
+#[test]
+fn structural_host_cv_scores_each_selected_target_and_resume_keeps_history() {
+    let (plan, request) = structural_host_fixture();
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let controllers = structural_score_controllers(calls.clone());
+    let provider = InMemoryDataProvider::new(ControllerId::new("controller:data").unwrap());
+    let options = HostHpoResumeOptions {
+        data_fingerprint: "data:structural".into(),
+        checkpoint: None,
+    };
+    let mut proposals = StructuralHostProposals::from_request(&request);
+    let mut progress = DurableHostProgress {
+        stop_after: 2,
+        checkpoints: Vec::new(),
+    };
+    let first = SequentialScheduler
+        .execute_resumable_host_hpo_search(
+            &plan,
+            &controllers,
+            &provider,
+            &request,
+            &mut proposals,
+            &options,
+            &mut progress,
+        )
+        .unwrap();
+    assert_eq!(first.status, HostHpoSearchStatus::Cancelled);
+    assert_eq!(calls.lock().unwrap().len(), 4);
+    let checkpoint = first.checkpoint.unwrap();
+    assert_eq!(
+        checkpoint.binding.structural_catalogue_fingerprint.as_ref(),
+        Some(
+            &request
+                .structural_catalogue
+                .as_ref()
+                .unwrap()
+                .catalogue_fingerprint
+        )
+    );
+    let original = serde_json::to_value(&checkpoint.trials).unwrap();
+    progress.stop_after = usize::MAX;
+    let mut resumed = StructuralHostProposals::from_request(&request);
+    let result = SequentialScheduler
+        .execute_resumable_host_hpo_search(
+            &plan,
+            &controllers,
+            &provider,
+            &request,
+            &mut resumed,
+            &HostHpoResumeOptions {
+                checkpoint: Some(checkpoint),
+                ..options
+            },
+            &mut progress,
+        )
+        .unwrap();
+    assert_eq!(resumed.asked, [2, 3]);
+    assert_eq!(
+        serde_json::to_value(&result.checkpoint.as_ref().unwrap().trials[..2]).unwrap(),
+        original
+    );
+    let evidence = result.result.unwrap();
+    assert_eq!(
+        evidence
+            .trials
+            .iter()
+            .map(|trial| trial.score)
+            .collect::<Vec<_>>(),
+        [1.0, 2.0, 3.0, 4.0]
+    );
+    assert_eq!(evidence.selected_trial_index, 0);
+    for (index, entry) in request
+        .structural_catalogue
+        .as_ref()
+        .unwrap()
+        .entries
+        .iter()
+        .enumerate()
+    {
+        let native_trial = VariantId::new(format!("host_hpo:trial:{index:010}")).unwrap();
+        let actual = calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, id)| *id == native_trial)
+            .map(|(node, _)| node.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            actual,
+            [entry.target_node.clone(), entry.target_node.clone()]
+        );
+        assert!(evidence.trials[index]
+            .scores
+            .reports
+            .iter()
+            .all(|report| report.producer_node == entry.target_node));
+    }
+}
+
+#[test]
+fn structural_host_checkpoint_catalogue_and_fixed_profile_refuse_before_ask() {
+    let (plan, request) = structural_host_fixture();
+    let options = HostHpoResumeOptions {
+        data_fingerprint: "data:structural".into(),
+        checkpoint: None,
+    };
+    let checkpoint = prepare_host_hpo_checkpoint(&plan, &request, &options).unwrap();
+    for change in 0..3 {
+        let mut current = request.clone();
+        match change {
+            0 => current.structural_catalogue = None,
+            1 => {
+                let catalogue = current.structural_catalogue.as_mut().unwrap();
+                catalogue.entries.reverse();
+                reseal_structural_catalogue(catalogue);
+            }
+            _ => {
+                current
+                    .optimizer_descriptor
+                    .insert("seed".into(), json!(999));
+            }
+        }
+        let mut proposals = StructuralHostProposals::from_request(&request);
+        let mut progress = DurableHostProgress {
+            stop_after: usize::MAX,
+            checkpoints: Vec::new(),
+        };
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let controllers = structural_score_controllers(calls.clone());
+        let provider = InMemoryDataProvider::new(ControllerId::new("controller:data").unwrap());
+        assert!(SequentialScheduler
+            .execute_resumable_host_hpo_search(
+                &plan,
+                &controllers,
+                &provider,
+                &current,
+                &mut proposals,
+                &HostHpoResumeOptions {
+                    checkpoint: Some(checkpoint.clone()),
+                    data_fingerprint: options.data_fingerprint.clone()
+                },
+                &mut progress
+            )
+            .is_err());
+        assert!(proposals.asked.is_empty());
+        assert!(calls.lock().unwrap().is_empty());
+    }
+}
+
+#[test]
+fn structural_host_worker_plans_are_pruned_and_validate_before_execution() {
+    let (plan, mut request) = structural_host_fixture();
+    request.trial_budget = 2;
+    let options = HostHpoResumeOptions {
+        data_fingerprint: "worker:structural".into(),
+        checkpoint: None,
+    };
+    let mut proposals = StructuralHostProposals::from_request(&request);
+    let window =
+        prepare_host_hpo_worker_window(&plan, &request, &options, &mut proposals, 2).unwrap();
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let controllers = structural_score_controllers(calls.clone());
+    let provider = InMemoryDataProvider::new(ControllerId::new("controller:data").unwrap());
+    let mut results = Vec::new();
+    for task in &window.tasks {
+        assert_eq!(
+            task.candidate_plan
+                .node_plans
+                .values()
+                .filter(|node| node.kind == NodeKind::Model)
+                .count(),
+            1
+        );
+        let evidence =
+            evaluate_host_hpo_worker_task(task, &request, &controllers, &provider).unwrap();
+        results.push(HostHpoWorkerResult::Complete {
+            evidence,
+            data_fingerprint: options.data_fingerprint.clone(),
+            fold_evidence: Vec::new(),
+        });
+    }
+    let previous = calls.lock().unwrap().len();
+    let mut changed = window.tasks[0].clone();
+    changed.params.insert("model.alpha".into(), json!(10));
+    assert!(evaluate_host_hpo_worker_task(&changed, &request, &controllers, &provider).is_err());
+    assert_eq!(calls.lock().unwrap().len(), previous);
+    results.reverse();
+    let mut progress = DurableHostProgress {
+        stop_after: usize::MAX,
+        checkpoints: Vec::new(),
+    };
+    let outcome = complete_host_hpo_worker_window(
+        &plan,
+        &request,
+        &options,
+        window,
+        results,
+        &mut proposals,
+        &mut progress,
+    )
+    .unwrap();
+    assert_eq!(outcome.result.unwrap().selected_trial_index, 0);
+    assert_eq!(proposals.told, [(0, 1.0), (1, 2.0)]);
+}
+
+#[test]
+fn fixed_host_hpo_omits_all_new_structural_wire_fields() {
+    let (_, _, _, request) = durable_host_fixture(false);
+    let value = serde_json::to_value(&request).unwrap();
+    assert!(!value
+        .as_object()
+        .unwrap()
+        .contains_key("structural_catalogue"));
+    let (plan, _, _, _) = durable_host_fixture(false);
+    let checkpoint = prepare_host_hpo_checkpoint(
+        &plan,
+        &request,
+        &HostHpoResumeOptions {
+            data_fingerprint: "fixed:data".into(),
+            checkpoint: None,
+        },
+    )
+    .unwrap();
+    assert!(!serde_json::to_value(&checkpoint.binding)
+        .unwrap()
+        .as_object()
+        .unwrap()
+        .contains_key("structural_catalogue_fingerprint"));
+}
+
+#[test]
+fn structural_host_worker_pruning_scores_the_recipe_target_per_fold() {
+    let (plan, mut request) = structural_host_fixture();
+    request.trial_budget = 2;
+    request.progressive_pruning = true;
+    let options = HostHpoResumeOptions {
+        data_fingerprint: "worker:structural.pruning".into(),
+        checkpoint: None,
+    };
+    let mut proposals = StructuralHostProposals::from_request(&request);
+    let window =
+        prepare_host_hpo_worker_window(&plan, &request, &options, &mut proposals, 2).unwrap();
+    let controllers = structural_score_controllers(Arc::new(Mutex::new(Vec::new())));
+    let provider = InMemoryDataProvider::new(ControllerId::new("controller:data").unwrap());
+    let folds = (0..2)
+        .map(|index| {
+            evaluate_host_hpo_worker_fold(
+                &window.tasks[0],
+                &request,
+                index,
+                &controllers,
+                &provider,
+                &options.data_fingerprint,
+            )
+            .unwrap()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        host_hpo_worker_intermediate_score(
+            &window.tasks[0],
+            &request,
+            &options.data_fingerprint,
+            &folds
+        )
+        .unwrap(),
+        1.0
+    );
+    let complete =
+        evaluate_host_hpo_worker_task(&window.tasks[0], &request, &controllers, &provider).unwrap();
+    let observed = vec![evaluate_host_hpo_worker_fold(
+        &window.tasks[1],
+        &request,
+        0,
+        &controllers,
+        &provider,
+        &options.data_fingerprint,
+    )
+    .unwrap()];
+    assert_eq!(observed[0].score, 2.0);
+    let pruned = host_hpo_worker_pruned_evidence(
+        &window.tasks[1],
+        &request,
+        &options.data_fingerprint,
+        &observed,
+    )
+    .unwrap();
+    let result = complete_host_hpo_worker_window(
+        &plan,
+        &request,
+        &options,
+        window,
+        vec![
+            HostHpoWorkerResult::Complete {
+                evidence: complete,
+                data_fingerprint: options.data_fingerprint.clone(),
+                fold_evidence: folds,
+            },
+            HostHpoWorkerResult::Pruned {
+                evidence: pruned,
+                data_fingerprint: options.data_fingerprint.clone(),
+                fold_evidence: observed,
+            },
+        ],
+        &mut proposals,
+        &mut DurableHostProgress {
+            stop_after: usize::MAX,
+            checkpoints: Vec::new(),
+        },
+    )
+    .unwrap();
+    let result = result.result.unwrap();
+    assert_eq!(result.trials.len(), 1);
+    assert_eq!(result.pruned_trials.len(), 1);
+    assert_eq!(result.pruned_trials[0].intermediate_scores, [2.0]);
+    assert_eq!(proposals.told, [(0, 1.0)]);
+}
+
+#[test]
+fn structural_host_parallel_and_sequential_factories_return_identical_native_evidence() {
+    struct Providers;
+    impl HostHpoCandidateProviderFactory for Providers {
+        fn create(&self, _index: u32) -> Result<Box<dyn RuntimeDataProvider + Send>> {
+            Ok(Box::new(InMemoryDataProvider::new(
+                ControllerId::new("controller:data").unwrap(),
+            )))
+        }
+    }
+    struct Controllers(Arc<Mutex<Vec<(NodeId, VariantId)>>>);
+    impl HostHpoCandidateControllerFactory for Controllers {
+        fn create(&self, _index: u32) -> Result<RuntimeControllerRegistry> {
+            Ok(structural_score_controllers(self.0.clone()))
+        }
+    }
+    let (plan, request) = structural_host_fixture();
+    let sequential_calls = Arc::new(Mutex::new(Vec::new()));
+    let sequential = SequentialScheduler
+        .execute_host_hpo_search_with_candidate_factories(
+            &plan,
+            &structural_score_controllers(sequential_calls.clone()),
+            &InMemoryDataProvider::new(ControllerId::new("controller:data").unwrap()),
+            &Providers,
+            &Controllers(sequential_calls.clone()),
+            &request,
+            &mut StructuralHostProposals::from_request(&request),
+        )
+        .unwrap();
+    let parallel_calls = Arc::new(Mutex::new(Vec::new()));
+    let parallel = SequentialScheduler
+        .execute_parallel_host_hpo_search_with_candidate_factories(
+            &plan,
+            &Providers,
+            &Controllers(parallel_calls.clone()),
+            &request,
+            &mut StructuralHostProposals::from_request(&request),
+            2,
+        )
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(&sequential).unwrap(),
+        serde_json::to_value(&parallel).unwrap()
+    );
+    let mut sequential_tasks = sequential_calls.lock().unwrap().clone();
+    sequential_tasks.sort();
+    let mut parallel_tasks = parallel_calls.lock().unwrap().clone();
+    parallel_tasks.sort();
+    assert_eq!(sequential_tasks, parallel_tasks);
+    assert_eq!(parallel_tasks.len(), 8);
+}
+
+#[test]
+fn structural_host_winner_request_preserves_output_alias_and_target_order_for_nonfirst_recipe() {
+    let (old_plan, old_request) = structural_host_fixture();
+    let mut registry = ControllerRegistry::new();
+    for manifest in old_plan.controller_manifests.values() {
+        let mut manifest = manifest.clone();
+        manifest
+            .supported_phases
+            .extend([Phase::Refit, Phase::Predict]);
+        registry.register(manifest).unwrap();
+    }
+    let old_catalogue = old_request.structural_catalogue.as_ref().unwrap();
+    let catalogue = prepare_host_hpo_structural_catalogue(
+        &old_catalogue.source_dsl,
+        &registry,
+        old_catalogue.parameter_paths.clone(),
+        old_catalogue.selector_path.clone(),
+    )
+    .unwrap();
+    let compiled = crate::compile_pipeline_dsl_with_generation_and_controller_registry(
+        &catalogue.source_dsl,
+        &registry,
+    )
+    .unwrap();
+    let plan = build_execution_plan(
+        old_plan.id,
+        compiled.graph,
+        compiled.campaign_template,
+        &registry,
+    )
+    .unwrap();
+    let request = HostHpoSearchRequest {
+        structural_catalogue: Some(catalogue),
+        ..old_request
+    };
+    let mut proposals = StructuralHostProposals::from_request(&request);
+    for (index, params) in proposals.params.iter_mut().enumerate() {
+        for (path, value) in params {
+            if path != "__recipe__" {
+                *value = json!(4 - index);
+            }
+        }
+    }
+    let controllers = structural_score_controllers(Arc::new(Mutex::new(Vec::new())));
+    let provider = InMemoryDataProvider::new(ControllerId::new("controller:data").unwrap());
+    let result = SequentialScheduler
+        .execute_host_hpo_search(&plan, &controllers, &provider, &request, &mut proposals)
+        .unwrap();
+    assert_eq!(result.selected_trial_index, 3);
+    let mut template: crate::TrainingRequest = serde_json::from_str(include_str!(
+        "../../../../examples/fixtures/training/training_request_package_refit.v1.json"
+    ))
+    .unwrap();
+    template.graph = plan.graph_plan.graph.clone();
+    template.campaign = plan.campaign.clone();
+    template.controller_manifests = plan.controller_manifests.values().cloned().collect();
+    template.data_identities.clear();
+    template.parameter_patches.clear();
+    template.patch_policies.clear();
+    template.influence_requirements.clear();
+    template.training_losses.clear();
+    template.options.seed = 17;
+    template.options.outputs.truncate(1);
+    template.options.outputs[0].output_id = "output:structural.winner.capture".into();
+    template.options.outputs[0].node_id = request.target_node.clone();
+    template.options.outputs[0].port_name = None;
+    template.options.outputs[0].target_names = vec!["protein".into(), "moisture".into()];
+    template.options.outputs[0].target_units = vec![Some("percent".into()), None];
+    template.options.outputs[0].class_labels = vec![Vec::new(), Vec::new()];
+    template.options.selection_output_id = template.options.outputs[0].output_id.clone();
+    let winner = resolve_host_hpo_structural_winner(&request, &result, &template).unwrap();
+    let recipe = &request.structural_catalogue.as_ref().unwrap().entries[3];
+    assert_ne!(recipe.target_node, request.target_node);
+    let mut expected_output = template.options.outputs[0].clone();
+    expected_output.node_id = recipe.target_node.clone();
+    assert_eq!(
+        winner.options.outputs.as_slice(),
+        std::slice::from_ref(&expected_output)
+    );
+    assert_eq!(
+        winner.options.selection_output_id,
+        "output:structural.winner.capture"
+    );
+    let projection = winner.project().unwrap();
+    assert_eq!(projection.outputs.len(), 1);
+    let projected_output = &projection.outputs[0];
+    assert_eq!(projected_output.output_id, expected_output.output_id);
+    assert_eq!(projected_output.node_id, recipe.target_node);
+    assert_eq!(projected_output.port_name, "oof");
+    assert_eq!(projected_output.target_names, expected_output.target_names);
+    assert_eq!(projected_output.target_units, expected_output.target_units);
+    assert_eq!(projected_output.class_labels, expected_output.class_labels);
+    assert!(!winner
+        .graph
+        .nodes
+        .iter()
+        .any(|node| node.id == request.target_node));
+    assert_eq!(
+        projection.plan.variants.as_slice(),
+        std::slice::from_ref(&recipe.variant)
+    );
+    assert_eq!(winner.options.outputs[0].node_id, recipe.target_node);
+    assert_eq!(winner.graph.edges, recipe.graph.edges);
+    assert_eq!(
+        winner
+            .graph
+            .nodes
+            .iter()
+            .map(|node| node.id.clone())
+            .collect::<Vec<_>>(),
+        recipe
+            .graph
+            .nodes
+            .iter()
+            .map(|node| node.id.clone())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        projection.plan.node_plans[&recipe.target_node].params["n_components"],
+        json!(1)
+    );
+    assert_eq!(
+        winner.campaign.metadata["host_hpo_structural_selection"]["recipe_id"],
+        json!(recipe.recipe_id)
+    );
+    assert_eq!(
+        winner.campaign.metadata["host_hpo_structural_selection"]["selected_trial_index"],
+        json!(3)
+    );
+    let mut forged = result.clone();
+    forged.selected_trial_index = 0;
+    forged.selected_params = forged.trials[0].params.clone();
+    assert!(
+        resolve_host_hpo_structural_winner(&request, &forged, &template)
+            .unwrap_err()
+            .to_string()
+            .contains("native SELECT")
+    );
+    template.graph.nodes[0]
+        .params
+        .insert("forged".into(), json!(true));
+    assert!(resolve_host_hpo_structural_winner(&request, &result, &template).is_err());
+}
+
 #[cfg(dag_ml_workspace_contract_fixtures)]
 #[test]
 fn lineage_rejects_duplicate_or_out_of_scope_early_stopping_records() {
@@ -12965,6 +13742,7 @@ fn browser_hpo_worker_window_is_phase_bounded_and_checkpoint_keyed() {
     .unwrap();
     let mut request = HostHpoSearchRequest {
         parameter_bindings: BTreeMap::new(),
+        structural_catalogue: None,
         phase_trial_budgets: vec![1, 2],
         progressive_pruning: false,
         fold_score_reduction: None,
@@ -13033,6 +13811,7 @@ fn browser_hpo_worker_fold_stops_before_next_fold() {
     .unwrap();
     let request = HostHpoSearchRequest {
         parameter_bindings: BTreeMap::new(),
+        structural_catalogue: None,
         phase_trial_budgets: Vec::new(),
         progressive_pruning: false,
         fold_score_reduction: None,
@@ -13113,6 +13892,7 @@ fn browser_hpo_worker_window_terminalizes_real_pruned_prefix() {
     .unwrap();
     let request = HostHpoSearchRequest {
         parameter_bindings: BTreeMap::new(),
+        structural_catalogue: None,
         phase_trial_budgets: Vec::new(),
         progressive_pruning: true,
         fold_score_reduction: None,
@@ -13283,6 +14063,7 @@ fn host_hpo_owns_budget_native_scores_and_selection_without_refit() {
     let provider = InMemoryDataProvider::new(ControllerId::new("controller:data").unwrap());
     let mut request = HostHpoSearchRequest {
         parameter_bindings: BTreeMap::new(),
+        structural_catalogue: None,
         phase_trial_budgets: vec![1, 2],
         progressive_pruning: false,
         fold_score_reduction: None,
@@ -13499,6 +14280,7 @@ fn durable_host_fixture(
     let provider = InMemoryDataProvider::new(ControllerId::new("controller:data").unwrap());
     let request = HostHpoSearchRequest {
         parameter_bindings: BTreeMap::new(),
+        structural_catalogue: None,
         phase_trial_budgets: Vec::new(),
         progressive_pruning: false,
         target_node: NodeId::new("model:pls").unwrap(),

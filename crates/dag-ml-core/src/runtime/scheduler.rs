@@ -714,6 +714,7 @@ impl SequentialScheduler {
         fold_index: usize,
     ) -> Result<(ScoreSet, f64)> {
         plan.validate()?;
+        let target_node = request.target_for_plan(plan)?;
         if !nested_stacking_campaign_plans(plan)?.is_empty() {
             return Err(DagMlError::RuntimeValidation(
                 "host HPO progressive pruning cannot attest nested-stacking outer folds".into(),
@@ -761,7 +762,7 @@ impl SequentialScheduler {
             .reports
             .iter()
             .filter(|report| {
-                report.producer_node == request.target_node
+                report.producer_node == *target_node
                     && report.partition == PredictionPartition::Validation
                     && report.fold_id.as_ref() == Some(&fold.fold_id)
             })
@@ -797,6 +798,7 @@ impl SequentialScheduler {
         request: &HostHpoSearchRequest,
         on_fold: &mut dyn FnMut(u32, f64) -> Result<bool>,
     ) -> Result<bool> {
+        let target_node = request.target_for_plan(plan)?;
         if !nested_stacking_campaign_plans(plan)?.is_empty() {
             return Err(DagMlError::RuntimeValidation(
                 "host HPO progressive pruning cannot attest nested-stacking outer folds".into(),
@@ -832,7 +834,7 @@ impl SequentialScheduler {
             let reports = ctx.score_collector[score_start..]
                 .iter()
                 .filter(|report| {
-                    report.producer_node == request.target_node
+                    report.producer_node == *target_node
                         && report.partition == PredictionPartition::Validation
                         && report.fold_id.as_ref() == Some(&fold.fold_id)
                 })

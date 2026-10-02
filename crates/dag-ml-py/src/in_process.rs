@@ -1354,19 +1354,32 @@ pub fn run_host_hpo_search_in_process(
     }
     let dsl = parse_pipeline_dsl_json(dsl_json.as_bytes()).map_err(py_core_error)?;
     let dsl = fan_out_data_aware_branches(&dsl, &envelope).map_err(py_core_error)?;
-    if !compile_operator_variant_models(&dsl)
+    let manifests: Vec<dag_ml_core::ControllerManifest> =
+        serde_json::from_str(controller_manifests_json).map_err(py_serde_error)?;
+    let mut registry = ControllerRegistry::new();
+    for manifest in manifests {
+        registry.register(manifest).map_err(py_core_error)?;
+    }
+    if let Some(catalogue) = &request.structural_catalogue {
+        let resolved = dag_ml_core::resolve_pipeline_dsl_minimal_aliases(&dsl, &registry)
+            .map_err(py_core_error)?;
+        if catalogue.source_dsl != resolved {
+            return Err(py_core_error(CoreDagMlError::CampaignValidation(
+                "structural host HPO catalogue differs from the resolved caller DSL".into(),
+            )));
+        }
+        if candidate_callback_factory.is_none() {
+            return Err(py_core_error(CoreDagMlError::RuntimeValidation(
+                "structural host HPO requires candidate-local operator callbacks".into(),
+            )));
+        }
+    } else if !compile_operator_variant_models(&dsl)
         .map_err(py_core_error)?
         .is_empty()
     {
         return Err(py_core_error(CoreDagMlError::CampaignValidation(
             "host HPO requires a concrete operator topology".into(),
         )));
-    }
-    let manifests: Vec<dag_ml_core::ControllerManifest> =
-        serde_json::from_str(controller_manifests_json).map_err(py_serde_error)?;
-    let mut registry = ControllerRegistry::new();
-    for manifest in manifests {
-        registry.register(manifest).map_err(py_core_error)?;
     }
     let compiled = compile_pipeline_dsl_with_generation_and_controller_registry(&dsl, &registry)
         .map_err(py_core_error)?;
@@ -1380,7 +1393,7 @@ pub fn run_host_hpo_search_in_process(
     plan.campaign
         .validate_data_envelope_relations(&envelope)
         .map_err(py_core_error)?;
-    if resume_options.checkpoint.is_some() {
+    if resume_options.checkpoint.is_some() || request.structural_catalogue.is_some() {
         dag_ml_core::prepare_host_hpo_checkpoint(&plan, &request, &resume_options)
             .map_err(py_core_error)?;
     }

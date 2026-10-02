@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GBeurier/dag-ml/schemas/host_hpo_search_request.v1.schema.json",
+  "title": "DAG-ML host HPO request v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "target_node",
+    "trial_budget",
+    "metric",
+    "direction",
+    "optimizer_descriptor"
+  ],
+  "properties": {
+    "target_node": {
+      "type": "string",
+      "minLength": 1
+    },
+    "trial_budget": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 4294967295
+    },
+    "metric": {
+      "enum": [
+        "mse",
+        "rmse",
+        "mae",
+        "r2",
+        "accuracy",
+        "balanced_accuracy",
+        "f1"
+      ]
+    },
+    "direction": {
+      "enum": [
+        "minimize",
+        "maximize"
+      ]
+    },
+    "optimizer_descriptor": {
+      "type": "object",
+      "minProperties": 1
+    },
+    "phase_trial_budgets": {
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 4294967295
+      }
+    },
+    "progressive_pruning": {
+      "type": "boolean"
+    },
+    "fold_score_reduction": {
+      "enum": [
+        "mean",
+        "best",
+        "robust_best",
+        null
+      ]
+    },
+    "parameter_bindings": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "node_id",
+          "param_path"
+        ],
+        "properties": {
+          "node_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "param_path": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "structural_catalogue": {
+      "anyOf": [
+        {
+          "$ref": "https://github.com/GBeurier/dag-ml/schemas/host_hpo_structural_catalogue.v1.schema.json"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  }
+}

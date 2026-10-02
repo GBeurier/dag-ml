@@ -151,17 +151,22 @@
     },
     {
       "path": "crates/dag-ml-core/src/runtime/host_hpo.rs",
-      "sha256": "775e11035edacacdab345f2dc40bf2579e79f26bbfba70a745d026d2ede80bf2",
+      "sha256": "998380c2e1398b5cc3a5b3d6db8ad5554fb49a7c3e42687fade92bb542e52d70",
       "kind": "native_hpo_runtime_session"
     },
     {
+      "path": "crates/dag-ml-core/src/runtime/host_hpo_structural.rs",
+      "sha256": "4110dfa04e2673ebb1ea00f9bb044ace174963393b4d62d3c4c5fc940e700d02",
+      "kind": "native_hpo_structural_catalogue"
+    },
+    {
       "path": "crates/dag-ml-core/src/runtime/mod.rs",
-      "sha256": "c1f96a35a8bc3c4eead9f276e4bbbe280f798fac7ae323162210f01ae29f8742",
+      "sha256": "3d2b4d9b6c6a40ce5dd572c0d5011e0b1a415e22f4c01994a776c4752d1eb428",
       "kind": "native_hpo_runtime_topology"
     },
     {
       "path": "crates/dag-ml-core/src/runtime/scheduler.rs",
-      "sha256": "3765773a719c44bc9785fa350a2de241c9a64200b7f328f095cc4eeb2ed248ae",
+      "sha256": "e30f4c8d4690c806aa34e5fcf8e6a5ef2203f802e839c68c3217b7f03d8cb3a0",
       "kind": "native_hpo_scheduler"
     },
     {
@@ -186,12 +191,12 @@
     },
     {
       "path": "crates/dag-ml-core/src/training_runtime.rs",
-      "sha256": "8445fd4a8b0295e999ac46f87eaf1c64bdd82a50504df6c2534776a1683f61b5",
+      "sha256": "f9649b7233c7666812411372d750b92f64a87de817d0247cf07d8490a248dfc0",
       "kind": "native_runtime_contract"
     },
     {
       "path": "crates/dag-ml-core/tests/training_runtime_operation.rs",
-      "sha256": "849d87eca11763b10e2cd8788d924a0f3bf9c01cf95ee47d5a89f4124aa82d2b",
+      "sha256": "bd24e25f8241cd3ea3b97f06e3ab26c04ad36bc559d25e5d8c6296d2383cc713",
       "kind": "native_integration_test"
     },
     {
@@ -206,22 +211,22 @@
     },
     {
       "path": "crates/dag-ml-py/python/dag_ml/__init__.py",
-      "sha256": "1caa23b8a3c7666e2732dcb0dcb2b1d77fd10d7514928fc4e65250cd82bb6348",
+      "sha256": "409d19546f4e088076cadc5c94afff99f9e2868076375929e2ddecd91f6999df",
       "kind": "python_facade"
     },
     {
       "path": "crates/dag-ml-py/python/dag_ml/__init__.pyi",
-      "sha256": "c35ba9544654e486ae7af27d4d1090a71aed1d8a35b2cae67512b99631c94db8",
+      "sha256": "82523831b5cf392d51297244184750e2dec68ee2fa7b39a05bb222d005d208fb",
       "kind": "python_typing"
     },
     {
       "path": "crates/dag-ml-py/src/in_process.rs",
-      "sha256": "b068a33cd8fa924f23a46108a2c80789c2fc73aaa3f6fde1ddef2ee7eaa48c8f",
+      "sha256": "524ffcb46b4107eddbab9447298cdc747f704ae9e63aaf038f57cc27c4f1946b",
       "kind": "python_controller_bridge"
     },
     {
       "path": "crates/dag-ml-py/src/lib.rs",
-      "sha256": "e9e5d1c3dbbc1673c54f3adad87bf88e2b7e781dfad75279fd6c23d7f04e0250",
+      "sha256": "9f63355a9e05d18b153c62e2bc0419706666adb76be1657f59ff581abee04595",
       "kind": "python_binding"
     },
     {
@@ -245,8 +250,13 @@
       "kind": "wasm_training_binding"
     },
     {
+      "path": "docs/HOST_STRUCTURAL_HPO.md",
+      "sha256": "6e5fb1d8a72f6c71be048dc9a58bbe97e9fb40e03a28ffc0386dfdfda0cf874a",
+      "kind": "structural_hpo_documentation"
+    },
+    {
       "path": "docs/HPO_METHODS_ADAPTER.md",
-      "sha256": "8b5e42e52b9d61b651ea52ddf3d53738fa1d5e6c06f7da68b0cddeebb0a97104",
+      "sha256": "2b91f61d47bbefa4dc70511b3f563f33437dce8fd8e4cb627f09bfd94bee966a",
       "kind": "hpo_documentation"
     },
     {
@@ -256,7 +266,7 @@
     },
     {
       "path": "docs/contracts/README.md",
-      "sha256": "24a32474fdd348b37a5530efa08e3e7d1c2ae8e4d29398dd8dd4575d6e1b0d1f",
+      "sha256": "81805fb1a136a0882ffbeee826fea4e4aa9067eb041506e5688e7d7ff48c4fb2",
       "kind": "contract_index_documentation"
     },
     {
@@ -313,6 +323,21 @@
       "path": "docs/contracts/graph_spec.schema.json",
       "sha256": "fbe8ee5ab1c7c5692c259bc007cbaf4067970bac309be3daf8a7a88768fa4168",
       "kind": "schema_dependency"
+    },
+    {
+      "path": "docs/contracts/host_hpo_checkpoint.schema.json",
+      "sha256": "e23a96c089e74925b115744cf835c827061118646e3fdc92efb1a1aaf2c2baa0",
+      "kind": "host_hpo_checkpoint_schema"
+    },
+    {
+      "path": "docs/contracts/host_hpo_search_request.schema.json",
+      "sha256": "faa644eee22f9c8144086a4b3357be63bd30f495083e2bf45268eab15b079114",
+      "kind": "host_hpo_search_schema"
+    },
+    {
+      "path": "docs/contracts/host_hpo_structural_catalogue.schema.json",
+      "sha256": "c059d4c1faf9ae2444d894e0b7ad9743c206ef427798ddf06acafaadde83cb2d",
+      "kind": "host_hpo_structural_schema"
     },
     {
       "path": "docs/contracts/implementation_descriptor.schema.json",
@@ -375,6 +400,11 @@
       "kind": "schema"
     },
     {
+      "path": "docs/contracts/pipeline_dsl.schema.json",
+      "sha256": "d59352dcabd486ae87283f2fc82707e302e913b09dbf703031989eec37450574",
+      "kind": "schema_dependency"
+    },
+    {
       "path": "docs/contracts/portable_predictor_package.schema.json",
       "sha256": "9ff26daf3f94089104831c6be53ca82f8a2d613d103d4f00a782c112995e2262",
       "kind": "schema"
@@ -387,6 +417,11 @@
     {
       "path": "docs/contracts/score_set.schema.json",
       "sha256": "b0122078a2812760688e71be449e7492c1ae9dd38d8aeb51211bc51eb1e87622",
+      "kind": "schema_dependency"
+    },
+    {
+      "path": "docs/contracts/score_set.v2.schema.json",
+      "sha256": "b6b7fb3167cbd7548d652e2fe7765c3cd00c5cbb2e181ceb2d036d28a97c3e39",
       "kind": "schema_dependency"
     },
     {
@@ -501,7 +536,7 @@
     },
     {
       "path": "parity/training/generate_fixtures.py",
-      "sha256": "146a014c16679d91777aad0fc6d6273eb619bc72b6f1279c3b3f3534ab6643ec",
+      "sha256": "9f3b1dcab9d6142528370f1e8d95810994a3ff3abeb1335835a5843dc0dcde0a",
       "kind": "generator"
     },
     {
@@ -614,5 +649,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "64ce6c5b397b993fb48a608a95ccae26a29bae42ed3467b67805a5000b9d66de"
+  "pack_checksum": "0198d50200f358d619fc9ffad67ba4419375c713b8dc68844d787c843bf9c30b"
 }
