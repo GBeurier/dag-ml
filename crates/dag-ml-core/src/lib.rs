@@ -29,6 +29,7 @@ pub mod initial_refit;
 #[cfg(feature = "methods-optimizer")]
 pub mod methods_estimator;
 pub mod methods_fold_hpo;
+pub mod methods_multimodal;
 pub mod methods_phase_controls;
 #[cfg(feature = "methods-optimizer")]
 pub mod methods_role_pipeline;
@@ -97,6 +98,7 @@ pub use training::*;
 pub use training_runtime::*;
 
 pub use methods_fold_hpo::*;
+pub use methods_multimodal::*;
 pub use methods_phase_controls::*;
 #[cfg(feature = "methods-optimizer")]
 pub use methods_role_pipeline::*;

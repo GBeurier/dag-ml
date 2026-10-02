@@ -9917,6 +9917,183 @@ fn refit_issues_an_attested_external_test_companion_view() {
         .data_views
         .contains_key("data:x:test"));
     assert_eq!(without_test.materializations.borrow().len(), 1);
+
+    // Raw hosts opt in to the same external-test isolation without claiming
+    // generated buffers or manufacturing dynamic-view receipts.
+    let mut raw_campaign = oof_edge_campaign();
+    let mut raw_binding = data_binding(&model_id);
+    assert!(!raw_binding.view_policy.include_refit_test_view);
+    raw_binding.view_policy.include_refit_test_view = true;
+    raw_campaign.data_bindings = BTreeMap::from([(model_id.clone(), vec![raw_binding])]);
+    let raw_plan = build_execution_plan(
+        "plan:refit.raw.external.test.view",
+        simple_graph(),
+        raw_campaign,
+        &manifests(),
+    )
+    .unwrap();
+    let make_raw_candidate = |candidate: PredictCohort, relations: SampleRelationSet| {
+        let mut candidate = make_candidate(candidate, relations);
+        candidate.generated = false;
+        candidate
+    };
+    let collect_raw = |candidate_plan: &ExecutionPlan,
+                       candidate: &RefitTestProvider,
+                       override_folds: Option<&FoldSet>| {
+        collect_input_handles(
+            candidate_plan,
+            candidate_plan.node_plans.get(&model_id).unwrap(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &PhaseScopeResources {
+                data_provider: Some(candidate),
+                fold_set_override: override_folds,
+                ..Default::default()
+            },
+            &ctx,
+            &scope,
+        )
+    };
+    let raw_provider = make_raw_candidate(cohort.clone(), provider.train_relations.clone());
+    let raw = collect_raw(&raw_plan, &raw_provider, None).unwrap();
+    assert_eq!(raw.data_views.len(), 2);
+    assert_eq!(
+        raw.data_views["data:x"].partition,
+        DataRequestPartition::FullTrain
+    );
+    assert_eq!(
+        raw.data_views["data:x"].sample_ids,
+        Some(training_ids.clone())
+    );
+    let raw_test_view = &raw.data_views["data:x:test"];
+    assert_eq!(raw_test_view.partition, DataRequestPartition::Predict);
+    assert_eq!(raw_test_view.sample_ids, Some(vec![test_id.clone()]));
+    assert!(raw_test_view.fold_id.is_none());
+    assert!(!raw_test_view.include_augmented);
+    assert!(!raw_test_view
+        .extra
+        .contains_key("include_augmented_refit_predictions"));
+    assert!(raw.data_view_receipts.is_empty());
+    assert_eq!(raw_provider.materializations.borrow().len(), 2);
+    assert!(raw_provider.materializations.borrow()[0]
+        .predict_cohort
+        .is_none());
+    assert_eq!(
+        raw_provider.materializations.borrow()[1].predict_cohort,
+        Some(cohort.clone())
+    );
+    assert!(raw_provider.views.borrow()[0].predict_cohort.is_none());
+    assert_eq!(
+        raw_provider.views.borrow()[1].predict_cohort,
+        Some(cohort.clone())
+    );
+    let mut raw_task = task.clone();
+    raw_task.node_plan = raw_plan.node_plans.get(&model_id).unwrap().clone();
+    raw_task.input_handles = raw.handles;
+    raw_task.data_views = raw.data_views;
+    raw_task.data_view_receipts = raw.data_view_receipts;
+    raw_task.validate_dynamic_view_training_gate().unwrap();
+
+    let mut raw_no_fold_plan = raw_plan.clone();
+    raw_no_fold_plan.fold_set = None;
+    let mut raw_no_fold_provider =
+        make_raw_candidate(cohort.clone(), provider.train_relations.clone());
+    raw_no_fold_provider.refit_ids = Some(training_ids.clone());
+    let raw_no_fold = collect_raw(&raw_no_fold_plan, &raw_no_fold_provider, None).unwrap();
+    assert_eq!(raw_no_fold_provider.refit_id_calls.get(), 1);
+    assert_eq!(
+        raw_no_fold.data_views["data:x"].sample_ids,
+        Some(training_ids.clone())
+    );
+    assert_eq!(
+        raw_no_fold.data_views["data:x:test"].sample_ids,
+        Some(vec![test_id.clone()])
+    );
+    assert!(raw_no_fold.data_view_receipts.is_empty());
+    assert!(raw_no_fold_provider.materializations.borrow()[0]
+        .predict_cohort
+        .is_none());
+    assert_eq!(
+        raw_no_fold_provider.materializations.borrow()[1].predict_cohort,
+        Some(cohort.clone())
+    );
+
+    let inference_cohort = PredictCohort::from_relations(
+        PredictCohortRole::Inference,
+        cohort.relations.clone(),
+        vec!["y".to_string()],
+        "c".repeat(64),
+        None,
+    )
+    .unwrap();
+    let mut raw_aliased_relations = provider.train_relations.clone();
+    raw_aliased_relations.records[0].origin_sample_id = Some(test_id.clone());
+    for (label, candidate_cohort, candidate_relations, expected_error) in [
+        (
+            "physical overlap",
+            make_cohort(training_ids[0].clone(), None),
+            provider.train_relations.clone(),
+            "overlaps CV fold sample or origin",
+        ),
+        (
+            "origin overlap",
+            make_cohort(test_id.clone(), Some(training_ids[0].clone())),
+            provider.train_relations.clone(),
+            "overlaps CV fold sample or origin",
+        ),
+        (
+            "relation overlap",
+            cohort.clone(),
+            raw_aliased_relations,
+            "overlaps CV relation identity closure",
+        ),
+        (
+            "inference cohort",
+            inference_cohort,
+            provider.train_relations.clone(),
+            "non-external-test cohort",
+        ),
+    ] {
+        let candidate = make_raw_candidate(candidate_cohort, candidate_relations);
+        let error = collect_raw(&raw_plan, &candidate, None)
+            .err()
+            .expect("invalid raw external test must fail")
+            .to_string();
+        assert!(error.contains(expected_error), "{label}: {error}");
+        assert!(candidate.materializations.borrow().is_empty(), "{label}");
+        assert!(candidate.views.borrow().is_empty(), "{label}");
+    }
+    let raw_override_provider =
+        make_raw_candidate(cohort.clone(), provider.train_relations.clone());
+    let error = collect_raw(&raw_plan, &raw_override_provider, Some(&override_fold_set))
+        .err()
+        .expect("raw external test overlapping the effective FoldSet must fail")
+        .to_string();
+    assert!(
+        error.contains("overlaps CV fold sample or origin"),
+        "{error}"
+    );
+    assert!(raw_override_provider.materializations.borrow().is_empty());
+    assert!(raw_override_provider.views.borrow().is_empty());
+
+    let raw_missing_ids = make_raw_candidate(cohort.clone(), provider.train_relations.clone());
+    let error = collect_raw(&raw_no_fold_plan, &raw_missing_ids, None)
+        .err()
+        .expect("raw REFIT external test needs explicit training IDs")
+        .to_string();
+    assert!(error.contains("without attested training IDs"), "{error}");
+    assert!(raw_missing_ids.materializations.borrow().is_empty());
+    assert!(raw_missing_ids.views.borrow().is_empty());
+
+    let mut raw_overlap_ids = make_raw_candidate(cohort.clone(), provider.train_relations.clone());
+    raw_overlap_ids.refit_ids = Some(vec![test_id]);
+    let error = collect_raw(&raw_no_fold_plan, &raw_overlap_ids, None)
+        .err()
+        .expect("raw REFIT training IDs must exclude external test identities")
+        .to_string();
+    assert!(error.contains("overlaps REFIT training IDs"), "{error}");
+    assert!(raw_overlap_ids.materializations.borrow().is_empty());
+    assert!(raw_overlap_ids.views.borrow().is_empty());
 }
 
 // R-P1-7: a node only sees upstream handles for ports it DECLARES an edge to.

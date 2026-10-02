@@ -35,6 +35,7 @@
             "fit_partition": {"type": "string", "pattern": "^[a-z][a-z_]*$"},
             "predict_partition": {"type": "string", "pattern": "^[a-z][a-z_]*$"},
             "include_augmented_train": {"type": "boolean"},
+            "include_refit_test_view": {"type": "boolean", "default": false},
             "include_augmented_refit_predictions": {"type": "boolean"},
             "include_augmented_cv_train_predictions": {"type": "boolean"},
             "augmented_cv_train_prediction_ids_by_fold": {"type": "object"},

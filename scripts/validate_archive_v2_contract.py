@@ -12,6 +12,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import math
 import re
 import stat
 import sys
@@ -434,9 +435,10 @@ def validate_semantics(document: Any) -> None:
                 "Methods reference has an invalid ABI minimum minor",
             )
     role_pipelines = methods.get("role_pipelines", [])
+    multimodal_pipelines = methods.get("multimodal_pipelines", [])
     method_paths = [
         reference["member_path"]
-        for reference in methods["n4mm"] + methods["n4mopt"] + role_pipelines
+        for reference in methods["n4mm"] + methods["n4mopt"] + role_pipelines + multimodal_pipelines
     ]
     require(
         len(method_paths) == len(set(method_paths)),
@@ -444,15 +446,15 @@ def validate_semantics(document: Any) -> None:
         "Methods payload members cannot alias",
     )
     n4mm_artifact_ids = [
-        reference["artifact_id"] for reference in methods["n4mm"] + role_pipelines
+        reference["artifact_id"] for reference in methods["n4mm"] + role_pipelines + multimodal_pipelines
     ]
     require(
         len(n4mm_artifact_ids) == len(set(n4mm_artifact_ids)),
         "native_model_refusal",
-        "N4MM and RolePipeline artifact ids must be unique",
+        "N4MM, RolePipeline and multimodal artifact ids must be unique",
     )
     require(
-        bool(methods["n4mm"] or role_pipelines),
+        bool(methods["n4mm"] or role_pipelines or multimodal_pipelines),
         "native_model_refusal",
         "Archive V2 native replay requires at least one N4MM or RolePipeline member",
     )
@@ -656,6 +658,95 @@ def validate_package_schema_boundary(root: Path = ROOT) -> None:
 
 
 ROLE_PIPELINE_PROFILE = "dagml_methods_role_pipeline_raw_sha256"
+MULTIMODAL_PIPELINE_PROFILE = "dagml_methods_multimodal_pipeline_raw_sha256"
+
+
+def validate_multimodal_pipeline_payload(record: dict[str, Any], payload: bytes, plan: dict[str, Any]) -> None:
+    """Validate complete declarative U07 state binding, without native hydration."""
+    artifact = record["artifact"]
+    digest = hashlib.sha256(payload).hexdigest()
+    owners = {f"dagml.methods.{host}.multimodal": f"controller:methods.{host}.multimodal"
+              for host in ("python", "wasm", "r", "octave")}
+    owner = owners.get(artifact.get("plugin"))
+    require(0 < len(payload) <= 134_217_728 and owner is not None
+            and record.get("controller_id") == artifact.get("controller_id") == owner
+            and artifact.get("kind") == "methods_multimodal_pipeline"
+            and artifact.get("backend") == "raw" and artifact.get("plugin_version") == "1.0.0"
+            and artifact.get("native_predictor_descriptor") is None and artifact.get("native_estimator_descriptor") is None
+            and artifact.get("size_bytes") == len(payload) and artifact.get("content_fingerprint") == digest
+            and artifact.get("uri") == f"artifacts/{digest}.json", "native_model_refusal",
+            "Complete Methods multimodal predictor must bind bounded RAW bytes and its exact owner")
+    saved = load_json_bytes(payload, artifact["uri"])
+    require(isinstance(saved, dict) and set(saved) == {"schema", "node_id", "params_fingerprint", "target_names", "recipe", "source_schemas", "state"}
+            and saved["schema"] == "dagml.methods.multimodal.v1" and saved["node_id"] == record["node_id"]
+            and saved["params_fingerprint"] == record["params_fingerprint"], "native_model_refusal", "Closed complete multimodal wrapper required")
+    names = saved["target_names"]
+    require(isinstance(names, list) and len(names) == 1 and isinstance(names[0], str) and 0 < len(names[0].encode()) <= 4096,
+            "native_model_refusal", "Complete U07 predictor requires one named target")
+    state = saved["state"]
+    require(isinstance(state, list) and 28 <= len(state) <= 67_108_864
+            and all(type(byte) is int and 0 <= byte <= 255 for byte in state)
+            and bytes(state[:12]) == b"N4MF" + (1).to_bytes(4, "little") + (2).to_bytes(4, "little"),
+            "native_model_refusal", "Complete Methods state must use N4MF format1 ABImajor2")
+    order = ["nir", "image", "series", "metadata"]
+    recipe, schemas = saved["recipe"], saved["source_schemas"]
+    require(isinstance(recipe, dict) and set(recipe) == {"schema_version", "fusion", "source_order", "encoders", "source_weights", "model"}
+            and type(recipe["schema_version"]) is int and recipe["schema_version"] == 1 and recipe["fusion"] == "early" and recipe["source_order"] == order
+            and isinstance(schemas, dict) and set(schemas) == set(order)
+            and isinstance(recipe["encoders"], dict) and set(recipe["encoders"]) == set(order)
+            and isinstance(recipe["source_weights"], dict) and set(recipe["source_weights"]) == set(order),
+            "native_model_refusal", "Canonical U07 source order and complete recipe required")
+    for name, representation in zip(order, ("signal_1d", "rgb_image", "series_mv", "tabular_mixed"), strict=True):
+        schema = schemas[name]
+        require(isinstance(schema, dict) and set(schema) == {"representation_id", "input_shape", "dtype", "identity"}
+                and schema["representation_id"] == representation and isinstance(schema["input_shape"], list)
+                and 0 < len(schema["input_shape"]) <= 7 and all(type(size) is int and 0 < size <= 2**63-1 for size in schema["input_shape"])
+                and math.prod(schema["input_shape"]) <= 1_048_576
+                and (name != "metadata" or schema["input_shape"] == [2])
+                and isinstance(schema["dtype"], str) and 0 < len(schema["dtype"].encode()) <= 128
+                and isinstance(schema["identity"], str) and 0 < len(schema["identity"].encode()) <= 1_048_576,
+                "native_model_refusal", "Canonical raw shape, representation and identity required")
+        try:
+            validate_strict_json(load_json_bytes(schema["identity"].encode(), name), "Raw multimodal source identity")
+        except ContractError as error:
+            raise ArchiveV2ContractError(f"native_model_refusal: {error}") from error
+    weights = recipe["source_weights"].values()
+    require(all(type(value) in (int, float) and value >= 0 and value < float("inf") for value in weights),
+            "native_model_refusal", "Finite nonnegative source weights required")
+    require(tcv1_sha256(recipe["encoders"]["nir"]) == tcv1_sha256({"kind":"standard_scaler", "with_mean":True, "with_std":True})
+            and tcv1_sha256(recipe["encoders"]["metadata"]) == tcv1_sha256({"kind":"column_transformer", "numeric_columns":[0], "categorical_columns":[1],
+                "with_mean":True, "with_std":True, "handle_unknown":"ignore", "sparse_output":False, "drop":None}),
+            "native_model_refusal", "Closed native population scaler/mixed column recipe required")
+    for name in ("image", "series"):
+        encoder = recipe["encoders"][name]
+        require(isinstance(encoder, dict) and set(encoder) == {"kind", "n_components", "whiten", "random_state"}
+                and encoder["kind"] == "tensor_pca" and type(encoder["n_components"]) is int
+                and 0 < encoder["n_components"] <= min(2**31-1, math.prod(schemas[name]["input_shape"]))
+                and encoder["whiten"] is False and type(encoder["random_state"]) is int and 0 <= encoder["random_state"] <= 2**32-1,
+                "native_model_refusal", "Closed native unwhitened U07 PCA recipe required")
+    model = recipe["model"]
+    require(isinstance(model, dict) and set(model) == {"method_id", "params"}
+            and model["method_id"] == "models.regularized.ridge" and isinstance(model["params"], dict)
+            and set(model["params"]) == {"alpha", "center_x", "center_y", "scale_x"}
+            and type(model["params"]["alpha"]) in (int,float) and 0 <= model["params"]["alpha"] < float("inf")
+            and model["params"]["center_x"] is True and model["params"]["center_y"] is True and model["params"]["scale_x"] is False,
+            "native_model_refusal", "Native Ridge must preserve canonical U07 centering and scaling")
+    node = plan.get("node_plans", {}).get(record["node_id"])
+    graph_node = next((item for item in plan.get("graph_plan", {}).get("graph", {}).get("nodes", []) if item.get("id") == record["node_id"]), None)
+    require(isinstance(node, dict) and isinstance(graph_node, dict) and isinstance(graph_node.get("operator"), dict),
+            "native_model_refusal", "Complete multimodal state requires its signed effective graph node")
+    operator = graph_node["operator"]
+    require(set(operator) == {"type", "recipe", "source_schemas"} and operator["type"] == "N4mMultimodalPipeline",
+            "native_model_refusal", "Explicit complete multimodal graph operator required")
+    expected = copy.deepcopy(operator["recipe"])
+    params = node["params"]
+    require(set(params) <= {"model__alpha", "source_weights__image", "transformers__image__n_components"},
+            "native_model_refusal", "Unknown effective multimodal tuning parameter")
+    if "model__alpha" in params: expected["model"]["params"]["alpha"] = params["model__alpha"]
+    if "source_weights__image" in params: expected["source_weights"]["image"] = params["source_weights__image"]
+    if "transformers__image__n_components" in params: expected["encoders"]["image"]["n_components"] = params["transformers__image__n_components"]
+    require(recipe == expected and schemas == operator["source_schemas"] and saved["params_fingerprint"] == node["params_fingerprint"],
+            "native_model_refusal", "Saved multimodal recipe/source schema differs from selected effective plan")
 
 
 def validate_role_pipeline_payload(record: dict[str, Any], payload: bytes) -> None:
@@ -891,12 +982,12 @@ def validate_package_portability(package: Any) -> None:
             "Archive V2 refit artifact ids must be unique",
         )
         require(
-            artifact.get("kind") in {"n4m_model", "methods_role_pipeline"}
+            artifact.get("kind") in {"n4m_model", "methods_role_pipeline", "methods_multimodal_pipeline"}
             and artifact.get("backend") == "raw",
             "native_model_refusal",
             f"artifact `{artifact_id}` must use an accepted raw Methods codec",
         )
-        if artifact.get("kind") == "methods_role_pipeline":
+        if artifact.get("kind") in {"methods_role_pipeline", "methods_multimodal_pipeline"}:
             records_by_id[artifact_id] = record
             continue
         uri = artifact.get("uri")
@@ -944,6 +1035,8 @@ def validate_package_portability(package: Any) -> None:
         if artifact["kind"] == "methods_role_pipeline":
             validate_role_pipeline_payload(records_by_id[artifact_id], payload)
             validate_role_pipeline_recipe(records_by_id[artifact_id], payload, package["effective_plan"])
+        elif artifact["kind"] == "methods_multimodal_pipeline":
+            validate_multimodal_pipeline_payload(records_by_id[artifact_id], payload, package["effective_plan"])
     require(
         package.get("package_fingerprint")
         == fingerprint_without(package, "package_fingerprint"),
@@ -966,7 +1059,7 @@ def materialize_fixture(
     package = canonical_portable_package_v2(root)
     raw_artifact_payloads = package["execution_bundle"]["raw_artifact_payloads"]
     methods = document["payloads"]["methods"]
-    for n4mm in methods["n4mm"] + methods.get("role_pipelines", []):
+    for n4mm in methods["n4mm"] + methods.get("role_pipelines", []) + methods.get("multimodal_pipelines", []):
         payloads[n4mm["member_path"]] = bytes(
             raw_artifact_payloads[n4mm["artifact_id"]]
         )
@@ -988,10 +1081,10 @@ def materialize_fixture(
         reference["raw_sha256"] = hashes[reference["member_path"]]
         if reference["member_path"] == PACKAGE_MEMBER:
             reference["semantic_fingerprint"] = package_semantic_fingerprint
-        elif reference.get("semantic_profile") in {"n4mm_raw_sha256", ROLE_PIPELINE_PROFILE}:
+        elif reference.get("semantic_profile") in {"n4mm_raw_sha256", ROLE_PIPELINE_PROFILE, MULTIMODAL_PIPELINE_PROFILE}:
             reference["semantic_fingerprint"] = hashes[reference["member_path"]]
     for member in document["member_inventory"]:
-        if member.get("semantic_profile") in {"n4mm_raw_sha256", ROLE_PIPELINE_PROFILE}:
+        if member.get("semantic_profile") in {"n4mm_raw_sha256", ROLE_PIPELINE_PROFILE, MULTIMODAL_PIPELINE_PROFILE}:
             member["semantic_fingerprint"] = hashes[member["path"]]
     return document, payloads
 
@@ -1084,7 +1177,7 @@ def validate_archive_v2_payloads(
     methods = document["payloads"]["methods"]
     n4mm_by_id = {
         reference["artifact_id"]: reference
-        for reference in methods["n4mm"] + methods.get("role_pipelines", [])
+        for reference in methods["n4mm"] + methods.get("role_pipelines", []) + methods.get("multimodal_pipelines", [])
     }
     require(
         set(n4mm_by_id) == set(raw_artifact_payloads),
@@ -1095,7 +1188,12 @@ def validate_archive_v2_payloads(
         reference = n4mm_by_id[artifact_id]
         artifact = refit_by_id[artifact_id]
         is_role = artifact["kind"] == "methods_role_pipeline"
-        if is_role:
+        is_multimodal = artifact["kind"] == "methods_multimodal_pipeline"
+        if is_multimodal:
+            require(reference in methods.get("multimodal_pipelines", []) and reference.get("kind") == "methods_multimodal_pipeline"
+                    and reference.get("owner") == "dag-ml" and reference.get("format_version") == 1,
+                    "native_model_refusal", "Complete multimodal artifact must use its own manifest family")
+        elif is_role:
             require(
                 reference in methods.get("role_pipelines", [])
                 and reference.get("kind") == "methods_role_pipeline"
@@ -1127,7 +1225,7 @@ def validate_archive_v2_payloads(
         )
         raw_sha256 = hashlib.sha256(payloads[reference["member_path"]]).hexdigest()
         require(
-            reference["semantic_profile"] == (ROLE_PIPELINE_PROFILE if is_role else "n4mm_raw_sha256")
+            reference["semantic_profile"] == (MULTIMODAL_PIPELINE_PROFILE if is_multimodal else ROLE_PIPELINE_PROFILE if is_role else "n4mm_raw_sha256")
             and reference["semantic_fingerprint"] == raw_sha256,
             "native_model_refusal",
             f"Methods member `{artifact_id}` must use its exact raw SHA-256 semantic profile",

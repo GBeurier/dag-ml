@@ -20,7 +20,7 @@
   "artifacts": [
     {
       "path": "docs/contracts/campaign_spec.schema.json",
-      "sha256": "07c2a3a39e47f58b4878ba92bd28452e0a0b4c538b0a421af6b43ac490b701b3",
+      "sha256": "989310a05c28901a5b9580875972c68b49fe263b303495548a81c8410f0d197e",
       "kind": "schema_dependency"
     },
     {
@@ -463,5 +463,5 @@
       ]
     }
   ],
-  "pack_checksum": "f404c2f34c05af2bdff0b6a410e658149f8d045bfcb68a21018f6f95c880d697"
+  "pack_checksum": "bacf1d87b3491bbf234a7c703590a04261db32f0ead49a67616a5f80879fd359"
 }

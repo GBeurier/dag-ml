@@ -197,6 +197,18 @@ partitions, validation/predict views cannot include augmented rows, and excluded
 rows cannot be included unless the corresponding `DataViewPolicy.unsafe_flags`
 entry is present.
 
+`DataViewPolicy.include_refit_test_view=true` explicitly requests a separate
+external-test companion during `REFIT`, including for static providers. It
+defaults to false and is omitted from serialization when false, preserving
+existing plans and fingerprints. The scheduler requires sample identities and
+validates the attested external-test cohort against the effective FoldSet (or
+explicit no-fold REFIT training identities) and CV relation closure before
+materializing any data. The companion uses the cohort's identities in a
+non-fit `predict` view, without augmentation; the primary full-train fit view
+and generated-view receipt requirements remain unchanged. Test targets never
+enter fitting or model selection; prediction blocks are scored by the native
+coordinator. Generated providers retain their existing automatic companion.
+
 Controller outputs:
 
 - opaque data/model/artifact handles;

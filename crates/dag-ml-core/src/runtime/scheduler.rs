@@ -4992,6 +4992,8 @@ pub(crate) fn collect_input_handles(
             .unwrap_or_default();
         let scope_fold_set = resources.fold_set_override.or(plan.fold_set.as_ref());
         for binding in &node_plan.data_bindings {
+            let refit_test_view =
+                scope.phase == Phase::Refit && binding.view_policy.include_refit_test_view;
             // Resolve the no-fold REFIT universe once. Reusing these exact IDs
             // for both disjointness and the fit view prevents a mutable provider
             // from changing the training set between validation and execution.
@@ -5004,12 +5006,15 @@ pub(crate) fn collect_input_handles(
                 data_provider.predict_cohort(binding, scope.phase)?
             } else if scope.phase == Phase::FitCv
                 || (scope.phase == Phase::Refit && generated_views_enabled)
+                || refit_test_view
             {
                 data_provider.cv_test_cohort(binding)?
             } else {
                 None
             };
-            if generated_views_enabled && matches!(scope.phase, Phase::FitCv | Phase::Refit) {
+            if (generated_views_enabled && matches!(scope.phase, Phase::FitCv | Phase::Refit))
+                || refit_test_view
+            {
                 if let Some(cohort) = predict_cohort.as_ref() {
                     if cohort.role != crate::data::PredictCohortRole::ExternalTest {
                         return Err(DagMlError::RuntimeValidation(format!(
@@ -5150,9 +5155,13 @@ pub(crate) fn collect_input_handles(
             }
 
             // FIT_CV already exposes the test companion to existing hosts.
-            // A REFIT companion is new and needed only when generated buffers
-            // must be read through an attested native handle.
-            if scope.phase == Phase::FitCv || (scope.phase == Phase::Refit && generated_view) {
+            // REFIT supplies one separately attested external-test view for
+            // generated buffers or an explicit static-host opt-in. The primary
+            // fit materialization and receipt requirements remain unchanged.
+            if scope.phase == Phase::FitCv
+                || (scope.phase == Phase::Refit && generated_view)
+                || refit_test_view
+            {
                 if let Some(cohort) = predict_cohort.as_ref() {
                     let test_materialized =
                         data_provider.materialize(&DataMaterializationRequest {
