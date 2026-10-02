@@ -51,6 +51,9 @@ use crate::policy::{
 use crate::relation::{SampleRelation, SampleRelationSet};
 use serde_json::json;
 
+#[path = "tests/structural_source_subsets/tests.rs"]
+mod structural_source_subsets;
+
 fn structural_host_fixture() -> (ExecutionPlan, HostHpoSearchRequest) {
     let dsl: crate::PipelineDslSpec = serde_json::from_value(json!({
         "id": "dsl:structural.hpo", "root_seed": 17,
