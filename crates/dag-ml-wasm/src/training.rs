@@ -21,15 +21,50 @@ fn provider_for_plan(
     plan: &ExecutionPlan,
     envelopes: BTreeMap<String, ExternalDataPlanEnvelope>,
 ) -> CoreResult<EnvelopeAttestedRuntimeDataProvider<InMemoryDataProvider>> {
-    let mut inner = InMemoryDataProvider::new(ControllerId::new("controller:data.provider")?);
-    for envelope in envelopes.values().cloned() {
-        inner.register_envelope(envelope)?;
-    }
     let bindings = plan
         .node_plans
         .values()
         .flat_map(|node| node.data_bindings.iter().cloned());
+    provider_for_bindings(bindings, envelopes)
+}
+
+fn provider_for_bindings(
+    bindings: impl IntoIterator<Item = DataBinding>,
+    envelopes: BTreeMap<String, ExternalDataPlanEnvelope>,
+) -> CoreResult<EnvelopeAttestedRuntimeDataProvider<InMemoryDataProvider>> {
+    let mut inner = InMemoryDataProvider::new(ControllerId::new("controller:data.provider")?);
+    for envelope in envelopes.values().cloned() {
+        inner.register_envelope(envelope)?;
+    }
     EnvelopeAttestedRuntimeDataProvider::new(inner, bindings, envelopes)
+}
+
+fn provider_for_replay(
+    plan: &ExecutionPlan,
+    envelopes: BTreeMap<String, ExternalDataPlanEnvelope>,
+) -> CoreResult<EnvelopeAttestedRuntimeDataProvider<InMemoryDataProvider>> {
+    let mut bindings = Vec::new();
+    for binding in plan
+        .node_plans
+        .values()
+        .flat_map(|node| &node.data_bindings)
+    {
+        let key = dag_ml_core::data_binding_requirement_key(&binding.node_id, &binding.input_name);
+        let envelope = envelopes.get(&key).ok_or_else(|| {
+            CoreDagMlError::RuntimeValidation(format!(
+                "training replay is missing external data envelope for `{key}`"
+            ))
+        })?;
+        envelope.validate()?;
+        // Core derives this same current-cohort relation in its cloned replay
+        // plan. Attest that binding, while retaining every other saved field
+        // and leaving the producer's signed package and SELECT untouched.
+        let mut current = binding.clone();
+        current.relation_fingerprint = envelope.relation_fingerprint.clone();
+        current.validate_envelope(envelope)?;
+        bindings.push(current);
+    }
+    provider_for_bindings(bindings, envelopes)
 }
 
 /// Assemble the canonical opaque payload set consumed by Core's bounded ZIP writer.
@@ -227,7 +262,7 @@ pub fn replay_training_package_json(
     let envelopes: BTreeMap<String, ExternalDataPlanEnvelope> =
         parse_contract(data_envelopes_json, "replay data envelope map").map_err(js_core_error)?;
     let provider =
-        provider_for_plan(&package.effective_plan, envelopes.clone()).map_err(js_core_error)?;
+        provider_for_replay(&package.effective_plan, envelopes.clone()).map_err(js_core_error)?;
     let controllers = initial_refit::controllers_for_plan(&package.effective_plan, js_invoke)
         .map_err(js_core_error)?;
     let predictor =
@@ -245,4 +280,113 @@ pub fn replay_training_package_json(
     })
     .map_err(js_core_error)?;
     serde_json::to_string(&replay).map_err(js_serde_error)
+}
+
+#[cfg(test)]
+mod replay_provider_tests {
+    use super::*;
+    use dag_ml_core::{Phase, PredictCohort, PredictCohortRole, RuntimeDataProvider};
+
+    fn current_target_free_fixture() -> (
+        PortablePredictorPackage,
+        BTreeMap<String, ExternalDataPlanEnvelope>,
+    ) {
+        let package = PortablePredictorPackage::from_json(include_str!(
+            "../../../examples/fixtures/training/portable_predictor_package.v1.json"
+        ))
+        .unwrap();
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../examples/fixtures/training/replay/training_replay_input_envelopes.v1.json"
+        ))
+        .unwrap();
+        let mut envelopes: BTreeMap<String, ExternalDataPlanEnvelope> =
+            serde_json::from_value(fixture["envelopes"].clone()).unwrap();
+        // These requirements share one raw IO plan and current physical
+        // cohort. Register its single content/metadata identity consistently.
+        let current = envelopes.values().next().unwrap().clone();
+        for envelope in envelopes.values_mut() {
+            *envelope = current.clone();
+            envelope.schema_version = EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION_V2;
+            envelope.target_content_fingerprint = None;
+            envelope.predict_cohort = Some(
+                PredictCohort::from_relations(
+                    PredictCohortRole::Inference,
+                    envelope.coordinator_relations.clone().unwrap(),
+                    vec!["y".into()],
+                    envelope.data_content_fingerprint.clone().unwrap(),
+                    None,
+                )
+                .unwrap(),
+            );
+            envelope.validate().unwrap();
+        }
+        (package, envelopes)
+    }
+
+    #[test]
+    fn replay_provider_attests_current_target_free_relations_without_changing_package() {
+        let (package, envelopes) = current_target_free_fixture();
+        let original = serde_json::to_string(&package).unwrap();
+        let saved_provider = provider_for_plan(&package.effective_plan, envelopes.clone()).unwrap();
+        let provider = provider_for_replay(&package.effective_plan, envelopes.clone()).unwrap();
+        for saved in package
+            .effective_plan
+            .node_plans
+            .values()
+            .flat_map(|node| &node.data_bindings)
+        {
+            let key = dag_ml_core::data_binding_requirement_key(&saved.node_id, &saved.input_name);
+            let mut current = saved.clone();
+            current.relation_fingerprint = envelopes[&key].relation_fingerprint.clone();
+            assert_ne!(current.relation_fingerprint, saved.relation_fingerprint);
+            let previous_error = saved_provider
+                .coordinator_relations(&current)
+                .unwrap_err()
+                .to_string();
+            assert!(previous_error.contains("does not exactly match"));
+            assert_eq!(
+                provider.coordinator_relations(&current).unwrap(),
+                envelopes[&key].coordinator_relations
+            );
+            assert_eq!(
+                provider.predict_cohort(&current, Phase::Predict).unwrap(),
+                envelopes[&key].predict_cohort
+            );
+            assert!(provider.training_data_identity(&current).unwrap().is_none());
+            assert!(provider.coordinator_relations(saved).is_err());
+            let mut foreign = current;
+            foreign.schema_fingerprint = "a".repeat(64);
+            assert!(provider.coordinator_relations(&foreign).is_err());
+        }
+        assert_eq!(serde_json::to_string(&package).unwrap(), original);
+        assert!(provider.inner().handle_records().is_empty());
+    }
+
+    #[test]
+    fn replay_provider_refuses_missing_envelope_before_delegation() {
+        let (package, mut envelopes) = current_target_free_fixture();
+        let key = envelopes.keys().next().unwrap().clone();
+        envelopes.remove(&key);
+        let error = provider_for_replay(&package.effective_plan, envelopes)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("missing external data envelope"));
+        assert!(error.contains(&key));
+    }
+
+    #[test]
+    fn replay_provider_refuses_wrong_envelope_contract_before_delegation() {
+        let (package, envelopes) = current_target_free_fixture();
+        let key = envelopes.keys().next().unwrap().clone();
+        for field in ["schema", "plan"] {
+            let mut wrong = envelopes.clone();
+            let envelope = wrong.get_mut(&key).unwrap();
+            if field == "schema" {
+                envelope.schema_fingerprint = "a".repeat(64);
+            } else {
+                envelope.plan_fingerprint = "a".repeat(64);
+            }
+            assert!(provider_for_replay(&package.effective_plan, wrong).is_err());
+        }
+    }
 }

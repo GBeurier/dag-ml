@@ -76,7 +76,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/data.rs",
-      "sha256": "3897da778048453ad495fa5ba1a9dc9fae0c10a13c19f67c2460c22044a72ce0",
+      "sha256": "9afa93b1f3cc248962cb4183486eb2d071cf2cb30873b8d23f5b6cab3ad15bb8",
       "kind": "typed_contract_dependency"
     },
     {
@@ -146,7 +146,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/runtime/dataview.rs",
-      "sha256": "6bf1cc19ade6f06ffca1ee1ae1aa860d5b4b9675370f9ecb1a14545bd17427d8",
+      "sha256": "822fcc0586c3da4e5e21ef2fb313402658a9795362f918b2c66060a5df7baec7",
       "kind": "native_hpo_runtime_session"
     },
     {
@@ -161,7 +161,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/runtime/scheduler.rs",
-      "sha256": "1d4a8b7832d7fb2b93aff99bb69c31a814cccce58cc9df33cd84fee118b2e160",
+      "sha256": "3765773a719c44bc9785fa350a2de241c9a64200b7f328f095cc4eeb2ed248ae",
       "kind": "native_hpo_scheduler"
     },
     {
@@ -241,7 +241,7 @@
     },
     {
       "path": "crates/dag-ml-wasm/src/training.rs",
-      "sha256": "758c205df88818890213f034829b5ecc9fe0969c812dd0cda66859a2d26fe01d",
+      "sha256": "16c405d05f4d2abd3cc6bef8f8e2441a5bf81a1a2ef33e0fd2057b262b51a049",
       "kind": "wasm_training_binding"
     },
     {
@@ -271,7 +271,7 @@
     },
     {
       "path": "docs/contracts/campaign_spec.schema.json",
-      "sha256": "07c2a3a39e47f58b4878ba92bd28452e0a0b4c538b0a421af6b43ac490b701b3",
+      "sha256": "989310a05c28901a5b9580875972c68b49fe263b303495548a81c8410f0d197e",
       "kind": "schema_dependency"
     },
     {
@@ -614,5 +614,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "050946b0e31620a1c220bb5115e6e6dd52ef38a958a5f29fc21d836a7797cfb7"
+  "pack_checksum": "64ce6c5b397b993fb48a608a95ccae26a29bae42ed3467b67805a5000b9d66de"
 }

@@ -539,6 +539,10 @@
         "include_augmented_train": {
           "type": "boolean"
         },
+        "include_refit_test_view": {
+          "type": "boolean",
+          "default": false
+        },
         "include_augmented_validation": {
           "type": "boolean"
         },

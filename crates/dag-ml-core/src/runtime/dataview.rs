@@ -11,7 +11,8 @@ pub struct DataMaterializationRequest {
     pub fold_id: Option<FoldId>,
     pub binding: crate::data::DataBinding,
     /// Separately attested cohort for top-level PREDICT, or an external-test
-    /// companion read during FIT_CV. It never contributes to a fitting view.
+    /// companion read during FIT_CV or explicitly opted-in REFIT. It never
+    /// contributes to a fitting view.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub predict_cohort: Option<crate::data::PredictCohort>,
 }
@@ -1074,6 +1075,22 @@ impl<P> EnvelopeAttestedRuntimeDataProvider<P> {
                     )));
                 }
             }
+            Phase::Refit if binding.view_policy.include_refit_test_view => {
+                if let Some(cohort) = supplied {
+                    cohort.validate()?;
+                    if cohort.role != crate::data::PredictCohortRole::ExternalTest {
+                        return Err(DagMlError::RuntimeValidation(
+                            "REFIT may read only an external_test companion cohort".to_string(),
+                        ));
+                    }
+                    if supplied != &attestation.envelope.predict_cohort {
+                        return Err(DagMlError::RuntimeValidation(format!(
+                            "predict cohort for runtime binding `{}` does not exactly match its envelope attestation",
+                            data_binding_requirement_key(&binding.node_id, &binding.input_name)
+                        )));
+                    }
+                }
+            }
             _ if supplied.is_some() => {
                 return Err(DagMlError::RuntimeValidation(format!(
                     "runtime binding `{}` carries a PREDICT cohort during non-PREDICT phase {phase:?}",
@@ -1081,6 +1098,23 @@ impl<P> EnvelopeAttestedRuntimeDataProvider<P> {
                 )));
             }
             _ => {}
+        }
+        Ok(())
+    }
+
+    fn validate_refit_test_view_request(request: &DataViewRequest) -> Result<()> {
+        if request.phase == Phase::Refit {
+            if let Some(cohort) = request.predict_cohort.as_ref() {
+                if request.view.partition != DataRequestPartition::Predict
+                    || request.view.sample_ids.as_ref() != Some(&cohort.physical_sample_ids)
+                    || request.view.include_augmented
+                {
+                    return Err(DagMlError::RuntimeValidation(
+                        "REFIT external_test companion requires a PREDICT view with exact cohort sample IDs and no augmented rows"
+                            .to_string(),
+                    ));
+                }
+            }
         }
         Ok(())
     }
@@ -1105,6 +1139,7 @@ impl<P: RuntimeDataProvider> RuntimeDataProvider for EnvelopeAttestedRuntimeData
             request.phase,
             &request.predict_cohort,
         )?;
+        Self::validate_refit_test_view_request(request)?;
         self.inner.make_view(request)
     }
 
@@ -1116,6 +1151,7 @@ impl<P: RuntimeDataProvider> RuntimeDataProvider for EnvelopeAttestedRuntimeData
             request.phase,
             &request.predict_cohort,
         )?;
+        Self::validate_refit_test_view_request(request)?;
         self.inner.make_view_attested(request)
     }
 
@@ -2120,6 +2156,187 @@ mod envelope_attested_provider_tests {
         let error = provider.materialize(&request).unwrap_err().to_string();
         assert!(error.contains("during non-PREDICT phase"));
         assert_eq!(provider.inner().materialize_calls.get(), 1);
+    }
+
+    #[test]
+    fn envelope_attested_provider_delegates_opted_in_refit_test_companion() {
+        let mut envelope = complete_envelope();
+        envelope.schema_version = crate::data::EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION_V2;
+        let expected = crate::data::PredictCohort::from_relations(
+            crate::data::PredictCohortRole::ExternalTest,
+            SampleRelationSet {
+                records: vec![crate::relation::SampleRelation::new(
+                    crate::ids::ObservationId::new("obs:external.test").unwrap(),
+                    SampleId::new("sample:external.test").unwrap(),
+                )],
+            },
+            vec!["y".to_string()],
+            "c".repeat(64),
+            Some("d".repeat(64)),
+        )
+        .unwrap();
+        envelope.predict_cohort = Some(expected.clone());
+        envelope.validate().unwrap();
+        let mut binding = binding_for("model:base", "x", &envelope);
+        binding.view_policy.include_refit_test_view = true;
+        let provider = EnvelopeAttestedRuntimeDataProvider::new(
+            ProbeProvider::default(),
+            vec![binding.clone()],
+            envelopes_for(&binding, envelope.clone()),
+        )
+        .unwrap();
+
+        // The primary REFIT read remains target-cohort-free. The separately
+        // attested companion is a second read through the same actual provider.
+        let mut request = materialization_request(&binding);
+        provider.materialize(&request).unwrap();
+        request.predict_cohort = Some(expected.clone());
+        let data_handle = provider.materialize(&request).unwrap();
+        let view = DataViewRequest {
+            run_id: request.run_id.clone(),
+            node_id: binding.node_id.clone(),
+            input_name: binding.input_name.clone(),
+            phase: Phase::Refit,
+            variant_id: None,
+            fold_id: None,
+            binding: binding.clone(),
+            data_handle,
+            view: DataProviderViewSpec {
+                sample_ids: Some(expected.physical_sample_ids.clone()),
+                partition: DataRequestPartition::Predict,
+                fold_id: None,
+                source_ids: Some(binding.source_ids.clone()),
+                columns: None,
+                include_augmented: false,
+                include_excluded: true,
+                branch_view: None,
+                extra: BTreeMap::new(),
+            },
+            view_key: String::new(),
+            view_seed: None,
+            predict_cohort: Some(expected.clone()),
+        };
+        assert_eq!(provider.make_view(&view).unwrap().handle, 42);
+        let attested = provider.make_view_attested(&view).unwrap();
+        assert_eq!(attested.handle.handle, 42);
+        assert!(attested.receipt.is_none());
+        assert_eq!(provider.inner().materialize_calls.get(), 2);
+        assert_eq!(provider.inner().make_view_calls.get(), 2);
+
+        for mutation in ["full_train", "fold_train", "sample_ids", "augmented"] {
+            let mut invalid_view = view.clone();
+            match mutation {
+                "full_train" => invalid_view.view.partition = DataRequestPartition::FullTrain,
+                "fold_train" => {
+                    invalid_view.view.partition = DataRequestPartition::FoldTrain;
+                    invalid_view.view.fold_id = Some(FoldId::new("fold:0").unwrap());
+                }
+                "sample_ids" => {
+                    invalid_view.view.sample_ids =
+                        Some(vec![SampleId::new("sample:foreign.test").unwrap()]);
+                }
+                "augmented" => invalid_view.view.include_augmented = true,
+                _ => unreachable!(),
+            }
+            let error = provider.make_view(&invalid_view).unwrap_err().to_string();
+            assert!(
+                error.contains("REFIT external_test companion requires"),
+                "{mutation}: {error}"
+            );
+            let error = provider
+                .make_view_attested(&invalid_view)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("REFIT external_test companion requires"),
+                "{mutation}: {error}"
+            );
+            assert_eq!(provider.inner().materialize_calls.get(), 2);
+            assert_eq!(provider.inner().make_view_calls.get(), 2);
+        }
+
+        let mut mismatch = expected.clone();
+        mismatch.data_content_fingerprint = "e".repeat(64);
+        mismatch.cohort_fingerprint = mismatch.fingerprint().unwrap();
+        let inference = crate::data::PredictCohort::from_relations(
+            crate::data::PredictCohortRole::Inference,
+            expected.relations.clone(),
+            expected.target_names.clone(),
+            expected.data_content_fingerprint.clone(),
+            None,
+        )
+        .unwrap();
+        for (phase, cohort, diagnostic) in [
+            (Phase::Refit, mismatch, "does not exactly match"),
+            (Phase::Refit, inference.clone(), "external_test companion"),
+            (Phase::Compile, expected.clone(), "during non-PREDICT phase"),
+            (Phase::Select, expected.clone(), "during non-PREDICT phase"),
+            (Phase::Explain, expected.clone(), "during non-PREDICT phase"),
+        ] {
+            let mut invalid_request = request.clone();
+            invalid_request.phase = phase;
+            invalid_request.predict_cohort = Some(cohort.clone());
+            let error = provider
+                .materialize(&invalid_request)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(diagnostic), "{error}");
+            let mut invalid_view = view.clone();
+            invalid_view.phase = phase;
+            invalid_view.predict_cohort = Some(cohort);
+            let error = provider.make_view(&invalid_view).unwrap_err().to_string();
+            assert!(error.contains(diagnostic), "{error}");
+            let error = provider
+                .make_view_attested(&invalid_view)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(diagnostic), "{error}");
+            assert_eq!(provider.inner().materialize_calls.get(), 2);
+            assert_eq!(provider.inner().make_view_calls.get(), 2);
+        }
+
+        let mut unopted_binding = binding.clone();
+        unopted_binding.view_policy.include_refit_test_view = false;
+        let unopted = EnvelopeAttestedRuntimeDataProvider::new(
+            ProbeProvider::default(),
+            vec![unopted_binding.clone()],
+            envelopes_for(&unopted_binding, envelope.clone()),
+        )
+        .unwrap();
+        let mut unopted_request = materialization_request(&unopted_binding);
+        unopted_request.predict_cohort = Some(expected);
+        let error = unopted
+            .materialize(&unopted_request)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("during non-PREDICT phase"), "{error}");
+        let mut unopted_view = view;
+        unopted_view.binding = unopted_binding;
+        let error = unopted
+            .make_view_attested(&unopted_view)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("during non-PREDICT phase"), "{error}");
+        assert_eq!(unopted.inner().materialize_calls.get(), 0);
+        assert_eq!(unopted.inner().make_view_calls.get(), 0);
+
+        // An exactly attested inference cohort still cannot become a REFIT
+        // companion merely because the binding opted in to external tests.
+        envelope.predict_cohort = Some(inference.clone());
+        envelope.validate().unwrap();
+        let inference_provider = EnvelopeAttestedRuntimeDataProvider::new(
+            ProbeProvider::default(),
+            vec![binding.clone()],
+            envelopes_for(&binding, envelope),
+        )
+        .unwrap();
+        request.predict_cohort = Some(inference);
+        let error = inference_provider
+            .materialize(&request)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("external_test companion"), "{error}");
+        assert_eq!(inference_provider.inner().materialize_calls.get(), 0);
     }
 
     #[test]

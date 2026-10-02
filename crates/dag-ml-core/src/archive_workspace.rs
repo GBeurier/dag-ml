@@ -509,9 +509,38 @@ pub fn build_archive_v2_native_portable_payloads(
 
     let mut n4mm = Vec::new();
     let mut role_pipelines = Vec::new();
+    let mut multimodal_pipelines = Vec::new();
     let mut role_paths = BTreeSet::new();
+    let mut multimodal_paths = BTreeSet::new();
     for record in &package.execution_bundle.refit_artifacts {
         let artifact = &record.artifact;
+        if artifact.kind == "methods_multimodal_pipeline" {
+            let bytes = package
+                .execution_bundle
+                .raw_artifact_payloads
+                .get(&artifact.id)
+                .ok_or_else(|| {
+                    DagMlError::RuntimeValidation(
+                        "Archive V2 lacks its complete Methods multimodal RAW payload".into(),
+                    )
+                })?;
+            crate::validate_methods_multimodal_pipeline_recipe(
+                record,
+                bytes,
+                &package.effective_plan,
+            )?;
+            let path = artifact.uri.as_ref().expect("validated portable URI");
+            if members.insert(path.clone(), bytes.clone()).is_some() {
+                return refuse("Archive V2 native artifact paths must be unique");
+            }
+            multimodal_paths.insert(path.clone());
+            let raw = sha256(bytes);
+            multimodal_pipelines.push(json!({"artifact_id":artifact.id,
+                "kind":"methods_multimodal_pipeline", "owner":"dag-ml", "format_version":1,
+                "member_path":path, "raw_sha256":raw, "semantic_fingerprint":raw,
+                "semantic_profile":crate::METHODS_MULTIMODAL_SEMANTIC_PROFILE}));
+            continue;
+        }
         if artifact.kind == "methods_role_pipeline" {
             let bytes = package
                 .execution_bundle
@@ -603,7 +632,7 @@ pub fn build_archive_v2_native_portable_payloads(
             "semantic_profile": "n4mm_raw_sha256"
         }));
     }
-    let native_count = n4mm.len() + role_pipelines.len();
+    let native_count = n4mm.len() + role_pipelines.len() + multimodal_pipelines.len();
     if native_count == 0
         || package.execution_bundle.raw_artifact_payloads.len() != native_count
         || package.artifact_bindings.len() != native_count
@@ -644,6 +673,10 @@ pub fn build_archive_v2_native_portable_payloads(
     if !role_pipelines.is_empty() {
         manifest["payloads"]["methods"]["role_pipelines"] = Value::Array(role_pipelines);
     }
+    if !multimodal_pipelines.is_empty() {
+        manifest["payloads"]["methods"]["multimodal_pipelines"] =
+            Value::Array(multimodal_pipelines);
+    }
     let inventory = members
         .iter()
         .map(|(path, bytes)| {
@@ -651,6 +684,8 @@ pub fn build_archive_v2_native_portable_payloads(
                 ("dagml_tcv1", package.package_fingerprint.clone())
             } else if role_paths.contains(path) {
                 (METHODS_ROLE_PIPELINE_SEMANTIC_PROFILE, sha256(bytes))
+            } else if multimodal_paths.contains(path) {
+                (crate::METHODS_MULTIMODAL_SEMANTIC_PROFILE, sha256(bytes))
             } else if path.ends_with(".n4mm") {
                 ("n4mm_raw_sha256", sha256(bytes))
             } else if path == ARCHIVE_V2_BUNDLE_MEMBER {

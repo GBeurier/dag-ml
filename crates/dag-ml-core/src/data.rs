@@ -1221,6 +1221,10 @@ pub struct DataViewPolicy {
     pub predict_partition: DataRequestPartition,
     #[serde(default = "default_true")]
     pub include_augmented_train: bool,
+    /// Request a separately attested external-test view during REFIT. It is
+    /// non-fit data, disjoint from training, and never alters the fit view.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub include_refit_test_view: bool,
     /// Opt in to REFIT resubstitution predictions over augmented children as
     /// well as their base origins. The fit view must include those children.
     #[serde(default, skip_serializing_if = "is_false")]
@@ -1248,6 +1252,7 @@ impl Default for DataViewPolicy {
             fit_partition: DataRequestPartition::FoldTrain,
             predict_partition: DataRequestPartition::FoldValidation,
             include_augmented_train: true,
+            include_refit_test_view: false,
             include_augmented_refit_predictions: false,
             include_augmented_cv_train_predictions: false,
             augmented_cv_train_prediction_ids_by_fold: BTreeMap::new(),
@@ -1268,6 +1273,11 @@ impl DataViewPolicy {
     pub const ALLOW_EXCLUDED_ROWS: &'static str = "allow_excluded_rows";
 
     pub fn validate(&self) -> Result<()> {
+        if self.include_refit_test_view && !self.require_sample_ids {
+            return Err(DagMlError::CampaignValidation(
+                "include_refit_test_view requires require_sample_ids=true".to_string(),
+            ));
+        }
         if self.include_augmented_refit_predictions && !self.include_augmented_train {
             return Err(DagMlError::CampaignValidation(
                 "include_augmented_refit_predictions requires include_augmented_train=true"
@@ -2619,9 +2629,43 @@ mod tests {
         }))
         .unwrap();
         assert!(policy.include_augmented_train);
+        assert!(!policy.include_refit_test_view);
         assert!(!policy.include_augmented_refit_predictions);
         assert!(!policy.include_augmented_cv_train_predictions);
         policy.validate().unwrap();
+    }
+
+    #[test]
+    fn refit_test_view_opt_in_preserves_default_wire_and_requires_identities() {
+        let policy = DataViewPolicy::default();
+        assert_eq!(
+            serde_json::to_value(&policy).unwrap(),
+            serde_json::json!({
+                "fit_partition": "fold_train",
+                "predict_partition": "fold_validation",
+                "include_augmented_train": true,
+                "include_augmented_validation": false,
+                "include_excluded": false,
+                "require_sample_ids": true,
+            })
+        );
+        let mut opted_in: DataViewPolicy =
+            serde_json::from_value(serde_json::json!({"include_refit_test_view": true})).unwrap();
+        opted_in.validate().unwrap();
+        assert_eq!(
+            serde_json::to_value(&opted_in).unwrap()["include_refit_test_view"],
+            serde_json::json!(true)
+        );
+        opted_in.require_sample_ids = false;
+        assert!(opted_in
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("include_refit_test_view requires require_sample_ids=true"));
+        assert!(serde_json::from_value::<DataViewPolicy>(serde_json::json!({
+            "include_refit_test_view": "true"
+        }))
+        .is_err());
     }
 
     #[test]

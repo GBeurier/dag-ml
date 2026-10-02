@@ -1,7 +1,8 @@
 # Archive V2 native-portable replay contract
 
 Status: ADR-23 native-portable contract with the additive ADR-28 Methods
-RolePipeline profile. DAG-ML assembles and validates the replay closure; Core
+RolePipeline profile and the complete `dagml.methods.multimodal.v1` predictor.
+DAG-ML assembles and validates the replay closure; Core
 owns the archive writer and bounded reader.
 
 Archive V2 is the strict native-only successor to the frozen Archive V1 wire.
@@ -74,6 +75,16 @@ Writers derive the minimum from the payload capability: historical PLS N4MM is
 only for the historical PLS profile; it never defaults a Ridge payload to 2.3.
 
 ## Additive RolePipeline transport
+
+The complete multimodal family additionally uses optional
+`payloads.methods.multimodal_pipelines`, kind `methods_multimodal_pipeline`,
+owner `dag-ml`, format 1, and semantic profile
+`dagml_methods_multimodal_pipeline_raw_sha256`. Its content-addressed RAW JSON
+wrapper contains one bounded native N4MF state and the selected recipe/raw source
+schemas. The nonempty union now spans N4MM, RolePipeline and complete multimodal
+families; IDs/paths remain globally unique. Pure composite archives require no
+N4MM placeholder. See [the complete contract](../../MULTIMODAL_METHODS_CONTRACT.md)
+for source identity, replay trust and actual-host qualification.
 
 `payloads.methods.role_pipelines` is optional and absent on N4MM-only exports.
 The nonempty union of N4MM and RolePipeline declarations exactly covers every
