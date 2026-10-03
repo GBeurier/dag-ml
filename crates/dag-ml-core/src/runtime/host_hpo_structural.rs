@@ -8,6 +8,10 @@ use crate::{
     GenerationStrategy, PipelineDslSpec, TrainingRequest,
 };
 
+#[path = "host_hpo_topology.rs"]
+mod topology;
+pub use topology::{prepare_host_hpo_topology_catalogue, HostHpoTopologyContract};
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HostHpoStructuralRecipe {
@@ -30,6 +34,9 @@ pub struct HostHpoStructuralCatalogue {
     pub parameter_paths: BTreeMap<String, String>,
     pub entries: Vec<HostHpoStructuralRecipe>,
     pub catalogue_fingerprint: String,
+    /// Additive V2 declaration. Its absence preserves V1 JSON and hash preimages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topology_contract: Option<HostHpoTopologyContract>,
 }
 
 /// Compile the existing operator generator, preserving its native choice
@@ -155,6 +162,7 @@ pub fn prepare_host_hpo_structural_catalogue(
         parameter_paths,
         entries,
         catalogue_fingerprint: String::new(),
+        topology_contract: None,
     };
     catalogue.catalogue_fingerprint = catalogue.compute_fingerprint()?;
     Ok(catalogue)
@@ -162,6 +170,16 @@ pub fn prepare_host_hpo_structural_catalogue(
 
 impl HostHpoStructuralCatalogue {
     fn compute_fingerprint(&self) -> Result<String> {
+        if let Some(contract) = &self.topology_contract {
+            return stable_json_fingerprint(&(
+                self.schema_version,
+                &self.selector_path,
+                &self.source_dsl,
+                &self.parameter_paths,
+                &self.entries,
+                contract,
+            ));
+        }
         stable_json_fingerprint(&(
             self.schema_version,
             &self.selector_path,
@@ -179,18 +197,33 @@ impl HostHpoStructuralCatalogue {
         for manifest in plan.controller_manifests.values() {
             registry.register(manifest.clone())?;
         }
-        let expected = prepare_host_hpo_structural_catalogue(
-            &self.source_dsl,
-            &registry,
-            self.parameter_paths.clone(),
-            self.selector_path.clone(),
-        )?;
+        let expected = match (self.schema_version, &self.topology_contract) {
+            (1, None) => prepare_host_hpo_structural_catalogue(
+                &self.source_dsl,
+                &registry,
+                self.parameter_paths.clone(),
+                self.selector_path.clone(),
+            )?,
+            (2, Some(contract)) if self.parameter_paths.is_empty() => {
+                prepare_host_hpo_topology_catalogue(
+                    &self.source_dsl,
+                    &registry,
+                    contract.parameter_bindings.clone(),
+                    contract.scored_nodes.clone(),
+                    self.selector_path.clone(),
+                )?
+            }
+            _ => {
+                return Err(DagMlError::RuntimeValidation(
+                    "structural HPO catalogue schema/declaration mismatch".into(),
+                ))
+            }
+        };
         let compiled = compile_pipeline_dsl_with_generation_and_controller_registry(
             &self.source_dsl,
             &registry,
         )?;
-        if self.schema_version != 1
-            || self.catalogue_fingerprint != self.compute_fingerprint()?
+        if self.catalogue_fingerprint != self.compute_fingerprint()?
             || stable_json_fingerprint(self)? != stable_json_fingerprint(&expected)?
             || stable_json_fingerprint(&compiled.graph)? != plan.graph_fingerprint
             || stable_json_fingerprint(&compiled.campaign_template)?
@@ -357,6 +390,16 @@ pub fn resolve_host_hpo_structural_winner(
         .keys()
         .cloned()
         .collect::<BTreeSet<_>>();
+    if catalogue.topology_contract.is_some()
+        && template
+            .parameter_patches
+            .iter()
+            .any(|patch| !keep.contains(&patch.node_id))
+    {
+        return Err(DagMlError::RuntimeValidation(
+            "topology HPO winner template patches an inactive node".into(),
+        ));
+    }
     let mut resolved = template.clone();
     resolved.graph = candidate.graph_plan.graph;
     for node in &mut resolved.graph.nodes {

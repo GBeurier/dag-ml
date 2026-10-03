@@ -568,6 +568,65 @@ fn prepare_host_hpo_structural_catalogue_json(
     serde_json::to_string(&catalogue).map_err(py_serde_error)
 }
 
+/// Prepare signed topology recipes without host fitting or optimizer work.
+#[pyfunction]
+#[pyo3(signature = (dsl_json, envelope_json, controller_manifests_json, parameter_bindings_json, scored_nodes_json, selector_path="__recipe__"))]
+fn prepare_host_hpo_topology_catalogue_json(
+    dsl_json: &str,
+    envelope_json: &str,
+    controller_manifests_json: &str,
+    parameter_bindings_json: &str,
+    scored_nodes_json: &str,
+    selector_path: &str,
+) -> PyResult<String> {
+    let envelope: ExternalDataPlanEnvelope = dag_ml_core::canonical::deserialize_external_contract(
+        envelope_json,
+        "topology HPO envelope",
+        CoreDagMlError::CampaignValidation,
+    )
+    .map_err(py_core_error)?;
+    envelope.validate().map_err(py_core_error)?;
+    let dsl = parse_pipeline_dsl_json(dsl_json.as_bytes()).map_err(py_core_error)?;
+    let dsl = fan_out_data_aware_branches(&dsl, &envelope).map_err(py_core_error)?;
+    let registry = controller_registry_from_json(controller_manifests_json)?;
+    let bindings = dag_ml_core::canonical::deserialize_external_contract(
+        parameter_bindings_json,
+        "topology HPO parameter bindings",
+        CoreDagMlError::CampaignValidation,
+    )
+    .map_err(py_core_error)?;
+    let sinks = dag_ml_core::canonical::deserialize_external_contract(
+        scored_nodes_json,
+        "topology HPO scored nodes",
+        CoreDagMlError::CampaignValidation,
+    )
+    .map_err(py_core_error)?;
+    let catalogue = dag_ml_core::prepare_host_hpo_topology_catalogue(
+        &dsl,
+        &registry,
+        bindings,
+        sinks,
+        selector_path.to_owned(),
+    )
+    .map_err(py_core_error)?;
+    let compiled = compile_pipeline_dsl_with_generation_and_controller_registry(
+        &catalogue.source_dsl,
+        &registry,
+    )
+    .map_err(py_core_error)?;
+    let plan = build_execution_plan(
+        format!("plan:{}:host_hpo", catalogue.source_dsl.id),
+        compiled.graph,
+        compiled.campaign_template,
+        &registry,
+    )
+    .map_err(py_core_error)?;
+    plan.campaign
+        .validate_data_envelope_relations(&envelope)
+        .map_err(py_core_error)?;
+    serde_json::to_string(&catalogue).map_err(py_serde_error)
+}
+
 /// Resolve native SELECT to the winner's ordinary signed training request.
 #[pyfunction]
 fn resolve_host_hpo_structural_winner_json(
@@ -789,6 +848,10 @@ fn _dag_ml(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(fan_out_data_aware_branches_json, module)?)?;
     module.add_function(wrap_pyfunction!(
         prepare_host_hpo_structural_catalogue_json,
+        module
+    )?)?;
+    module.add_function(wrap_pyfunction!(
+        prepare_host_hpo_topology_catalogue_json,
         module
     )?)?;
     module.add_function(wrap_pyfunction!(

@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GBeurier/dag-ml/schemas/host_hpo_topology_catalogue.v2.schema.json",
+  "title": "DAG-ML compiler-owned topology HPO catalogue v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "selector_path", "source_dsl", "parameter_paths", "entries", "catalogue_fingerprint", "topology_contract"],
+  "properties": {
+    "schema_version": {"const": 2},
+    "selector_path": {"type": "string", "minLength": 1},
+    "source_dsl": {"$ref": "https://github.com/GBeurier/dag-ml/schemas/pipeline_dsl.v1.schema.json"},
+    "parameter_paths": {"type": "object", "maxProperties": 0},
+    "entries": {"$ref": "https://github.com/GBeurier/dag-ml/schemas/host_hpo_structural_catalogue.v1.schema.json#/properties/entries"},
+    "catalogue_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "topology_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["parameter_bindings", "scored_nodes"],
+      "properties": {
+        "parameter_bindings": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "type": "array", "minItems": 1, "uniqueItems": true,
+            "items": {"$ref": "https://github.com/GBeurier/dag-ml/schemas/host_hpo_structural_catalogue.v1.schema.json#/properties/entries/items/properties/parameter_bindings/additionalProperties"}
+          }
+        },
+        "scored_nodes": {
+          "type": "array", "minItems": 1, "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        }
+      }
+    }
+  }
+}

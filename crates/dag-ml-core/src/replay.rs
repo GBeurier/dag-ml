@@ -1898,6 +1898,8 @@ fn bind_attached_replay_outputs(
             predictions: Vec::new(),
             observation_predictions: Vec::new(),
             aggregated_predictions: Vec::new(),
+            artifact_only: false,
+            refit_test_cohort: None,
         };
         for result in results {
             output.predictions.extend(
@@ -1998,6 +2000,8 @@ fn bind_replay_outputs(
             predictions: Vec::new(),
             observation_predictions: Vec::new(),
             aggregated_predictions: Vec::new(),
+            artifact_only: false,
+            refit_test_cohort: None,
         };
         for result in results {
             output.predictions.extend(
@@ -2160,6 +2164,15 @@ fn validate_output_order_and_version(outputs: &[BoundTrainingOutput]) -> Result<
 }
 
 fn validate_replay_bound_output_blocks(output: &BoundTrainingOutput) -> Result<()> {
+    if output.artifact_only || output.refit_test_cohort.is_some() {
+        return contract_error("training replay outputs cannot retain training-only REFIT markers");
+    }
+    if output.predictions.is_empty()
+        && output.observation_predictions.is_empty()
+        && output.aggregated_predictions.is_empty()
+    {
+        return contract_error("training replay bound output contains no prediction block");
+    }
     for block in &output.predictions {
         validate_optional_port(
             "training replay prediction producer_port",

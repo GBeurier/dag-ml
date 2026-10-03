@@ -143,6 +143,9 @@ from ._dag_ml import (
     prepare_host_hpo_structural_catalogue_json as _native_prepare_host_hpo_structural_catalogue_json,
 )
 from ._dag_ml import (
+    prepare_host_hpo_topology_catalogue_json as _native_prepare_host_hpo_topology_catalogue_json,
+)
+from ._dag_ml import (
     resolve_host_hpo_structural_winner_json as _native_resolve_host_hpo_structural_winner_json,
 )
 from ._dag_ml import (
@@ -230,6 +233,7 @@ _FACADE_EXPORTS = [
     "run_host_hpo_search_in_process",
     "recover_host_hpo_checkpoint",
     "prepare_host_hpo_structural_catalogue",
+    "prepare_host_hpo_topology_catalogue",
     "resolve_host_hpo_structural_winner",
     "replay_loaded_predictor_package",
     "replay_loaded_predictor_package_json",
@@ -574,6 +578,24 @@ def prepare_host_hpo_structural_catalogue(
     return json.loads(_native_prepare_host_hpo_structural_catalogue_json(
         _coerce_json(dsl), _coerce_json(envelope), _coerce_json(controller_manifests),
         _coerce_json(parameter_paths), selector_path,
+    ))
+
+
+def prepare_host_hpo_topology_catalogue(
+    dsl: Any, envelope: Any, controller_manifests: Any,
+    parameter_bindings: Mapping[str, Any], scored_nodes: Any, *, selector_path: str = "__recipe__",
+) -> dict[str, Any]:
+    """Prepare V2 topology recipes with node-addressed conditional parameters.
+
+    Binding lists and scored nodes name logical source DSL IDs. Native compiler
+    namespacing resolves them per active recipe; one terminal scored sink and
+    exact active parameters are required. Full topology, branch order, nested
+    CV and REFIT OOF policies are signed without changing V1 labels or bytes.
+    Encoder capacity is checked against native inner-training scopes before fit.
+    """
+    return json.loads(_native_prepare_host_hpo_topology_catalogue_json(
+        _coerce_json(dsl), _coerce_json(envelope), _coerce_json(controller_manifests),
+        _coerce_json(parameter_bindings), _coerce_json(scored_nodes), selector_path,
     ))
 
 
@@ -2050,6 +2072,7 @@ __all__ = [
     "run_host_hpo_search_in_process",
     "recover_host_hpo_checkpoint",
     "prepare_host_hpo_structural_catalogue",
+    "prepare_host_hpo_topology_catalogue",
     "resolve_host_hpo_structural_winner",
     "sample_relation_set_fingerprint_json",
     "sign_training_replay_request",

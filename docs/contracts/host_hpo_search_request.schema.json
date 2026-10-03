@@ -88,6 +88,9 @@
           "$ref": "https://github.com/GBeurier/dag-ml/schemas/host_hpo_structural_catalogue.v1.schema.json"
         },
         {
+          "$ref": "https://github.com/GBeurier/dag-ml/schemas/host_hpo_topology_catalogue.v2.schema.json"
+        },
+        {
           "type": "null"
         }
       ]

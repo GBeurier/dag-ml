@@ -29,10 +29,12 @@ struct CallState {
     preferred: Mutex<Option<VariantId>>,
     divergent_rerun: Mutex<bool>,
     invalid_refit_output: Mutex<bool>,
+    artifact_only_refit: Mutex<bool>,
     score_auxiliary: Mutex<bool>,
     emit_extra_fit_cv_partitions: Mutex<bool>,
     emit_explicit_model_ports: Mutex<bool>,
     predict_sample_ids: Mutex<Option<Vec<SampleId>>>,
+    scoped_validation_samples: Mutex<BTreeMap<FoldId, Vec<SampleId>>>,
     observed_model_patch_values: Mutex<Vec<Option<serde_json::Value>>>,
 }
 
@@ -308,24 +310,33 @@ impl RuntimeController for TrainingController {
                 .unwrap()
                 .push(task.node_plan.params.get("patched_bias").cloned());
         }
-        let sample_ids = match task.fold_id.as_ref().map(FoldId::as_str) {
-            Some("fold:0") => vec![sample("sample:1"), sample("sample:2")],
-            Some("fold:1") => vec![sample("sample:3"), sample("sample:4")],
-            None if task.phase == Phase::Predict => self
-                .state
-                .predict_sample_ids
+        let scoped_samples = task.fold_id.as_ref().and_then(|fold| {
+            self.state
+                .scoped_validation_samples
                 .lock()
                 .unwrap()
-                .clone()
-                .unwrap_or_else(|| {
-                    (1..=4)
-                        .map(|index| sample(&format!("sample:{index}")))
-                        .collect()
-                }),
-            _ => (1..=4)
-                .map(|index| sample(&format!("sample:{index}")))
-                .collect(),
-        };
+                .get(fold)
+                .cloned()
+        });
+        let sample_ids =
+            scoped_samples.unwrap_or_else(|| match task.fold_id.as_ref().map(FoldId::as_str) {
+                Some("fold:0") => vec![sample("sample:1"), sample("sample:2")],
+                Some("fold:1") => vec![sample("sample:3"), sample("sample:4")],
+                None if task.phase == Phase::Predict => self
+                    .state
+                    .predict_sample_ids
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .unwrap_or_else(|| {
+                        (1..=4)
+                            .map(|index| sample(&format!("sample:{index}")))
+                            .collect()
+                    }),
+                _ => (1..=4)
+                    .map(|index| sample(&format!("sample:{index}")))
+                    .collect(),
+            });
 
         let mut value = 0.0;
         if is_model && task.phase == Phase::FitCv {
@@ -410,6 +421,10 @@ impl RuntimeController for TrainingController {
                 .map(|row| row.iter().map(|value| value + 100.0).collect())
                 .collect();
             predictions.push(sibling);
+        }
+        if is_model && task.phase == Phase::Refit && *self.state.artifact_only_refit.lock().unwrap()
+        {
+            predictions.clear();
         }
         if self.emits_predictions
             && task.phase == Phase::FitCv
@@ -5350,6 +5365,192 @@ fn stacking_cache_retention_and_discard_are_both_explicit() {
 }
 
 #[test]
+fn oof_refit_without_prediction_cohort_retains_explicit_artifact_only_binding() {
+    let case = fixture(true, true);
+    let state = Arc::new(CallState::default());
+    *state.artifact_only_refit.lock().unwrap() = true;
+    let mut store = InMemoryArtifactStore::new();
+    let outcome = run(&case, state, &provider(&case), &mut store).unwrap();
+    let output = &outcome.outputs[0];
+    assert!(output.artifact_only);
+    assert!(output.refit_test_cohort.is_none());
+    assert!(output.predictions.is_empty());
+    assert!(output.observation_predictions.is_empty());
+    assert!(output.aggregated_predictions.is_empty());
+    assert_eq!(
+        output.binding.prediction_source,
+        PredictionSource::FinalRefit
+    );
+    assert!(!outcome.oof_averages.is_empty());
+    assert!(!outcome.execution_bundle.refit_artifacts.is_empty());
+    assert!(outcome.to_reference().is_ok());
+    assert_eq!(
+        TrainingOutcome::from_json(&serde_json::to_string(&outcome).unwrap()).unwrap(),
+        outcome
+    );
+
+    let mut missing_artifact = outcome.clone();
+    missing_artifact
+        .execution_bundle
+        .refit_artifacts
+        .retain(|record| record.node_id != output.binding.node_id);
+    resign_outcome(&mut missing_artifact);
+    assert!(missing_artifact.validate().is_err());
+    let mut missing_lineage = outcome.clone();
+    missing_lineage
+        .lineage
+        .retain(|record| record.node_id != output.binding.node_id || record.phase != Phase::Refit);
+    resign_outcome(&mut missing_lineage);
+    assert!(missing_lineage.validate().is_err());
+
+    let missing = fixture(true, false);
+    let state = Arc::new(CallState::default());
+    *state.artifact_only_refit.lock().unwrap() = true;
+    let mut store = InMemoryArtifactStore::new();
+    let error = run(&missing, state, &provider(&missing), &mut store).unwrap_err();
+    assert!(error.to_string().contains("contains no prediction block"));
+    assert!(
+        store.is_empty(),
+        "missing raw predictions cannot commit a deployed output"
+    );
+}
+
+#[test]
+fn oof_refit_test_binding_revalidates_exact_disjoint_cohort_after_reload() {
+    let fixture = fixture(true, true);
+    let mut store = InMemoryArtifactStore::new();
+    let mut outcome = run(
+        &fixture,
+        Arc::new(CallState::default()),
+        &provider(&fixture),
+        &mut store,
+    )
+    .unwrap();
+    let cohort = PredictCohort::from_relations(
+        PredictCohortRole::ExternalTest,
+        SampleRelationSet {
+            records: vec![SampleRelation::new(
+                ObservationId::new("observation:test").unwrap(),
+                sample("sample:test"),
+            )],
+        },
+        vec!["protein".to_string()],
+        "c".repeat(64),
+        Some("d".repeat(64)),
+    )
+    .unwrap();
+    let output = &mut outcome.outputs[0];
+    let mut block = output.predictions[0].clone();
+    block.partition = PredictionPartition::Test;
+    block.fold_id = None;
+    block.sample_ids = cohort.physical_sample_ids.clone();
+    block.values = vec![vec![7.0]];
+    output.predictions = vec![block];
+    output.observation_predictions.clear();
+    output.aggregated_predictions.clear();
+    output.refit_test_cohort = Some(cohort);
+    let mut test_report = outcome
+        .score_set
+        .reports
+        .iter()
+        .find(|report| {
+            report.producer_node == outcome.outputs[0].binding.node_id
+                && report.partition == PredictionPartition::Validation
+                && report.variant_id.as_ref() == Some(&outcome.selected_variant_id)
+        })
+        .unwrap()
+        .clone();
+    test_report.partition = PredictionPartition::Test;
+    test_report.fold_id = None;
+    test_report.row_count = 1;
+    test_report.prediction_id = outcome.outputs[0].predictions[0].prediction_id.clone();
+    outcome.score_set.reports.push(test_report);
+    outcome.execution_bundle.scores = Some(outcome.score_set.clone());
+    resign_outcome(&mut outcome);
+    assert_eq!(
+        TrainingOutcome::from_json(&serde_json::to_string(&outcome).unwrap()).unwrap(),
+        outcome
+    );
+
+    for mutation in [
+        "training_id",
+        "fold",
+        "final",
+        "missing_block",
+        "artifact_only",
+        "missing_cohort",
+        "hide_test_reports",
+        "wrong_artifact_owner",
+        "wrong_refit_variant",
+        "duplicate_test_id",
+        "training_origin",
+    ] {
+        let mut forged = outcome.clone();
+        let output = &mut forged.outputs[0];
+        match mutation {
+            "training_id" => output.predictions[0].sample_ids = vec![sample("sample:1")],
+            "fold" => output.predictions[0].fold_id = Some(FoldId::new("fold:0").unwrap()),
+            "final" => output.predictions[0].partition = PredictionPartition::Final,
+            "missing_block" => output.predictions.clear(),
+            "artifact_only" => output.artifact_only = true,
+            "missing_cohort" => output.refit_test_cohort = None,
+            "hide_test_reports" => {
+                output.predictions.clear();
+                output.refit_test_cohort = None;
+                output.artifact_only = true;
+            }
+            "wrong_artifact_owner" => {
+                let node_id = output.binding.node_id.clone();
+                let artifact = forged
+                    .execution_bundle
+                    .refit_artifacts
+                    .iter_mut()
+                    .find(|record| record.node_id == node_id)
+                    .unwrap();
+                artifact.controller_id = ControllerId::new("controller:forged").unwrap();
+            }
+            "wrong_refit_variant" => {
+                let node_id = output.binding.node_id.clone();
+                let lineage = forged
+                    .lineage
+                    .iter_mut()
+                    .find(|record| record.node_id == node_id && record.phase == Phase::Refit)
+                    .unwrap();
+                lineage.variant_id = Some(VariantId::new("variant:forged").unwrap());
+            }
+            "duplicate_test_id" => {
+                output.predictions[0].sample_ids.push(sample("sample:test"));
+                output.predictions[0].values.push(vec![7.0]);
+            }
+            "training_origin" => {
+                let cohort = output.refit_test_cohort.as_mut().unwrap();
+                cohort.relations.records[0].origin_sample_id = Some(sample("sample:1"));
+                cohort.origin_sample_ids = vec![sample("sample:1")];
+                cohort.relation_fingerprint = cohort.relations.fingerprint().unwrap();
+                cohort.cohort_fingerprint = cohort.fingerprint().unwrap();
+            }
+            _ => unreachable!(),
+        }
+        resign_outcome(&mut forged);
+        assert!(
+            forged.validate().is_err(),
+            "forged REFIT Test scope accepted: {mutation}"
+        );
+    }
+    let mut missing_cv = outcome.clone();
+    missing_cv
+        .score_set
+        .reports
+        .retain(|report| report.partition != PredictionPartition::Validation);
+    missing_cv.execution_bundle.scores = Some(missing_cv.score_set.clone());
+    resign_outcome(&mut missing_cv);
+    assert!(
+        missing_cv.validate().is_err(),
+        "Test predictions must never replace SELECT OOF evidence"
+    );
+}
+
+#[test]
 fn explicit_selection_output_controls_multi_producer_ranking() {
     let fixture = fixture(false, true);
     let state = Arc::new(CallState::default());
@@ -6829,4 +7030,261 @@ fn standalone_contract_readers_reject_serde_positional_struct_wires() {
     let permissive_nested: ExecutionBundle = serde_json::from_value(nested_bundle.clone()).unwrap();
     permissive_nested.validate().unwrap();
     assert!(ExecutionBundle::from_json(&serde_json::to_string(&nested_bundle).unwrap()).is_err());
+}
+
+#[test]
+fn nested_group_oof_refit_lineage_retains_exact_signed_inner_runs_after_reload() {
+    let mut case = fixture(true, true);
+    // Nested stacking consumes only OOF prediction graph inputs. The shared
+    // flat fixture also has a transform-to-model Data edge, which is not part
+    // of this signed topology. Bind that same attested raw source upstream.
+    case.request
+        .graph
+        .edges
+        .retain(|edge| edge.contract.requires_oof);
+    case.request
+        .graph
+        .nodes
+        .iter_mut()
+        .find(|node| node.id == self::node("model:base"))
+        .unwrap()
+        .ports
+        .inputs
+        .retain(|port| port.kind == PortKind::Prediction);
+    let mut raw_bindings = case
+        .request
+        .campaign
+        .data_bindings
+        .remove(&node("model:base"))
+        .unwrap();
+    for binding in &mut raw_bindings {
+        binding.node_id = node("transform:snv");
+    }
+    case.request
+        .campaign
+        .data_bindings
+        .insert(node("transform:snv"), raw_bindings);
+    for identity in &mut case.request.data_identities {
+        identity.requirement_key = data_binding_requirement_key(&node("transform:snv"), "x");
+    }
+    // Four distinct attested groups leave two groups in each outer train
+    // scope, so both outer-local and full-refit GroupKFold(2) are valid.
+    for (index, relation) in case.relations.records.iter_mut().enumerate() {
+        relation.group_id = Some(GroupId::new(format!("group:{index}")).unwrap());
+    }
+    let fingerprint = case.relations.fingerprint().unwrap();
+    for binding in case.request.campaign.data_bindings.values_mut().flatten() {
+        binding.relation_fingerprint = Some(fingerprint.clone());
+    }
+    for identity in &mut case.request.data_identities {
+        identity.relation_fingerprint = fingerprint.clone();
+        identity.identity_fingerprint = identity.compute_fingerprint().unwrap();
+    }
+    let inner = NestedCvSpec::GroupKFold(GroupKFoldSpec { n_splits: 2 });
+    case.request.campaign.inner_cv = Some(inner.clone());
+    let outer = case
+        .request
+        .campaign
+        .split_invocation
+        .as_mut()
+        .unwrap()
+        .fold_set
+        .as_mut()
+        .unwrap();
+    outer.sample_groups = case
+        .relations
+        .records
+        .iter()
+        .map(|relation| {
+            (
+                relation.sample_id.clone(),
+                relation.group_id.clone().unwrap(),
+            )
+        })
+        .collect();
+    let outer = outer.clone();
+    let meta = case
+        .request
+        .graph
+        .nodes
+        .iter_mut()
+        .find(|node| node.id == self::node("model:base"))
+        .unwrap();
+    meta.metadata.insert(
+        "stacking_oof_execution".into(),
+        serde_json::json!("nested_oof_v1"),
+    );
+    meta.metadata.insert(
+        "stacking_refit_oof".into(),
+        serde_json::json!("partitioned_inner_v1"),
+    );
+    rebuild(&mut case);
+
+    let refit = inner
+        .build_inner_fold_set(
+            &FoldAssignment {
+                fold_id: FoldId::new("stacking.refit").unwrap(),
+                train_sample_ids: outer.sample_ids.clone(),
+                validation_sample_ids: Vec::new(),
+                metadata: BTreeMap::new(),
+            },
+            &outer.sample_groups,
+        )
+        .unwrap();
+    let state = Arc::new(CallState::default());
+    let mut folds = outer.folds.clone();
+    for fold in &outer.folds {
+        folds.extend(
+            outer
+                .nested_fold_set(&inner, fold)
+                .unwrap()
+                .inner_fold_set
+                .folds,
+        );
+    }
+    folds.extend(refit.folds.clone());
+    *state.scoped_validation_samples.lock().unwrap() = folds
+        .into_iter()
+        .map(|fold| (fold.fold_id, fold.validation_sample_ids))
+        .collect();
+    let mut store = InMemoryArtifactStore::new();
+    let outcome = run(&case, state.clone(), &provider(&case), &mut store).unwrap();
+    assert_eq!(
+        TrainingOutcome::from_json(&serde_json::to_string(&outcome).unwrap()).unwrap(),
+        outcome
+    );
+    let refit_ids = refit
+        .folds
+        .iter()
+        .map(|fold| fold.fold_id.clone())
+        .collect::<BTreeSet<_>>();
+    let full_refit_inner = outcome
+        .lineage
+        .iter()
+        .filter(|record| {
+            record.phase == Phase::FitCv
+                && record
+                    .fold_id
+                    .as_ref()
+                    .is_some_and(|fold| refit_ids.contains(fold))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(full_refit_inner.len(), 2);
+    assert!(full_refit_inner
+        .iter()
+        .all(|record| record.node_id == node("transform:snv")));
+    for record in &full_refit_inner {
+        assert!(state.scoped_calls.lock().unwrap().contains(&(
+            record.phase,
+            record.node_id.clone(),
+            record.fold_id.clone()
+        )));
+    }
+    for mutation in ["missing", "foreign"] {
+        let mut forged = outcome.clone();
+        let index = forged
+            .lineage
+            .iter()
+            .position(|record| record.record_id == full_refit_inner[0].record_id)
+            .unwrap();
+        if mutation == "missing" {
+            forged.lineage.remove(index);
+        } else {
+            forged.lineage[index].fold_id =
+                Some(FoldId::new("stacking.refit.inner.foreign").unwrap());
+        }
+        resign_outcome(&mut forged);
+        let error =
+            TrainingOutcome::from_json(&serde_json::to_string(&forged).unwrap()).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("FIT_CV lineage does not exactly cover closure folds"),
+            "{mutation}: {error}"
+        );
+    }
+
+    let flat = fixture(true, false);
+    let mut flat_store = InMemoryArtifactStore::new();
+    let flat_outcome = run(
+        &flat,
+        Arc::new(CallState::default()),
+        &provider(&flat),
+        &mut flat_store,
+    )
+    .unwrap();
+    assert!(flat_outcome
+        .outputs
+        .iter()
+        .all(|output| !output.artifact_only && output.refit_test_cohort.is_none()));
+    assert!(flat_outcome.outputs[0]
+        .predictions
+        .iter()
+        .all(|block| block.partition == PredictionPartition::Final));
+    TrainingOutcome::from_json(&serde_json::to_string(&flat_outcome).unwrap()).unwrap();
+}
+
+#[test]
+fn public_replay_outcome_refuses_training_markers_and_empty_prediction_payload() {
+    let case = fixture(true, false);
+    let state = Arc::new(CallState::default());
+    let mut store = InMemoryArtifactStore::new();
+    let source = run(&case, state.clone(), &provider(&case), &mut store).unwrap();
+    let controllers = controllers(&case, state, true);
+    let request = replay_request(&source, Phase::Predict);
+    let envelopes = replay_envelopes_with_relations(&source, &case.relations);
+    let replay = execute_attached_training_replay(AttachedTrainingReplayInput {
+        source: &source,
+        request: &request,
+        outcome_id: "replay:training.marker.refusal".into(),
+        run_id: RunId::new("run:training.marker.refusal").unwrap(),
+        controllers: &controllers,
+        data_provider: &provider(&case),
+        artifact_store: &store,
+        data_envelopes: &envelopes,
+        warnings: Vec::new(),
+        diagnostics: BTreeMap::new(),
+    })
+    .unwrap();
+    replay.validate().unwrap();
+    let cohort = PredictCohort::from_relations(
+        PredictCohortRole::ExternalTest,
+        SampleRelationSet {
+            records: vec![SampleRelation::new(
+                ObservationId::new("observation:test").unwrap(),
+                sample("sample:test"),
+            )],
+        },
+        vec!["protein".into()],
+        "c".repeat(64),
+        Some("d".repeat(64)),
+    )
+    .unwrap();
+    for mutation in ["artifact_only", "test_cohort", "empty"] {
+        let mut forged = replay.clone();
+        match mutation {
+            "artifact_only" => forged.outputs[0].artifact_only = true,
+            "test_cohort" => forged.outputs[0].refit_test_cohort = Some(cohort.clone()),
+            "empty" => {
+                forged.outputs[0].predictions.clear();
+                forged.outputs[0].observation_predictions.clear();
+                forged.outputs[0].aggregated_predictions.clear();
+                forged.prediction_block_count = 0;
+                forged.observation_prediction_block_count = 0;
+                forged.aggregated_prediction_block_count = 0;
+            }
+            _ => unreachable!(),
+        }
+        resign_replay_outcome(&mut forged);
+        let error = forged.validate().unwrap_err();
+        let expected = if mutation == "empty" {
+            "contains no prediction block"
+        } else {
+            "training-only REFIT markers"
+        };
+        assert!(error.to_string().contains(expected), "{mutation}: {error}");
+        assert!(
+            TrainingReplayOutcome::from_json(&serde_json::to_string(&forged).unwrap()).is_err()
+        );
+    }
 }

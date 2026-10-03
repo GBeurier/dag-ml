@@ -1784,9 +1784,38 @@ pub(crate) fn namespace_generated_sequence(
         )?;
     }
     for step in &mut choice.steps {
-        rewrite_step_node_refs(step, &node_map);
+        rewrite_step_node_refs(step, &node_map)?;
     }
     Ok((choice, emitted))
+}
+
+/// Recover logical-to-emitted IDs through the compiler's own minting function.
+/// Topology HPO declarations must never infer generated node IDs from prefixes.
+pub(crate) fn operator_generator_node_maps(
+    generator: &PipelineDslGeneratorStep,
+) -> Result<BTreeMap<String, BTreeMap<NodeId, NodeId>>> {
+    let mut mappings = BTreeMap::new();
+    for (index, mut choice) in expand_generator_sequences(generator)?
+        .into_iter()
+        .enumerate()
+    {
+        let mut node_map = BTreeMap::new();
+        let mut emitted = BTreeSet::new();
+        let mut counter = 0;
+        for step in &mut choice.steps {
+            namespace_step_ids(
+                generator,
+                index,
+                step,
+                &mut counter,
+                &mut node_map,
+                &mut emitted,
+            )?;
+        }
+        node_map.retain(|_, id| emitted.contains(id));
+        mappings.insert(choice.id, node_map);
+    }
+    Ok(mappings)
 }
 pub(crate) fn namespace_step_ids(
     generator: &PipelineDslGeneratorStep,
@@ -1990,7 +2019,7 @@ pub(crate) fn sanitized_id_fragment(input: &str, max_len: usize) -> String {
 pub(crate) fn rewrite_step_node_refs(
     step: &mut PipelineDslStep,
     node_map: &BTreeMap<NodeId, NodeId>,
-) {
+) -> Result<()> {
     match step {
         PipelineDslStep::Transform(_)
         | PipelineDslStep::YTransform(_)
@@ -2015,37 +2044,113 @@ pub(crate) fn rewrite_step_node_refs(
         PipelineDslStep::Branch(step) => {
             for branch in &mut step.branches {
                 for branch_step in &mut branch.steps {
-                    rewrite_step_node_refs(branch_step, node_map);
+                    rewrite_step_node_refs(branch_step, node_map)?;
                 }
             }
         }
         PipelineDslStep::Generator(step) => {
             for branch in &mut step.branches {
                 for branch_step in &mut branch.steps {
-                    rewrite_step_node_refs(branch_step, node_map);
+                    rewrite_step_node_refs(branch_step, node_map)?;
                 }
             }
             for stage in &mut step.stages {
                 for branch in &mut stage.branches {
                     for branch_step in &mut branch.steps {
-                        rewrite_step_node_refs(branch_step, node_map);
+                        rewrite_step_node_refs(branch_step, node_map)?;
                     }
                 }
             }
         }
         PipelineDslStep::Sequential(step) => {
             for child in &mut step.steps {
-                rewrite_step_node_refs(child, node_map);
+                rewrite_step_node_refs(child, node_map)?;
             }
         }
         PipelineDslStep::Merge(step) => {
             rewrite_merge_selectors(&mut step.selectors, node_map);
         }
-        PipelineDslStep::MergeModel(_) => {}
+        PipelineDslStep::MergeModel(step) => {
+            for source in &mut step.sources {
+                if let Some(mapped) = node_map.get(source) {
+                    *source = mapped.clone();
+                }
+            }
+            let source_ports = std::mem::take(&mut step.source_ports);
+            for (source, port) in source_ports {
+                let mapped = node_map.get(&source).unwrap_or(&source).clone();
+                if step.source_ports.insert(mapped.clone(), port).is_some() {
+                    return Err(DagMlError::GraphValidation(format!(
+                        "pipeline DSL generated merge_model `{}` source port references collide at `{mapped}`", step.id,
+                    )));
+                }
+            }
+            rewrite_merge_selectors(&mut step.selectors, node_map);
+        }
     }
+    Ok(())
 }
 pub(crate) fn rewrite_operator_step_refs(
     _step: &mut PipelineDslOperatorStep,
     _node_map: &BTreeMap<NodeId, NodeId>,
 ) {
+}
+
+#[cfg(test)]
+mod generated_merge_model_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn generated_merge_model_remaps_ordered_sources_ports_and_selectors_only_when_local() {
+        let mut step: PipelineDslStep = serde_json::from_value(json!({
+            "kind":"merge_model", "id":"meta", "operator":{"type":"Ridge"},
+            "sources":["right", "external", "left"],
+            "source_ports":{"right":"alternate", "external":"oof"},
+            "selectors":[{"model":"left"}, {"model":"external"}]
+        }))
+        .unwrap();
+        let mapping = [("left", "gen:c0:left"), ("right", "gen:c0:right")]
+            .into_iter()
+            .map(|(old, new)| (NodeId::new(old).unwrap(), NodeId::new(new).unwrap()))
+            .collect();
+        rewrite_step_node_refs(&mut step, &mapping).unwrap();
+        let PipelineDslStep::MergeModel(step) = step else {
+            panic!("merge model")
+        };
+        assert_eq!(
+            step.sources.iter().map(NodeId::as_str).collect::<Vec<_>>(),
+            vec!["gen:c0:right", "external", "gen:c0:left"]
+        );
+        assert_eq!(
+            step.source_ports[&NodeId::new("gen:c0:right").unwrap()],
+            "alternate"
+        );
+        assert_eq!(step.source_ports[&NodeId::new("external").unwrap()], "oof");
+        assert_eq!(
+            step.selectors[0].model.as_ref().unwrap().as_str(),
+            "gen:c0:left"
+        );
+        assert_eq!(
+            step.selectors[1].model.as_ref().unwrap().as_str(),
+            "external"
+        );
+    }
+
+    #[test]
+    fn generated_merge_model_refuses_colliding_remapped_port_owners() {
+        let mut step: PipelineDslStep = serde_json::from_value(json!({
+            "kind":"merge_model", "id":"meta", "operator":{"type":"Ridge"},
+            "sources":["left"], "source_ports":{"left":"oof", "gen:c0:left":"alternate"}
+        }))
+        .unwrap();
+        let mapping = BTreeMap::from([(
+            NodeId::new("left").unwrap(),
+            NodeId::new("gen:c0:left").unwrap(),
+        )]);
+        assert!(rewrite_step_node_refs(&mut step, &mapping)
+            .unwrap_err()
+            .to_string()
+            .contains("collide"));
+    }
 }

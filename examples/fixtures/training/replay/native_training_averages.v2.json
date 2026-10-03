@@ -1,0 +1,741 @@
+{
+  "description": "Unmodified native OofAverageBlock excerpts from a signed public U21 synthetic-fixture late training outcome. Shape regression only; this projection is not a standalone signed TrainingOutcome.",
+  "provenance": {
+    "source_test": "test_fresh_installed_late_winner_replays_exact_mixed_closure_without_fit_or_hpo",
+    "source_archive_sha256": "9856d80615e67def20fc46a924988beabdb900baa7f513f6464c6334c7cb3cdc",
+    "source_member": "dagml/training_outcome.json",
+    "source_member_sha256": "d99ad15e425d8cf3031c4fdc8473a85cb128d1f112a260ad3578c75677d9253a",
+    "source_outcome_fingerprint": "4ca57c374341073d8d7f84fa5383e088e722808a584173f8536204db53b6fd2e",
+    "selection": "First serialized block of each optional native average field; no values, identities or fields altered."
+  },
+  "oof_averages": [
+    {
+      "predictions": {
+        "prediction_id": null,
+        "producer_node": "gen:generator_topologies:c2:n0.a2_source_image",
+        "producer_port": "oof",
+        "partition": "validation",
+        "fold_id": "avg",
+        "level": "sample",
+        "unit_ids": [
+          {
+            "level": "sample",
+            "id": "sample.17.13"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.14"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.15"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.16"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.17"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.18"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.25"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.26"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.30"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.33"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.34"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.35"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.7"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.8"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.9"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.10"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.11"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.12"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.19"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.20"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.24"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.27"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.28"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.29"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.0"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.1"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.2"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.3"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.4"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.5"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.6"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.21"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.22"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.23"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.31"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.32"
+          }
+        ],
+        "values": [
+          [
+            0.6878307882858512
+          ],
+          [
+            0.6890151999628704
+          ],
+          [
+            0.05593249676537759
+          ],
+          [
+            0.04879864709515136
+          ],
+          [
+            0.05501251862401291
+          ],
+          [
+            2.176451909567386
+          ],
+          [
+            -0.4902147227107898
+          ],
+          [
+            -0.48522737864218257
+          ],
+          [
+            0.8181274748123903
+          ],
+          [
+            0.6194116009144336
+          ],
+          [
+            0.6129821662499977
+          ],
+          [
+            0.6205861564527425
+          ],
+          [
+            -2.5980890004552695
+          ],
+          [
+            -2.587992668243067
+          ],
+          [
+            -0.7842316177856352
+          ],
+          [
+            -0.7491125449090107
+          ],
+          [
+            -0.7680530748906333
+          ],
+          [
+            2.0102757900447323
+          ],
+          [
+            -0.19626356305628123
+          ],
+          [
+            -0.20736340999970948
+          ],
+          [
+            -0.8856362576476378
+          ],
+          [
+            0.5896616029236068
+          ],
+          [
+            0.6134463374849496
+          ],
+          [
+            0.5985017246594654
+          ],
+          [
+            0.4393509379119514
+          ],
+          [
+            0.8085836771118455
+          ],
+          [
+            0.7905152139967366
+          ],
+          [
+            0.023369223734402755
+          ],
+          [
+            0.04158142640685464
+          ],
+          [
+            0.06350886988163762
+          ],
+          [
+            2.772250513988252
+          ],
+          [
+            0.270624258501062
+          ],
+          [
+            0.26741902162552444
+          ],
+          [
+            0.2244902209324311
+          ],
+          [
+            1.0321137620250513
+          ],
+          [
+            1.0439363045818504
+          ]
+        ],
+        "target_names": [
+          "y"
+        ]
+      },
+      "y_true": {
+        "level": "sample",
+        "unit_ids": [
+          {
+            "level": "sample",
+            "id": "sample.17.13"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.14"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.15"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.16"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.17"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.18"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.25"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.26"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.30"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.33"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.34"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.35"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.7"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.8"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.9"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.10"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.11"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.12"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.19"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.20"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.24"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.27"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.28"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.29"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.0"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.1"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.2"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.3"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.4"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.5"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.6"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.21"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.22"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.23"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.31"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.32"
+          }
+        ],
+        "values": [
+          [
+            1.7216523008092726
+          ],
+          [
+            1.6784002320599805
+          ],
+          [
+            -0.6036433353981325
+          ],
+          [
+            -0.6177539561094191
+          ],
+          [
+            -0.573271827030255
+          ],
+          [
+            3.1973830889769825
+          ],
+          [
+            -1.0307078239706617
+          ],
+          [
+            -0.9953009676121494
+          ],
+          [
+            -0.3929583933834236
+          ],
+          [
+            1.5339473034671967
+          ],
+          [
+            1.5348005380159648
+          ],
+          [
+            1.526442200177876
+          ],
+          [
+            -3.6394147231181084
+          ],
+          [
+            -3.65840657808267
+          ],
+          [
+            -1.6918599339414768
+          ],
+          [
+            -1.7102822582082187
+          ],
+          [
+            -1.5335609018600334
+          ],
+          [
+            1.3256423374926616
+          ],
+          [
+            -1.1308031161987022
+          ],
+          [
+            -1.1393762320825276
+          ],
+          [
+            -1.101980086957993
+          ],
+          [
+            -0.0006522547914622374
+          ],
+          [
+            -0.07607882087573514
+          ],
+          [
+            0.03603282697707683
+          ],
+          [
+            0.731888799469596
+          ],
+          [
+            0.07445398894808915
+          ],
+          [
+            -0.006725976098469505
+          ],
+          [
+            -0.40984667188384
+          ],
+          [
+            -0.37209389258929615
+          ],
+          [
+            -0.3396917335664671
+          ],
+          [
+            2.2001709604960635
+          ],
+          [
+            0.1780617204128377
+          ],
+          [
+            0.14939969467138342
+          ],
+          [
+            0.0617665544959761
+          ],
+          [
+            0.9812042285496807
+          ],
+          [
+            0.962226957175334
+          ]
+        ],
+        "target_names": [
+          "y"
+        ]
+      }
+    }
+  ],
+  "ensemble_averages": [
+    {
+      "predictions": {
+        "prediction_id": null,
+        "producer_node": "gen:generator_topologies:c2:n0.a2_source_image",
+        "producer_port": "oof",
+        "partition": "test",
+        "fold_id": "avg",
+        "level": "sample",
+        "unit_ids": [
+          {
+            "level": "sample",
+            "id": "sample.17.36"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.37"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.38"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.39"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.40"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.41"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.42"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.43"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.44"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.45"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.46"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.47"
+          }
+        ],
+        "values": [
+          [
+            0.3095246754299385
+          ],
+          [
+            0.4365810079360289
+          ],
+          [
+            0.44646311462716853
+          ],
+          [
+            1.4455717613802377
+          ],
+          [
+            1.4509316510124137
+          ],
+          [
+            1.4508992758957946
+          ],
+          [
+            0.1684823723471023
+          ],
+          [
+            0.012479036717375375
+          ],
+          [
+            0.021816116480145222
+          ],
+          [
+            2.409647292655545
+          ],
+          [
+            2.385356975739232
+          ],
+          [
+            2.3983135127009687
+          ]
+        ],
+        "target_names": [
+          "y"
+        ]
+      },
+      "y_true": {
+        "level": "sample",
+        "unit_ids": [
+          {
+            "level": "sample",
+            "id": "sample.17.36"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.37"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.38"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.39"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.40"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.41"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.42"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.43"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.44"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.45"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.46"
+          },
+          {
+            "level": "sample",
+            "id": "sample.17.47"
+          }
+        ],
+        "values": [
+          [
+            0.28152140082987437
+          ],
+          [
+            0.1738507929980618
+          ],
+          [
+            0.1471974232834314
+          ],
+          [
+            1.7238760584296229
+          ],
+          [
+            1.7505625838925065
+          ],
+          [
+            1.7434924688591587
+          ],
+          [
+            0.2299253302780972
+          ],
+          [
+            -0.1409961914930486
+          ],
+          [
+            -0.10598878220242
+          ],
+          [
+            2.860295161646801
+          ],
+          [
+            2.905962902320914
+          ],
+          [
+            2.8769272619783877
+          ]
+        ],
+        "target_names": [
+          "y"
+        ]
+      }
+    }
+  ]
+}

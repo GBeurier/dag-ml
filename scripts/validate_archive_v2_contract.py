@@ -37,6 +37,8 @@ from parity.conformal.oracle import (  # noqa: E402
     tcv1_sha256,
     validate_strict_json,
 )
+from parity.training.oracle import _serde_sha256  # noqa: E402
+from parity.training.training_replay_oracle import replay_relation_fingerprint  # noqa: E402
 from scripts.validate_archive_v1_contract import (  # noqa: E402
     ARCHIVE_ROOT as ARCHIVE_V1_ROOT,
     ArchiveContractError as ArchiveV1ContractError,
@@ -776,6 +778,7 @@ def validate_role_pipeline_payload(record: dict[str, Any], payload: bytes) -> No
         and artifact.get("plugin") in {
             "dagml.methods.wasm.regression", "dagml.methods.r.regression",
             "dagml.methods.octave.regression", "dagml.methods.native.regression",
+            "dagml.methods.python.regression",
         }
         and artifact.get("plugin_version") == "1.0.0"
         and artifact.get("native_predictor_descriptor") is None
@@ -790,6 +793,9 @@ def validate_role_pipeline_payload(record: dict[str, Any], payload: bytes) -> No
     if artifact.get("plugin") == "dagml.methods.octave.regression":
         require(artifact.get("controller_id") == record.get("controller_id") == "controller:methods.octave.regression",
                 "native_model_refusal", "Octave Methods RAW plugin requires its exact Octave controller owner")
+    if artifact.get("plugin") == "dagml.methods.python.regression":
+        require(artifact.get("controller_id") == record.get("controller_id") == "controller:methods.python.regression",
+                "native_model_refusal", "Python Methods RAW plugin requires its exact Python controller owner")
     wrapper = load_json_bytes(payload, artifact["uri"])
     def validate_depth(value: Any, depth: int = 0) -> None:
         require(depth <= 128, "native_model_refusal", "RolePipeline JSON exceeds its depth bound")
@@ -1140,6 +1146,74 @@ def rebind_member_integrity(
             reference["raw_sha256"] = raw_sha256
 
 
+def validate_refit_output_scope(outcome: dict[str, Any]) -> None:
+    """Independently check the additive training-only OOF REFIT fallback."""
+    plan = outcome.get("effective_plan", {})
+    edges = plan.get("graph_plan", {}).get("graph", {}).get("edges", [])
+    records = outcome.get("execution_bundle", {}).get("refit_artifacts", [])
+    lineage = outcome.get("lineage", [])
+    reports = outcome.get("score_set", {}).get("reports", [])
+    influence = {sample for entry in outcome.get("training_influence", {}).get("entries", [])
+                 for key in ("physical_sample_ids", "origin_sample_ids") for sample in entry.get(key, [])}
+    for output in outcome.get("outputs", []):
+        artifact_only = output.get("artifact_only", False)
+        cohort = output.get("refit_test_cohort")
+        if not artifact_only and cohort is None:
+            continue
+        binding = output["binding"]
+        node_id = binding["node_id"]
+        node = plan.get("node_plans", {}).get(node_id, {})
+        owner = node.get("controller_id")
+        require(outcome.get("schema_version") == output.get("schema_version") == 2
+                and outcome.get("refit", {}).get("requested") is True
+                and outcome.get("refit", {}).get("status") == "completed"
+                and binding.get("prediction_source") == "final_refit"
+                and node.get("kind") == "model"
+                and "REFIT" in node.get("supported_phases", [])
+                and {"emits_artifacts", "emits_predictions"} <= set(node.get("controller_capabilities", []))
+                and any(edge.get("target", {}).get("node_id") == node_id
+                        and edge.get("contract", {}).get("requires_oof") is True for edge in edges),
+                "refit_output_refusal", "Fallback requires a completed signed OOF model REFIT")
+        artifacts = [record for record in records if record.get("node_id") == node_id
+                     and record.get("controller_id") == owner and record.get("artifact", {}).get("controller_id") == owner]
+        fitted = [record for record in lineage if record.get("node_id") == node_id
+                  and record.get("phase") == "REFIT" and record.get("fold_id") is None
+                  and record.get("controller_id") == owner and record.get("variant_id") == outcome.get("selected_variant_id")]
+        require(bool(artifacts) and len(fitted) == 1
+                and all(record["artifact"] in fitted[0].get("artifact_refs", []) for record in artifacts),
+                "refit_output_refusal", "Fallback lacks exact selected fitted artifacts and lineage")
+        blocks = output.get("predictions", [])
+        if artifact_only:
+            require(cohort is None and not blocks and not output.get("observation_predictions")
+                    and not output.get("aggregated_predictions")
+                    and not any(report.get("producer_node") == node_id and report.get("partition") == "test"
+                                and report.get("fold_id") is None for report in reports),
+                    "refit_output_refusal", "Artifact-only marker cannot hide external-test data")
+            continue
+        cohort_preimage = {key: cohort.get(key) for key in (
+            "role", "physical_sample_ids", "origin_sample_ids", "target_names",
+            "relation_fingerprint", "relations", "data_content_fingerprint", "target_content_fingerprint")}
+        require(cohort.get("role") == "external_test" and cohort.get("target_names") == binding.get("target_names")
+                and cohort.get("cohort_fingerprint") == _serde_sha256(cohort_preimage)
+                and cohort.get("relation_fingerprint") == replay_relation_fingerprint(cohort["relations"]),
+                "refit_output_refusal", "External-test authority fingerprint or targets differ")
+        expected = set(cohort["physical_sample_ids"])
+        origins = set(cohort["origin_sample_ids"])
+        relation_rows = cohort["relations"]["records"]
+        require(expected == {row["sample_id"] for row in relation_rows}
+                and origins == {row.get("origin_sample_id") or row["sample_id"] for row in relation_rows}
+                and not (expected | origins) & (influence | set(plan.get("fold_set", {}).get("sample_ids", [])))
+                and binding.get("prediction_level") == "sample" and bool(blocks)
+                and not output.get("observation_predictions") and not output.get("aggregated_predictions")
+                and all(block.get("partition") == "test" and block.get("fold_id") is None
+                        and block.get("producer_node") == node_id
+                        and block.get("producer_port") in (None, binding.get("port_name"))
+                        and block.get("target_names") == binding.get("target_names")
+                        and len(block.get("sample_ids", [])) == len(expected)
+                        and set(block.get("sample_ids", [])) == expected for block in blocks),
+                "refit_output_refusal", "REFIT Test blocks differ from their exact disjoint cohort")
+
+
 def validate_archive_v2_payloads(
     document: dict[str, Any],
     payloads: dict[str, bytes],
@@ -1179,6 +1253,19 @@ def validate_archive_v2_payloads(
         "PortablePredictorPackage V2 member",
     )
     validate_package_portability(package)
+    outcome_reference = document["replay"]["training_artifacts"]["training_outcome"]
+    outcome_path = outcome_reference["member_path"]
+    outcome_bytes = payloads[outcome_path]
+    # The historical illustrative fixture deliberately uses this exact opaque
+    # literal for non-package members. Every real outcome must remain strict JSON.
+    if outcome_bytes != f"archive-v2-fixture:{outcome_path}".encode("utf-8"):
+        outcome = load_json_bytes(outcome_bytes, outcome_path)
+        require(isinstance(outcome, dict), "json_refusal", "training outcome must be a JSON object")
+        if any(output.get("artifact_only", False) or output.get("refit_test_cohort") is not None
+               for output in outcome.get("outputs", [])):
+            validate_instance(outcome, schemas[RUNTIME_V2_ARTIFACTS["training_outcome"]], registry,
+                              "TrainingOutcome V2 REFIT scope member")
+            validate_refit_output_scope(outcome)
     require(
         document["replay"]["portable_predictor_package"]["semantic_fingerprint"]
         == package["package_fingerprint"],

@@ -142,6 +142,7 @@ pub fn validate_methods_role_pipeline_payload(
             artifact.plugin.as_deref(),
             Some(
                 "dagml.methods.wasm.regression"
+                    | "dagml.methods.python.regression"
                     | "dagml.methods.r.regression"
                     | "dagml.methods.octave.regression"
                     | "dagml.methods.native.regression"
@@ -166,6 +167,12 @@ pub fn validate_methods_role_pipeline_payload(
             || record.controller_id.as_str() != "controller:methods.octave.regression")
     {
         return refuse("Octave Methods RAW plugin requires its exact Octave controller owner");
+    }
+    if artifact.plugin.as_deref() == Some("dagml.methods.python.regression")
+        && (artifact.controller_id.as_str() != "controller:methods.python.regression"
+            || record.controller_id.as_str() != "controller:methods.python.regression")
+    {
+        return refuse("Python Methods RAW plugin requires its exact Python controller owner");
     }
     let raw = sha256(bytes);
     if artifact.content_fingerprint.as_deref() != Some(raw.as_str())
@@ -1119,6 +1126,30 @@ mod tests {
             assert!(validate_methods_role_pipeline_payload(&unknown, bytes).is_err());
         }
         let mut wrong_version = octave;
+        wrong_version.artifact.plugin_version = Some("1.0.1".into());
+        assert!(validate_methods_role_pipeline_payload(&wrong_version, bytes).is_err());
+    }
+
+    #[test]
+    fn python_role_plugin_requires_both_exact_controller_owners() {
+        let (_, package) = role_transport_fixture(false);
+        let original = &package.execution_bundle.refit_artifacts[0];
+        let bytes = &package.execution_bundle.raw_artifact_payloads[&original.artifact.id];
+        let mut python = original.clone();
+        python.artifact.plugin = Some("dagml.methods.python.regression".into());
+        assert!(validate_methods_role_pipeline_payload(&python, bytes).is_err());
+        python.artifact.controller_id =
+            crate::ControllerId::new("controller:methods.python.regression").unwrap();
+        assert!(validate_methods_role_pipeline_payload(&python, bytes).is_err());
+        python.controller_id = python.artifact.controller_id.clone();
+        validate_methods_role_pipeline_payload(&python, bytes).unwrap();
+        let mut foreign = python.clone();
+        foreign.artifact.controller_id = original.artifact.controller_id.clone();
+        assert!(validate_methods_role_pipeline_payload(&foreign, bytes).is_err());
+        let mut unknown = python.clone();
+        unknown.artifact.plugin = Some("dagml.methods.python.regression.v2".into());
+        assert!(validate_methods_role_pipeline_payload(&unknown, bytes).is_err());
+        let mut wrong_version = python;
         wrong_version.artifact.plugin_version = Some("1.0.1".into());
         assert!(validate_methods_role_pipeline_payload(&wrong_version, bytes).is_err());
     }

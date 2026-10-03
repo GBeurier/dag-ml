@@ -25,6 +25,10 @@ def prepare_host_hpo_structural_catalogue(
     dsl: Any, envelope: Any, controller_manifests: Any,
     parameter_paths: Mapping[str, str], *, selector_path: str = "__recipe__",
 ) -> dict[str, Any]: ...
+def prepare_host_hpo_topology_catalogue(
+    dsl: Any, envelope: Any, controller_manifests: Any,
+    parameter_bindings: Mapping[str, Any], scored_nodes: Any, *, selector_path: str = "__recipe__",
+) -> dict[str, Any]: ...
 def resolve_host_hpo_structural_winner(
     request: Any, result: Any, training_request: Any,
 ) -> dict[str, Any]: ...
