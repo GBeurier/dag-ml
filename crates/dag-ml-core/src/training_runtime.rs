@@ -90,6 +90,17 @@ pub struct BoundTrainingOutput {
     pub predictions: Vec<PredictionBlock>,
     pub observation_predictions: Vec<ObservationPredictionBlock>,
     pub aggregated_predictions: Vec<AggregatedPredictionBlock>,
+    /// A deployed OOF learner fitted without a held-out prediction cohort.
+    /// Valid only inside a completed training outcome, never a replay result.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub artifact_only: bool,
+    /// Retained external-test authority for actual REFIT Test blocks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refit_test_cohort: Option<crate::data::PredictCohort>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -2638,6 +2649,7 @@ pub fn execute_training(input: TrainingExecutionInput<'_>) -> Result<TrainingOut
         &fit_cv_results,
         &refit_results,
         &selected_ctx,
+        input.data_provider,
     )?;
     let mut lineage = selected_ctx
         .lineage
@@ -3298,6 +3310,7 @@ fn producer_port_matches_graph_output(
     prediction_ports.len() == 1 && prediction_ports[0].name == port_name
 }
 
+#[allow(clippy::too_many_arguments)]
 fn bind_training_outputs(
     outputs: &[ResolvedTrainingOutput],
     request: &TrainingRequest,
@@ -3305,6 +3318,7 @@ fn bind_training_outputs(
     fit_cv_results: &[NodeResult],
     refit_results: &[NodeResult],
     ctx: &RunContext,
+    provider: &dyn RuntimeDataProvider,
 ) -> Result<Vec<BoundTrainingOutput>> {
     let source = if request.options.refit {
         refit_results
@@ -3496,17 +3510,148 @@ fn bind_training_outputs(
                 ))
         });
         aggregated_predictions.dedup();
-        let output = BoundTrainingOutput {
+        let mut output = BoundTrainingOutput {
             schema_version: Some(BOUND_TRAINING_OUTPUT_SCHEMA_VERSION),
             binding,
             predictions,
             observation_predictions,
             aggregated_predictions,
+            artifact_only: false,
+            refit_test_cohort: None,
         };
-        output.validate(plan)?;
+        if request.options.refit && output.is_empty() {
+            if !is_oof_refit_output(plan, &output.binding.node_id) {
+                return contract_error("bound training output contains no prediction block");
+            }
+            let producer_results = source
+                .iter()
+                .filter(|result| result.node_id == output.binding.node_id)
+                .collect::<Vec<_>>();
+            let [result] = producer_results.as_slice() else {
+                return contract_error("artifact-only REFIT requires one exact producer result");
+            };
+            let owner = &plan.node_plans[&output.binding.node_id].controller_id;
+            if result.lineage.phase != Phase::Refit
+                || result.lineage.fold_id.is_some()
+                || result.lineage.controller_id != *owner
+                || !result.artifacts.iter().any(|artifact| {
+                    artifact.controller_id == *owner
+                        && result.lineage.artifact_refs.contains(artifact)
+                })
+            {
+                return contract_error(
+                    "artifact-only REFIT lacks its exact fitted artifact and lineage",
+                );
+            }
+            let cohort = refit_output_test_cohort(plan, &output.binding.node_id, provider)?;
+            let matching_test = |producer_port: &Option<String>,
+                                 partition: &PredictionPartition,
+                                 fold: Option<&FoldId>| {
+                *partition == PredictionPartition::Test
+                    && fold.is_none()
+                    && producer_port_matches_graph_output(
+                        plan,
+                        &output.binding.node_id,
+                        &output.binding.port_name,
+                        producer_port,
+                    )
+            };
+            if cohort.is_some() {
+                if output.binding.prediction_level != PredictionLevel::Sample {
+                    return contract_error(
+                        "REFIT Test fallback requires exact sample prediction blocks",
+                    );
+                }
+                output.predictions.extend(
+                    result
+                        .predictions
+                        .iter()
+                        .filter(|block| {
+                            matching_test(
+                                &block.producer_port,
+                                &block.partition,
+                                block.fold_id.as_ref(),
+                            )
+                        })
+                        .cloned(),
+                );
+                output.refit_test_cohort = cohort;
+                if output.is_empty() {
+                    return contract_error(
+                        "REFIT external-test output contains no prediction block",
+                    );
+                }
+            } else {
+                if !result.predictions.is_empty()
+                    || !result.observation_predictions.is_empty()
+                    || !result.aggregated_predictions.is_empty()
+                {
+                    return contract_error(
+                        "artifact-only REFIT cannot hide unbound prediction blocks",
+                    );
+                }
+                output.artifact_only = true;
+            }
+        }
+        output.validate_training_output(plan)?;
         bound.push(output);
     }
     Ok(bound)
+}
+
+fn is_oof_refit_output(plan: &ExecutionPlan, node_id: &NodeId) -> bool {
+    plan.node_plans.get(node_id).is_some_and(|node| {
+        node.kind == NodeKind::Model
+            && node.supported_phases.contains(&Phase::Refit)
+            && node
+                .controller_capabilities
+                .contains(&ControllerCapability::EmitsArtifacts)
+            && node
+                .controller_capabilities
+                .contains(&ControllerCapability::EmitsPredictions)
+            && plan
+                .graph_plan
+                .graph
+                .edges
+                .iter()
+                .any(|edge| edge.target.node_id == *node_id && edge.contract.requires_oof)
+    })
+}
+
+fn refit_output_test_cohort(
+    plan: &ExecutionPlan,
+    node_id: &NodeId,
+    provider: &dyn RuntimeDataProvider,
+) -> Result<Option<crate::data::PredictCohort>> {
+    let mut cohort = None;
+    let mut missing = false;
+    for upstream in predictor_closure(plan, [node_id.clone()])? {
+        for binding in &plan.node_plans[&upstream].data_bindings {
+            if !binding.view_policy.include_refit_test_view {
+                continue;
+            }
+            match provider.cv_test_cohort(binding)? {
+                Some(actual) => {
+                    actual.validate()?;
+                    if actual.role != crate::data::PredictCohortRole::ExternalTest
+                        || cohort.as_ref().is_some_and(|expected| expected != &actual)
+                    {
+                        return contract_error(
+                            "REFIT output upstream external-test cohorts differ",
+                        );
+                    }
+                    cohort = Some(actual);
+                }
+                None => missing = true,
+            }
+        }
+    }
+    if cohort.is_some() && missing {
+        return contract_error(
+            "REFIT output upstream external-test cohorts have incomplete coverage",
+        );
+    }
+    Ok(cohort)
 }
 
 /// Derive portable OOF requirements from the blocks produced by an existing
@@ -4868,7 +5013,82 @@ impl TrainingOutcome {
                 );
             }
             previous = Some(output.binding.binding_id.as_str());
-            output.validate(&self.effective_plan)?;
+            output.validate_training_output(&self.effective_plan)?;
+            if output.artifact_only || output.refit_test_cohort.is_some() {
+                if self.schema_version != TRAINING_OUTCOME_SCHEMA_VERSION
+                    || self.refit.status != TrainingRefitStatus::Completed
+                    || !self.refit.requested
+                {
+                    return contract_error(
+                        "REFIT output fallback requires a completed V2 REFIT outcome",
+                    );
+                }
+                let node_id = &output.binding.node_id;
+                let owner = &self.effective_plan.node_plans[node_id].controller_id;
+                let artifacts = self
+                    .execution_bundle
+                    .refit_artifacts
+                    .iter()
+                    .filter(|record| {
+                        record.node_id == *node_id
+                            && record.controller_id == *owner
+                            && record.artifact.controller_id == *owner
+                    })
+                    .collect::<Vec<_>>();
+                let lineage = self
+                    .lineage
+                    .iter()
+                    .filter(|record| {
+                        record.node_id == *node_id
+                            && record.phase == Phase::Refit
+                            && record.fold_id.is_none()
+                            && record.controller_id == *owner
+                            && record.variant_id.as_ref() == Some(&self.selected_variant_id)
+                    })
+                    .collect::<Vec<_>>();
+                if artifacts.is_empty()
+                    || lineage.len() != 1
+                    || artifacts
+                        .iter()
+                        .any(|record| !lineage[0].artifact_refs.contains(&record.artifact))
+                {
+                    return contract_error("REFIT output fallback lacks its exact selected fitted artifact and lineage");
+                }
+                if output.artifact_only
+                    && self.score_set.reports.iter().any(|report| {
+                        report.producer_node == *node_id
+                            && report.partition == PredictionPartition::Test
+                            && report.fold_id.is_none()
+                    })
+                {
+                    return contract_error(
+                        "artifact-only REFIT cannot hide retained external-test reports",
+                    );
+                }
+                if let Some(cohort) = &output.refit_test_cohort {
+                    let influence_ids = self
+                        .training_influence
+                        .entries
+                        .iter()
+                        .flat_map(|entry| {
+                            entry
+                                .physical_sample_ids
+                                .iter()
+                                .chain(entry.origin_sample_ids.iter())
+                        })
+                        .collect::<BTreeSet<_>>();
+                    if cohort
+                        .physical_sample_ids
+                        .iter()
+                        .chain(cohort.origin_sample_ids.iter())
+                        .any(|id| influence_ids.contains(id))
+                    {
+                        return contract_error(
+                            "REFIT Test cohort overlaps signed training influence",
+                        );
+                    }
+                }
+            }
             roots.push(output.binding.node_id.clone());
         }
         predictor_closure(&self.effective_plan, roots)
@@ -4984,7 +5204,20 @@ impl TrainingOutcome {
 }
 
 impl BoundTrainingOutput {
+    fn is_empty(&self) -> bool {
+        self.predictions.is_empty()
+            && self.observation_predictions.is_empty()
+            && self.aggregated_predictions.is_empty()
+    }
+
     pub(crate) fn validate(&self, plan: &ExecutionPlan) -> Result<()> {
+        if self.artifact_only || self.refit_test_cohort.is_some() {
+            return contract_error("replay output cannot carry training-only REFIT scope evidence");
+        }
+        self.validate_training_output(plan)
+    }
+
+    fn validate_training_output(&self, plan: &ExecutionPlan) -> Result<()> {
         if let Some(schema_version) = self.schema_version {
             if schema_version != BOUND_TRAINING_OUTPUT_SCHEMA_VERSION {
                 return contract_error(format!(
@@ -4994,11 +5227,62 @@ impl BoundTrainingOutput {
             }
         }
         self.binding.validate(&plan.graph_plan.graph)?;
-        if self.predictions.is_empty()
-            && self.observation_predictions.is_empty()
-            && self.aggregated_predictions.is_empty()
+        if (self.artifact_only || self.refit_test_cohort.is_some())
+            && (self.schema_version != Some(BOUND_TRAINING_OUTPUT_SCHEMA_VERSION)
+                || self.binding.prediction_source != PredictionSource::FinalRefit
+                || !is_oof_refit_output(plan, &self.binding.node_id))
         {
+            return contract_error(
+                "REFIT output fallback requires a V2 OOF-consuming fitted model binding",
+            );
+        }
+        if self.artifact_only {
+            if !self.is_empty() || self.refit_test_cohort.is_some() {
+                return contract_error(
+                    "artifact-only REFIT must have no predictions or Test cohort",
+                );
+            }
+            return Ok(());
+        }
+        if self.is_empty() {
             return contract_error("bound training output contains no prediction block");
+        }
+        if let Some(cohort) = &self.refit_test_cohort {
+            cohort.validate()?;
+            let fold_set = plan.fold_set.as_ref().ok_or_else(|| {
+                DagMlError::CampaignValidation("REFIT Test output requires signed CV folds".into())
+            })?;
+            cohort.validate_against_cv_fold_set(fold_set)?;
+            if cohort.role != crate::data::PredictCohortRole::ExternalTest
+                || cohort.target_names != self.binding.target_names
+            {
+                return contract_error(
+                    "REFIT Test output must match its external-test target authority",
+                );
+            }
+            // This additive fallback is sample-level only. Other levels need
+            // an independently retained observation/aggregation authority.
+            if self.binding.prediction_level != PredictionLevel::Sample
+                || !self.observation_predictions.is_empty()
+                || !self.aggregated_predictions.is_empty()
+                || self.predictions.is_empty()
+            {
+                return contract_error(
+                    "REFIT Test fallback requires exact sample prediction blocks",
+                );
+            }
+            let expected = cohort.physical_sample_ids.iter().collect::<BTreeSet<_>>();
+            for block in &self.predictions {
+                block.validate_content()?;
+                if block.partition != PredictionPartition::Test
+                    || block.fold_id.is_some()
+                    || block.sample_ids.iter().collect::<BTreeSet<_>>() != expected
+                {
+                    return contract_error(
+                        "REFIT Test output differs from its exact cohort or scope",
+                    );
+                }
+            }
         }
         match self.binding.prediction_level {
             PredictionLevel::Observation
@@ -5034,6 +5318,7 @@ impl BoundTrainingOutput {
                 block.fold_id.as_ref(),
                 &block.target_names,
                 &expected_names,
+                self.refit_test_cohort.is_some(),
             )?;
         }
         for block in &self.observation_predictions {
@@ -5047,6 +5332,7 @@ impl BoundTrainingOutput {
                 block.fold_id.as_ref(),
                 &block.target_names,
                 &expected_names,
+                self.refit_test_cohort.is_some(),
             )?;
         }
         for block in &self.aggregated_predictions {
@@ -5065,6 +5351,7 @@ impl BoundTrainingOutput {
                 block.fold_id.as_ref(),
                 &block.target_names,
                 &expected_names,
+                self.refit_test_cohort.is_some(),
             )?;
         }
         match self.binding.prediction_level {
@@ -5096,6 +5383,7 @@ fn validate_bound_block(
     fold_id: Option<&crate::ids::FoldId>,
     target_names: &[String],
     expected_names: &[String],
+    refit_test: bool,
 ) -> Result<()> {
     if producer != &binding.node_id
         || !producer_port_matches_graph_output(
@@ -5111,7 +5399,13 @@ fn validate_bound_block(
         );
     }
     if binding.prediction_source == PredictionSource::FinalRefit
-        && (partition != &PredictionPartition::Final || fold_id.is_some())
+        && (partition
+            != if refit_test {
+                &PredictionPartition::Test
+            } else {
+                &PredictionPartition::Final
+            }
+            || fold_id.is_some())
     {
         return contract_error("final_refit output blocks must use final partition without fold");
     }
@@ -5669,19 +5963,31 @@ fn validate_lineage_coordinates(
         // base dependencies additionally run on each parent-bound inner fold
         // to build the meta-model's training features. Those inner records are
         // required evidence, not duplicate outer-fold lineage.
-        for outer in &nested.outer_scopes {
-            for inner_fold in &outer.inner.inner_fold_set.folds {
-                for node_id in nested.base_node_ids.intersection(closure) {
-                    if outcome.effective_plan.node_plans[node_id]
-                        .supported_phases
-                        .contains(&Phase::FitCv)
-                    {
-                        expected_fit.insert((
-                            Phase::FitCv,
-                            Some(inner_fold.fold_id.clone()),
-                            node_id.clone(),
-                        ));
-                    }
+        let inner_folds = nested
+            .outer_scopes
+            .iter()
+            .flat_map(|outer| &outer.inner.inner_fold_set.folds)
+            .chain(
+                nested
+                    .refit_fold_set
+                    .as_ref()
+                    .filter(|_| outcome.refit.requested)
+                    .into_iter()
+                    .flat_map(|refit| &refit.folds),
+            );
+        // REFIT prepares full-training OOF features using its separately
+        // signed inner fold set. These are genuine FIT_CV base runs too.
+        for inner_fold in inner_folds {
+            for node_id in nested.base_node_ids.intersection(closure) {
+                if outcome.effective_plan.node_plans[node_id]
+                    .supported_phases
+                    .contains(&Phase::FitCv)
+                {
+                    expected_fit.insert((
+                        Phase::FitCv,
+                        Some(inner_fold.fold_id.clone()),
+                        node_id.clone(),
+                    ));
                 }
             }
         }
@@ -6169,6 +6475,22 @@ mod tests {
         ] {
             assert!(!is_bound_output_partition(true, &partition, None));
         }
+    }
+
+    #[cfg(dag_ml_workspace_contract_fixtures)]
+    #[test]
+    fn replay_outputs_refuse_training_only_artifact_and_cohort_markers() {
+        let outcome = TrainingOutcome::from_json(REFIT_FIXTURE).unwrap();
+        let mut output = outcome.outputs[0].clone();
+        output.artifact_only = true;
+        output.predictions.clear();
+        output.observation_predictions.clear();
+        output.aggregated_predictions.clear();
+        assert!(output
+            .validate(&outcome.effective_plan)
+            .unwrap_err()
+            .to_string()
+            .contains("training-only REFIT scope"));
     }
 
     #[cfg(dag_ml_workspace_contract_fixtures)]

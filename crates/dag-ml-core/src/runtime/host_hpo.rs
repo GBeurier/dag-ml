@@ -72,6 +72,11 @@ impl HostHpoSearchRequest {
 
     pub(super) fn validate_parameter_bindings(&self, plan: &ExecutionPlan) -> Result<()> {
         if let Some(catalogue) = &self.structural_catalogue {
+            if catalogue.topology_contract.is_some() && self.progressive_pruning {
+                return Err(DagMlError::RuntimeValidation(
+                    "topology HPO does not support progressive pruning of nested stacking".into(),
+                ));
+            }
             if !self.parameter_bindings.is_empty()
                 || catalogue
                     .entries
@@ -113,7 +118,7 @@ impl HostHpoSearchRequest {
         Ok(())
     }
 
-    fn parameter_overrides(
+    pub(super) fn parameter_overrides(
         &self,
         params: &BTreeMap<String, serde_json::Value>,
     ) -> Result<Vec<crate::generation::GenerationParamOverride>> {
@@ -624,6 +629,15 @@ pub fn prepare_host_hpo_worker_window(
     proposals: &mut dyn HostHpoProposalSource,
     max_workers: usize,
 ) -> Result<HostHpoWorkerWindow> {
+    if request
+        .structural_catalogue
+        .as_ref()
+        .is_some_and(|catalogue| catalogue.topology_contract.is_some())
+    {
+        return Err(DagMlError::RuntimeValidation(
+            "topology HPO currently requires serial candidate execution".into(),
+        ));
+    }
     plan.validate()?;
     if max_workers < 2 || request.trial_budget == 0 || request.optimizer_descriptor.is_empty() {
         return Err(DagMlError::RuntimeValidation(
@@ -1862,6 +1876,15 @@ impl SequentialScheduler {
                 "parallel host HPO requires at least two workers".into(),
             ));
         }
+        if request
+            .structural_catalogue
+            .as_ref()
+            .is_some_and(|catalogue| catalogue.topology_contract.is_some())
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "topology HPO currently requires serial candidate execution".into(),
+            ));
+        }
         plan.validate()?;
         if request.trial_budget == 0 || request.optimizer_descriptor.is_empty() {
             return Err(DagMlError::RuntimeValidation(
@@ -2448,13 +2471,40 @@ pub(super) fn host_hpo_candidate(
     } else {
         plan.clone()
     };
-    if request.structural_catalogue.is_some() {
+    if let Some(catalogue) = &request.structural_catalogue {
         let target = request.target_for_plan(&candidate_plan)?;
+        let mut producers = BTreeSet::from([target.clone()]);
+        if catalogue.schema_version == 2 {
+            // Nested late-fusion execution retains native branch scores as
+            // evidence. Admit only the selected signed graph's upstream
+            // closure; host_hpo_score still requires the sink objective.
+            loop {
+                let before = producers.len();
+                for edge in &candidate_plan.graph_plan.graph.edges {
+                    if producers.contains(&edge.target.node_id)
+                        && candidate_plan.node_plans.contains_key(&edge.source.node_id)
+                    {
+                        producers.insert(edge.source.node_id.clone());
+                    }
+                }
+                if producers.len() == before {
+                    break;
+                }
+            }
+            producers.retain(|id| {
+                candidate_plan.node_plans.get(id).is_some_and(|node| {
+                    node.kind == NodeKind::Model
+                        && node
+                            .controller_capabilities
+                            .contains(&ControllerCapability::EmitsPredictions)
+                })
+            });
+        }
         if trial
             .scores
             .reports
             .iter()
-            .any(|report| report.producer_node != *target)
+            .any(|report| !producers.contains(&report.producer_node))
         {
             return Err(DagMlError::RuntimeValidation(
                 "structural HPO score producer is outside selected recipe".into(),
