@@ -1,6 +1,6 @@
 # Methods regression controllers for JavaScript
 
-Version `0.3.33` includes these adapters. The older `dag-ml-wasm@0.3.32`
+Version `0.3.34` includes these adapters. The older `dag-ml-wasm@0.3.32`
 package does not include them.
 
 The Node and browser npm builds expose two optional subpaths:

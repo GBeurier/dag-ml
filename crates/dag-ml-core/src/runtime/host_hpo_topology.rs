@@ -681,6 +681,7 @@ mod tests {
         .unwrap()
     }
 
+    #[cfg(dag_ml_workspace_contract_fixtures)]
     #[test]
     fn topology_branch_scores_survive_resume_and_winner_but_foreign_producers_do_not() {
         use super::super::super::host_hpo::{

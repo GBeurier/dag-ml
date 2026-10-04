@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.34
+
+- Keep the verified Rust 1.85 runtime minimum and check the retained Core V2 oracle targets separately on Rust 1.88.
+- Include the structural HPO/classification/Torch pages in the documentation navigation.
+- Repair the named-input workspace fixtures and refresh the committed Python extension; preserve runtime contracts and scientific fixtures.
+- Build the explicit Methods runtime from the qualified 1.3.2 source while retaining the published n4m 0.4.0 Rust binding.
+
 ## 0.3.33
 
 - Coordinate typed multimodal regression/classification and learned late fusion with native grouped OOF, selection/refit and signed replay identities.

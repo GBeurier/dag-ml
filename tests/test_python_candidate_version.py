@@ -19,7 +19,9 @@ def load_script(name: str):
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
+    with pytest.MonkeyPatch.context() as paths:
+        paths.syspath_prepend(str(path.parent))
+        spec.loader.exec_module(module)
     return module
 
 
@@ -54,15 +56,29 @@ def set_stable_python_version(root: Path) -> None:
         return
     assert current == f"{next_patch}-dev.0"
     for name, old, new in (
-        ("Cargo.toml", f'name = "dag-ml-py"\ndescription = "Python bindings for DAG-ML JSON contracts."\nversion = "{next_patch}-dev.0"',
-         f'name = "dag-ml-py"\ndescription = "Python bindings for DAG-ML JSON contracts."\nversion = "{released}"'),
-        ("Cargo.lock", f'name = "dag-ml-py"\nversion = "{next_patch}-dev.0"',
-         f'name = "dag-ml-py"\nversion = "{released}"'),
-        ("pyproject.toml", f'name = "dag-ml"\nversion = "{next_patch}.dev0"',
-         f'name = "dag-ml"\nversion = "{released}"'),
+        (
+            "Cargo.toml",
+            f'name = "dag-ml-py"\ndescription = "Python bindings for DAG-ML JSON contracts."\nversion = "{next_patch}-dev.0"',
+            f'name = "dag-ml-py"\ndescription = "Python bindings for DAG-ML JSON contracts."\nversion = "{released}"',
+        ),
+        (
+            "Cargo.lock",
+            f'name = "dag-ml-py"\nversion = "{next_patch}-dev.0"',
+            f'name = "dag-ml-py"\nversion = "{released}"',
+        ),
+        (
+            "pyproject.toml",
+            f'name = "dag-ml"\nversion = "{next_patch}.dev0"',
+            f'name = "dag-ml"\nversion = "{released}"',
+        ),
     ):
         path = package / name
-        path.write_text(candidate_script.replace_once(path.read_text(encoding="utf-8"), old, new, name), encoding="utf-8")
+        path.write_text(
+            candidate_script.replace_once(
+                path.read_text(encoding="utf-8"), old, new, name
+            ),
+            encoding="utf-8",
+        )
 
 
 def test_next_patch_candidate_is_coherent_but_not_a_release(tmp_path: Path) -> None:
@@ -90,7 +106,9 @@ def test_next_patch_candidate_is_coherent_but_not_a_release(tmp_path: Path) -> N
         release_metadata.validate_python(root, "dag-ml", released, release=True)
 
 
-def test_candidate_preparation_is_idempotent_but_refuses_lock_drift(tmp_path: Path) -> None:
+def test_candidate_preparation_is_idempotent_but_refuses_lock_drift(
+    tmp_path: Path,
+) -> None:
     root = copy_manifests(tmp_path)
     set_stable_python_version(root)
     prepared = candidate_script.prepare(root)
@@ -134,3 +152,44 @@ def test_candidate_build_cannot_publish_without_a_release_tag() -> None:
     assert "github.event_name != 'workflow_dispatch'" in publishing
     assert "python scripts/validate_release_metadata.py --release" in publishing
     assert '"${GITHUB_REF_TYPE:-}" != "tag"' in publishing
+
+
+def test_ci_preserves_runtime_msrv_and_historical_oracle_targets() -> None:
+    release_metadata.validate_ci(ROOT)
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "message"),
+    [
+        (
+            "run: cargo check --workspace --locked\n",
+            "run: cargo check --workspace\n",
+            "runtime targets",
+        ),
+        (
+            "toolchain: ${{ env.RUST_ORACLE_TOOLCHAIN }}",
+            "toolchain: ${{ env.RUST_MSRV }}",
+            "oracle toolchain for all targets",
+        ),
+        (
+            "run: cargo check --workspace --all-targets --locked\n",
+            "run: cargo check --workspace --locked\n",
+            "locked all-targets check",
+        ),
+        (
+            'RUST_ORACLE_TOOLCHAIN: "1.88.0"',
+            'RUST_ORACLE_TOOLCHAIN: "1.85.0"',
+            "pin the historical Core oracle toolchain",
+        ),
+    ],
+)
+def test_ci_refuses_loss_of_locked_runtime_or_oracle_checks(
+    tmp_path: Path, old: str, new: str, message: str
+) -> None:
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
+    assert workflow.count(old) == 1
+    target = tmp_path / ".github" / "workflows"
+    target.mkdir(parents=True)
+    (target / "ci.yml").write_text(workflow.replace(old, new, 1))
+    with pytest.raises(SystemExit, match=message):
+        release_metadata.validate_ci(tmp_path)

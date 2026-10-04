@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any
 
 import tomllib
-
 from validate_abi_snapshot import main as validate_abi_snapshot
 
 EXPECTED_CLAP_VERSION = "=4.5.53"
@@ -17,6 +16,7 @@ EXPECTED_CARGO_AUDIT_VERSION = "0.22.1"
 EXPECTED_INDEXMAP_VERSION = "=2.13.1"
 EXPECTED_RUST_VERSION = "1.85"
 EXPECTED_RUST_TOOLCHAIN = f"{EXPECTED_RUST_VERSION}.0"
+EXPECTED_ORACLE_TOOLCHAIN = "1.88.0"
 EXPECTED_PYO3_VERSION = "0.29"
 # ADR-18: dag-ml is dual-licensed under the canonical SPDX expression
 # `CECILL-2.1 OR AGPL-3.0-or-later`. The same expression must be used verbatim
@@ -272,13 +272,33 @@ def validate_ci(repo: Path) -> None:
         "CI must pin RUST_MSRV",
     )
     require('WASM_PACK_VERSION: "0.15.0"' in workflow, "CI must pin WASM_PACK_VERSION")
+    runtime_job = re.search(r"(?ms)^  msrv:\n(.*?)(?=^  [\w-]+:\n|\Z)", workflow)
+    require(runtime_job is not None, "CI must retain the runtime MSRV job")
+    runtime_source = runtime_job.group(1)
     require(
-        "toolchain: ${{ env.RUST_MSRV }}" in workflow,
+        "toolchain: ${{ env.RUST_MSRV }}" in runtime_source,
         "CI must install the pinned MSRV toolchain",
     )
     require(
-        "cargo check --workspace --all-targets" in workflow,
-        "CI must run cargo check on the pinned MSRV",
+        "run: cargo check --workspace --locked\n" in runtime_source,
+        "CI must check runtime targets on the pinned MSRV with its lock",
+    )
+    require(
+        f'RUST_ORACLE_TOOLCHAIN: "{EXPECTED_ORACLE_TOOLCHAIN}"' in workflow,
+        "CI must pin the historical Core oracle toolchain",
+    )
+    oracle_job = re.search(
+        r"(?ms)^  oracle-targets:\n(.*?)(?=^  [\w-]+:\n|\Z)", workflow
+    )
+    require(oracle_job is not None, "CI must retain all historical oracle targets")
+    oracle_source = oracle_job.group(1)
+    require(
+        "toolchain: ${{ env.RUST_ORACLE_TOOLCHAIN }}" in oracle_source,
+        "CI must use the historical Core oracle toolchain for all targets",
+    )
+    require(
+        "run: cargo check --workspace --all-targets --locked\n" in oracle_source,
+        "CI must retain the locked all-targets check for the historical oracle",
     )
     require(
         "scripts/smoke_python_wheel_metadata.py" in workflow,
