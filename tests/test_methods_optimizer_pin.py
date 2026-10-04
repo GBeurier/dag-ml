@@ -12,7 +12,7 @@ except ModuleNotFoundError:  # Python 3.10 in the current workspace.
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "test_methods_optimizer_local.sh"
-METHODS_RUNTIME_SOURCE_SHA = "d2a587642bde4627f0e22c9a2c9655324f46c5d5"
+METHODS_RUNTIME_SOURCE_SHA = "42a6f56de3e22199ea7299992ba7c441ba5b1fb0"
 
 
 def _probe(library_path: str | None) -> subprocess.CompletedProcess[str]:
@@ -53,7 +53,7 @@ def test_ci_and_local_selector_use_the_published_dynamic_binding() -> None:
         (ROOT / "crates" / "dag-ml-core" / "Cargo.toml").read_text(encoding="utf-8")
     )
     dependency = primary["dependencies"]["n4m"]
-    assert dependency["version"] == "0.3.0"
+    assert dependency["version"] == "0.4.0"
     assert dependency["default-features"] is False
     assert dependency["features"] == ["dynamic"]
     assert "git" not in dependency
@@ -80,7 +80,7 @@ def test_ci_and_local_selector_use_the_published_dynamic_binding() -> None:
         "registry+https://github.com/rust-lang/crates.io-index"
     )
     assert locked_n4m[0]["checksum"] == (
-        "a28300dc578f910c1878f5587351d2ff17578a04f051f7b07f104da7c41f25fc"
+        "262224913fd9338e523dea8a55e688abab21eb131422a23fc3f2dfb32a4001f6"
     )
 
     workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")

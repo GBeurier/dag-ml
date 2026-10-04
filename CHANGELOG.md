@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.33
+
+- Coordinate typed multimodal regression/classification and learned late fusion with native grouped OOF, selection/refit and signed replay identities.
+- Add bounded structural HPO, missing-source/partial-target masks, independent-unit influence/scoring and native GroupKFold browser exports.
+- Preserve native HPO/phase-control identities across sorted JSON persistence; retain exact archive and resource validation.
+- Require the released n4m 0.4.0 runtime binding; retain Core 0.4.0 only as the opaque V2 storage-test baseline.
+
+
 All notable changes to `dag-ml` are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims
 to adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
