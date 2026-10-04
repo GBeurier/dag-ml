@@ -815,13 +815,25 @@ pub(crate) fn replace_nested_stacking_fit_cv_inputs(
                     .is_some_and(|fold_id| inner_fold_ids.contains(fold_id))
             });
         let inner_blocks = filter_prediction_blocks_for_edge_source_port(plan, edge, raw_blocks)?;
-        if inner_blocks.is_empty() {
-            return Err(DagMlError::OofValidation(format!(
-                "nested stacking meta node `{}` has no inner OOF evidence for `{}`.{}",
-                node_plan.node_id, edge.source.node_id, edge.source.port_name
-            )));
-        }
-        let input = prediction_input_spec(edge, scope, &inner_blocks, false)?;
+        let input = match available_oof_input(
+            plan,
+            edge,
+            scope,
+            &inner_blocks,
+            &nested.inner.inner_fold_set,
+            &outer.train_sample_ids,
+        )? {
+            Some(input) => input,
+            None => {
+                if inner_blocks.is_empty() {
+                    return Err(DagMlError::OofValidation(format!(
+                        "nested stacking meta node `{}` has no inner OOF evidence for `{}`.{}",
+                        node_plan.node_id, edge.source.node_id, edge.source.port_name
+                    )));
+                }
+                prediction_input_spec(edge, scope, &inner_blocks, false)?
+            }
+        };
         let actual_samples = input.sample_ids.iter().cloned().collect::<BTreeSet<_>>();
         if actual_samples != expected_samples {
             return Err(DagMlError::OofValidation(format!(

@@ -79,6 +79,17 @@ fn auxiliary_prediction_ports_for_node(
         .iter()
         .find(|node| node.id == *node_id)
         .ok_or_else(|| DagMlError::RuntimeValidation(format!("node `{node_id}` is absent")))?;
+    if node
+        .operator
+        .as_ref()
+        .map(crate::methods_operator_classification)
+        .transpose()?
+        .flatten()
+        .is_some()
+    {
+        let declared = prediction_output_ports_for_node(plan, node_id)?;
+        return classifier_auxiliary_prediction_ports(&declared);
+    }
     let Some(value) = node.metadata.get("auxiliary_prediction_ports") else {
         return Ok(BTreeSet::new());
     };
@@ -99,6 +110,28 @@ fn auxiliary_prediction_ports_for_node(
         )));
     }
     Ok(ports.into_iter().collect())
+}
+
+/// Classifiers score labels and route distributions to OOF consumers. The DSL
+/// retains its historical reserved `oof` declaration; it is not a classifier
+/// output alias, and the signed classifier result validator refuses to emit it.
+pub(crate) fn classifier_auxiliary_prediction_ports(
+    declared: &[String],
+) -> Result<BTreeSet<String>> {
+    if !declared
+        .iter()
+        .map(String::as_str)
+        .eq(["probabilities", "y_hat"])
+        && !declared
+            .iter()
+            .map(String::as_str)
+            .eq(["oof", "probabilities", "y_hat"])
+    {
+        return Err(DagMlError::RuntimeValidation(
+            "signed classifier requires exactly label and probability prediction ports".into(),
+        ));
+    }
+    Ok(BTreeSet::from(["probabilities".into()]))
 }
 
 fn normalize_prediction_result_port(
@@ -144,21 +177,24 @@ pub(crate) fn normalize_result_prediction_ports(
 ) -> Result<()> {
     for targets in &mut result.regression_targets {
         *targets = targets.canonicalized()?;
-        // Prediction consumers (including stacking) do not yet carry target masks.
-        // Refuse before an incomplete target contract can enter a downstream fit.
+        // Legacy prediction consumers require complete targets. Partial labels
+        // require the independently signed availability admission below.
         if plan.graph_plan.graph.edges.iter().any(|edge| {
             edge.source.node_id == task.node_plan.node_id
                 && edge.contract.kind == PortKind::Prediction
-        }) {
+        }) && prediction_availability(plan)?.is_none()
+        {
             targets.require_complete_targets("prediction merge/late fusion")?;
         }
     }
+    validate_available_target_masks(plan, result)?;
     if result.predictions.is_empty()
         && result.classification_probabilities.is_empty()
         && result.observation_predictions.is_empty()
         && result.aggregated_predictions.is_empty()
         && result.explanations.is_empty()
     {
+        crate::methods_classification::validate_methods_classification_result(plan, task, result)?;
         return Ok(());
     }
     let prediction_ports = prediction_output_ports_for_node(plan, &task.node_plan.node_id)?;
@@ -202,6 +238,15 @@ pub(crate) fn normalize_result_prediction_ports(
             &prediction_ports,
         )?;
     }
+    let primary_port =
+        if crate::methods_classification::classification_for_node(plan, &task.node_plan.node_id)?
+            .is_some()
+        {
+            "y_hat"
+        } else {
+            "oof"
+        };
+    crate::methods_classification::validate_methods_classification_result(plan, task, result)?;
     let auxiliary = auxiliary_prediction_ports_for_node(plan, &task.node_plan.node_id)?;
     for block in &result.predictions {
         if !block
@@ -215,7 +260,7 @@ pub(crate) fn normalize_result_prediction_ports(
             .predictions
             .iter()
             .filter(|candidate| {
-                candidate.producer_port.as_deref() == Some("oof")
+                candidate.producer_port.as_deref() == Some(primary_port)
                     && candidate.partition == block.partition
                     && candidate.fold_id == block.fold_id
             })
@@ -835,6 +880,11 @@ impl SequentialScheduler {
                 .iter()
                 .filter(|report| {
                     report.producer_node == *target_node
+                        && (plan.campaign.aggregation_policy.grouping_key.is_none()
+                            || (report.level
+                                == plan.campaign.aggregation_policy.selection_metric_level
+                                && report.grouping_key
+                                    == plan.campaign.aggregation_policy.grouping_key))
                         && report.partition == PredictionPartition::Validation
                         && report.fold_id.as_ref() == Some(&fold.fold_id)
                 })
@@ -2371,6 +2421,17 @@ impl SequentialScheduler {
         scope: PhaseScope,
         mut resources: PhaseScopeResources<'_>,
     ) -> Result<Vec<NodeResult>> {
+        if plan.campaign.aggregation_policy.grouping_key.is_some()
+            && matches!(scope.phase, Phase::FitCv | Phase::Refit)
+        {
+            let provider = resources.data_provider.ok_or_else(|| {
+                DagMlError::RuntimeValidation(
+                    "independent-unit FIT requires relation-attested provider".into(),
+                )
+            })?;
+            ctx.configure_global_oof_aggregation(plan, provider)?;
+        }
+
         let _phase_span = crate::observability::phase_span(
             ctx.run_id.as_str(),
             plan.id.as_str(),
@@ -2577,6 +2638,8 @@ impl SequentialScheduler {
                     plan,
                     &task_node_plan,
                     &collected_inputs.data_views,
+                    &prediction_inputs,
+                    scope.phase,
                 )?;
                 let task = NodeTask {
                     inner_fold_set,
@@ -2632,7 +2695,13 @@ impl SequentialScheduler {
                 } else {
                     match resources.data_provider {
                         Some(data_provider) => {
-                            controller.invoke_with_data_provider(&task, data_provider)?
+                            let prediction_ports =
+                                prediction_output_ports_for_node(plan, &task.node_plan.node_id)?;
+                            controller.invoke_with_data_provider_and_prediction_ports(
+                                &task,
+                                data_provider,
+                                &prediction_ports,
+                            )?
                         }
                         None => controller.invoke(&task)?,
                     }
@@ -2697,6 +2766,33 @@ impl SequentialScheduler {
                 input_lineage.insert(node_id.clone(), result.lineage.record_id.clone());
                 results.push(result);
             }
+        }
+
+        if plan.campaign.aggregation_policy.grouping_key.is_some() {
+            let blocks = results
+                .iter()
+                .flat_map(|result| result.predictions.iter())
+                .filter(|block| {
+                    block.partition != PredictionPartition::Validation
+                        || ctx
+                            .validation_scoring_fold_ids
+                            .as_ref()
+                            .is_none_or(|allowed| {
+                                block
+                                    .fold_id
+                                    .as_ref()
+                                    .is_some_and(|fold| allowed.contains(fold))
+                            })
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            let grouped = apply_independent_unit_scope_reports(
+                Default::default(),
+                &ctx.global_oof_aggregation,
+                &blocks,
+                &ctx.regression_target_records,
+            )?;
+            ctx.score_collector.extend(grouped.reports);
         }
 
         Ok(results)
@@ -3040,6 +3136,17 @@ impl ParallelScheduler {
         scope: PhaseScope,
         mut resources: PhaseScopeResources<'_>,
     ) -> Result<Vec<NodeResult>> {
+        if plan.campaign.aggregation_policy.grouping_key.is_some()
+            && matches!(scope.phase, Phase::FitCv | Phase::Refit)
+        {
+            let provider = resources.data_provider.ok_or_else(|| {
+                DagMlError::RuntimeValidation(
+                    "independent-unit FIT requires relation-attested provider".into(),
+                )
+            })?;
+            ctx.configure_global_oof_aggregation(plan, provider)?;
+        }
+
         // Hold the phase span on the scheduler thread, and clone it into each
         // worker so worker-thread telemetry nests under the phase (tracing spans
         // are thread-local and do not auto-propagate across `thread::scope`).
@@ -3162,6 +3269,8 @@ impl ParallelScheduler {
                     plan,
                     &task_node_plan,
                     &collected_inputs.data_views,
+                    &prediction_inputs,
+                    scope.phase,
                 )?;
                 prepared.push(PreparedNodeTask {
                     node_id: node_id.clone(),
@@ -3373,6 +3482,33 @@ impl ParallelScheduler {
                     results.push(result);
                 }
             }
+        }
+
+        if plan.campaign.aggregation_policy.grouping_key.is_some() {
+            let blocks = results
+                .iter()
+                .flat_map(|result| result.predictions.iter())
+                .filter(|block| {
+                    block.partition != PredictionPartition::Validation
+                        || ctx
+                            .validation_scoring_fold_ids
+                            .as_ref()
+                            .is_none_or(|allowed| {
+                                block
+                                    .fold_id
+                                    .as_ref()
+                                    .is_some_and(|fold| allowed.contains(fold))
+                            })
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            let grouped = apply_independent_unit_scope_reports(
+                Default::default(),
+                &ctx.global_oof_aggregation,
+                &blocks,
+                &ctx.regression_target_records,
+            )?;
+            ctx.score_collector.extend(grouped.reports);
         }
 
         Ok(results)
@@ -4926,7 +5062,9 @@ pub(crate) fn collect_input_handles(
         });
     if cv_test_capture {
         for edge in incoming_oof_edges(plan, node_plan)? {
-            let Some(input) = collect_cv_fold_test_prediction_input(plan, edge, ctx, scope)? else {
+            let Some(input) =
+                collect_available_off_fold_prediction_input(plan, edge, ctx, scope, resources)?
+            else {
                 continue;
             };
             let key = format!("{}.{}:test", edge.source.node_id, edge.source.port_name);
@@ -4949,7 +5087,9 @@ pub(crate) fn collect_input_handles(
     if matches!(scope.phase, Phase::Refit | Phase::Predict) {
         let off_fold_suffix = scope.phase.as_str().to_ascii_lowercase();
         for edge in incoming_oof_edges(plan, node_plan)? {
-            let Some(input) = collect_off_fold_prediction_input(plan, edge, ctx, scope)? else {
+            let Some(input) =
+                collect_available_off_fold_prediction_input(plan, edge, ctx, scope, resources)?
+            else {
                 continue;
             };
             let key = format!(

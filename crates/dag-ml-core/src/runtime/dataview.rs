@@ -1261,6 +1261,18 @@ pub trait RuntimeController: Send + Sync {
         self.invoke(task)
     }
 
+    /// Provider-aware execution with prediction output names taken from the
+    /// execution graph. Existing controllers keep their original invocation;
+    /// native controllers can bind results without assuming a port alias.
+    fn invoke_with_data_provider_and_prediction_ports(
+        &self,
+        task: &NodeTask,
+        data_provider: &dyn RuntimeDataProvider,
+        _prediction_ports: &[String],
+    ) -> Result<NodeResult> {
+        self.invoke_with_data_provider(task, data_provider)
+    }
+
     /// Create an execution-local tuner session for one scheduler-owned HPO
     /// campaign. The controller stays `Send + Sync` because it is only a
     /// factory; the returned session has no Send/Sync bound and may therefore

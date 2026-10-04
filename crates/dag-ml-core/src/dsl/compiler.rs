@@ -98,6 +98,8 @@ pub fn compile_pipeline_dsl_with_generation(spec: &PipelineDslSpec) -> Result<Co
         generation_dimensions: Vec::new(),
         shape_plans: BTreeMap::new(),
         branch_view_plans: Vec::new(),
+        named_interface_inputs: Vec::new(),
+        consumes_default_input: false,
     };
     let mut sequence_state = SequenceCompileState::new(external_data.clone());
 
@@ -129,13 +131,26 @@ pub fn compile_pipeline_dsl_with_generation(spec: &PipelineDslSpec) -> Result<Co
         &spec.input.description,
     );
     apply_data_unit_contract(&mut interface_input, &spec.input);
+    let mut interface_inputs = Vec::new();
+    if compiler.named_interface_inputs.is_empty() || compiler.consumes_default_input {
+        interface_inputs.push(interface_input);
+    }
+    for (port, _) in compiler.named_interface_inputs {
+        if interface_inputs.iter().any(|input| input.name == port.name) {
+            return Err(DagMlError::GraphValidation(format!(
+                "named model_input interface port `{}` collides with the default pipeline input",
+                port.name
+            )));
+        }
+        interface_inputs.push(port);
+    }
     let mut interface_output = prediction_port(&spec.output.name, &spec.output.description);
     apply_prediction_unit_contract(&mut interface_output, &spec.output);
 
     let graph = GraphSpec {
         id: spec.id.clone(),
         interface: GraphInterface {
-            inputs: vec![interface_input],
+            inputs: interface_inputs,
             outputs: vec![interface_output],
         },
         nodes: compiler.nodes,
@@ -199,6 +214,8 @@ pub(crate) struct PipelineCompiler {
     generation_dimensions: Vec<GenerationDimension>,
     shape_plans: BTreeMap<NodeId, DataModelShapePlan>,
     branch_view_plans: Vec<BranchViewPlan>,
+    named_interface_inputs: Vec<(PortSpec, ModelInputPortSpec)>,
+    consumes_default_input: bool,
 }
 #[derive(Clone, Debug)]
 pub(crate) struct DataSource {
@@ -817,6 +834,12 @@ impl PipelineCompiler {
         input: &DataSource,
         extra_metadata: BTreeMap<String, serde_json::Value>,
     ) -> Result<DataSource> {
+        if step.model_input.is_some() {
+            return Err(DagMlError::GraphValidation(format!(
+                "pipeline DSL data operator `{}` cannot declare model_input",
+                step.id
+            )));
+        }
         if !step.prediction_output_ports.is_empty() {
             return Err(DagMlError::GraphValidation(format!(
                 "pipeline DSL data operator `{}` cannot declare prediction output ports",
@@ -865,6 +888,12 @@ impl PipelineCompiler {
         input: Option<&PortRef>,
         extra_metadata: BTreeMap<String, serde_json::Value>,
     ) -> Result<PortRef> {
+        if step.model_input.is_some() {
+            return Err(DagMlError::GraphValidation(format!(
+                "pipeline DSL target operator `{}` cannot declare model_input",
+                step.id
+            )));
+        }
         let mut metadata = operator_runtime_metadata(step, None)?;
         metadata.extend(extra_metadata);
         let node = NodeSpec {
@@ -996,6 +1025,61 @@ impl PipelineCompiler {
     ) -> Result<PredictionSource> {
         let mut metadata = operator_runtime_metadata(step, branch_id)?;
         metadata.extend(extra_metadata);
+        let inputs = if let Some(model_input) = &step.model_input {
+            validate_named_model_input_spec(model_input)?;
+            if input.node_id.is_some() {
+                return Err(DagMlError::GraphValidation(format!(
+                    "named model_input on `{}` requires external per-source bindings; an upstream X chain cannot be silently bypassed",
+                    step.id
+                )));
+            }
+            let declaration = serde_json::to_value(model_input).map_err(|error| {
+                DagMlError::GraphValidation(format!(
+                    "failed to serialize model_input for `{}`: {error}",
+                    step.id
+                ))
+            })?;
+            if metadata.contains_key(DSL_MODEL_INPUT_METADATA_KEY) {
+                return Err(DagMlError::GraphValidation(format!(
+                    "pipeline DSL `{}` metadata cannot override {DSL_MODEL_INPUT_METADATA_KEY}",
+                    step.id
+                )));
+            }
+            metadata.insert(DSL_MODEL_INPUT_METADATA_KEY.to_string(), declaration);
+            let mut ports = Vec::with_capacity(model_input.ports.len() + 1);
+            for requirement in &model_input.ports {
+                let port = data_port(
+                    &requirement.name,
+                    Some(requirement.accepted_representations[0].clone()),
+                    "",
+                );
+                if let Some((_, existing)) = self
+                    .named_interface_inputs
+                    .iter()
+                    .find(|(input, _)| input.name == port.name)
+                {
+                    if existing != requirement {
+                        return Err(DagMlError::GraphValidation(format!(
+                            "named model_input interface port `{}` has conflicting source/type declarations",
+                            port.name
+                        )));
+                    }
+                } else {
+                    self.named_interface_inputs
+                        .push((port.clone(), requirement.clone()));
+                }
+                ports.push(port);
+            }
+            ports.push(target_port("y", ""));
+            ports
+        } else if target.is_some() {
+            vec![
+                data_port("x", input.representation.clone(), ""),
+                target_port("y", ""),
+            ]
+        } else {
+            vec![data_port("x", input.representation.clone(), "")]
+        };
         if !step.prediction_output_ports.is_empty() {
             metadata.insert(
                 "auxiliary_prediction_ports".to_string(),
@@ -1008,14 +1092,7 @@ impl PipelineCompiler {
             operator: Some(step.operator.clone()),
             params: step.params.clone(),
             ports: PortSchema {
-                inputs: if target.is_some() {
-                    vec![
-                        data_port("x", input.representation.clone(), ""),
-                        target_port("y", ""),
-                    ]
-                } else {
-                    vec![data_port("x", input.representation.clone(), "")]
-                },
+                inputs,
                 outputs: prediction_output_schema(&step.id, &step.prediction_output_ports)?,
             },
             metadata,
@@ -1024,7 +1101,9 @@ impl PipelineCompiler {
         self.push_node(node)?;
         self.collect_operator_generation(&step.id, &step.variants, &step.param_generators)?;
         self.collect_shape_plan(&step.id, step.shape.as_ref())?;
-        self.connect_data(input, &step.id, "x")?;
+        if step.model_input.is_none() {
+            self.connect_data(input, &step.id, "x")?;
+        }
         self.connect_target(target, &step.id, "y")?;
         Ok(PredictionSource {
             node_id: step.id.clone(),
@@ -1523,6 +1602,8 @@ impl PipelineCompiler {
                     ..EdgeContract::new(PortKind::Data, input.representation.clone())
                 },
             });
+        } else {
+            self.consumes_default_input = true;
         }
         Ok(())
     }

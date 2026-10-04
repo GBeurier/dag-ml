@@ -110,6 +110,7 @@ end
         fid = fopen(config.audit_path, 'a'); assert(fid >= 0, 'Cannot write lifecycle audit');
         guard = onCleanup(@() fclose(fid)); %#ok<NASGU>
         fprintf(fid, '%s\n', jsonencode(struct('operation', operation, 'node_id', node, 'sample_ids', {samples})));
+        assert(fflush(fid) == 0, 'Cannot flush lifecycle audit');
     end
     function dispose(entry)
         entry.model.close(); audit('dispose', entry.saved.node_id);
@@ -234,10 +235,11 @@ end
         assert(strcmp(node.kind, 'model') && strcmp(node.controller_id, controller) && ...
             strcmp(node.controller_version, '1.0.0') && isfield(config.operators, node.node_id) && ...
             any(strcmp(task.phase, {'FIT_CV', 'REFIT', 'PREDICT'})), 'Foreign native node or phase');
-        assert(empty_value(task.prediction_inputs) && empty_value(task.data_view_receipts) && ...
-            empty_value(task.required_loss_attestations) && empty_value(task.residual_targets) && ...
-            (empty_value(task.fit_influence) || (strcmp(task.fit_influence.mechanism, 'uniform_rows') && ...
-            isempty(task.fit_influence.row_weights))), 'Generated/OOF/loss/residual/nonuniform inputs unsupported');
+        assert(empty_value(task.prediction_inputs) && empty_value(optional_member(task, 'data_view_receipts')) && ...
+            empty_value(optional_member(task, 'required_loss_attestations')) && empty_value(optional_member(task, 'residual_targets')) && ...
+            (empty_value(optional_member(task, 'fit_influence')) || (strcmp(task.fit_influence.mechanism, 'uniform_rows') && ...
+            empty_value(optional_member(task.fit_influence, 'row_weights')) && ...
+            empty_value(optional_member(task.fit_influence, 'target_row_weights')))), 'Generated/OOF/loss/residual/nonuniform inputs unsupported');
         op = config.operators.(node.node_id); params = struct();
         if isfield(node, 'params'), params = node.params; end
         recipe = recipe_for(op, params);
@@ -393,6 +395,10 @@ end
 function value = decode(text)
 strict_json(text, 0);
 value = jsondecode(text, 'makeValidName', false);
+end
+function value = optional_member(object, name)
+% Rust serde defaults omit empty receipts/losses/targets/influence fields.
+if isfield(object, name), value = object.(name); else, value = []; end
 end
 function ok = empty_value(value)
 if isstruct(value), ok = isempty(fieldnames(value));

@@ -316,8 +316,83 @@
           "items": {
             "$ref": "#/$defs/non_empty_string"
           }
+        },
+        "fit_sample_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/identifier"
+          }
+        },
+        "independent_unit_ids": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/identifier"
+          }
+        },
+        "target_names": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/non_empty_string"
+          }
+        },
+        "target_row_weights": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "number",
+              "minimum": 0
+            }
+          }
         }
-      }
+      },
+      "dependentRequired": {
+        "fit_sample_ids": [
+          "independent_unit_ids",
+          "target_names",
+          "row_weights"
+        ],
+        "independent_unit_ids": [
+          "fit_sample_ids",
+          "target_names",
+          "row_weights"
+        ],
+        "target_row_weights": [
+          "fit_sample_ids",
+          "independent_unit_ids",
+          "target_names",
+          "row_weights"
+        ]
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "fit_sample_ids"
+            ]
+          },
+          "then": {
+            "properties": {
+              "requested_policy": {
+                "const": "equal_sample_influence"
+              },
+              "effective_policy": {
+                "const": "equal_sample_influence"
+              },
+              "mechanism": {
+                "const": "sample_weights"
+              }
+            }
+          }
+        }
+      ]
     },
     "controller_fit_scope": {
       "enum": ["stateless", "fold_train", "full_train", "inference_only"]
@@ -550,6 +625,10 @@
     "prediction_input_spec": {
       "type": "object",
       "additionalProperties": false,
+      "dependentRequired": {
+        "feature_validity_masks": ["source_presence"],
+        "source_presence": ["feature_validity_masks"]
+      },
       "required": [
         "producer_node",
         "source_port",
@@ -606,6 +685,16 @@
               "type": "number"
             }
           }
+        },
+        "feature_validity_masks": {
+          "description": "Sample-major prediction-feature availability; false cells are zero placeholders, never authentic probability distributions.",
+          "type": "array",
+          "items": { "type": "array", "items": { "type": "boolean" } }
+        },
+        "source_presence": {
+          "description": "Ordered source-presence mask, required together with feature_validity_masks; omitted for legacy complete inputs.",
+          "type": "array",
+          "items": { "type": "boolean" }
         },
         "prediction_width": {
           "type": "integer",

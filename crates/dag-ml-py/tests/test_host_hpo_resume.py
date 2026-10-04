@@ -229,7 +229,9 @@ class HostHpoResumeTests(unittest.TestCase):
             progress_callback=lambda message: len(message["checkpoint"]["trials"]) < 1,
         )
         self.assertEqual(stopped["status"], "cancelled")
-        checkpoint = stopped["checkpoint"]
+        # Public SDK persistence sorts object keys; preserve array order and
+        # the native seal while round-tripping the genuine provider manifest.
+        checkpoint = json.loads(json.dumps(stopped["checkpoint"], sort_keys=True))
         self.assertEqual(len(checkpoint["trials"]), 1)
         saved_manifest = checkpoint["trials"][0]["evidence"]["generated_view_manifest"]
         self.assertEqual(saved_manifest, stopped["generated_view_manifest"])

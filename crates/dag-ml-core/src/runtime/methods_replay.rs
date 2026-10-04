@@ -6,7 +6,7 @@
 //! execution.  It deliberately has no Python, callback or host-artifact path.
 
 #[cfg(feature = "methods-optimizer")]
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[cfg(feature = "methods-optimizer")]
 use crate::data::{data_binding_requirement_key, ExternalDataPlanEnvelope, InMemoryDataProvider};
@@ -170,6 +170,7 @@ pub fn execute_loaded_methods_portable_refit_replay_v3(
 struct MethodsPortableReplayProvider {
     inner: InMemoryDataProvider,
     inputs: BTreeMap<String, MethodsPlsDataset>,
+    cohort_sample_ids: BTreeMap<String, Vec<SampleId>>,
 }
 
 #[cfg(feature = "methods-optimizer")]
@@ -181,13 +182,36 @@ impl MethodsPortableReplayProvider {
         let mut inner = InMemoryDataProvider::new(ControllerId::new(
             "controller:dagml.methods.portable-replay-provider",
         )?);
-        for envelope in envelopes.into_values() {
+        let mut cohort_sample_ids = BTreeMap::new();
+        for (key, envelope) in envelopes {
+            let ids = if let Some(cohort) = &envelope.predict_cohort {
+                Some(cohort.physical_sample_ids.clone())
+            } else {
+                envelope.coordinator_relations.as_ref().map(|relations| {
+                    // Legacy V1 has no separate PREDICT cohort. Preserve its
+                    // relation delivery order, deduplicating physical samples.
+                    let mut seen = BTreeSet::new();
+                    relations
+                        .records
+                        .iter()
+                        .filter(|record| seen.insert(record.sample_id.clone()))
+                        .map(|record| record.sample_id.clone())
+                        .collect()
+                })
+            };
             inner.register_envelope(envelope)?;
+            if let Some(ids) = ids {
+                cohort_sample_ids.insert(key, ids);
+            }
         }
         for (key, dataset) in &inputs {
             dataset.validate(&format!("native Methods replay input `{key}`"), false)?;
         }
-        Ok(Self { inner, inputs })
+        Ok(Self {
+            inner,
+            inputs,
+            cohort_sample_ids,
+        })
     }
 
     fn dataset_for_view(
@@ -239,11 +263,14 @@ impl MethodsPortableReplayProvider {
         let dataset = self.inputs.get(&key).ok_or_else(|| {
             DagMlError::RuntimeValidation(format!("native Methods replay has no input for `{key}`"))
         })?;
-        let ids = request
-            .fit_view
-            .sample_ids
-            .as_deref()
-            .unwrap_or(&dataset.sample_ids);
+        let ids = match request.fit_view.sample_ids.as_deref() {
+            Some(ids) => ids,
+            None => self.cohort_sample_ids.get(&key).map(Vec::as_slice).ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "native Methods replay input `{key}` requires attested PREDICT cohort identities"
+                ))
+            })?,
+        };
         Ok(MethodsPlsData {
             fit: Self::dataset_for_view(dataset, ids)?,
             prediction: None,
@@ -279,5 +306,123 @@ impl RuntimeDataProvider for MethodsPortableReplayProvider {
 
     fn methods_pls_data(&self, request: &MethodsPlsDataRequest) -> Result<MethodsPlsData> {
         self.data_for(request)
+    }
+}
+
+#[cfg(all(test, feature = "methods-optimizer"))]
+mod cohort_identity_tests {
+    use super::*;
+    use crate::data::{DataBinding, DataViewPolicy};
+    use crate::runtime::{DataProviderViewSpec, DataRequestPartition};
+    use crate::{NodeId, ObservationId, SampleRelation, SampleRelationSet};
+
+    fn fixture() -> (MethodsPortableReplayProvider, MethodsPlsDataRequest) {
+        let node = NodeId::new("model:base").unwrap();
+        let relations = SampleRelationSet {
+            records: vec![
+                SampleRelation::new(
+                    ObservationId::new("observation:two").unwrap(),
+                    SampleId::new("sample:two").unwrap(),
+                ),
+                SampleRelation::new(
+                    ObservationId::new("observation:one").unwrap(),
+                    SampleId::new("sample:one").unwrap(),
+                ),
+            ],
+        };
+        let envelope = ExternalDataPlanEnvelope {
+            schema_version: 1,
+            schema_fingerprint: "a".repeat(64),
+            plan_fingerprint: "b".repeat(64),
+            relation_fingerprint: Some(relations.fingerprint().unwrap()),
+            data_content_fingerprint: None,
+            target_content_fingerprint: None,
+            coordinator_relations: Some(relations),
+            predict_cohort: None,
+        };
+        let binding = DataBinding {
+            node_id: node.clone(),
+            input_name: "x".into(),
+            request_id: "input:predict".into(),
+            schema_fingerprint: envelope.schema_fingerprint.clone(),
+            plan_fingerprint: envelope.plan_fingerprint.clone(),
+            relation_fingerprint: envelope.relation_fingerprint.clone(),
+            output_representation: "tabular_numeric".into(),
+            feature_set_id: None,
+            source_ids: vec![],
+            require_relations: true,
+            view_policy: DataViewPolicy::default(),
+            metadata: BTreeMap::new(),
+        };
+        let key = data_binding_requirement_key(&node, "x");
+        let dataset = MethodsPlsDataset {
+            sample_ids: ["sample:unused", "sample:one", "sample:two"]
+                .map(|id| SampleId::new(id).unwrap())
+                .to_vec(),
+            x: MethodsPlsMatrix {
+                rows: 3,
+                cols: 1,
+                values: vec![99.0, 3.0, 8.0],
+            },
+            y: None,
+            target_names: vec!["protein".into()],
+        };
+        let provider = MethodsPortableReplayProvider::new(
+            BTreeMap::from([(key.clone(), envelope)]),
+            BTreeMap::from([(key, dataset)]),
+        )
+        .unwrap();
+        let request = MethodsPlsDataRequest {
+            node_id: node,
+            phase: Phase::Predict,
+            variant_id: None,
+            fold_id: None,
+            binding,
+            identity: None,
+            fit_view: DataProviderViewSpec {
+                sample_ids: None,
+                partition: DataRequestPartition::Predict,
+                fold_id: None,
+                source_ids: None,
+                columns: None,
+                include_augmented: false,
+                include_excluded: false,
+                branch_view: None,
+                extra: BTreeMap::new(),
+            },
+            prediction_view: None,
+        };
+        (provider, request)
+    }
+
+    #[test]
+    fn predict_fallback_refuses_foreign_replacement_of_required_cohort_id() {
+        let (mut provider, request) = fixture();
+        provider.inputs.get_mut("model:base.x").unwrap().sample_ids[2] =
+            SampleId::new("predict.foreign").unwrap();
+        let error = provider
+            .preflight_methods_pls(&request)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("sample:two") && error.contains("absent from its attested input"));
+    }
+
+    #[test]
+    fn predict_fallback_reindexes_permuted_rows_and_keeps_explicit_subset_views() {
+        let (mut provider, mut request) = fixture();
+        let expected = provider.methods_pls_data(&request).unwrap().fit;
+        assert_eq!(
+            expected.sample_ids,
+            ["sample:two", "sample:one"].map(|id| SampleId::new(id).unwrap())
+        );
+        assert_eq!(expected.x.values, vec![8.0, 3.0]);
+        let dataset = provider.inputs.get_mut("model:base.x").unwrap();
+        dataset.sample_ids.reverse();
+        dataset.x.values.reverse();
+        assert_eq!(provider.methods_pls_data(&request).unwrap().fit, expected);
+        request.fit_view.sample_ids = Some(vec![SampleId::new("sample:one").unwrap()]);
+        let subset = provider.methods_pls_data(&request).unwrap().fit;
+        assert_eq!(subset.x.values, vec![3.0]);
+        assert_eq!(subset.sample_ids, request.fit_view.sample_ids.unwrap());
     }
 }

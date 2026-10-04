@@ -3,17 +3,16 @@
 from __future__ import annotations
 
 import hashlib
-import io
 import importlib.util
+import io
 import json
 import re
 import sys
 import tarfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Self
 
 import pytest
-
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "release" / "publish_crates.py"
@@ -46,7 +45,7 @@ def test_every_publication_waits_for_same_sha_qualification(
 
 
 class _Response(io.BytesIO):
-    def __enter__(self) -> _Response:
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *_: object) -> None:
@@ -121,6 +120,7 @@ def test_dry_run_checks_only_publishable_roots(monkeypatch, capsys) -> None:
         publish_crates, "workspace_crates", lambda _: ("0.3.19", _plan())
     )
     monkeypatch.setattr(publish_crates, "cargo_publish", record_publish)
+    monkeypatch.setattr(publish_crates, "repository_head", lambda _: "1" * 40)
     monkeypatch.setattr(
         publish_crates,
         "crate_version_exists",
@@ -173,6 +173,7 @@ def test_real_publish_keeps_topological_order(monkeypatch) -> None:
         publish_crates, "workspace_crates", lambda _: ("0.3.19", _plan())
     )
     monkeypatch.setattr(publish_crates, "cargo_publish", record_publish)
+    monkeypatch.setattr(publish_crates, "repository_head", lambda _: "1" * 40)
     monkeypatch.setattr(publish_crates, "crate_version_exists", lambda *_: False)
     monkeypatch.setattr(sys, "argv", ["publish_crates.py", "--sleep-seconds", "0"])
 

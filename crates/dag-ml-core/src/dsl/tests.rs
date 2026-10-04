@@ -5,6 +5,243 @@ use crate::controller::{
 };
 use crate::phase::Phase;
 
+#[cfg(dag_ml_workspace_contract_fixtures)]
+mod named_dense_inputs {
+    use super::*;
+    use serde_json::json;
+
+    fn contract() -> serde_json::Value {
+        serde_json::from_str(include_str!(
+            "../../../../examples/fixtures/data/model_input_spec_named_dense.json"
+        ))
+        .unwrap()
+    }
+
+    fn spec(contract: serde_json::Value) -> PipelineDslSpec {
+        serde_json::from_value(json!({
+            "id": "named-dense", "steps": [{
+                "kind": "model", "id": "model:named", "operator": {"type": "UserModule"},
+                "model_input": contract
+            }]
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn canonical_and_compat_models_keep_named_ports_in_graph_and_interface() {
+        let canonical = spec(contract());
+        let compat = lower_nirs4all_compat_pipeline_dsl(&json!({
+            "id": "named-dense", "steps": [{
+                "id": "model:named", "model": {"type": "UserModule"},
+                "model_input": contract()
+            }]
+        }))
+        .unwrap();
+        for declaration in [canonical, compat] {
+            let graph = compile_pipeline_dsl(&declaration).unwrap();
+            let node = &graph.nodes[0];
+            assert_eq!(
+                node.ports
+                    .inputs
+                    .iter()
+                    .map(|port| port.name.as_str())
+                    .collect::<Vec<_>>(),
+                ["nir", "clinical", "y"]
+            );
+            assert_eq!(node.ports.inputs[2].kind, PortKind::Target);
+            assert_eq!(
+                graph
+                    .interface
+                    .inputs
+                    .iter()
+                    .map(|port| port.name.as_str())
+                    .collect::<Vec<_>>(),
+                ["nir", "clinical"]
+            );
+            assert!(node.ports.inputs[..2].iter().all(|port| {
+                port.kind == PortKind::Data
+                    && port.representation.as_deref() == Some("tabular_numeric")
+            }));
+            assert!(graph.edges.is_empty());
+            assert_eq!(node.metadata[DSL_MODEL_INPUT_METADATA_KEY], contract());
+            let roundtrip: GraphSpec =
+                serde_json::from_slice(&serde_json::to_vec(&graph).unwrap()).unwrap();
+            assert_eq!(roundtrip, graph);
+        }
+    }
+
+    #[test]
+    fn malformed_named_input_contracts_are_refused_before_graph_lowering() {
+        let mut mutations = Vec::new();
+        for (path, value) in [
+            ("/schema_version", json!(2)),
+            ("/ports/1/name", json!("nir")),
+            ("/ports/0/name", json!("y")),
+            ("/ports/0/name", json!("nir:validation")),
+            ("/ports/0/name", json!("data.test")),
+            ("/ports/0/rank", json!(3)),
+            ("/ports/0/multi_source", json!(true)),
+            ("/ports/0/optional", json!(true)),
+            ("/ports/0/accepted_types", json!(["multi_block"])),
+            (
+                "/ports/0/accepted_representations",
+                json!(["feature_block_set"]),
+            ),
+            ("/ports/1/metadata/source_id", json!("src0")),
+            ("/ports/0/metadata/source_id", json!(" src0")),
+            ("/ports/0/metadata/dtype", json!("object")),
+            ("/ports/0/metadata/feature_shape", json!([0])),
+            ("/ports/0/metadata/feature_shape", json!([2, 2])),
+            ("/ports/0/metadata/feature_shape", json!([4.0])),
+            ("/ports/0/metadata/feature_shape", json!([4294967296_u64])),
+        ] {
+            let mut invalid = contract();
+            *invalid.pointer_mut(path).unwrap() = value;
+            mutations.push(invalid);
+        }
+        let mut too_few = contract();
+        too_few["ports"].as_array_mut().unwrap().pop();
+        mutations.push(too_few);
+        let mut too_many = contract();
+        for index in 2..5 {
+            let mut extra = too_many["ports"][0].clone();
+            extra["name"] = json!(format!("extra{index}"));
+            extra["metadata"]["source_id"] = json!(format!("src{index}"));
+            too_many["ports"].as_array_mut().unwrap().push(extra);
+        }
+        mutations.push(too_many);
+        let mut extra_metadata = contract();
+        extra_metadata["ports"][0]["metadata"]["unbound_shape"] = json!(2);
+        mutations.push(extra_metadata);
+        let mut fused = contract();
+        fused["default_fusion"] = json!({"mode": "dict_by_source", "alignment": "sample_id"});
+        mutations.push(fused);
+        for invalid in mutations {
+            assert!(
+                compile_pipeline_dsl(&spec(invalid.clone())).is_err(),
+                "accepted {invalid}"
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_x_is_a_real_named_port_while_absence_keeps_single_x_unchanged() {
+        let mut declaration = contract();
+        declaration["ports"][0]["name"] = json!("x");
+        let graph = compile_pipeline_dsl(&spec(declaration)).unwrap();
+        assert_eq!(graph.interface.inputs.len(), 2);
+        assert_eq!(graph.nodes[0].ports.inputs.len(), 3);
+        assert_eq!(graph.nodes[0].ports.inputs[0].name, "x");
+
+        let mut old = spec(contract());
+        let PipelineDslStep::Model(step) = &mut old.steps[0] else {
+            unreachable!()
+        };
+        step.model_input = None;
+        assert!(serde_json::to_value(&old).unwrap()["steps"][0]
+            .get("model_input")
+            .is_none());
+        let graph = compile_pipeline_dsl(&old).unwrap();
+        assert_eq!(graph.interface.inputs.len(), 1);
+        assert_eq!(graph.nodes[0].ports.inputs.len(), 1);
+        assert_eq!(graph.nodes[0].ports.inputs[0].name, "x");
+        assert!(!graph.nodes[0]
+            .metadata
+            .contains_key(DSL_MODEL_INPUT_METADATA_KEY));
+    }
+
+    #[test]
+    fn named_ports_cannot_bypass_upstream_processing_or_override_the_contract() {
+        let mut declaration = spec(contract());
+        declaration.steps.insert(
+            0,
+            serde_json::from_value(json!({
+                "kind": "transform", "id": "scale", "operator": {"type": "Scaler"}
+            }))
+            .unwrap(),
+        );
+        assert!(compile_pipeline_dsl(&declaration)
+            .unwrap_err()
+            .to_string()
+            .contains("silently bypassed"));
+        let mut declaration = spec(contract());
+        let PipelineDslStep::Model(step) = &mut declaration.steps[0] else {
+            unreachable!()
+        };
+        step.metadata
+            .insert(DSL_MODEL_INPUT_METADATA_KEY.into(), contract());
+        assert!(compile_pipeline_dsl(&declaration)
+            .unwrap_err()
+            .to_string()
+            .contains("cannot override"));
+        for kind in ["transform", "y_transform", "chart"] {
+            let declaration: PipelineDslSpec = serde_json::from_value(json!({
+                "id":"wrong-owner", "steps":[{"kind":kind,"id":"wrong","operator":{"type":"Wrong"},"model_input":contract()}]
+            })).unwrap();
+            assert!(
+                compile_pipeline_dsl(&declaration).is_err(),
+                "accepted {kind}"
+            );
+        }
+        assert!(lower_nirs4all_compat_pipeline_dsl(&json!([
+            {"merge":"predictions"}, {"model":{"type":"UserModule"},"model_input":contract()}
+        ]))
+        .is_err());
+    }
+
+    #[test]
+    fn repeated_named_interfaces_share_only_identical_source_contracts() {
+        let mut declaration = spec(contract());
+        let mut second = declaration.steps[0].clone();
+        let PipelineDslStep::Model(step) = &mut second else {
+            unreachable!()
+        };
+        step.id = NodeId::new("model:second").unwrap();
+        declaration.steps.push(second);
+        assert_eq!(
+            compile_pipeline_dsl(&declaration)
+                .unwrap()
+                .interface
+                .inputs
+                .len(),
+            2
+        );
+        let PipelineDslStep::Model(step) = &mut declaration.steps[1] else {
+            unreachable!()
+        };
+        step.model_input.as_mut().unwrap().ports[0]
+            .metadata
+            .insert("source_id".into(), json!("different"));
+        assert!(compile_pipeline_dsl(&declaration)
+            .unwrap_err()
+            .to_string()
+            .contains("conflicting source/type"));
+    }
+
+    #[test]
+    fn operator_variant_identity_binds_named_source_dtype_shape_and_port_names() {
+        let original = spec(contract());
+        let label = operator_variant_label(&original.steps).unwrap();
+        for (path, value) in [
+            ("/ports/0/name", json!("spectra_main")),
+            ("/ports/0/metadata/source_id", json!("new-source")),
+            ("/ports/0/metadata/dtype", json!("float32")),
+            ("/ports/0/metadata/feature_shape", json!([5])),
+        ] {
+            let mut changed = contract();
+            *changed.pointer_mut(path).unwrap() = value;
+            assert_ne!(operator_variant_label(&spec(changed).steps).unwrap(), label);
+        }
+        let mut old = original;
+        let PipelineDslStep::Model(step) = &mut old.steps[0] else {
+            unreachable!()
+        };
+        step.model_input = None;
+        let canonical = operator_variant_canonical_value(&old.steps).unwrap();
+        assert!(canonical[0].get("model_input").is_none());
+    }
+}
+
 fn registry_manifest(id: &str, kind: NodeKind, aliases: &[&str]) -> ControllerManifest {
     ControllerManifest {
         controller_id: crate::ids::ControllerId::new(id).unwrap(),
@@ -2577,6 +2814,7 @@ fn operator_variant_model_rejects_nested_generator() {
 fn operator_variant_label_matches_pinned_host_contract() {
     let steps = vec![
         PipelineDslStep::Transform(PipelineDslOperatorStep {
+            model_input: None,
             id: NodeId::new("transform:snv").unwrap(),
             operator: serde_json::Value::String("SNV".to_string()),
             prediction_output_ports: Vec::new(),
@@ -2592,6 +2830,7 @@ fn operator_variant_label_matches_pinned_host_contract() {
             inner_cv: None,
         }),
         PipelineDslStep::Model(PipelineDslOperatorStep {
+            model_input: None,
             id: NodeId::new("model:pls").unwrap(),
             operator: serde_json::json!({"class": "sklearn.cross_decomposition.PLSRegression"}),
             prediction_output_ports: Vec::new(),
@@ -2671,6 +2910,7 @@ fn operator_variant_label_sorts_nested_operator_and_parameter_objects() {
 #[test]
 fn operator_variant_label_preserves_numeric_value_forms() {
     let with_int = vec![PipelineDslStep::Model(PipelineDslOperatorStep {
+        model_input: None,
         id: NodeId::new("model:pls").unwrap(),
         operator: serde_json::Value::String("PLS".to_string()),
         prediction_output_ports: Vec::new(),
@@ -2686,6 +2926,7 @@ fn operator_variant_label_preserves_numeric_value_forms() {
         inner_cv: None,
     })];
     let with_float = vec![PipelineDslStep::Model(PipelineDslOperatorStep {
+        model_input: None,
         id: NodeId::new("model:pls").unwrap(),
         operator: serde_json::Value::String("PLS".to_string()),
         prediction_output_ports: Vec::new(),

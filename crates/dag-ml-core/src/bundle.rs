@@ -3672,6 +3672,7 @@ mod tests {
             target_names: vec!["y".to_string()],
         };
         let report = RegressionMetricReport {
+            grouping_key: None,
             prediction_id: Some("prediction:model:hpo.avg".to_string()),
             producer_node: node.clone(),
             producer_port: Some("prediction".to_string()),
@@ -4204,6 +4205,7 @@ mod tests {
                 require_finite: true,
                 evaluation_scope: None,
                 refit_slot_plan: None,
+                requested_rank: None,
                 stacking_fit_contract: None,
                 reduction_id: None,
             },
@@ -4799,6 +4801,7 @@ mod tests {
             plan_id: plan.id.clone(),
             selection_metric: Some("rmse".to_string()),
             reports: vec![crate::metrics::RegressionMetricReport {
+                grouping_key: None,
                 prediction_id: Some("prediction:merge:sites:avg".to_string()),
                 producer_node: NodeId::new("merge:sites").unwrap(),
                 producer_port: Some("pred".to_string()),
@@ -5464,6 +5467,7 @@ mod tests {
             plan_id: bundle.plan_id.clone(),
             selection_metric: Some("rmse".to_string()),
             reports: vec![crate::metrics::RegressionMetricReport {
+                grouping_key: None,
                 prediction_id: None,
                 producer_node: NodeId::new("model:compat.0").unwrap(),
                 producer_port: Some("pred".to_string()),

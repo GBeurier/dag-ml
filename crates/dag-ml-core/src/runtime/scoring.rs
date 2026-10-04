@@ -27,10 +27,20 @@ pub(crate) fn global_oof_aggregation_specs(
         ..Default::default()
     };
     for (node_id, node_plan) in &plan.node_plans {
-        let Some(shape_plan) = &node_plan.shape_plan else {
-            continue;
+        let policy = if plan.campaign.aggregation_policy.grouping_key.is_some() {
+            if !node_plan
+                .controller_capabilities
+                .contains(&ControllerCapability::EmitsPredictions)
+            {
+                continue;
+            }
+            &plan.campaign.aggregation_policy
+        } else {
+            let Some(shape_plan) = &node_plan.shape_plan else {
+                continue;
+            };
+            &shape_plan.aggregation_policy
         };
-        let policy = &shape_plan.aggregation_policy;
         if matches!(
             policy.aggregation_level,
             PredictionLevel::Observation | PredictionLevel::Sample
@@ -39,12 +49,32 @@ pub(crate) fn global_oof_aggregation_specs(
             continue;
         }
         policy.validate()?;
-        let relations = coordinator_relations_for_node(node_plan, &resources)?.ok_or_else(|| {
+        let mut relations = coordinator_relations_for_node(node_plan, &resources)?;
+        if relations.is_none() && policy.grouping_key.is_some() {
+            for edge in plan
+                .graph_plan
+                .graph
+                .edges
+                .iter()
+                .filter(|edge| edge.target.node_id == *node_id)
+            {
+                if let Some(source) = plan.node_plans.get(&edge.source.node_id) {
+                    relations = coordinator_relations_for_node(source, &resources)?;
+                    if relations.is_some() {
+                        break;
+                    }
+                }
+            }
+        }
+        let mut relations = relations.ok_or_else(|| {
             DagMlError::RuntimeValidation(format!(
                 "node `{node_id}` declares global {:?} aggregation but has no relation-attested data binding",
                 policy.aggregation_level
             ))
         })?;
+        if let Some(units) = experimental_units(plan)? {
+            units.validate_relations(&relations)?;
+        }
         let actual_fingerprint = crate::relation::relation_set_fingerprint(&relations)?;
         for binding in &node_plan.data_bindings {
             if (binding.require_relations || binding.relation_fingerprint.is_some())
@@ -56,9 +86,34 @@ pub(crate) fn global_oof_aggregation_specs(
                 )));
             }
         }
+        if let Some(units) = experimental_units(plan)? {
+            let mut source_plans = vec![node_plan];
+            source_plans.extend(
+                plan.graph_plan
+                    .graph
+                    .edges
+                    .iter()
+                    .filter(|edge| edge.target.node_id == *node_id)
+                    .filter_map(|edge| plan.node_plans.get(&edge.source.node_id)),
+            );
+            for source in source_plans {
+                for binding in &source.data_bindings {
+                    if let Some(cohort) = data_provider.cv_test_cohort(binding)? {
+                        units.validate_test_cohort(&cohort)?;
+                        let ids = cohort.physical_sample_ids.iter().collect::<BTreeSet<_>>();
+                        relations
+                            .records
+                            .retain(|record| !ids.contains(&record.sample_id));
+                        relations.records.extend(cohort.relations.records);
+                    }
+                }
+            }
+            relations.validate()?;
+        }
         specs.insert(
             node_id.clone(),
             GlobalOofAggregationSpec {
+                class_labels: experimental_units(plan)?.and_then(|units| units.class_labels()),
                 policy: policy.clone(),
                 relations,
             },
@@ -86,6 +141,15 @@ pub(crate) fn apply_global_oof_aggregation(
         let Some(spec) = specs.get(&average.predictions.producer_node) else {
             continue;
         };
+        if spec.policy.grouping_key.is_some()
+            && matches!(
+                average.predictions.producer_port.as_deref(),
+                Some("proba" | "probabilities")
+            )
+        {
+            continue;
+        }
+        validate_independent_class_predictions(spec, &average.predictions.values)?;
         let sample_ids = average
             .predictions
             .unit_ids
@@ -108,8 +172,9 @@ pub(crate) fn apply_global_oof_aggregation(
             values: average.predictions.values.clone(),
             target_names: average.predictions.target_names.clone(),
         };
-        let requested_unit_order = requested_unit_order_for_sample_block(
+        let requested_unit_order = requested_unit_order_for_sample_block_with_key(
             spec.policy.aggregation_level,
+            spec.policy.grouping_key.as_ref(),
             &spec.relations,
             &sample_block,
         )?;
@@ -124,17 +189,21 @@ pub(crate) fn apply_global_oof_aggregation(
             &sample_block.sample_ids,
             &spec.relations,
             spec.policy.aggregation_level,
+            spec.policy.grouping_key.as_ref(),
             &requested_unit_order,
         )?;
-        outcome.reports.push(score_regression_aggregated_block(
-            &aggregated,
-            &targets,
-            SCORE_METRICS,
-        )?);
-        outcome.oof_averages.push(OofAverageBlock {
-            predictions: aggregated,
-            y_true: targets,
-        });
+        let report = if let Some(key) = &spec.policy.grouping_key {
+            crate::metrics::score_independent_unit_block(&aggregated, &targets, SCORE_METRICS, key)?
+        } else {
+            score_regression_aggregated_block(&aggregated, &targets, SCORE_METRICS)?
+        };
+        outcome.reports.push(report);
+        if spec.policy.grouping_key.is_none() {
+            outcome.oof_averages.push(OofAverageBlock {
+                predictions: aggregated,
+                y_true: targets,
+            });
+        }
     }
     Ok(outcome)
 }
@@ -144,9 +213,13 @@ fn aggregate_oof_targets_by_unit(
     sample_ids: &[SampleId],
     relations: &SampleRelationSet,
     level: PredictionLevel,
+    grouping_key: Option<&crate::policy::AggregationGroupingKey>,
     requested_unit_order: &[PredictionUnitId],
 ) -> Result<RegressionTargetBlock> {
-    sample_targets.require_complete_targets("global group/target OOF aggregation")?;
+    sample_targets.validate_shape()?;
+    if grouping_key.is_none() {
+        sample_targets.require_complete_targets("global group/target OOF aggregation")?;
+    }
     if sample_targets.level != PredictionLevel::Sample {
         return Err(DagMlError::OofValidation(
             "global OOF aggregation requires sample-level ground truth".to_string(),
@@ -169,41 +242,65 @@ fn aggregate_oof_targets_by_unit(
         }
     }
 
-    let mut target_by_unit = BTreeMap::<PredictionUnitId, Vec<f64>>::new();
+    let width = sample_targets.values[0].len();
+    let rows = sample_targets
+        .unit_ids
+        .iter()
+        .enumerate()
+        .map(|(index, id)| (id, index))
+        .collect::<BTreeMap<_, _>>();
+    let mut target_by_unit = BTreeMap::<PredictionUnitId, Vec<Option<f64>>>::new();
+    let grouping_index = grouping_key
+        .filter(|_| level == PredictionLevel::Group && !sample_ids.is_empty())
+        .map(|key| key.index(relations))
+        .transpose()?;
     for sample_id in sample_ids {
         let values = target_by_sample.get(sample_id).ok_or_else(|| {
-            DagMlError::OofValidation(format!(
-                "global OOF aggregation is missing ground truth for sample `{sample_id}`"
-            ))
+            DagMlError::OofValidation(format!("missing ground truth for sample `{sample_id}`"))
         })?;
-        let unit = aggregation_unit_for_sample(level, relations, sample_id)?;
-        match target_by_unit.get(&unit) {
-            None => {
-                target_by_unit.insert(unit, values.clone());
-            }
-            Some(existing) if existing == values => {}
-            Some(_) => {
-                return Err(DagMlError::OofValidation(format!(
-                    "global OOF aggregate unit `{unit:?}` has conflicting ground truth across member samples"
-                )));
+        let row = rows[&PredictionUnitId::Sample(sample_id.clone())];
+        let unit =
+            aggregation_unit_for_sample(level, relations, sample_id, grouping_index.as_ref())?;
+        let observed = target_by_unit
+            .entry(unit)
+            .or_insert_with(|| vec![None; width]);
+        for column in 0..width {
+            if sample_targets
+                .validity_masks
+                .as_ref()
+                .is_none_or(|masks| masks[row][column])
+            {
+                if observed[column].is_some_and(|previous| previous != values[column]) {
+                    return Err(DagMlError::OofValidation(
+                        "global OOF aggregate unit has conflicting ground truth".into(),
+                    ));
+                }
+                observed[column] = Some(values[column]);
             }
         }
     }
-    let values = requested_unit_order
+    let selected = requested_unit_order
         .iter()
         .map(|unit| {
-            target_by_unit.get(unit).cloned().ok_or_else(|| {
-                DagMlError::OofValidation(format!(
-                    "global OOF aggregate unit `{unit:?}` has no member ground truth"
-                ))
+            target_by_unit.get(unit).ok_or_else(|| {
+                DagMlError::OofValidation("aggregate unit has no member ground truth".into())
             })
         })
         .collect::<Result<Vec<_>>>()?;
+    let partial = selected.iter().any(|row| row.iter().any(Option::is_none));
     Ok(RegressionTargetBlock {
-        validity_masks: None,
+        validity_masks: partial.then(|| {
+            selected
+                .iter()
+                .map(|row| row.iter().map(Option::is_some).collect())
+                .collect()
+        }),
         level,
         unit_ids: requested_unit_order.to_vec(),
-        values,
+        values: selected
+            .iter()
+            .map(|row| row.iter().map(|value| value.unwrap_or(0.0)).collect())
+            .collect(),
         target_names: sample_targets.target_names.clone(),
     })
 }
@@ -212,6 +309,7 @@ fn aggregation_unit_for_sample(
     level: PredictionLevel,
     relations: &SampleRelationSet,
     sample_id: &SampleId,
+    grouping_index: Option<&crate::policy::AggregationGroupIndex<'_>>,
 ) -> Result<PredictionUnitId> {
     match level {
         PredictionLevel::Sample => Ok(PredictionUnitId::Sample(sample_id.clone())),
@@ -224,6 +322,10 @@ fn aggregation_unit_for_sample(
                     "sample `{sample_id}` is missing target id for global OOF aggregation"
                 ))
             }),
+        PredictionLevel::Group if grouping_index.is_some() => grouping_index
+            .expect("checked index")
+            .group_for_sample(sample_id)
+            .map(PredictionUnitId::Group),
         PredictionLevel::Group => relations
             .group_for_sample(sample_id)
             .cloned()
@@ -622,36 +724,24 @@ pub(crate) fn requested_unit_order_for_sample_block(
     relations: &SampleRelationSet,
     block: &PredictionBlock,
 ) -> Result<Vec<PredictionUnitId>> {
+    requested_unit_order_for_sample_block_with_key(level, None, relations, block)
+}
+
+pub(crate) fn requested_unit_order_for_sample_block_with_key(
+    level: PredictionLevel,
+    grouping_key: Option<&crate::policy::AggregationGroupingKey>,
+    relations: &SampleRelationSet,
+    block: &PredictionBlock,
+) -> Result<Vec<PredictionUnitId>> {
     let mut seen = BTreeSet::new();
     let mut unit_order = Vec::new();
+    let grouping_index = grouping_key
+        .filter(|_| level == PredictionLevel::Group && !block.sample_ids.is_empty())
+        .map(|key| key.index(relations))
+        .transpose()?;
     for sample_id in &block.sample_ids {
-        let unit_id = match level {
-            PredictionLevel::Sample => PredictionUnitId::Sample(sample_id.clone()),
-            PredictionLevel::Target => relations
-                .target_for_sample(sample_id)
-                .cloned()
-                .map(PredictionUnitId::Target)
-                .ok_or_else(|| {
-                    DagMlError::OofValidation(format!(
-                        "sample `{sample_id}` is missing target id for target aggregation"
-                    ))
-                })?,
-            PredictionLevel::Group => relations
-                .group_for_sample(sample_id)
-                .cloned()
-                .map(PredictionUnitId::Group)
-                .ok_or_else(|| {
-                    DagMlError::OofValidation(format!(
-                        "sample `{sample_id}` is missing group id for group aggregation"
-                    ))
-                })?,
-            PredictionLevel::Observation => {
-                return Err(DagMlError::OofValidation(
-                    "sample prediction aggregation cannot output observation-level predictions"
-                        .to_string(),
-                ));
-            }
-        };
+        let unit_id =
+            aggregation_unit_for_sample(level, relations, sample_id, grouping_index.as_ref())?;
         if seen.insert(unit_id.clone()) {
             unit_order.push(unit_id);
         }
@@ -741,6 +831,7 @@ mod global_oof_tests {
         let specs = BTreeMap::from([(
             NodeId::new("model:classifier").unwrap(),
             GlobalOofAggregationSpec {
+                class_labels: None,
                 policy: AggregationPolicy {
                     aggregation_level: PredictionLevel::Target,
                     method: AggregationMethod::Vote,
@@ -774,6 +865,7 @@ mod global_oof_tests {
         let specs = BTreeMap::from([(
             NodeId::new("model:classifier").unwrap(),
             GlobalOofAggregationSpec {
+                class_labels: None,
                 policy: AggregationPolicy {
                     aggregation_level: PredictionLevel::Target,
                     method: AggregationMethod::Vote,
@@ -793,4 +885,428 @@ mod global_oof_tests {
         .to_string();
         assert!(error.contains("conflicting ground truth"), "{error}");
     }
+}
+
+/// Score real per-fold/Test/REFIT blocks at the explicit statistical grain.
+/// These reports do not replace the sample-keyed feature/OOF buffers.
+pub(crate) fn apply_independent_unit_scope_reports(
+    mut outcome: crate::metrics::CrossFoldValidation,
+    specs: &BTreeMap<NodeId, GlobalOofAggregationSpec>,
+    blocks: &[PredictionBlock],
+    targets: &[RegressionTargetRecord],
+) -> Result<crate::metrics::CrossFoldValidation> {
+    for block in blocks {
+        let Some(spec) = specs.get(&block.producer_node) else {
+            continue;
+        };
+        let Some(key) = &spec.policy.grouping_key else {
+            continue;
+        };
+        if matches!(
+            block.producer_port.as_deref(),
+            Some("proba" | "probabilities")
+        ) {
+            continue;
+        }
+        validate_independent_class_predictions(spec, &block.values)?;
+        let records = targets
+            .iter()
+            .filter(|record| {
+                record.producer_node == block.producer_node
+                    && record.partition == block.partition
+                    && record.fold_id == block.fold_id
+                    && (record.producer_port.is_none()
+                        || record.producer_port == block.producer_port)
+            })
+            .collect::<Vec<_>>();
+        let Some(record) = records.first() else {
+            continue;
+        }; // target-free PREDICT is never scored
+        if records.iter().any(|other| other.block != record.block) {
+            return Err(DagMlError::OofValidation(
+                "ambiguous independent-unit target provenance".into(),
+            ));
+        }
+        let order = requested_unit_order_for_sample_block_with_key(
+            PredictionLevel::Group,
+            Some(key),
+            &spec.relations,
+            block,
+        )?;
+        let grouped =
+            aggregate_sample_predictions_by_unit(block, &spec.relations, &spec.policy, &order)?;
+        let truth = aggregate_oof_targets_by_unit(
+            &record.block,
+            &block.sample_ids,
+            &spec.relations,
+            PredictionLevel::Group,
+            Some(key),
+            &order,
+        )?;
+        let mut report =
+            crate::metrics::score_independent_unit_block(&grouped, &truth, SCORE_METRICS, key)?;
+        report.variant_id = record.variant_id.clone();
+        outcome.reports.push(report);
+    }
+    Ok(outcome)
+}
+
+#[cfg(test)]
+mod independent_unit_score_tests {
+    use super::*;
+    use crate::aggregation::AggregatedPredictionBlock;
+    use crate::ids::{GroupId, ObservationId};
+    use crate::policy::{AggregationGroupingKey, AggregationMethod};
+    use crate::relation::SampleRelation;
+
+    fn fixture(
+        classification: bool,
+    ) -> (BTreeMap<NodeId, GlobalOofAggregationSpec>, OofAverageBlock) {
+        let node = NodeId::new("model:independent.units").unwrap();
+        let samples = (1..=4)
+            .map(|index| SampleId::new(format!("s{index}")).unwrap())
+            .collect::<Vec<_>>();
+        let relations = SampleRelationSet {
+            records: samples
+                .iter()
+                .enumerate()
+                .map(|(index, id)| {
+                    let mut relation = SampleRelation::new(
+                        ObservationId::new(format!("obs{index}")).unwrap(),
+                        id.clone(),
+                    );
+                    relation.group_id = Some(GroupId::new("split_same").unwrap());
+                    relation.metadata.insert(
+                        "independent_unit_id".into(),
+                        serde_json::json!(if index < 3 { "unit_a" } else { "unit_b" }),
+                    );
+                    relation
+                })
+                .collect(),
+        };
+        let policy = AggregationPolicy {
+            aggregation_level: PredictionLevel::Group,
+            selection_metric_level: PredictionLevel::Group,
+            method: if classification {
+                AggregationMethod::Vote
+            } else {
+                AggregationMethod::Mean
+            },
+            grouping_key: Some(AggregationGroupingKey::RelationMetadata {
+                key: "independent_unit_id".into(),
+            }),
+            ..Default::default()
+        };
+        let ids = samples
+            .into_iter()
+            .map(PredictionUnitId::Sample)
+            .collect::<Vec<_>>();
+        let average = OofAverageBlock {
+            predictions: AggregatedPredictionBlock {
+                prediction_id: Some("prediction:units".into()),
+                producer_node: node.clone(),
+                producer_port: Some(if classification { "y_hat" } else { "predict" }.into()),
+                partition: PredictionPartition::Validation,
+                fold_id: Some(FoldId::new("avg").unwrap()),
+                level: PredictionLevel::Sample,
+                unit_ids: ids.clone(),
+                values: if classification {
+                    vec![vec![0.0], vec![1.0], vec![0.0], vec![1.0]]
+                } else {
+                    vec![vec![1.0], vec![3.0], vec![5.0], vec![9.0]]
+                },
+                target_names: vec!["y".into()],
+            },
+            y_true: RegressionTargetBlock {
+                level: PredictionLevel::Sample,
+                unit_ids: ids,
+                values: if classification {
+                    vec![vec![0.0], vec![0.0], vec![0.0], vec![1.0]]
+                } else {
+                    vec![vec![1.0], vec![1.0], vec![1.0], vec![9.0]]
+                },
+                validity_masks: None,
+                target_names: vec!["y".into()],
+            },
+        };
+        (
+            BTreeMap::from([(
+                node,
+                GlobalOofAggregationSpec {
+                    class_labels: classification.then_some(vec![0.0, 1.0]),
+                    policy,
+                    relations,
+                },
+            )]),
+            average,
+        )
+    }
+
+    #[test]
+    fn repeated_observations_score_equal_independent_units_and_keep_sample_features() {
+        let (specs, average) = fixture(false);
+        let raw = average.clone();
+        let outcome = apply_global_oof_aggregation(
+            crate::metrics::CrossFoldValidation {
+                reports: Vec::new(),
+                oof_averages: vec![average],
+            },
+            &specs,
+        )
+        .unwrap();
+        let report = &outcome.reports[0];
+        assert_eq!(report.level, PredictionLevel::Group);
+        assert_eq!(report.producer_node, raw.predictions.producer_node);
+        assert_eq!(report.producer_port.as_deref(), Some("predict"));
+        assert_eq!(report.fold_id.as_ref().unwrap().as_str(), "avg");
+        assert_eq!(outcome.oof_averages, vec![raw]);
+        assert_eq!(report.row_count, 2);
+        assert_eq!(report.metrics["mse"], 2.0); // mean of (mean(1,3,5)-1)^2 and (9-9)^2, not row-wise 5
+        assert_eq!(
+            report.grouping_key,
+            specs.values().next().unwrap().policy.grouping_key
+        );
+        assert!(specs
+            .values()
+            .next()
+            .unwrap()
+            .relations
+            .records
+            .iter()
+            .all(|record| record.group_id.as_ref().unwrap().as_str() == "split_same"));
+        assert_eq!(
+            report
+                .clone()
+                .into_candidate_score("candidate")
+                .unwrap()
+                .metadata["grouping_key"]["key"],
+            "independent_unit_id"
+        );
+    }
+
+    #[test]
+    fn classification_votes_real_labels_without_reducing_probability_feature_columns() {
+        let (specs, average) = fixture(true);
+        let mut probabilities = average.clone();
+        probabilities.predictions.producer_port = Some("probabilities".into());
+        probabilities.predictions.values = vec![
+            vec![0.8, 0.2],
+            vec![0.3, 0.7],
+            vec![0.9, 0.1],
+            vec![0.1, 0.9],
+        ];
+        probabilities.predictions.target_names = vec!["class:0".into(), "class:1".into()];
+        let originals = vec![average, probabilities];
+        let outcome = apply_global_oof_aggregation(
+            crate::metrics::CrossFoldValidation {
+                reports: Vec::new(),
+                oof_averages: originals.clone(),
+            },
+            &specs,
+        )
+        .unwrap();
+        assert_eq!(outcome.oof_averages, originals);
+        assert_eq!(outcome.reports.len(), 1);
+        assert_eq!(outcome.reports[0].producer_port.as_deref(), Some("y_hat"));
+        assert_ne!(
+            outcome.reports[0].producer_port.as_deref(),
+            Some("probabilities")
+        );
+        assert_eq!(
+            outcome.reports[0].grouping_key,
+            specs.values().next().unwrap().policy.grouping_key
+        );
+        for metric in ["accuracy", "balanced_accuracy", "f1"] {
+            assert_eq!(outcome.reports[0].metrics[metric], 1.0);
+        }
+        let mut fractional_label = originals[0].clone();
+        fractional_label.predictions.values[0][0] = 1.0 / 3.0;
+        assert!(apply_global_oof_aggregation(
+            crate::metrics::CrossFoldValidation {
+                reports: Vec::new(),
+                oof_averages: vec![fractional_label],
+            },
+            &specs,
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("genuine labels"));
+    }
+
+    #[test]
+    fn group_scoring_preserves_partial_truth_without_averaging_or_fabricating_labels() {
+        let (specs, mut average) = fixture(false);
+        average.predictions.target_names = vec!["y".into(), "z".into()];
+        average.predictions.values = vec![
+            vec![1.0, 2.0],
+            vec![3.0, 4.0],
+            vec![5.0, 6.0],
+            vec![9.0, 8.0],
+        ];
+        average.y_true.target_names = vec!["y".into(), "z".into()];
+        average.y_true.values = vec![
+            vec![1.0, 0.0],
+            vec![1.0, 2.0],
+            vec![1.0, 2.0],
+            vec![9.0, 0.0],
+        ];
+        average.y_true.validity_masks = Some(vec![
+            vec![true, false],
+            vec![true, true],
+            vec![true, true],
+            vec![true, false],
+        ]);
+        let outcome = apply_global_oof_aggregation(
+            crate::metrics::CrossFoldValidation {
+                reports: Vec::new(),
+                oof_averages: vec![average.clone()],
+            },
+            &specs,
+        )
+        .unwrap();
+        assert_eq!(outcome.reports[0].metrics["mse:y"], 2.0);
+        assert_eq!(outcome.reports[0].metrics["mse:z"], 4.0);
+        assert_eq!(outcome.reports[0].metrics["mse"], 3.0);
+        average.y_true.values[2][1] = 3.0;
+        assert!(apply_global_oof_aggregation(
+            crate::metrics::CrossFoldValidation {
+                reports: Vec::new(),
+                oof_averages: vec![average]
+            },
+            &specs
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("conflicting ground truth"));
+    }
+
+    #[test]
+    fn refit_scope_report_uses_real_scope_ids_and_does_not_invent_predictions() {
+        let (specs, average) = fixture(false);
+        let block = PredictionBlock {
+            prediction_id: average.predictions.prediction_id,
+            producer_node: average.predictions.producer_node.clone(),
+            producer_port: average.predictions.producer_port.clone(),
+            partition: PredictionPartition::Final,
+            fold_id: None,
+            sample_ids: average
+                .predictions
+                .unit_ids
+                .iter()
+                .map(|unit| match unit {
+                    PredictionUnitId::Sample(id) => id.clone(),
+                    _ => unreachable!(),
+                })
+                .collect(),
+            values: average.predictions.values,
+            target_names: average.predictions.target_names,
+        };
+        let truth = RegressionTargetRecord {
+            producer_node: block.producer_node.clone(),
+            producer_port: block.producer_port.clone(),
+            variant_id: None,
+            partition: PredictionPartition::Final,
+            fold_id: None,
+            block: average.y_true,
+        };
+        let outcome = apply_independent_unit_scope_reports(
+            Default::default(),
+            &specs,
+            std::slice::from_ref(&block),
+            std::slice::from_ref(&truth),
+        )
+        .unwrap();
+        assert_eq!(outcome.reports.len(), 1);
+        assert_eq!(outcome.reports[0].partition, PredictionPartition::Final);
+        assert_eq!(outcome.reports[0].fold_id, None);
+        assert_eq!(outcome.reports[0].row_count, 2);
+        assert!(outcome.oof_averages.is_empty());
+        assert!(apply_independent_unit_scope_reports(
+            Default::default(),
+            &specs,
+            std::slice::from_ref(&block),
+            &[]
+        )
+        .unwrap()
+        .reports
+        .is_empty());
+    }
+
+    #[test]
+    fn indexed_statistical_scoring_preserves_reports_with_unselected_relations() {
+        let (mut specs, average) = fixture(false);
+        let input = crate::metrics::CrossFoldValidation {
+            reports: Vec::new(),
+            oof_averages: vec![average],
+        };
+        let expected = apply_global_oof_aggregation(input.clone(), &specs).unwrap();
+        specs
+            .values_mut()
+            .next()
+            .unwrap()
+            .relations
+            .records
+            .push(SampleRelation::new(
+                ObservationId::new("unselected_observation").unwrap(),
+                SampleId::new("unselected_sample").unwrap(),
+            ));
+        let actual = apply_global_oof_aggregation(input, &specs).unwrap();
+        assert_eq!(actual.reports, expected.reports);
+        assert_eq!(actual.oof_averages, expected.oof_averages);
+    }
+
+    #[test]
+    fn indexed_statistical_scoring_keeps_missing_and_conflicting_unit_refusals() {
+        for case in ["absent", "missing_metadata", "conflicting_metadata"] {
+            let (mut specs, average) = fixture(false);
+            let relations = &mut specs.values_mut().next().unwrap().relations;
+            let expected = match case {
+                "absent" => {
+                    relations.records.remove(1);
+                    "sample `s2` has no attested relation"
+                }
+                "missing_metadata" => {
+                    relations.records[1].metadata.clear();
+                    "sample `s2` has no independent unit metadata"
+                }
+                "conflicting_metadata" => {
+                    let mut duplicate = relations.records[0].clone();
+                    duplicate.observation_id =
+                        ObservationId::new("conflicting_observation").unwrap();
+                    duplicate.metadata.insert(
+                        "independent_unit_id".into(),
+                        serde_json::json!("different_unit"),
+                    );
+                    relations.records.push(duplicate);
+                    "sample `s1` has conflicting independent units"
+                }
+                _ => unreachable!(),
+            };
+            let error = apply_global_oof_aggregation(
+                crate::metrics::CrossFoldValidation {
+                    reports: Vec::new(),
+                    oof_averages: vec![average],
+                },
+                &specs,
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(error.contains(expected), "{case}: {error}");
+        }
+    }
+}
+
+fn validate_independent_class_predictions(
+    spec: &GlobalOofAggregationSpec,
+    values: &[Vec<f64>],
+) -> Result<()> {
+    if let Some(classes) = &spec.class_labels {
+        if values
+            .iter()
+            .any(|row| row.len() != 1 || !classes.contains(&row[0]))
+        {
+            return Err(DagMlError::OofValidation("independent-unit classification requires genuine labels in the signed class vocabulary, not probability features or averaged IDs".into()));
+        }
+    }
+    Ok(())
 }

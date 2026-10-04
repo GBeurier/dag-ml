@@ -77,8 +77,8 @@ while true
                 assert(~isempty(regexp(seed, '^(0|[1-9][0-9]*)$', 'once')) && ...
                     (numel(seed) < 20 || (numel(seed) == 20 && ...
                     lex_le(seed, '18446744073709551615'))), 'Seed must be an exact u64 token');
-                result = invoke(frame.task);
-                reply = struct('type', 'result', 'schema_version', 1, 'result', result);
+                node_result = invoke(frame.task);
+                reply = struct('type', 'result', 'schema_version', 1, 'result', node_result);
                 encoded = jsonencode(reply);
                 encoded = strrep(encoded, '"seed":"__DAGML_U64_SEED__"', ['"seed":' seed]);
                 fprintf(1, '%s\n', encoded); fflush(1); continue;
@@ -108,6 +108,7 @@ end
         guard = onCleanup(@() fclose(fid)); %#ok<NASGU>
         fprintf(fid, '%s\n', jsonencode(struct('operation', operation, 'node_id', node, ...
             'sample_ids', {sample_ids})));
+        assert(fflush(fid) == 0, 'Cannot flush lifecycle audit');
     end
     function dispose(entry)
         entry.model.close(); audit('dispose', entry.node_id);
@@ -308,9 +309,10 @@ end
             strcmp(node.controller_version, version_id) && isfield(config.operators, node.node_id), ...
             'Current Methods controller or node mismatch');
         assert(any(strcmp(task.phase, {'FIT_CV', 'REFIT', 'PREDICT'})), 'Unsupported Methods phase');
-        assert(empty_value(task.data_view_receipts) && empty_value(task.required_loss_attestations) && ...
-            empty_value(task.residual_targets) && (empty_value(task.fit_influence) || ...
-            (strcmp(task.fit_influence.mechanism, 'uniform_rows') && empty_value(task.fit_influence.row_weights))), ...
+        assert(empty_value(optional_member(task, 'data_view_receipts')) && empty_value(optional_member(task, 'required_loss_attestations')) && ...
+            empty_value(optional_member(task, 'residual_targets')) && (empty_value(optional_member(task, 'fit_influence')) || ...
+            (strcmp(task.fit_influence.mechanism, 'uniform_rows') && empty_value(optional_member(task.fit_influence, 'row_weights')) && ...
+            empty_value(optional_member(task.fit_influence, 'target_row_weights')))), ...
             'Generated views, losses, residuals or nonuniform influence need a specialized controller');
         prediction_keys = fieldnames(task.prediction_inputs);
         assert(~strcmp(task.phase, 'FIT_CV') || ~any(endsWith(prediction_keys, ':test')), ...
@@ -403,6 +405,10 @@ end
 end
 function value = decode(text)
 value = jsondecode(text, 'makeValidName', false);
+end
+function value = optional_member(object, name)
+% Rust serde defaults omit empty receipts/losses/targets/influence fields.
+if isfield(object, name), value = object.(name); else, value = []; end
 end
 function ok = empty_value(value)
 if isstruct(value), ok = isempty(fieldnames(value)); else, ok = isempty(value); end

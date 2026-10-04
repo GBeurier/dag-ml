@@ -6,6 +6,7 @@
   "additionalProperties": false,
   "required": ["id", "metric"],
   "properties": {
+    "requested_rank": { "type": "integer", "minimum": 1 },
     "id": {
       "$ref": "#/$defs/non_empty_string"
     },

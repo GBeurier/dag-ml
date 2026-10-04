@@ -149,7 +149,8 @@ pub fn operator_variant_label_from_steps_json(steps_json: &str) -> Result<String
 }
 
 /// Render one lowered step into its canonical `{"kind", "class", "params"}` object (see
-/// [`operator_variant_label`]).
+/// [`operator_variant_label`]). Explicit named model inputs additionally bind
+/// their source/type/shape contract; absent contracts retain historical bytes.
 fn canonical_operator_step(step: &PipelineDslStep) -> Result<serde_json::Value> {
     let (kind, class, params): (&str, String, &BTreeMap<String, serde_json::Value>) = match step {
         PipelineDslStep::Transform(step) => {
@@ -232,6 +233,19 @@ fn canonical_operator_step(step: &PipelineDslStep) -> Result<serde_json::Value> 
     );
     object.insert("class".to_string(), serde_json::Value::String(class));
     object.insert("params".to_string(), serde_json::Value::Object(params_map));
+    if let PipelineDslStep::Model(step) | PipelineDslStep::Tuner(step) = step {
+        if let Some(model_input) = &step.model_input {
+            validate_named_model_input_spec(model_input)?;
+            object.insert(
+                "model_input".to_string(),
+                serde_json::to_value(model_input).map_err(|error| {
+                    DagMlError::GraphValidation(format!(
+                        "failed to canonicalize named model_input: {error}"
+                    ))
+                })?,
+            );
+        }
+    }
     Ok(serde_json::Value::Object(object))
 }
 

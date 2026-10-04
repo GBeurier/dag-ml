@@ -19,10 +19,10 @@ use dag_ml_core::{
     fold_set_fingerprint, n4m_host_controller_specs, parse_pipeline_dsl_json, select_candidate,
     select_candidate_groups, validate_runtime_controller_manifests, CampaignSpec, CandidateScore,
     ControllerManifest, ControllerRegistry, DagMlError as CoreDagMlError, ExecutionBundle,
-    ExecutionPlan, FoldSet, GraphSpec, HostControllerSpec, InitialFullRefitPackage, KFoldSpec,
-    PortablePredictorPackage, PredictCohortConstructionRequest, SampleId, SelectionPolicy,
-    StackingFoldSelectionRequest, StackingProducerSelectionRequest, StratifiedKFoldSpec,
-    TrainingLossRoleReference,
+    ExecutionPlan, FoldSet, GraphSpec, GroupId, GroupKFoldSpec, HostControllerSpec,
+    InitialFullRefitPackage, KFoldSpec, PortablePredictorPackage, PredictCohortConstructionRequest,
+    SampleId, SelectionPolicy, StackingFoldSelectionRequest, StackingProducerSelectionRequest,
+    StratifiedKFoldSpec, TrainingLossRoleReference,
 };
 use dag_ml_core::{
     ArtifactId, ArtifactMaterializationRequest, ControllerId, HandleRef, NodeResult, NodeTask,
@@ -156,6 +156,21 @@ pub fn kfold_split_json(
     let spec: KFoldSpec = serde_json::from_str(spec_json).map_err(js_serde_error)?;
     let samples: Vec<SampleId> = serde_json::from_str(sample_ids_json).map_err(js_serde_error)?;
     let fold_set = spec.split(id, &samples).map_err(js_core_error)?;
+    serde_json::to_string(&fold_set).map_err(js_serde_error)
+}
+
+/// Build a native group-disjoint FoldSet from explicit sample -> group identities.
+/// No group inference, clipping, randomization or feature values occur in the binding.
+#[wasm_bindgen]
+pub fn group_kfold_split_json(
+    spec_json: &str,
+    sample_groups_json: &str,
+    id: &str,
+) -> Result<String, JsValue> {
+    let spec: GroupKFoldSpec = serde_json::from_str(spec_json).map_err(js_serde_error)?;
+    let groups: BTreeMap<SampleId, GroupId> =
+        serde_json::from_str(sample_groups_json).map_err(js_serde_error)?;
+    let fold_set = spec.split(id, &groups).map_err(js_core_error)?;
     serde_json::to_string(&fold_set).map_err(js_serde_error)
 }
 
@@ -487,6 +502,7 @@ fn contract_manifest() -> serde_json::Value {
             "build_execution_plan_json",
             "build_execution_plan_with_training_losses_json",
             "kfold_split_json",
+            "group_kfold_split_json",
             "stratified_kfold_split_json",
             "select_candidates_json",
             "select_portable_output_json",
@@ -780,6 +796,41 @@ pub fn execute_execution_plan_phase_json(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn group_kfold_binding_keeps_repeated_groups_disjoint_and_complete() {
+        let groups = serde_json::json!({
+            "sample:1": "group:A", "sample:2": "group:A", "sample:3": "group:A",
+            "sample:4": "group:B", "sample:5": "group:C", "sample:6": "group:C"
+        });
+        let json = group_kfold_split_json("{\"n_splits\":3}", &groups.to_string(), "outer")
+            .expect("native group split");
+        let folds: FoldSet = serde_json::from_str(&json).unwrap();
+        folds.validate().unwrap();
+        let mut validated = std::collections::BTreeSet::new();
+        for fold in &folds.folds {
+            let train_groups = fold
+                .train_sample_ids
+                .iter()
+                .map(|id| &folds.sample_groups[id])
+                .collect::<std::collections::BTreeSet<_>>();
+            let val_groups = fold
+                .validation_sample_ids
+                .iter()
+                .map(|id| &folds.sample_groups[id])
+                .collect::<std::collections::BTreeSet<_>>();
+            assert!(train_groups.is_disjoint(&val_groups));
+            for id in &fold.validation_sample_ids {
+                assert!(validated.insert(id));
+            }
+        }
+        assert_eq!(validated.len(), 6);
+        assert_eq!(folds.sample_groups.len(), 6);
+        assert!(contract_manifest()["wasm_exports"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("group_kfold_split_json")));
+    }
 
     #[test]
     fn derives_controller_manifest_json_for_wasm_surface() {

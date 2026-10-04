@@ -226,6 +226,16 @@ pub fn n4m_host_controller_specs(manifest_json: &str) -> Result<Vec<HostControll
             });
             spec.output_ports = Some(outputs);
         }
+        if matches!(
+            role,
+            N4mRole::Transformer | N4mRole::Selector | N4mRole::Regressor | N4mRole::Classifier
+        ) {
+            // These native roles export their actual REFIT state as N4ME and
+            // hydrate it for PREDICT. Train-only filters/augmenters and split
+            // controllers do not share that durable-state contract.
+            spec.added_capabilities
+                .insert(ControllerCapability::SupportsPortableFullRefit);
+        }
         specs.push(spec);
     }
     Ok(specs)

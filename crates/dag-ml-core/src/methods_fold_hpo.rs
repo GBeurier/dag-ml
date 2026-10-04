@@ -123,11 +123,13 @@ pub fn methods_fold_hpo_study_plan(
     for node in plan.node_plans.values_mut() {
         node.inner_cv = None;
     }
-    let raw = plan
+    let operation = plan
         .campaign
         .metadata
         .get_mut("methods_hpo_operation")
-        .and_then(Value::as_object_mut)
+        .ok_or_else(|| invalid("missing signed operation"))?;
+    let raw = operation
+        .as_object_mut()
         .ok_or_else(|| invalid("missing signed operation"))?;
     raw.insert("schema_version".into(), Value::from(2));
     raw.insert("operation_id".into(), Value::from(scope_id));
@@ -147,6 +149,10 @@ pub fn methods_fold_hpo_study_plan(
         "study_id".into(),
         Value::from(format!("{root_study}:{scope_id}")),
     );
+    // Canonicalize only dynamic JSON, retaining the typed campaign field order
+    // and all ordered folds/parameters. Python's sorted JSON must replay this
+    // exact native scope without changing its fingerprint.
+    operation.sort_all_objects();
     plan.campaign_fingerprint = stable_json_fingerprint(&plan.campaign)?;
     plan.validate()?;
     Ok(plan)

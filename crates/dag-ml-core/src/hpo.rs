@@ -2831,6 +2831,8 @@ mod pls_controller {
                 unit_ids: Vec::new(),
                 sample_ids: sample_ids(),
                 values,
+                feature_validity_masks: None,
+                source_presence: None,
                 prediction_width: 1,
                 target_names: vec!["y".to_string()],
             }

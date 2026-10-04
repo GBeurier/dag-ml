@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "ports": [
+    {
+      "name": "nir",
+      "accepted_representations": [
+        "tabular_numeric"
+      ],
+      "accepted_types": [
+        "table"
+      ],
+      "rank": 2,
+      "multi_source": false,
+      "optional": false,
+      "metadata": {
+        "source_id": "src0",
+        "dtype": "float64",
+        "feature_shape": [
+          4
+        ]
+      }
+    },
+    {
+      "name": "clinical",
+      "accepted_representations": [
+        "tabular_numeric"
+      ],
+      "accepted_types": [
+        "table"
+      ],
+      "rank": 2,
+      "multi_source": false,
+      "optional": false,
+      "metadata": {
+        "source_id": "src1",
+        "dtype": "float32",
+        "feature_shape": [
+          3
+        ]
+      }
+    }
+  ],
+  "default_fusion": null,
+  "metadata": {}
+}

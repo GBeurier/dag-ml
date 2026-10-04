@@ -264,8 +264,93 @@ impl ReductionPlan {
     }
 }
 
+/// A statistical grouping identity independent of split groups.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AggregationGroupingKey {
+    RelationMetadata { key: String },
+}
+
+impl AggregationGroupingKey {
+    pub fn validate(&self) -> Result<()> {
+        match self {
+            Self::RelationMetadata { key } if key == "independent_unit_id" => Ok(()),
+            _ => Err(DagMlError::CampaignValidation(
+                "statistical grouping requires relation_metadata independent_unit_id".into(),
+            )),
+        }
+    }
+
+    pub fn group_for_sample(
+        &self,
+        relations: &crate::relation::SampleRelationSet,
+        sample_id: &crate::ids::SampleId,
+    ) -> Result<crate::ids::GroupId> {
+        self.index(relations)?.group_for_sample(sample_id)
+    }
+
+    /// Index relation membership once, preserving lazy per-sample validation.
+    pub(crate) fn index<'a>(
+        &'a self,
+        relations: &'a crate::relation::SampleRelationSet,
+    ) -> Result<AggregationGroupIndex<'a>> {
+        self.validate()?;
+        let Self::RelationMetadata { key } = self;
+        let mut records_by_sample = BTreeMap::new();
+        for record in &relations.records {
+            records_by_sample
+                .entry(record.sample_id.clone())
+                .or_insert_with(Vec::new)
+                .push(record);
+        }
+        Ok(AggregationGroupIndex {
+            key,
+            records_by_sample,
+        })
+    }
+}
+
+/// Operation-local index; never serialized into a graph, task or report.
+pub(crate) struct AggregationGroupIndex<'a> {
+    key: &'a str,
+    records_by_sample: BTreeMap<crate::ids::SampleId, Vec<&'a crate::relation::SampleRelation>>,
+}
+
+impl AggregationGroupIndex<'_> {
+    pub(crate) fn group_for_sample(
+        &self,
+        sample_id: &crate::ids::SampleId,
+    ) -> Result<crate::ids::GroupId> {
+        let records = self.records_by_sample.get(sample_id).ok_or_else(|| {
+            DagMlError::OofValidation(format!("sample `{sample_id}` has no attested relation"))
+        })?;
+        let mut found = None;
+        for record in records {
+            let value = record
+                .metadata
+                .get(self.key)
+                .and_then(serde_json::Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| {
+                    DagMlError::OofValidation(format!(
+                        "sample `{sample_id}` has no independent unit metadata"
+                    ))
+                })?;
+            if found.as_ref().is_some_and(|previous| previous != value) {
+                return Err(DagMlError::OofValidation(format!(
+                    "sample `{sample_id}` has conflicting independent units"
+                )));
+            }
+            found = Some(value.to_string());
+        }
+        crate::ids::GroupId::new(found.expect("indexed sample has at least one relation"))
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct AggregationPolicy {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grouping_key: Option<AggregationGroupingKey>,
     #[serde(default = "default_prediction_level")]
     pub aggregation_level: PredictionLevel,
     #[serde(default = "default_aggregation_method")]
@@ -288,6 +373,7 @@ impl Default for AggregationPolicy {
     fn default() -> Self {
         Self {
             aggregation_level: PredictionLevel::Sample,
+            grouping_key: None,
             method: AggregationMethod::Mean,
             weights: AggregationWeights::None,
             custom_controller: None,
@@ -301,6 +387,14 @@ impl Default for AggregationPolicy {
 
 impl AggregationPolicy {
     pub fn validate(&self) -> Result<()> {
+        if let Some(key) = &self.grouping_key {
+            key.validate()?;
+            if self.aggregation_level != PredictionLevel::Group {
+                return Err(DagMlError::CampaignValidation(
+                    "grouping_key requires Group aggregation".into(),
+                ));
+            }
+        }
         if self.method == AggregationMethod::None
             && self.aggregation_level != PredictionLevel::Observation
         {
@@ -961,5 +1055,88 @@ mod tests {
             .metadata
             .insert(" ".to_string(), serde_json::Value::Bool(true));
         assert!(bad_metadata.validate().is_err());
+    }
+}
+
+#[cfg(test)]
+mod grouping_index_tests {
+    use super::*;
+    use crate::ids::{GroupId, ObservationId, SampleId};
+    use crate::relation::{SampleRelation, SampleRelationSet};
+
+    fn relation(observation: &str, sample: &str, unit: serde_json::Value) -> SampleRelation {
+        let mut relation = SampleRelation::new(
+            ObservationId::new(observation).unwrap(),
+            SampleId::new(sample).unwrap(),
+        );
+        relation.metadata.insert("independent_unit_id".into(), unit);
+        relation
+    }
+
+    // The previous scan is a test-only compatibility oracle, including error order.
+    fn original_scan(relations: &SampleRelationSet, sample: &SampleId) -> Result<GroupId> {
+        let mut found = None;
+        for record in relations
+            .records
+            .iter()
+            .filter(|record| &record.sample_id == sample)
+        {
+            let value = record
+                .metadata
+                .get("independent_unit_id")
+                .and_then(serde_json::Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| {
+                    DagMlError::OofValidation(format!(
+                        "sample `{sample}` has no independent unit metadata"
+                    ))
+                })?;
+            if found.as_ref().is_some_and(|previous| previous != value) {
+                return Err(DagMlError::OofValidation(format!(
+                    "sample `{sample}` has conflicting independent units"
+                )));
+            }
+            found = Some(value.to_owned());
+        }
+        GroupId::new(found.ok_or_else(|| {
+            DagMlError::OofValidation(format!("sample `{sample}` has no attested relation"))
+        })?)
+    }
+
+    #[test]
+    fn indexed_groups_match_scan_and_preserve_lazy_errors_for_every_sample() {
+        let relations = SampleRelationSet {
+            records: vec![
+                relation("o1", "s1", serde_json::json!("unit_a")),
+                relation("o2", "s1", serde_json::json!("unit_a")),
+                relation("o3", "s2", serde_json::json!("unit_b")),
+                relation("o4", "conflict", serde_json::json!("unit_a")),
+                relation("o5", "conflict", serde_json::json!("unit_b")),
+                relation("o6", "missing", serde_json::Value::Null),
+                relation("o7", "blank", serde_json::json!(" ")),
+                relation("o8", "invalid_id", serde_json::json!("unit with spaces")),
+            ],
+        };
+        let key = AggregationGroupingKey::RelationMetadata {
+            key: "independent_unit_id".into(),
+        };
+        // Unselected invalid metadata must not make construction fail.
+        let index = key.index(&relations).unwrap();
+        for sample in [
+            "s2",
+            "s1",
+            "absent",
+            "conflict",
+            "missing",
+            "blank",
+            "invalid_id",
+        ] {
+            let sample = SampleId::new(sample).unwrap();
+            let actual = index
+                .group_for_sample(&sample)
+                .map_err(|error| error.to_string());
+            let expected = original_scan(&relations, &sample).map_err(|error| error.to_string());
+            assert_eq!(actual, expected, "lookup changed for {sample}");
+        }
     }
 }

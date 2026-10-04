@@ -40,7 +40,38 @@
     },
     "optimizer_descriptor": {
       "type": "object",
-      "minProperties": 1
+      "minProperties": 1,
+      "properties": {
+        "parallel_execution": { "$ref": "#/$defs/parallel_execution" }
+      },
+      "allOf": [
+        {
+          "if": { "required": ["parallel_execution"] },
+          "then": {
+            "required": ["n_jobs", "sampler"],
+            "properties": {
+              "n_jobs": { "type": "integer", "enum": [2, 3, 4] },
+              "sampler": { "const": "random" },
+              "pruner": { "enum": [null, "none"] }
+            },
+            "allOf": [
+              {
+                "if": { "properties": { "parallel_execution": { "properties": { "workers": { "const": 2 } } } } },
+                "then": { "properties": { "n_jobs": { "const": 2 } } }
+              },
+              {
+                "if": { "properties": { "parallel_execution": { "properties": { "workers": { "const": 3 } } } } },
+                "then": { "properties": { "n_jobs": { "const": 3 } } }
+              },
+              {
+                "if": { "properties": { "parallel_execution": { "properties": { "workers": { "const": 4 } } } } },
+                "then": { "properties": { "n_jobs": { "const": 4 } } }
+              }
+            ],
+            "not": { "required": ["generated_view_mode"] }
+          }
+        }
+      ]
     },
     "phase_trial_budgets": {
       "type": "array",
@@ -94,6 +125,45 @@
           "type": "null"
         }
       ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "optimizer_descriptor": { "required": ["parallel_execution"] } }
+      },
+      "then": {
+        "properties": {
+          "progressive_pruning": { "const": false },
+          "metric": { "enum": ["mse", "rmse", "mae", "r2"] }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "parallel_execution": {
+      "description": "Host-attested bounded Methods sequential CPU profile, signed into the native objective and checkpoint. Native validation also requires workers equal n_jobs and the actual worker budget.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "profile", "workers", "cpu_threads", "gpu_devices", "methods_build"],
+      "properties": {
+        "schema_version": { "type": "integer", "const": 1 },
+        "profile": { "const": "methods_sequential_cpu_v1" },
+        "workers": { "type": "integer", "minimum": 2, "maximum": 4 },
+        "cpu_threads": { "type": "integer", "const": 1 },
+        "gpu_devices": { "type": "array", "maxItems": 0, "items": { "type": "string" } },
+        "methods_build": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["schema_version", "blas", "openmp", "cuda"],
+          "properties": {
+            "schema_version": { "type": "integer", "const": 1 },
+            "blas": { "const": false },
+            "openmp": { "const": false },
+            "cuda": { "const": false }
+          }
+        }
+      }
     }
   }
 }

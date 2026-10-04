@@ -37,4 +37,4 @@ n4m = { version = "0.3.0", default-features = false, features = ["dynamic"], opt
 # solely through its public opaque Archive V2 storage API. This exact registry
 # baseline is not the Core version qualified by the release train; that
 # cross-source qualification belongs to a separate integration harness.
-nirs4all_archive_core = { package = "nirs4all", version = "=0.3.22" }
+nirs4all_archive_core = { package = "nirs4all", version = "=0.4.0" }

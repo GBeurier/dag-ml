@@ -315,6 +315,7 @@ pub(crate) struct CachedDataOutput {
 
 #[derive(Clone, Debug)]
 pub(crate) struct GlobalOofAggregationSpec {
+    pub(crate) class_labels: Option<Vec<f64>>,
     pub(crate) policy: AggregationPolicy,
     pub(crate) relations: SampleRelationSet,
 }
@@ -490,6 +491,32 @@ impl RunContext {
                 block
             })
             .collect::<Vec<_>>();
+        let scoped = apply_independent_unit_scope_reports(
+            Default::default(),
+            &self.global_oof_aggregation,
+            &scoring_blocks,
+            &self.regression_target_records,
+        )?;
+        for report in scoped.reports {
+            let existing = self.score_collector.iter().find(|existing| {
+                existing.producer_node == report.producer_node
+                    && existing.producer_port == report.producer_port
+                    && existing.variant_id == report.variant_id
+                    && existing.partition == report.partition
+                    && existing.fold_id == report.fold_id
+                    && existing.level == report.level
+                    && existing.grouping_key == report.grouping_key
+            });
+            if let Some(existing) = existing {
+                if existing != &report {
+                    return Err(DagMlError::OofValidation(
+                        "independent-unit scope score changed after emission".into(),
+                    ));
+                }
+            } else {
+                self.score_collector.push(report);
+            }
+        }
         self.score_collector.extend(outcome.reports);
         self.score_collector.extend(weighted_reports);
         self.oof_average_blocks.extend(outcome.oof_averages);
@@ -1143,6 +1170,9 @@ where
                             && target_port
                                 .is_none_or(|port| report.producer_port.as_deref() == Some(port))
                             && report.level == level
+                            && (level != PredictionLevel::Group
+                                || report.grouping_key
+                                    == variant_plan.campaign.aggregation_policy.grouping_key)
                     })
                     && report
                         .fold_id
@@ -1220,6 +1250,7 @@ where
         require_finite: true,
         evaluation_scope: None,
         refit_slot_plan: None,
+        requested_rank: None,
         stacking_fit_contract: None,
         reduction_id: None,
     };

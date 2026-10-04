@@ -89,7 +89,7 @@ The tracked root workspace and standalone `dag-ml-py` maturin workspace both
 lock that binding from the registry with its published checksum. A local path
 patch is evidence only, never a release source.
 
-The `nirs4all_archive_core = "=0.3.22"` development dependency is a registry
+The `nirs4all_archive_core = "=0.4.0"` development dependency is a registry
 baseline used only by the Archive V2 integration tests. It is not the Core
 selected by the release train and must not be presented as cross-source Core
 qualification; that qualification is owned by a separate integration harness.
@@ -253,11 +253,15 @@ absolute library path.
 
 Campaign provenance excludes only the requested total trial budget and opaque
 resume-package transport. Study/search space, graph, controller, fold, data and
-influence identities remain validated. Nested JSON object order is canonical
-even when a downstream Rust crate enables `serde_json/preserve_order`; this
-keeps published default-build fingerprints readable across the aggregate and
-standalone Python bindings. Increasing a trial budget does not authorize any
-change to those scientific identities.
+influence identities remain validated. HPO campaign provenance and the
+execution-derived phase-control objects use canonical nested JSON object order
+even when a downstream Rust crate enables `serde_json/preserve_order`. This
+keeps their published default-build fingerprints readable across the aggregate
+and standalone Python bindings. Historical graph and controller fingerprints
+still bind their original serialized representation: Python dictionary inputs
+are sorted before plan construction, while string, path and `JsonContract`
+inputs preserve their supplied representation. Increasing a trial budget does
+not authorize any change to those scientific identities.
 
 `N4moptCheckpointArtifact` is a live-session envelope for an opaque byte payload.
 It records a schema version, `n4m_optimizer_checkpoint` kind, `N4MOPT` format,

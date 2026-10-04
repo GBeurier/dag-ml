@@ -36,8 +36,9 @@ creates native parent/view handles, rejects IDs outside the envelope relations,
 and requires a receipt with the same handle, view key, ordered IDs, and SHA-256
 schema/content fingerprints. The caller supplies the request; this diagnostic
 does not prove scheduler fold membership or that training consumed those
-buffers. The CV/refit entry point therefore does not accept a view callback
-until the host resolver and native training identity are connected.
+buffers. CV/refit and explicit phase execution accept their own view callbacks;
+the host must bind each receipt to the actual buffers consumed by that task.
+The standalone probe does not qualify those complete execution paths.
 
 For a concrete host-managed pipeline without cross-validation, use
 `execute_phase_in_process(dsl, envelope, controllers, callback, "REFIT",
@@ -50,6 +51,14 @@ The same entry point with `phase="PREDICT"` requires a separately attested V2
 prediction cohort and forbids `training_sample_ids`. It executes only PREDICT,
 never fitting or selecting a model. Host-managed fitted state stays the host's
 responsibility and is not implicitly promoted to a portable predictor package.
+An optional `view_callback` receives every scheduler-selected request and its
+opaque handle in REFIT or PREDICT. The host materializes its actual buffer and
+returns a `DataViewReceipt`; Rust checks the handle, key, ordered identities and
+canonical digests before dispatching the operator. This reuses the CV bridge
+while retaining the explicit phase provider's training-order and cohort guards.
+Omitting the callback preserves the existing handle-only path. Neither path
+moves feature buffers into Rust or makes a host-model portability claim.
+
 Both paths return JSON with native `node_results`, `scores`, `phase` and
 `effective_plan`; absent target observations produce no invented score.
 

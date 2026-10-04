@@ -46,13 +46,11 @@ use crate::runtime::{
     is_nested_stacking_meta_node, nested_stacking_campaign_plan, plan_oof_partition_mode,
     select_best_variant_outcome_by_cv_for_target, InMemoryArtifactStore, LineageRecord, NodeResult,
     ParallelScheduler, RunContext, RuntimeControllerRegistry, RuntimeDataProvider,
-    SequentialScheduler, VariantExecutionSpec, SCORE_METRICS,
+    SequentialScheduler, VariantExecutionSpec, VariantSelection, VariantSelectionOutcome,
+    SCORE_METRICS,
 };
 #[cfg(feature = "methods-optimizer")]
-use crate::runtime::{
-    RuntimeHpoExecutionContext, RuntimeHpoProvenance, RuntimeHpoSelectionTarget, VariantSelection,
-    VariantSelectionOutcome,
-};
+use crate::runtime::{RuntimeHpoExecutionContext, RuntimeHpoProvenance, RuntimeHpoSelectionTarget};
 use crate::selection::{
     select_candidate, EvaluationScope, RefitStrategy, SelectionDecision, SelectionMetric,
     SelectionPolicy,
@@ -119,6 +117,14 @@ pub struct TrainingRefitOutcome {
     pub strategy: Option<RefitStrategy>,
 }
 
+/// Exact native CV evidence retained for one non-selected scored variant.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VariantOofAverages {
+    pub variant_id: VariantId,
+    pub oof_averages: Vec<OofAverageBlock>,
+}
+
 /// Portable result of COMPILE/PLAN/FIT_CV/SELECT and optional REFIT.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -139,6 +145,10 @@ pub struct TrainingOutcome {
     /// Selected variant's exact per-sample CV averages, retained even when REFIT runs.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub oof_averages: Vec<OofAverageBlock>,
+    /// Non-selected variants' report-grade CV averages captured during SELECT.
+    /// These never feed the selected predictor's training or replay closure.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub variant_oof_averages: Vec<VariantOofAverages>,
     /// Selected variant's native train/test CV ensembles; never selection evidence.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ensemble_averages: Vec<OofAverageBlock>,
@@ -575,13 +585,13 @@ impl HpoExecutionContext<'_> {
     )> {
         use crate::methods_fold_hpo::*;
         let mut base_plan = self.projection.plan.clone();
-        if let Some(raw) = base_plan
-            .campaign
-            .metadata
-            .get_mut("methods_hpo_operation")
-            .and_then(serde_json::Value::as_object_mut)
-        {
-            raw.remove("resume_package_json");
+        if let Some(operation) = base_plan.campaign.metadata.get_mut("methods_hpo_operation") {
+            if let Some(raw) = operation.as_object_mut() {
+                raw.remove("resume_package_json");
+            }
+            // preserve_order makes Map::remove swap entries. Keep the old
+            // sorted dynamic-JSON contract before sealing a portable plan.
+            operation.sort_all_objects();
         }
         base_plan.campaign_fingerprint = stable_json_fingerprint(&base_plan.campaign)?;
         let mut base_projection = self.projection.clone();
@@ -629,14 +639,12 @@ impl HpoExecutionContext<'_> {
         if let Some(previous) = &previous {
             let normalized = |plan: &ExecutionPlan| -> Result<String> {
                 let mut plan = plan.clone();
-                if let Some(raw) = plan
-                    .campaign
-                    .metadata
-                    .get_mut("methods_hpo_operation")
-                    .and_then(serde_json::Value::as_object_mut)
-                {
-                    raw.remove("trials");
-                    raw.remove("resume_package_json");
+                if let Some(operation) = plan.campaign.metadata.get_mut("methods_hpo_operation") {
+                    if let Some(raw) = operation.as_object_mut() {
+                        raw.remove("trials");
+                        raw.remove("resume_package_json");
+                    }
+                    operation.sort_all_objects();
                 }
                 plan.campaign_fingerprint = stable_json_fingerprint(&plan.campaign)?;
                 stable_json_fingerprint(&plan)
@@ -2263,6 +2271,15 @@ pub fn execute_training(input: TrainingExecutionInput<'_>) -> Result<TrainingOut
     projection.plan = materialize_request_parameter_patches(projection.plan, input.request)?;
     projection.validate()?;
     validate_native_training_options(input.request)?;
+    crate::python_torch_profile::validate_torch_outputs(&projection.plan, input.request)?;
+    if crate::python_torch_profile::has_torch_profile(&projection.plan)
+        && (input.request.options.resources.cpu_threads != 1
+            || !input.request.options.resources.gpu_devices.is_empty())
+    {
+        return Err(DagMlError::RuntimeValidation(
+            "Python Torch topology requires serial CPU training resources".into(),
+        ));
+    }
     input.training_influence.validate_for_projection(
         &projection,
         input.request,
@@ -2291,6 +2308,13 @@ pub fn execute_training(input: TrainingExecutionInput<'_>) -> Result<TrainingOut
         selection: &input.request.options.selection,
     }
     .preflight()?;
+    if input.request.options.selection.requested_rank.unwrap_or(1) > 1
+        && native_hpo_descriptor.is_some()
+    {
+        return Err(DagMlError::RuntimeValidation(
+            "ranked refit requires concrete campaign variants, not a dynamic HPO study".into(),
+        ));
+    }
     validate_provider_attestations(
         &projection,
         input.request,
@@ -2427,16 +2451,9 @@ pub fn execute_training(input: TrainingExecutionInput<'_>) -> Result<TrainingOut
             selection
         }
     } else {
-        select_best_variant_outcome_by_cv_for_target(
-            &projection.plan,
-            &input.run_id,
-            Some(input.request.options.seed),
-            selection_metric,
-            &selection_producer,
-            Some(selection_producer_port.as_str()),
-            metric_level,
-            &mut run_candidate_fit_cv,
-        )?
+        select_training_variants(&projection.plan, &input.run_id, input.request.options.seed,
+            selection_metric, &selection_producer, selection_producer_port.as_str(), metric_level,
+            &mut run_candidate_fit_cv)?
         .ok_or_else(|| DagMlError::RuntimeValidation(
             "native training SELECT received no scored candidate; controllers must emit targets".to_string(),
         ))?
@@ -2444,31 +2461,76 @@ pub fn execute_training(input: TrainingExecutionInput<'_>) -> Result<TrainingOut
     #[cfg(not(feature = "methods-optimizer"))]
     let selection = {
         let _ = native_hpo_descriptor;
-        select_best_variant_outcome_by_cv_for_target(
-            &projection.plan,
-            &input.run_id,
-            Some(input.request.options.seed),
-            selection_metric,
-            &selection_producer,
-            Some(selection_producer_port.as_str()),
-            metric_level,
-            &mut run_candidate_fit_cv,
-        )?
+        select_training_variants(&projection.plan, &input.run_id, input.request.options.seed,
+            selection_metric, &selection_producer, selection_producer_port.as_str(), metric_level,
+            &mut run_candidate_fit_cv)?
         .ok_or_else(|| DagMlError::RuntimeValidation(
             "native training SELECT received no scored candidate; controllers must emit targets".to_string(),
         ))?
     };
 
-    validate_selection_report_levels(
-        &selection.selection.validation_reports,
-        &selection_producer,
-        &Some(selection_producer_port.clone()),
-        metric_level,
-    )?;
+    if crate::training::training_operator_union_plan(&projection.plan)?.is_none() {
+        validate_selection_report_levels(
+            &selection.selection.validation_reports,
+            &selection_producer,
+            &Some(selection_producer_port.clone()),
+            metric_level,
+        )?;
+    }
     let mut decision = selection.decision;
     bind_selection_decision(&mut decision, input.request, metric_level)?;
-    let selected_variant_id = selection.selection.selected_variant_id;
-    let effective_plan = materialize_selected_variant(projection.plan, &selected_variant_id)?;
+    // SELECT has already scored and ranked every concrete variant. Choose the
+    // signed one-based member without changing that evidence or its ordering.
+    let requested_rank = input.request.options.selection.requested_rank;
+    let rank = requested_rank.unwrap_or(1);
+    let member = decision.ranked_candidates.get(rank - 1).ok_or_else(|| {
+        DagMlError::RuntimeValidation(format!(
+            "selection requested_rank {rank} exceeds {} scored variants",
+            decision.ranked_candidates.len()
+        ))
+    })?;
+    decision.selected_candidate_id = member.candidate_id.clone();
+    decision.selected_score = member.score;
+    decision.requested_rank = requested_rank;
+    decision.validate()?;
+    let selected_variant_id = VariantId::new(decision.selected_candidate_id.clone())?;
+    let effective_plan = if let Some((union, models)) =
+        crate::training::training_operator_union_plan(&projection.plan)?
+    {
+        let selected = union
+            .variants
+            .iter()
+            .find(|variant| variant.variant_id == selected_variant_id)
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(
+                    "selected operator variant is absent from compiler inventory".into(),
+                )
+            })?;
+        let mut pruned =
+            crate::runtime::pruned_plan_for_operator_models(&union, &models, selected)?;
+        // Full ranked IDs remain part of the signed replay identity, while the
+        // actual executable graph and artifacts contain only selected operators.
+        pruned.variants = union.variants;
+        for output in &mut projection.outputs {
+            let index = projection
+                .plan
+                .graph_plan
+                .graph
+                .nodes
+                .iter()
+                .find(|node| node.id == output.node_id)
+                .and_then(|node| node.metadata.get("source_index"))
+                .and_then(serde_json::Value::as_u64)
+                .ok_or_else(|| {
+                    DagMlError::RuntimeValidation("operator output source index is absent".into())
+                })?;
+            output.node_id = source_output_node(&pruned, index)?;
+        }
+        pruned.validate()?;
+        pruned
+    } else {
+        materialize_selected_variant(projection.plan, &selected_variant_id)?
+    };
     // Keep the original union variants for replay/identity while pinning every
     // retained execution through RunContext.variant_id.
     let selected_variant = effective_plan
@@ -2714,12 +2776,51 @@ pub fn execute_training(input: TrainingExecutionInput<'_>) -> Result<TrainingOut
         })
         .cloned()
         .collect();
+    let variant_oof_averages = selection
+        .selection
+        .variant_validation_predictions
+        .iter()
+        .filter(|variant| variant.variant_id != selected_variant_id)
+        .filter_map(|variant| {
+            let oof_averages = variant
+                .oof_averages
+                .iter()
+                .filter(|average| {
+                    native_hpo_descriptor.is_none()
+                        || score_set.reports.iter().any(|report| {
+                            report.variant_id.as_ref() == Some(&variant.variant_id)
+                                && report.producer_node == average.predictions.producer_node
+                                && report.producer_port == average.predictions.producer_port
+                                && report.partition == average.predictions.partition
+                                && report.fold_id == average.predictions.fold_id
+                                && report.level == average.predictions.level
+                        })
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            (!oof_averages.is_empty()).then(|| VariantOofAverages {
+                variant_id: variant.variant_id.clone(),
+                oof_averages,
+            })
+        })
+        .collect();
     let mut outcome = TrainingOutcome {
         schema_version: TRAINING_OUTCOME_SCHEMA_VERSION,
         outcome_id: input.outcome_id,
         run_id: input.run_id,
         training_request_fingerprint: projection.request_fingerprint,
-        data_identities: input.request.data_identities.clone(),
+        data_identities: input
+            .request
+            .data_identities
+            .iter()
+            .filter(|identity| {
+                execution_bundle
+                    .data_requirements
+                    .iter()
+                    .any(|requirement| requirement.key() == identity.requirement_key)
+            })
+            .cloned()
+            .collect(),
         selection_output_id,
         effective_plan,
         effective_plan_fingerprint,
@@ -2729,6 +2830,7 @@ pub fn execute_training(input: TrainingExecutionInput<'_>) -> Result<TrainingOut
         refit: refit_outcome,
         score_set,
         oof_averages,
+        variant_oof_averages,
         ensemble_averages: selected_ctx
             .train_ensemble_blocks
             .iter()
@@ -3192,6 +3294,7 @@ fn reports_match_rerun_tolerance(
         && left.level == right.level
         && left.row_count == right.row_count
         && left.target_width == right.target_width
+        && left.grouping_key == right.grouping_key
         && left.target_names == right.target_names
         && left.metrics.len() == right.metrics.len()
         && left.metrics.iter().all(|(name, value)| {
@@ -3235,6 +3338,126 @@ fn bind_selection_decision(
     decision.refit_slot_plan = request.options.selection.refit_slot_plan.clone();
     decision.reduction_id = None;
     decision.validate()
+}
+
+fn source_output_node(plan: &ExecutionPlan, source_index: u64) -> Result<NodeId> {
+    let nodes = plan
+        .graph_plan
+        .graph
+        .nodes
+        .iter()
+        .filter(|node| {
+            node.kind == NodeKind::Model
+                && node
+                    .metadata
+                    .get("source_index")
+                    .and_then(serde_json::Value::as_u64)
+                    == Some(source_index)
+        })
+        .map(|node| node.id.clone())
+        .collect::<Vec<_>>();
+    match nodes.as_slice() {
+        [node] => Ok(node.clone()),
+        _ => Err(DagMlError::RuntimeValidation(format!(
+            "selected source {source_index} must have exactly one terminal model"
+        ))),
+    }
+}
+
+/// Reuse the native OOF scorer for each compiler-pruned candidate. Selection
+/// remains a full native ranking of the one explicitly signed output source.
+// Keep the explicit native selection coordinates together at this boundary.
+#[allow(clippy::too_many_arguments)]
+fn select_training_variants<F>(
+    plan: &ExecutionPlan,
+    run_id: &RunId,
+    seed: u64,
+    metric: RegressionMetricKind,
+    producer: &NodeId,
+    port: &str,
+    level: PredictionLevel,
+    mut fit: F,
+) -> Result<Option<VariantSelectionOutcome>>
+where
+    F: FnMut(&ExecutionPlan, &mut RunContext) -> Result<()>,
+{
+    let Some((union, models)) = crate::training::training_operator_union_plan(plan)? else {
+        return select_best_variant_outcome_by_cv_for_target(
+            plan,
+            run_id,
+            Some(seed),
+            metric,
+            producer,
+            Some(port),
+            level,
+            fit,
+        );
+    };
+    let source_index = union
+        .graph_plan
+        .graph
+        .nodes
+        .iter()
+        .find(|node| &node.id == producer)
+        .and_then(|node| node.metadata.get("source_index"))
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| {
+            DagMlError::RuntimeValidation("operator selection producer has no source index".into())
+        })?;
+    let mut candidates = Vec::new();
+    let mut reports = Vec::new();
+    let mut predictions = Vec::new();
+    for variant in &union.variants {
+        let candidate = crate::runtime::pruned_plan_for_operator_models(&union, &models, variant)?;
+        let target = source_output_node(&candidate, source_index)?;
+        let Some(result) = select_best_variant_outcome_by_cv_for_target(
+            &candidate,
+            run_id,
+            Some(seed),
+            metric,
+            &target,
+            Some(port),
+            level,
+            &mut fit,
+        )?
+        else {
+            return Err(DagMlError::RuntimeValidation(
+                "operator source candidate has no complete native OOF score".into(),
+            ));
+        };
+        candidates.push(crate::selection::CandidateScore {
+            candidate_id: variant.variant_id.to_string(),
+            metrics: BTreeMap::from([(metric.name().to_string(), result.decision.selected_score)]),
+            metadata: BTreeMap::new(),
+        });
+        reports.extend(result.selection.validation_reports);
+        predictions.extend(result.selection.variant_validation_predictions);
+    }
+    let decision = select_candidate(
+        &SelectionPolicy {
+            id: "selection:operator_source".into(),
+            metric: SelectionMetric {
+                name: metric.name().into(),
+                objective: metric.objective(),
+            },
+            required_metric_level: None,
+            require_finite: true,
+            evaluation_scope: None,
+            refit_slot_plan: None,
+            requested_rank: None,
+            stacking_fit_contract: None,
+            reduction_id: None,
+        },
+        &candidates,
+    )?;
+    Ok(Some(VariantSelectionOutcome {
+        selection: VariantSelection {
+            selected_variant_id: VariantId::new(decision.selected_candidate_id.clone())?,
+            validation_reports: reports,
+            variant_validation_predictions: predictions,
+        },
+        decision,
+    }))
 }
 
 pub(crate) fn materialize_selected_variant(
@@ -4139,8 +4362,40 @@ impl TrainingOutcome {
     }
 
     fn validate_oof_averages(&self) -> Result<()> {
+        self.validate_oof_average_blocks(&self.oof_averages, &self.selected_variant_id)?;
+        if self.schema_version == LEGACY_TRAINING_OUTCOME_SCHEMA_VERSION
+            && !self.variant_oof_averages.is_empty()
+        {
+            return contract_error("training outcome V1 cannot carry variant OOF averages");
+        }
+        let mut variants = BTreeSet::new();
+        for variant in &self.variant_oof_averages {
+            if variant.variant_id == self.selected_variant_id
+                || !variants.insert(&variant.variant_id)
+                || variant.oof_averages.is_empty()
+                || !self.execution_bundle.selections.values().any(|decision| {
+                    decision
+                        .ranked_candidates
+                        .iter()
+                        .any(|candidate| candidate.candidate_id == variant.variant_id.as_str())
+                })
+            {
+                return contract_error(
+                    "training outcome variant OOF averages must identify a unique ranked non-selected variant",
+                );
+            }
+            self.validate_oof_average_blocks(&variant.oof_averages, &variant.variant_id)?;
+        }
+        Ok(())
+    }
+
+    fn validate_oof_average_blocks(
+        &self,
+        averages: &[OofAverageBlock],
+        variant_id: &VariantId,
+    ) -> Result<()> {
         let mut seen = BTreeSet::new();
-        for average in &self.oof_averages {
+        for average in averages {
             let predictions = &average.predictions;
             let targets = &average.y_true;
             let width = predictions.validate_shape()?;
@@ -4177,7 +4432,7 @@ impl TrainingOutcome {
                 .reports
                 .iter()
                 .filter(|report| {
-                    report.variant_id.as_ref() == Some(&self.selected_variant_id)
+                    report.variant_id.as_ref() == Some(variant_id)
                         && report.producer_node == predictions.producer_node
                         && report.producer_port == predictions.producer_port
                         && report.partition == predictions.partition
@@ -4451,6 +4706,7 @@ impl TrainingOutcome {
         )?;
         validate_sha256("training outcome", &self.outcome_fingerprint)?;
         self.effective_plan.validate()?;
+        crate::methods_classification::validate_methods_classification_plan(&self.effective_plan)?;
         if self.effective_plan_fingerprint
             != tcv1_fingerprint(&self.effective_plan, "training outcome effective plan")?
         {
@@ -4534,11 +4790,24 @@ impl TrainingOutcome {
             );
         }
         self.training_influence.validate()?;
-        validate_influence_against_closure(
-            &self.training_influence,
-            &self.effective_plan,
-            &closure,
-        )?;
+        if let Some((union, _)) =
+            crate::training::training_operator_union_plan(&self.effective_plan)?
+        {
+            // SELECT genuinely fitted every union candidate; its signed influence
+            // evidence includes those losers, whereas deployment artifacts do not.
+            let selection_closure = union.node_plans.keys().cloned().collect();
+            validate_influence_against_closure(
+                &self.training_influence,
+                &union,
+                &selection_closure,
+            )?;
+        } else {
+            validate_influence_against_closure(
+                &self.training_influence,
+                &self.effective_plan,
+                &closure,
+            )?;
+        }
         let base_fit_nodes = self
             .training_influence
             .entries
@@ -4885,15 +5154,15 @@ impl TrainingOutcome {
             .expect("selection length was checked");
         if selection_key != &decision.policy_id
             || decision.selected_candidate_id != self.selected_variant_id.as_str()
-            || decision.metric_level != Some(selected_output.binding.prediction_level)
+            || decision.metric_level
+                != Some(
+                    self.effective_plan
+                        .campaign
+                        .aggregation_policy
+                        .selection_metric_level,
+                )
             || decision.evaluation_scope != Some(EvaluationScope::Oof)
             || self.score_set.selection_metric.as_deref() != Some(decision.metric_name.as_str())
-            || selected_output.binding.prediction_level
-                != self
-                    .effective_plan
-                    .campaign
-                    .aggregation_policy
-                    .selection_metric_level
         {
             return contract_error(
                 "training outcome SELECT decision metadata is inconsistent with selected output",
@@ -4904,17 +5173,109 @@ impl TrainingOutcome {
             decision.objective,
             selected_output.binding.prediction_kind,
         )?;
+        let operator_union = crate::training::training_operator_union_plan(&self.effective_plan)?;
+        let mut source_producers = BTreeMap::new();
+        if let Some((union, models)) = &operator_union {
+            let order = union
+                .graph_plan
+                .graph
+                .metadata
+                .get("by_source_source_order")
+                .and_then(serde_json::Value::as_array)
+                .ok_or_else(|| {
+                    DagMlError::CampaignValidation("operator source order is absent".into())
+                })?;
+            let mut output_indices = BTreeSet::new();
+            for output in &self.outputs {
+                let index = self
+                    .effective_plan
+                    .graph_plan
+                    .graph
+                    .nodes
+                    .iter()
+                    .find(|node| node.id == output.binding.node_id)
+                    .and_then(|node| node.metadata.get("source_index"))
+                    .and_then(serde_json::Value::as_u64)
+                    .ok_or_else(|| {
+                        DagMlError::CampaignValidation("operator output has no source index".into())
+                    })?;
+                if output.binding.binding_id != format!("output:source_{index}")
+                    || index as usize >= order.len()
+                    || !output_indices.insert(index)
+                    || source_output_node(&self.effective_plan, index)? != output.binding.node_id
+                {
+                    return contract_error(
+                        "operator output binding differs from its signed source producer",
+                    );
+                }
+            }
+            if output_indices.len() != order.len() {
+                return contract_error(
+                    "operator outcome does not cover every signed source output",
+                );
+            }
+            let source_index = self
+                .effective_plan
+                .graph_plan
+                .graph
+                .nodes
+                .iter()
+                .find(|node| node.id == selected_output.binding.node_id)
+                .and_then(|node| node.metadata.get("source_index"))
+                .and_then(serde_json::Value::as_u64)
+                .ok_or_else(|| {
+                    DagMlError::CampaignValidation(
+                        "selected output has no signed source index".into(),
+                    )
+                })?;
+            for variant in &union.variants {
+                let candidate =
+                    crate::runtime::pruned_plan_for_operator_models(union, models, variant)?;
+                source_producers.insert(
+                    variant.variant_id.clone(),
+                    source_output_node(&candidate, source_index)?,
+                );
+            }
+            let selected = union
+                .variants
+                .iter()
+                .find(|variant| variant.variant_id == self.selected_variant_id)
+                .ok_or_else(|| {
+                    DagMlError::CampaignValidation("selected operator variant is absent".into())
+                })?;
+            let pruned = crate::runtime::pruned_plan_for_operator_models(union, models, selected)?;
+            if pruned.graph_plan != self.effective_plan.graph_plan
+                || union.variants != self.effective_plan.variants
+            {
+                return contract_error("operator effective graph or ranked inventory differs from signed native pruning");
+            }
+        }
+        let scoring_plan = operator_union
+            .as_ref()
+            .map_or(&self.effective_plan, |(union, _)| union);
         let mut reports_by_variant = BTreeMap::<VariantId, _>::new();
         for report in self.score_set.reports.iter().filter(|report| {
-            report.producer_node == selected_output.binding.node_id
-                && producer_port_matches_graph_output(
-                    &self.effective_plan,
-                    &selected_output.binding.node_id,
-                    &selected_output.binding.port_name,
-                    &report.producer_port,
-                )
-                && report.partition == PredictionPartition::Validation
-                && report.level == selected_output.binding.prediction_level
+            (if source_producers.is_empty() {
+                report.producer_node == selected_output.binding.node_id
+            } else {
+                report
+                    .variant_id
+                    .as_ref()
+                    .and_then(|id| source_producers.get(id))
+                    == Some(&report.producer_node)
+            }) && producer_port_matches_graph_output(
+                scoring_plan,
+                &report.producer_node,
+                &selected_output.binding.port_name,
+                &report.producer_port,
+            ) && report.partition == PredictionPartition::Validation
+                && report.level
+                    == decision
+                        .metric_level
+                        .unwrap_or(selected_output.binding.prediction_level)
+                && (report.level != PredictionLevel::Group
+                    || report.grouping_key
+                        == self.effective_plan.campaign.aggregation_policy.grouping_key)
                 && report
                     .fold_id
                     .as_ref()
@@ -4960,6 +5321,7 @@ impl TrainingOutcome {
                 require_finite: true,
                 evaluation_scope: decision.evaluation_scope,
                 refit_slot_plan: decision.refit_slot_plan.clone(),
+                requested_rank: decision.requested_rank,
                 stacking_fit_contract: None,
                 reduction_id: decision.reduction_id.clone(),
             },
@@ -6613,6 +6975,7 @@ mod tests {
             partition: PredictionPartition::Validation,
             fold_id: Some(crate::ids::FoldId::new("avg").unwrap()),
             level,
+            grouping_key: None,
             row_count: 2,
             target_width: 1,
             target_names: vec!["y".to_string()],

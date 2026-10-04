@@ -220,6 +220,27 @@ impl TrainingOutputRequest {
                 }
             },
         };
+        if let Some(classification) = node
+            .operator
+            .as_ref()
+            .map(crate::methods_operator_classification)
+            .transpose()?
+            .flatten()
+        {
+            let names = classification
+                .class_labels
+                .iter()
+                .map(usize::to_string)
+                .collect::<Vec<_>>();
+            if port_name != "y_hat"
+                || self.prediction_kind != PredictionKind::ClassLabel
+                || self.target_names != ["y"]
+                || self.class_labels != vec![names]
+                || self.prediction_level != PredictionLevel::Sample
+            {
+                return contract_error("Methods classifier deployment must bind its exact signed class-label output and vocabulary".into());
+            }
+        }
         Ok(ResolvedTrainingOutput {
             output_id: self.output_id.clone(),
             node_id: self.node_id.clone(),
@@ -294,7 +315,8 @@ pub struct TrainingResourceLimits {
 }
 
 impl TrainingResourceLimits {
-    fn validate(&self, scheduler: &TrainingSchedulerOptions) -> Result<()> {
+    /// Validate resource budgets against the requested native scheduler.
+    pub fn validate(&self, scheduler: &TrainingSchedulerOptions) -> Result<()> {
         if self.cpu_threads == 0 {
             return contract_error("training resources require cpu_threads>=1".to_string());
         }
@@ -1071,7 +1093,7 @@ impl TrainingContractProjection {
         }
         let expected_closure = predictor_closure(
             &self.plan,
-            self.outputs.iter().map(|output| &output.node_id),
+            training_projection_roots(&self.plan, &self.outputs)?.iter(),
         )?;
         if self.predictor_node_ids != expected_closure {
             return contract_error(
@@ -1080,6 +1102,119 @@ impl TrainingContractProjection {
         }
         Ok(())
     }
+}
+
+/// Reconstruct the closed operator-source graph from signed DSL metadata.
+/// The compiler, not host-provided active-node lists, defines all candidates.
+pub(crate) fn training_operator_union_plan(
+    plan: &ExecutionPlan,
+) -> Result<Option<(ExecutionPlan, Vec<crate::generation::OperatorVariantModel>)>> {
+    let Some(value) = plan
+        .graph_plan
+        .graph
+        .metadata
+        .get("training_operator_source_dsl")
+    else {
+        return Ok(None);
+    };
+    let source = crate::parse_pipeline_dsl_json(&serde_json::to_vec(value)?)?;
+    let mut registry = ControllerRegistry::new();
+    for manifest in plan.controller_manifests.values() {
+        registry.register(manifest.clone())?;
+    }
+    let mut graph = crate::compile_pipeline_dsl_with_controller_registry(&source, &registry)?;
+    graph
+        .metadata
+        .insert("training_operator_source_dsl".into(), value.clone());
+    let models = crate::compile_operator_variant_models(&source)?;
+    if models.is_empty() || !plan.campaign.generation.dimensions.is_empty() {
+        return contract_error("operator source capture requires concrete operator choices without mixed parameter generation".to_string());
+    }
+    let mut union = build_execution_plan(plan.id.clone(), graph, plan.campaign.clone(), &registry)?;
+    union.variants = crate::runtime::enumerate_operator_variants(&models, plan.campaign.root_seed)?;
+    union.validate()?;
+    Ok(Some((union, models)))
+}
+
+fn training_projection_roots(
+    plan: &ExecutionPlan,
+    outputs: &[ResolvedTrainingOutput],
+) -> Result<Vec<NodeId>> {
+    if let Some((union, _)) = training_operator_union_plan(plan)? {
+        if union.graph_plan.graph != plan.graph_plan.graph {
+            return contract_error(
+                "operator training graph differs from its signed DSL compilation".to_string(),
+            );
+        }
+        let order = plan
+            .graph_plan
+            .graph
+            .metadata
+            .get("by_source_source_order")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| {
+                DagMlError::CampaignValidation(
+                    "operator source capture requires signed source order".into(),
+                )
+            })?;
+        let mut indices = BTreeSet::new();
+        for output in outputs {
+            let node = plan
+                .graph_plan
+                .graph
+                .nodes
+                .iter()
+                .find(|node| node.id == output.node_id)
+                .unwrap();
+            let index = node
+                .metadata
+                .get("source_index")
+                .and_then(serde_json::Value::as_u64)
+                .ok_or_else(|| {
+                    DagMlError::CampaignValidation("operator output has no source index".into())
+                })?;
+            if index as usize >= order.len()
+                || !indices.insert(index)
+                || output.output_id != format!("output:source_{index}")
+            {
+                return contract_error(
+                    "operator outputs must identify each signed source exactly once".to_string(),
+                );
+            }
+        }
+        if indices.len() != order.len() {
+            return contract_error(
+                "operator output contract does not cover signed sources".to_string(),
+            );
+        }
+        let mut roots = Vec::new();
+        for node in plan
+            .graph_plan
+            .graph
+            .nodes
+            .iter()
+            .filter(|node| node.kind == NodeKind::Model)
+        {
+            let index = node
+                .metadata
+                .get("source_index")
+                .and_then(serde_json::Value::as_u64)
+                .ok_or_else(|| {
+                    DagMlError::CampaignValidation("operator model has no source index".into())
+                })?;
+            if !indices.contains(&index) {
+                return contract_error(
+                    "operator model belongs to an undeclared source".to_string(),
+                );
+            }
+            roots.push(node.id.clone());
+        }
+        return Ok(roots);
+    }
+    Ok(outputs
+        .iter()
+        .map(|output| output.node_id.clone())
+        .collect())
 }
 
 impl TrainingRequest {
@@ -1128,6 +1263,14 @@ impl TrainingRequest {
             );
         }
         let outputs = self.options.validate(&self.graph)?;
+        if self
+            .graph
+            .metadata
+            .contains_key("training_operator_source_dsl")
+            && (!self.parameter_patches.is_empty() || !self.training_losses.is_empty())
+        {
+            return contract_error("operator source capture does not admit parameter patches or training-loss role injection".to_string());
+        }
         let mut registry = ControllerRegistry::new();
         let mut previous_controller: Option<&str> = None;
         for manifest in &self.controller_manifests {
@@ -1142,20 +1285,29 @@ impl TrainingRequest {
             previous_controller = Some(manifest.controller_id.as_str());
             registry.register(manifest.clone())?;
         }
-        let plan = build_execution_plan(
+        let mut plan = build_execution_plan(
             self.plan_id.clone(),
             self.graph.clone(),
             self.campaign.clone(),
             &registry,
         )?
         .with_training_losses(self.training_losses.clone())?;
+        if let Some((union, _)) = training_operator_union_plan(&plan)? {
+            if union.graph_plan.graph != plan.graph_plan.graph {
+                return contract_error(
+                    "operator source graph differs from its signed DSL compilation".to_string(),
+                );
+            }
+            plan.variants = union.variants;
+            plan.validate()?;
+        }
         validate_output_controllers(&plan, &outputs)?;
         validate_selection_output(&plan, &self.options, &outputs)?;
         validate_training_data_identities(self, &plan)?;
         let parameters =
             project_parameter_patches(&plan, &self.parameter_patches, &self.patch_policies)?;
         let predictor_node_ids =
-            predictor_closure(&plan, outputs.iter().map(|output| &output.node_id))?;
+            predictor_closure(&plan, training_projection_roots(&plan, &outputs)?.iter())?;
         validate_scheduler_capabilities(&self.options.scheduler, &plan, &predictor_node_ids)?;
         validate_artifact_mode(&self.options.artifacts, &plan, &predictor_node_ids)?;
         validate_influence_requirements(self, &plan, &predictor_node_ids)?;
@@ -2118,6 +2270,23 @@ impl PortablePredictorPackage {
         }
         self.execution_bundle
             .validate_against_plan(&self.effective_plan)?;
+        for record in &self.execution_bundle.refit_artifacts {
+            if matches!(
+                record.artifact.kind.as_str(),
+                "methods_multimodal_classifier_pipeline" | "methods_role_classifier_pipeline"
+            ) {
+                let bytes = self
+                    .execution_bundle
+                    .raw_artifact_payloads
+                    .get(&record.artifact.id)
+                    .ok_or_else(|| {
+                        DagMlError::RuntimeValidation(
+                            "portable classifier has no retained raw state payload".into(),
+                        )
+                    })?;
+                crate::validate_methods_classifier_payload(record, bytes, &self.effective_plan)?;
+            }
+        }
         if let Some(state) = &self.execution_bundle.methods_hpo_fold_state {
             if self.schema_version != PORTABLE_PREDICTOR_PACKAGE_SCHEMA_VERSION
                 || state.provenance.data_identities_fingerprint
@@ -2422,11 +2591,18 @@ impl PortablePredictorPackage {
                 "portable predictor_node_ids do not exactly match output closure".to_string(),
             );
         }
+        // Training evidence covers every evaluated operator alternative. The
+        // deployment closure remains only the selected, native-pruned graph.
+        let operator_influence = package_operator_influence_plan(self)?;
+        let (influence_plan, influence_closure) = operator_influence.as_ref().map_or(
+            (&self.effective_plan, &expected_closure),
+            |(plan, closure)| (plan, closure),
+        );
         if self.training_influence.entries.iter().any(|entry| {
             entry
                 .node_id
                 .as_ref()
-                .is_some_and(|node_id| !expected_closure.contains(node_id))
+                .is_some_and(|node_id| !influence_closure.contains(node_id))
         }) {
             return contract_error(
                 "portable predictor influence references a node outside predictor closure"
@@ -2435,8 +2611,8 @@ impl PortablePredictorPackage {
         }
         validate_package_base_influence(
             &self.training_influence,
-            &self.effective_plan,
-            &expected_closure,
+            influence_plan,
+            influence_closure,
         )?;
         validate_package_data_identities(self)?;
         let data_identities_fingerprint =
@@ -3105,7 +3281,10 @@ fn validate_selection_output(
         ));
     }
     let campaign_metric_level = plan.campaign.aggregation_policy.selection_metric_level;
-    if output.prediction_level != campaign_metric_level {
+    let explicit_group_reduction = output.prediction_level == PredictionLevel::Sample
+        && campaign_metric_level == PredictionLevel::Group
+        && plan.campaign.aggregation_policy.grouping_key.is_some();
+    if output.prediction_level != campaign_metric_level && !explicit_group_reduction {
         return contract_error(format!(
             "training selection output `{}` prediction level does not match campaign selection_metric_level",
             output.output_id
@@ -3308,6 +3487,112 @@ fn influence_identity_closure_for_samples(
         ));
     }
     Ok((origins.into_iter().collect(), groups.into_iter().collect()))
+}
+
+/// Retain the original training evidence without widening deployment. Only
+/// the compiler-owned operator union, and its exact selected pruning, can
+/// authorize influence from alternatives absent from the predictor graph.
+fn package_operator_influence_plan(
+    package: &PortablePredictorPackage,
+) -> Result<Option<(ExecutionPlan, BTreeSet<NodeId>)>> {
+    let Some((union, models)) = training_operator_union_plan(&package.effective_plan)? else {
+        return Ok(None);
+    };
+    let selected_id = package
+        .execution_bundle
+        .selected_variant_id
+        .as_ref()
+        .ok_or_else(|| {
+            DagMlError::CampaignValidation("operator predictor has no selected variant".into())
+        })?;
+    let selected = union
+        .variants
+        .iter()
+        .find(|variant| &variant.variant_id == selected_id)
+        .ok_or_else(|| {
+            DagMlError::CampaignValidation(
+                "operator predictor selected variant is absent from signed DSL".into(),
+            )
+        })?;
+    let pruned = crate::runtime::pruned_plan_for_operator_models(&union, &models, selected)?;
+    if pruned.graph_plan != package.effective_plan.graph_plan
+        || union.variants != package.effective_plan.variants
+    {
+        return contract_error(
+            "operator predictor graph or variant inventory differs from signed native pruning"
+                .to_string(),
+        );
+    }
+    let order = union
+        .graph_plan
+        .graph
+        .metadata
+        .get("by_source_source_order")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| {
+            DagMlError::CampaignValidation("operator predictor source order is absent".into())
+        })?;
+    let mut source_indices = BTreeSet::new();
+    for binding in &package.output_bindings {
+        let node = package
+            .effective_plan
+            .graph_plan
+            .graph
+            .nodes
+            .iter()
+            .find(|node| node.id == binding.node_id)
+            .expect("output bindings were validated against effective graph");
+        let index = node
+            .metadata
+            .get("source_index")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| {
+                DagMlError::CampaignValidation(
+                    "operator predictor output has no source index".into(),
+                )
+            })?;
+        if node.kind != NodeKind::Model
+            || index as usize >= order.len()
+            || binding.binding_id != format!("output:source_{index}")
+            || !source_indices.insert(index)
+        {
+            return contract_error(
+                "operator predictor outputs must identify each signed source exactly once"
+                    .to_string(),
+            );
+        }
+    }
+    if source_indices.len() != order.len() {
+        return contract_error(
+            "operator predictor outputs do not cover signed sources".to_string(),
+        );
+    }
+    let mut roots = Vec::new();
+    for node in union
+        .graph_plan
+        .graph
+        .nodes
+        .iter()
+        .filter(|node| node.kind == NodeKind::Model)
+    {
+        let index = node
+            .metadata
+            .get("source_index")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| {
+                DagMlError::CampaignValidation(
+                    "operator predictor union model has no source index".into(),
+                )
+            })?;
+        if !source_indices.contains(&index) {
+            return contract_error(
+                "operator predictor union model belongs to an undeclared source".to_string(),
+            );
+        }
+        roots.push(&node.id);
+    }
+    let closure = predictor_closure(&union, roots)?;
+    Ok(Some((union, closure)))
 }
 
 fn validate_package_base_influence(
@@ -3644,6 +3929,7 @@ mod tests {
                     require_finite: true,
                     evaluation_scope: None,
                     refit_slot_plan: None,
+                    requested_rank: None,
                     stacking_fit_contract: None,
                     reduction_id: None,
                 },

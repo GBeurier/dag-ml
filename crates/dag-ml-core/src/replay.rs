@@ -1208,6 +1208,73 @@ pub fn execute_attached_training_replay(
     Ok(outcome)
 }
 
+/// Validate a detached V2 replay before a host starts any operator processes.
+/// This uses the same native cohort derivation as execution, without hydration
+/// or numerical callbacks. Artifact sidecar coverage remains owned by
+/// `LoadedPredictor::new`.
+pub fn preflight_loaded_predictor_replay(
+    package: &PortablePredictorPackage,
+    request: &TrainingReplayRequest,
+    envelopes: &BTreeMap<String, ExternalDataPlanEnvelope>,
+) -> Result<()> {
+    package.validate()?;
+    request.validate()?;
+    if request.source_outcome_fingerprint != package.training_outcome.outcome_fingerprint {
+        return contract_error("training replay request does not target package source outcome");
+    }
+    preflight_replay_output_bindings(&package.output_bindings, request)?;
+    replay_input_data_identities(&package.execution_bundle, request, envelopes)?;
+    replay_plan_and_bundle_for_current_cohort(
+        &package.effective_plan,
+        &package.execution_bundle,
+        request,
+        envelopes,
+    )?;
+    Ok(())
+}
+
+/// Validate a detached V3 replay without starting a host or hydrating state.
+pub fn preflight_loaded_portable_refit_replay_v3(
+    package: &PortableRefitPackageV3,
+    request: &TrainingReplayRequest,
+    envelopes: &BTreeMap<String, ExternalDataPlanEnvelope>,
+) -> Result<()> {
+    package.validate()?;
+    request.validate()?;
+    if request.source_outcome_fingerprint != package.outcome.outcome_fingerprint {
+        return contract_error(
+            "portable refit replay request does not target the V3 child outcome",
+        );
+    }
+    preflight_replay_output_bindings(&package.outcome.output_bindings, request)?;
+    let bundle = package.outcome.to_runtime_replay_bundle()?;
+    replay_input_data_identities(&bundle, request, envelopes)?;
+    replay_plan_and_bundle_for_current_cohort(
+        &package.outcome.effective_plan,
+        &bundle,
+        request,
+        envelopes,
+    )?;
+    Ok(())
+}
+
+fn preflight_replay_output_bindings(
+    bindings: &[crate::training::OutputBinding],
+    request: &TrainingReplayRequest,
+) -> Result<()> {
+    for binding_id in &request.output_binding_ids {
+        if !bindings
+            .iter()
+            .any(|binding| binding.binding_id == *binding_id)
+        {
+            return contract_error(format!(
+                "training replay request references absent package binding `{binding_id}`"
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub fn execute_loaded_predictor_replay(
     input: LoadedPredictorReplayInput<'_>,
 ) -> Result<TrainingReplayOutcome> {
@@ -1253,6 +1320,7 @@ pub fn execute_loaded_predictor_replay(
         hydrated_handles: Mutex::new(Vec::new()),
     };
     let mut ctx = RunContext::new(input.run_id.clone(), None);
+    ctx.resource_limits = crate::python_torch_profile::torch_resources(&replay_plan);
     let execution = SequentialScheduler.execute_bundle_replay(
         BundleReplayExecution {
             plan: &replay_plan,

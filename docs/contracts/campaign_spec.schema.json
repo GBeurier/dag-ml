@@ -193,8 +193,30 @@
         },
         "store_aggregated_predictions": {
           "type": "boolean"
+        },
+        "grouping_key": {
+          "$ref": "#/$defs/aggregation_grouping_key"
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "grouping_key"
+            ]
+          },
+          "then": {
+            "required": [
+              "aggregation_level"
+            ],
+            "properties": {
+              "aggregation_level": {
+                "const": "group"
+              }
+            }
+          }
+        }
+      ]
     },
     "aggregation_controller_spec": {
       "type": "object",
@@ -682,6 +704,22 @@
           "propertyNames": {
             "$ref": "#/$defs/identifier"
           }
+        }
+      }
+    },
+    "aggregation_grouping_key": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "key"
+      ],
+      "properties": {
+        "kind": {
+          "const": "relation_metadata"
+        },
+        "key": {
+          "const": "independent_unit_id"
         }
       }
     }

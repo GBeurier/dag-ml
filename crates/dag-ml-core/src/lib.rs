@@ -26,6 +26,9 @@ pub mod hpo;
 pub mod ids;
 pub mod implementation_registry;
 pub mod initial_refit;
+pub mod methods_classification;
+mod methods_classification_archive;
+mod methods_classification_state;
 #[cfg(feature = "methods-optimizer")]
 pub mod methods_estimator;
 pub mod methods_fold_hpo;
@@ -42,6 +45,7 @@ pub mod phase;
 pub mod plan;
 pub mod policy;
 pub mod provenance;
+mod python_torch_profile;
 pub mod relation;
 pub mod replay;
 pub mod residual;
@@ -97,6 +101,8 @@ pub use terminal_prediction::*;
 pub use training::*;
 pub use training_runtime::*;
 
+pub use methods_classification::*;
+pub use methods_classification_archive::*;
 pub use methods_fold_hpo::*;
 pub use methods_multimodal::*;
 pub use methods_phase_controls::*;

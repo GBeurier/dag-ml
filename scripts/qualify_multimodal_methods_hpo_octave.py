@@ -17,6 +17,7 @@ import json
 import math
 import os
 import queue
+import re
 import shlex
 import shutil
 import subprocess
@@ -59,6 +60,13 @@ OCTAVE_MANIFEST = {
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise AssertionError(message)
+
+
+def require_role_abi(version: object) -> None:
+    """Mirror the public RolePipeline MEX's n4m_check_abi_compatibility(2, 14)."""
+    abi = re.search(r"\+abi\.([0-9]+)\.([0-9]+)\.([0-9]+)$", version) if isinstance(version, str) else None
+    require(abi is not None and int(abi[1]) == 2 and int(abi[2]) >= 14,
+            "Qualification requires the public Methods ABI major 2, minor >= 14 runtime")
 
 
 def write_json(path: Path, value: Any) -> None:
@@ -140,8 +148,7 @@ class OctaveWorker:
             require(reply.get("type") == "ack" and reply.get("status") == "initialized",
                     "Octave adapter did not acknowledge initialization")
             self.runtime = reply["runtime"]
-            require("+abi.2.14." in self.runtime["methods_version"],
-                    "Qualification must load the public Methods ABI 2.14 runtime")
+            require_role_abi(self.runtime["methods_version"])
             for field in ("mex", "role_pipeline"):
                 path = Path(self.runtime[field])
                 require(path.is_file(), "Missing actual Octave binding origin: " + str(path))

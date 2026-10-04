@@ -13,6 +13,7 @@
     "ranked_candidates"
   ],
   "properties": {
+    "requested_rank": { "type": "integer", "minimum": 1 },
     "policy_id": {
       "$ref": "#/$defs/non_empty_string"
     },

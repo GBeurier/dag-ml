@@ -42,13 +42,56 @@ or label is insufficient. SELECT and the existing winner resolver retain the
 selected native VariantPlan, apply only its active node parameters and prune
 inactive data contracts. V2 winner templates may not patch inactive nodes.
 
-The current feature runs serially and rejects progressive pruning and parallel
-worker windows. Preparation is exposed through Rust and Python; CLI execution
+The typed Python/native profile also admits explicit `n_jobs=2..4` with random
+sampling and no pruning. Progressive pruning and browser V2 worker windows
+remain refused. Preparation is exposed through Rust and Python; CLI execution
 uses the ordinary serialized host-HPO request. No dedicated preparation C/WASM
 endpoint is added. Native predictor archive transport combines complete N4MF
 raw-source wrappers with the existing N4ME role-pipeline wrapper for meta Ridge;
 the Python role wrapper requires both exact Python controller owners. Bare
 generic N4ME estimator transport is outside this archive contract.
+
+Parallel requests add a closed `optimizer_descriptor.parallel_execution`:
+
+```json
+{
+  "schema_version": 1,
+  "profile": "methods_sequential_cpu_v1",
+  "workers": 2,
+  "cpu_threads": 1,
+  "gpu_devices": [],
+  "methods_build": {"schema_version": 1, "blas": false, "openmp": false, "cuda": false}
+}
+```
+
+The Python host must obtain those compile-time capabilities from the actual
+loaded Methods library through `n4m.build_capabilities()` before constructing
+an optimizer. This is a host attestation, not a generic thread cap for
+accelerated libraries. Core checks the exact declaration, random sampler,
+absent/`null`/`"none"` pruner and agreement between `workers`, `n_jobs` and the
+actual worker budget before proposal, progress or candidate-factory callbacks.
+Generated views, GPU and `n_jobs=-1` are outside this bounded profile. Each
+candidate task carries one CPU thread and no GPU; no memory ceiling is claimed.
+The descriptor participates in native objective/checkpoint identity, so resume
+cannot silently change the resource or build profile. Serial requests add no
+parallel declaration and retain their existing serialized bytes.
+
+This declaration is native-only. Browser window preparation, direct task/fold
+evaluation and completion reject its presence, including malformed declarations
+on V1 or generic requests, before proposal, provider or controller callbacks.
+Historical browser requests without the declaration retain their existing
+support; the separate V2 topology browser refusal remains unchanged.
+
+Native candidate factories allocate independent controller/provider namespaces;
+immutable input buffers may be shared, fitted models and context state may not.
+The existing scheduler joins every admitted worker before ordered terminal
+feedback and paired checkpoint publication. Budgets shorter than the worker
+limit and partial final windows remain valid. Cancellation waits for the whole
+admitted window, and failed/panicked workers still leave successful sibling
+terminals durably recorded. Python bindings release the GIL during the native
+search; hosts remain responsible for closing their candidate-owned handles
+after the joined terminal boundary, including errors. Replay uses the selected
+portable predictor and does not rerun HPO or fitting.
 
 Deployment output bindings retain `prediction_source="final_refit"`, which
 identifies the fitted predictor rather than relabeling a prediction partition.

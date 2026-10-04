@@ -29,9 +29,52 @@ pub struct PredictionInputSpec {
     /// so a host can build a stacking meta-feature matrix during FIT_CV/REFIT.
     #[serde(default)]
     pub values: Vec<Vec<f64>>,
+    /// Missing prediction features, distinct from target-label validity and
+    /// authentic probability distributions. Both fields are absent on legacy
+    /// complete inputs; false cells must contain explicit zero placeholders.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feature_validity_masks: Option<Vec<Vec<bool>>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_presence: Option<Vec<bool>>,
     pub prediction_width: usize,
     #[serde(default)]
     pub target_names: Vec<String>,
+}
+
+impl PredictionInputSpec {
+    pub fn validate_feature_availability(&self) -> Result<()> {
+        match (&self.feature_validity_masks, &self.source_presence) {
+            (None, None) => Ok(()),
+            (Some(masks), Some(presence)) => {
+                if self.prediction_level != PredictionLevel::Sample
+                    || self.prediction_width == 0
+                    || masks.len() != self.sample_ids.len()
+                    || presence.len() != self.sample_ids.len()
+                    || self.values.len() != self.sample_ids.len()
+                    || masks
+                        .iter()
+                        .zip(&self.values)
+                        .zip(presence)
+                        .any(|((mask, row), present)| {
+                            mask.len() != self.prediction_width
+                                || row.len() != self.prediction_width
+                                || mask.iter().any(|cell| cell != present)
+                                || row.iter().any(|value| !value.is_finite())
+                                || (!*present && row.iter().any(|value| *value != 0.0))
+                        })
+                {
+                    return Err(DagMlError::OofValidation(format!(
+                        "prediction input `{}.{}` has invalid feature availability",
+                        self.producer_node, self.source_port
+                    )));
+                }
+                Ok(())
+            }
+            _ => Err(DagMlError::OofValidation(
+                "prediction feature validity and source presence must be supplied together".into(),
+            )),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -699,6 +742,14 @@ pub enum FitInfluenceMechanism {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FitInfluenceTask {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fit_sample_ids: Vec<SampleId>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub independent_unit_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub target_names: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_row_weights: Option<Vec<Vec<f64>>>,
     pub requested_policy: FitInfluencePolicy,
     pub effective_policy: FitInfluencePolicy,
     pub mechanism: FitInfluenceMechanism,
@@ -711,6 +762,10 @@ pub struct FitInfluenceTask {
 impl Default for FitInfluenceTask {
     fn default() -> Self {
         Self {
+            fit_sample_ids: Vec::new(),
+            independent_unit_ids: Vec::new(),
+            target_names: Vec::new(),
+            target_row_weights: None,
             requested_policy: FitInfluencePolicy::UniformRows,
             effective_policy: FitInfluencePolicy::UniformRows,
             mechanism: FitInfluenceMechanism::UniformRows,
@@ -737,6 +792,78 @@ impl FitInfluenceTask {
     }
 
     pub fn validate(&self) -> Result<()> {
+        if !self.fit_sample_ids.is_empty()
+            || !self.independent_unit_ids.is_empty()
+            || self.target_row_weights.is_some()
+        {
+            if self.fit_sample_ids.is_empty()
+                || self.fit_sample_ids.len() != self.row_weights.len()
+                || self.fit_sample_ids.len() != self.independent_unit_ids.len()
+                || self.fit_sample_ids.iter().collect::<BTreeSet<_>>().len()
+                    != self.fit_sample_ids.len()
+                || self
+                    .independent_unit_ids
+                    .iter()
+                    .any(|id| id.trim().is_empty())
+                || self.requested_policy != FitInfluencePolicy::EqualSampleInfluence
+                || self.mechanism != FitInfluenceMechanism::SampleWeights
+            {
+                return Err(DagMlError::RuntimeValidation(
+                    "invalid independent-unit fit influence identity".into(),
+                ));
+            }
+            let mut counts = BTreeMap::<&str, usize>::new();
+            for unit in &self.independent_unit_ids {
+                *counts.entry(unit).or_default() += 1;
+            }
+            if self
+                .row_weights
+                .iter()
+                .zip(&self.independent_unit_ids)
+                .any(|(weight, unit)| *weight != 1.0 / counts[unit.as_str()] as f64)
+            {
+                return Err(DagMlError::RuntimeValidation(
+                    "independent-unit row weights differ from attested scope counts".into(),
+                ));
+            }
+            if let Some(weights) = &self.target_row_weights {
+                if self.target_names.is_empty()
+                    || weights.len() != self.fit_sample_ids.len()
+                    || weights.iter().any(|row| {
+                        row.len() != self.target_names.len()
+                            || row
+                                .iter()
+                                .any(|weight| !weight.is_finite() || *weight < 0.0)
+                    })
+                {
+                    return Err(DagMlError::RuntimeValidation(
+                        "invalid per-target independent-unit weights".into(),
+                    ));
+                }
+                let mut counts = BTreeMap::<(&str, usize), usize>::new();
+                for (unit, row) in self.independent_unit_ids.iter().zip(weights) {
+                    for (column, weight) in row.iter().enumerate() {
+                        if *weight > 0.0 {
+                            *counts.entry((unit, column)).or_default() += 1;
+                        }
+                    }
+                }
+                if weights
+                    .iter()
+                    .zip(&self.independent_unit_ids)
+                    .any(|(row, unit)| {
+                        row.iter().enumerate().any(|(column, weight)| {
+                            *weight > 0.0
+                                && *weight != 1.0 / counts[&(unit.as_str(), column)] as f64
+                        })
+                    })
+                {
+                    return Err(DagMlError::RuntimeValidation(
+                        "independent-unit target weights differ from selected target scopes".into(),
+                    ));
+                }
+            }
+        }
         if !self
             .row_weights
             .iter()
@@ -1833,7 +1960,15 @@ pub(crate) fn fit_influence_task_for_node(
     plan: &ExecutionPlan,
     node_plan: &NodePlan,
     data_views: &BTreeMap<String, DataProviderViewSpec>,
+    prediction_inputs: &BTreeMap<String, PredictionInputSpec>,
+    phase: Phase,
 ) -> Result<FitInfluenceTask> {
+    if let Some(units) = experimental_units(plan)? {
+        if matches!(phase, Phase::FitCv | Phase::Refit) {
+            return units.fit_task(plan, node_plan, data_views, prediction_inputs);
+        }
+        return Ok(FitInfluenceTask::default());
+    }
     let manifest = plan
         .controller_manifests
         .get(&node_plan.controller_id)
@@ -1864,6 +1999,10 @@ pub(crate) fn resolve_fit_influence_task(
     let row_weights = equal_sample_influence_weights(data_views);
     match requested_policy {
         FitInfluencePolicy::UniformRows => Ok(FitInfluenceTask {
+            fit_sample_ids: Vec::new(),
+            independent_unit_ids: Vec::new(),
+            target_names: Vec::new(),
+            target_row_weights: None,
             requested_policy,
             effective_policy: FitInfluencePolicy::UniformRows,
             mechanism: FitInfluenceMechanism::UniformRows,
@@ -1871,6 +2010,10 @@ pub(crate) fn resolve_fit_influence_task(
             warnings: Vec::new(),
         }),
         FitInfluencePolicy::ScorerOnly => Ok(FitInfluenceTask {
+            fit_sample_ids: Vec::new(),
+            independent_unit_ids: Vec::new(),
+            target_names: Vec::new(),
+            target_row_weights: None,
             requested_policy,
             effective_policy: FitInfluencePolicy::ScorerOnly,
             mechanism: FitInfluenceMechanism::ScorerOnly,
@@ -1885,6 +2028,10 @@ pub(crate) fn resolve_fit_influence_task(
                 )
             })?;
             Ok(FitInfluenceTask {
+                fit_sample_ids: Vec::new(),
+                independent_unit_ids: Vec::new(),
+                target_names: Vec::new(),
+                target_row_weights: None,
                 requested_policy,
                 effective_policy: FitInfluencePolicy::EqualSampleInfluence,
                 mechanism: FitInfluenceMechanism::SampleWeights,
@@ -1895,6 +2042,10 @@ pub(crate) fn resolve_fit_influence_task(
         FitInfluencePolicy::ResampleEqualized => {
             require_fit_influence_support(capabilities, requested_policy)?;
             Ok(FitInfluenceTask {
+                fit_sample_ids: Vec::new(),
+                independent_unit_ids: Vec::new(),
+                target_names: Vec::new(),
+                target_row_weights: None,
                 requested_policy,
                 effective_policy: FitInfluencePolicy::ResampleEqualized,
                 mechanism: FitInfluenceMechanism::RowResampling,
@@ -1910,6 +2061,10 @@ pub(crate) fn resolve_fit_influence_task(
                 )
             })?;
             Ok(FitInfluenceTask {
+                fit_sample_ids: Vec::new(),
+                independent_unit_ids: Vec::new(),
+                target_names: Vec::new(),
+                target_row_weights: None,
                 requested_policy,
                 effective_policy: FitInfluencePolicy::BackendLossWeight,
                 mechanism: FitInfluenceMechanism::BackendLossWeights,
@@ -1951,6 +2106,10 @@ pub(crate) fn strict_fit_influence_task(
             )
         })?;
         return Ok(FitInfluenceTask {
+            fit_sample_ids: Vec::new(),
+            independent_unit_ids: Vec::new(),
+            target_names: Vec::new(),
+            target_row_weights: None,
             requested_policy,
             effective_policy: FitInfluencePolicy::BackendLossWeight,
             mechanism: FitInfluenceMechanism::BackendLossWeights,
@@ -1966,6 +2125,10 @@ pub(crate) fn strict_fit_influence_task(
             )
         })?;
         return Ok(FitInfluenceTask {
+            fit_sample_ids: Vec::new(),
+            independent_unit_ids: Vec::new(),
+            target_names: Vec::new(),
+            target_row_weights: None,
             requested_policy,
             effective_policy: FitInfluencePolicy::EqualSampleInfluence,
             mechanism: FitInfluenceMechanism::SampleWeights,
@@ -1974,6 +2137,10 @@ pub(crate) fn strict_fit_influence_task(
         });
     }
     Ok(FitInfluenceTask {
+        fit_sample_ids: Vec::new(),
+        independent_unit_ids: Vec::new(),
+        target_names: Vec::new(),
+        target_row_weights: None,
         requested_policy,
         effective_policy: FitInfluencePolicy::ResampleEqualized,
         mechanism: FitInfluenceMechanism::RowResampling,
@@ -1989,6 +2156,10 @@ pub(crate) fn auto_fit_influence_task(
     if capabilities.contains(&ControllerCapability::SupportsSampleWeights) {
         if let Some(weights) = row_weights.clone() {
             return FitInfluenceTask {
+                fit_sample_ids: Vec::new(),
+                independent_unit_ids: Vec::new(),
+                target_names: Vec::new(),
+                target_row_weights: None,
                 requested_policy: FitInfluencePolicy::Auto,
                 effective_policy: FitInfluencePolicy::EqualSampleInfluence,
                 mechanism: FitInfluenceMechanism::SampleWeights,
@@ -1999,6 +2170,10 @@ pub(crate) fn auto_fit_influence_task(
     }
     if capabilities.contains(&ControllerCapability::SupportsRowResampling) {
         return FitInfluenceTask {
+            fit_sample_ids: Vec::new(),
+            independent_unit_ids: Vec::new(),
+            target_names: Vec::new(),
+            target_row_weights: None,
             requested_policy: FitInfluencePolicy::Auto,
             effective_policy: FitInfluencePolicy::ResampleEqualized,
             mechanism: FitInfluenceMechanism::RowResampling,
@@ -2009,6 +2184,10 @@ pub(crate) fn auto_fit_influence_task(
     if capabilities.contains(&ControllerCapability::SupportsBackendLossWeights) {
         if let Some(weights) = row_weights {
             return FitInfluenceTask {
+                fit_sample_ids: Vec::new(),
+                independent_unit_ids: Vec::new(),
+                target_names: Vec::new(),
+                target_row_weights: None,
                 requested_policy: FitInfluencePolicy::Auto,
                 effective_policy: FitInfluencePolicy::BackendLossWeight,
                 mechanism: FitInfluenceMechanism::BackendLossWeights,
@@ -2018,6 +2197,10 @@ pub(crate) fn auto_fit_influence_task(
         }
     }
     FitInfluenceTask {
+        fit_sample_ids: Vec::new(),
+        independent_unit_ids: Vec::new(),
+        target_names: Vec::new(),
+        target_row_weights: None,
         requested_policy: FitInfluencePolicy::Auto,
         effective_policy: FitInfluencePolicy::UniformRows,
         mechanism: FitInfluenceMechanism::UniformRows,
@@ -2068,4 +2251,545 @@ pub(crate) fn record_fit_influence_diagnostic(task: &NodeTask, result: &mut Node
     result
         .fit_influence_diagnostics
         .push(task.fit_influence.diagnostic());
+}
+
+/// Explicit statistical units, signed independently of physical row and splitter identities.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ExperimentalUnits {
+    schema_version: u32,
+    sample_ids: Vec<SampleId>,
+    independent_unit_ids: Vec<String>,
+    fit_influence_policy: FitInfluencePolicy,
+    task_type: String,
+    target_names: Vec<String>,
+    target_values: Vec<Vec<Option<f64>>>,
+}
+
+pub(crate) fn experimental_units(plan: &ExecutionPlan) -> Result<Option<ExperimentalUnits>> {
+    plan.graph_plan
+        .graph
+        .metadata
+        .get("experimental_unit")
+        .map(|value| {
+            serde_json::from_value(value.clone()).map_err(|error| {
+                DagMlError::RuntimeValidation(format!(
+                    "invalid experimental_unit contract: {error}"
+                ))
+            })
+        })
+        .transpose()
+}
+
+impl ExperimentalUnits {
+    fn validate(&self) -> Result<()> {
+        if self.schema_version != 1
+            || self.sample_ids.is_empty()
+            || self.sample_ids.len() != self.independent_unit_ids.len()
+            || self.sample_ids.iter().collect::<BTreeSet<_>>().len() != self.sample_ids.len()
+            || self
+                .independent_unit_ids
+                .iter()
+                .any(|id| id.trim().is_empty())
+            || self.fit_influence_policy != FitInfluencePolicy::EqualSampleInfluence
+            || !matches!(self.task_type.as_str(), "regression" | "classification")
+            || self.target_names.is_empty()
+            || self.target_names.iter().any(|name| name.trim().is_empty())
+            || self.target_names.iter().collect::<BTreeSet<_>>().len() != self.target_names.len()
+            || self.target_values.len() != self.sample_ids.len()
+            || self.target_values.iter().any(|row| {
+                row.len() != self.target_names.len()
+                    || row.iter().flatten().any(|value| !value.is_finite())
+            })
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "invalid signed experimental-unit identities/targets".into(),
+            ));
+        }
+        if self.task_type == "classification"
+            && (self.target_names.len() != 1
+                || self.target_values.iter().any(|row| row[0].is_none()))
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "experimental-unit classification requires complete mono-y".into(),
+            ));
+        }
+        for unit in &self.independent_unit_ids {
+            crate::ids::GroupId::new(unit.clone())?;
+        }
+        let mut truth = BTreeMap::<(&str, usize), f64>::new();
+        for (unit, row) in self.independent_unit_ids.iter().zip(&self.target_values) {
+            for (target, value) in row.iter().enumerate() {
+                if let Some(value) = value {
+                    if truth
+                        .insert((unit, target), *value)
+                        .is_some_and(|previous| previous != *value)
+                    {
+                        return Err(DagMlError::RuntimeValidation(
+                            "independent unit has conflicting observed targets".into(),
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn position(&self, id: &SampleId) -> Result<usize> {
+        self.sample_ids
+            .iter()
+            .position(|sample| sample == id)
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(format!(
+                    "experimental-unit scope contains foreign sample `{id}`"
+                ))
+            })
+    }
+
+    fn validate_fold_set(&self, folds: &FoldSet) -> Result<()> {
+        folds.validate()?;
+        if self.task_type == "classification" {
+            let mut seen = BTreeSet::new();
+            if folds
+                .folds
+                .iter()
+                .flat_map(|fold| fold.validation_sample_ids.iter())
+                .any(|id| !seen.insert(id))
+            {
+                return Err(DagMlError::RuntimeValidation("independent-unit classification requires disjoint native validation folds; overlapping label-feature averages are unsupported".into()));
+            }
+        }
+        for fold in &folds.folds {
+            let train = fold
+                .train_sample_ids
+                .iter()
+                .map(|id| {
+                    self.position(id)
+                        .map(|position| &self.independent_unit_ids[position])
+                })
+                .collect::<Result<BTreeSet<_>>>()?;
+            for id in &fold.validation_sample_ids {
+                if train.contains(&self.independent_unit_ids[self.position(id)?]) {
+                    return Err(DagMlError::RuntimeValidation(format!(
+                        "fold `{}` leaks an independent unit between training and validation",
+                        fold.fold_id
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn selected_positions(
+        &self,
+        plan: &ExecutionPlan,
+        node: &NodePlan,
+        scope: &[SampleId],
+    ) -> Result<Vec<usize>> {
+        let availability = prediction_availability(plan)?;
+        let source = availability_source(plan, &node.node_id)?;
+        let mut selected = Vec::new();
+        for id in scope {
+            let position = self.position(id)?;
+            let present = if let (Some(availability), Some(source)) = (&availability, source) {
+                availability.presence(source, std::slice::from_ref(id))?[0]
+            } else {
+                true
+            };
+            if present && self.target_values[position].iter().any(Option::is_some) {
+                selected.push(position);
+            }
+        }
+        if selected.is_empty() {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "model `{}` has no observed independent-unit fit rows",
+                node.node_id
+            )));
+        }
+        for target in 0..self.target_names.len() {
+            if !selected
+                .iter()
+                .any(|position| self.target_values[*position][target].is_some())
+            {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "model `{}` has no observed rows for target `{}`",
+                    node.node_id, self.target_names[target]
+                )));
+            }
+        }
+        if self.task_type == "classification" {
+            let class_bits = |value: f64| if value == 0.0 { 0 } else { value.to_bits() };
+            let classes = self
+                .target_values
+                .iter()
+                .map(|row| class_bits(row[0].expect("validated class target")))
+                .collect::<BTreeSet<_>>();
+            let observed = selected
+                .iter()
+                .map(|position| {
+                    class_bits(self.target_values[*position][0].expect("validated class target"))
+                })
+                .collect::<BTreeSet<_>>();
+            if classes.len() < 2 || observed != classes {
+                return Err(DagMlError::RuntimeValidation(
+                    "independent-unit training scope is missing a declared class".into(),
+                ));
+            }
+        }
+        Ok(selected)
+    }
+
+    fn validate_scored_scope(
+        &self,
+        plan: &ExecutionPlan,
+        node: &NodePlan,
+        scope: &[SampleId],
+    ) -> Result<()> {
+        let availability = prediction_availability(plan)?;
+        let source = availability_source(plan, &node.node_id)?;
+        let mut present = Vec::new();
+        for id in scope {
+            if let (Some(availability), Some(source)) = (&availability, source) {
+                if !availability.presence(source, std::slice::from_ref(id))?[0] {
+                    continue;
+                }
+            }
+            present.push(self.position(id)?);
+        }
+        if present.is_empty() && source.is_some() {
+            return Ok(());
+        } // no genuine raw prediction block
+        for column in 0..self.target_names.len() {
+            if !present
+                .iter()
+                .any(|position| self.target_values[*position][column].is_some())
+            {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "independent-unit scored native scope has no observed target `{}`",
+                    self.target_names[column]
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn fit_task(
+        &self,
+        plan: &ExecutionPlan,
+        node: &NodePlan,
+        data_views: &BTreeMap<String, DataProviderViewSpec>,
+        prediction_inputs: &BTreeMap<String, PredictionInputSpec>,
+    ) -> Result<FitInfluenceTask> {
+        if !plan
+            .graph_plan
+            .graph
+            .nodes
+            .iter()
+            .any(|candidate| candidate.id == node.node_id && candidate.kind == NodeKind::Model)
+        {
+            return Ok(FitInfluenceTask::default());
+        }
+        self.validate()?;
+        if !node
+            .controller_capabilities
+            .contains(&ControllerCapability::SupportsSampleWeights)
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "experimental-unit model requires sample-weight support".into(),
+            ));
+        }
+        let scope = data_views
+            .values()
+            .filter(|view| {
+                matches!(
+                    view.partition,
+                    DataRequestPartition::FoldTrain
+                        | DataRequestPartition::FullTrain
+                        | DataRequestPartition::AllObservations
+                )
+            })
+            .filter_map(|view| view.sample_ids.as_ref())
+            .find(|ids| !ids.is_empty())
+            .or_else(|| {
+                prediction_inputs
+                    .values()
+                    .find(|input| {
+                        matches!(
+                            input.partition,
+                            PredictionPartition::Validation | PredictionPartition::Train
+                        )
+                    })
+                    .map(|input| &input.sample_ids)
+            })
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(
+                    "experimental-unit FIT has no authoritative training row scope".into(),
+                )
+            })?;
+        let positions = self.selected_positions(plan, node, scope)?;
+        let units = positions
+            .iter()
+            .map(|position| self.independent_unit_ids[*position].clone())
+            .collect::<Vec<_>>();
+        let mut counts = BTreeMap::<&str, usize>::new();
+        let mut target_counts = BTreeMap::<(&str, usize), usize>::new();
+        for (position, unit) in positions.iter().zip(&units) {
+            *counts.entry(unit).or_default() += 1;
+            for (target, value) in self.target_values[*position].iter().enumerate() {
+                if value.is_some() {
+                    *target_counts.entry((unit, target)).or_default() += 1;
+                }
+            }
+        }
+        let task = FitInfluenceTask {
+            requested_policy: FitInfluencePolicy::EqualSampleInfluence,
+            effective_policy: FitInfluencePolicy::EqualSampleInfluence,
+            mechanism: FitInfluenceMechanism::SampleWeights,
+            row_weights: units
+                .iter()
+                .map(|unit| 1.0 / counts[unit.as_str()] as f64)
+                .collect(),
+            fit_sample_ids: positions
+                .iter()
+                .map(|position| self.sample_ids[*position].clone())
+                .collect(),
+            independent_unit_ids: units.clone(),
+            target_names: self.target_names.clone(),
+            // Per-target regression fitting also needs this matrix when a
+            // particular native fold/source intersection is fully observed.
+            target_row_weights: (self.task_type == "regression").then(|| {
+                positions
+                    .iter()
+                    .zip(&units)
+                    .map(|(position, unit)| {
+                        self.target_values[*position]
+                            .iter()
+                            .enumerate()
+                            .map(|(target, value)| {
+                                if value.is_some() {
+                                    1.0 / target_counts[&(unit.as_str(), target)] as f64
+                                } else {
+                                    0.0
+                                }
+                            })
+                            .collect()
+                    })
+                    .collect()
+            }),
+            warnings: Vec::new(),
+        };
+        task.validate()?;
+        Ok(task)
+    }
+
+    pub(crate) fn class_labels(&self) -> Option<Vec<f64>> {
+        (self.task_type == "classification").then(|| {
+            let mut labels = self
+                .target_values
+                .iter()
+                .map(|row| row[0].expect("validated class labels"))
+                .collect::<Vec<_>>();
+            labels.sort_by(f64::total_cmp);
+            labels.dedup();
+            labels
+        })
+    }
+
+    pub(crate) fn validate_relations(&self, relations: &SampleRelationSet) -> Result<()> {
+        let key = crate::policy::AggregationGroupingKey::RelationMetadata {
+            key: "independent_unit_id".into(),
+        };
+        for (id, unit) in self.sample_ids.iter().zip(&self.independent_unit_ids) {
+            if key.group_for_sample(relations, id)?.as_str() != unit {
+                return Err(DagMlError::RuntimeValidation(
+                    "relation independent units differ from the signed training descriptor".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+    pub(crate) fn validate_test_cohort(&self, cohort: &crate::data::PredictCohort) -> Result<()> {
+        cohort.validate()?;
+        if cohort.role != crate::data::PredictCohortRole::ExternalTest {
+            return Err(DagMlError::RuntimeValidation(
+                "independent-unit CV test authority has a wrong role".into(),
+            ));
+        }
+        let key = crate::policy::AggregationGroupingKey::RelationMetadata {
+            key: "independent_unit_id".into(),
+        };
+        let train = self
+            .independent_unit_ids
+            .iter()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        for id in &cohort.physical_sample_ids {
+            let unit = key.group_for_sample(&cohort.relations, id)?;
+            if train.contains(unit.as_str()) {
+                return Err(DagMlError::RuntimeValidation(
+                    "independent unit leaks between Train and external Test".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+impl ExecutionPlan {
+    pub(crate) fn validate_experimental_units(&self) -> Result<()> {
+        let Some(units) = experimental_units(self)? else {
+            if self.campaign.aggregation_policy.grouping_key.is_some()
+                || self.node_plans.values().any(|node| {
+                    node.shape_plan
+                        .as_ref()
+                        .is_some_and(|shape| shape.aggregation_policy.grouping_key.is_some())
+                })
+            {
+                return Err(DagMlError::RuntimeValidation(
+                    "independent-unit grouping requires a signed experimental_unit descriptor"
+                        .into(),
+                ));
+            }
+            return Ok(());
+        };
+        units.validate()?;
+        if let Some(availability) = prediction_availability(self)? {
+            if availability.target_names != units.target_names {
+                return Err(DagMlError::RuntimeValidation(
+                    "independent-unit targets differ from availability contract".into(),
+                ));
+            }
+            for (index, id) in units.sample_ids.iter().enumerate() {
+                let position = availability
+                    .sample_ids
+                    .iter()
+                    .position(|sample| sample == id)
+                    .ok_or_else(|| {
+                        DagMlError::RuntimeValidation(
+                            "independent-unit sample absent from availability".into(),
+                        )
+                    })?;
+                if availability.target_validity_masks[position]
+                    .iter()
+                    .zip(&units.target_values[index])
+                    .any(|(valid, value)| *valid != value.is_some())
+                {
+                    return Err(DagMlError::RuntimeValidation(
+                        "independent-unit target mask differs from availability".into(),
+                    ));
+                }
+                if availability
+                    .sample_labels
+                    .as_ref()
+                    .is_some_and(|labels| labels[position] != units.target_values[index][0])
+                {
+                    return Err(DagMlError::RuntimeValidation(
+                        "independent-unit class labels differ from availability".into(),
+                    ));
+                }
+            }
+        }
+        let policy = &self.campaign.aggregation_policy;
+        let expected_key = crate::policy::AggregationGroupingKey::RelationMetadata {
+            key: "independent_unit_id".into(),
+        };
+        if policy.grouping_key.as_ref() != Some(&expected_key)
+            || policy.aggregation_level != PredictionLevel::Group
+            || policy.selection_metric_level != PredictionLevel::Group
+            || policy.method
+                != if units.task_type == "classification" {
+                    crate::policy::AggregationMethod::Vote
+                } else {
+                    crate::policy::AggregationMethod::Mean
+                }
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "experimental-unit scoring requires the explicit native Group policy".into(),
+            ));
+        }
+        if let Some(folds) = &self.fold_set {
+            if folds.sample_ids.iter().collect::<BTreeSet<_>>()
+                != units.sample_ids.iter().collect::<BTreeSet<_>>()
+            {
+                return Err(DagMlError::RuntimeValidation(
+                    "experimental-unit universe differs from FoldSet".into(),
+                ));
+            }
+            units.validate_fold_set(folds)?;
+        }
+        let nested = nested_stacking_campaign_plans(self)?;
+        for campaign in &nested {
+            for outer in &campaign.outer_scopes {
+                units.validate_fold_set(&outer.inner.inner_fold_set)?;
+            }
+            if let Some(refit) = &campaign.refit_fold_set {
+                units.validate_fold_set(refit)?;
+            }
+        }
+        for graph_node in &self.graph_plan.graph.nodes {
+            let node = &self.node_plans[&graph_node.id];
+            if graph_node.kind != NodeKind::Model {
+                if matches!(
+                    node.fit_scope,
+                    crate::controller::ControllerFitScope::FoldTrain
+                        | crate::controller::ControllerFitScope::FullTrain
+                ) {
+                    return Err(DagMlError::RuntimeValidation("independent-unit profile requires weighted preprocessing inside the model owner; separate fitting nodes are unsupported".into()));
+                }
+                continue;
+            }
+            if units.task_type == "classification"
+                && graph_node
+                    .metadata
+                    .get("nirs4all_prediction_output")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("proba")
+                && !(prediction_availability(self)?
+                    .is_some_and(|availability| availability.class_labels.is_some())
+                    && availability_source(self, &node.node_id)?.is_some())
+            {
+                return Err(DagMlError::RuntimeValidation("independent-unit classification cannot score a legacy probability-only prediction projection".into()));
+            }
+            if !node
+                .controller_capabilities
+                .contains(&ControllerCapability::SupportsSampleWeights)
+            {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "model `{}` cannot honor independent-unit sample weights",
+                    node.node_id
+                )));
+            }
+            if node.shape_plan.as_ref().is_some_and(|shape| {
+                shape.aggregation_policy.grouping_key.is_some()
+                    || shape.aggregation_policy.aggregation_level != PredictionLevel::Sample
+            }) {
+                return Err(DagMlError::RuntimeValidation(
+                    "independent-unit scoring must not alter sample-keyed model/OOF features"
+                        .into(),
+                ));
+            }
+            units.selected_positions(self, node, &units.sample_ids)?;
+            if let Some(folds) = &self.fold_set {
+                for fold in &folds.folds {
+                    units.selected_positions(self, node, &fold.train_sample_ids)?;
+                    units.validate_scored_scope(self, node, &fold.validation_sample_ids)?;
+                }
+            }
+            for campaign in &nested {
+                if campaign.base_node_ids.contains(&node.node_id) {
+                    for outer in &campaign.outer_scopes {
+                        for fold in &outer.inner.inner_fold_set.folds {
+                            units.selected_positions(self, node, &fold.train_sample_ids)?;
+                        }
+                    }
+                    if let Some(refit) = &campaign.refit_fold_set {
+                        for fold in &refit.folds {
+                            units.selected_positions(self, node, &fold.train_sample_ids)?;
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
 }

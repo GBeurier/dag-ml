@@ -61,7 +61,7 @@
     },
     {
       "path": "crates/dag-ml-cli/src/main.rs",
-      "sha256": "0a8b736f1b483062f61770f3e6e5021676cea4ada97681069a7208cfeee654a1",
+      "sha256": "e7e87cfaea730ce8bf4285dd3bf64f8bea680b537a97b8b0240c44ef0f6f9aec",
       "kind": "cli_validator"
     },
     {
@@ -86,7 +86,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/metrics.rs",
-      "sha256": "1020a7735385245b72104713a261455c0212da74b1254fccc65655c6384625ce",
+      "sha256": "2ad8e6e5fae78dce090b323da15a23de0a4e1975640f25703a6b4164500f2462",
       "kind": "native_metric_adapter"
     },
     {
@@ -96,12 +96,12 @@
     },
     {
       "path": "crates/dag-ml-py/python/dag_ml/__init__.py",
-      "sha256": "ab67cc3a888513c4ff850343b47dc57349208456dcb9fc7f20ae7719f95d57b6",
+      "sha256": "207200e5be279d008be5733cc3916416dd0d7aaf11a6dd62a94a3164b4a821a3",
       "kind": "python_facade"
     },
     {
       "path": "crates/dag-ml-py/python/dag_ml/__init__.pyi",
-      "sha256": "6e8222637828f30d6b84cfa429ca87ffac215458c374e333b2987e5438697160",
+      "sha256": "5818a11cc3d4462d5e96d437bddbcf17640f15a5d416a31ed8661f95e3c7ac5b",
       "kind": "python_types"
     },
     {
@@ -121,7 +121,7 @@
     },
     {
       "path": "crates/dag-ml-wasm/src/lib.rs",
-      "sha256": "cde4d8baabbdc012a47106f9de36c7125a2331cb7d1cf9832f067c987a59e37f",
+      "sha256": "45377b068ab5678398f39e0456452a773e3b961bc1aa79e20d14ede25723470c",
       "kind": "javascript_binding"
     },
     {
@@ -136,7 +136,7 @@
     },
     {
       "path": "docs/contracts/campaign_spec.schema.json",
-      "sha256": "07c2a3a39e47f58b4878ba92bd28452e0a0b4c538b0a421af6b43ac490b701b3",
+      "sha256": "e11dde8ba4042f02ff524ffbcce22f44a86d1c09245a0dd31889a29bc4c43b1c",
       "kind": "schema_dependency"
     },
     {
@@ -206,7 +206,7 @@
     },
     {
       "path": "docs/contracts/node_task.schema.json",
-      "sha256": "dc6c4eeab7767dec1b5a69b8c4a42f14fa9c8c62a384d9919559b39da573e1e6",
+      "sha256": "3b1e8b4e807c36153e3c0ef6b7408365121f65a5671f8343aee1217644f74d01",
       "kind": "schema_dependency"
     },
     {
@@ -216,7 +216,7 @@
     },
     {
       "path": "docs/contracts/selection_policy.schema.json",
-      "sha256": "a6196da912f5775ddd319698649adf04f7e91406f504a8669c8c3d5c2caf99e4",
+      "sha256": "24efff513cf486b4b5db68180f703e9ed6c62bbee73bd7dd688d28577e0d04c3",
       "kind": "schema_dependency"
     },
     {
@@ -300,5 +300,5 @@
   "runtime_only_negative_cases": [
     "provider_result_non_finite"
   ],
-  "pack_checksum": "83609ea85f5c50bf232c3f0f5e7c1038217f344e7e899b29dfdfcbe29d29844f"
+  "pack_checksum": "2a22f906930205085f1fef5942d54ca510507eea30a61587f6d4a76d2b2ef9e9"
 }
