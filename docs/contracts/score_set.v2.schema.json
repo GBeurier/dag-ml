@@ -32,7 +32,45 @@
         "row_count": { "type": "integer", "minimum": 0 },
         "target_width": { "type": "integer", "minimum": 0 },
         "target_names": { "type": "array", "items": { "type": "string" } },
-        "metrics": { "type": "object", "additionalProperties": { "type": "number" } }
+        "metrics": { "type": "object", "additionalProperties": { "type": "number" } },
+        "grouping_key": {
+          "$ref": "#/$defs/aggregation_grouping_key"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "grouping_key"
+            ]
+          },
+          "then": {
+            "required": [
+              "level"
+            ],
+            "properties": {
+              "level": {
+                "const": "group"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "aggregation_grouping_key": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "key"
+      ],
+      "properties": {
+        "kind": {
+          "const": "relation_metadata"
+        },
+        "key": {
+          "const": "independent_unit_id"
+        }
       }
     }
   }

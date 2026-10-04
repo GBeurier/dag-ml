@@ -62,7 +62,7 @@ def test_ci_and_local_selector_use_the_published_dynamic_binding() -> None:
     assert not (ROOT / "crates" / "dag-ml-core" / "Cargo.toml.methods-local").exists()
 
     archive_core = primary["dev-dependencies"]["nirs4all_archive_core"]
-    assert archive_core == {"package": "nirs4all", "version": "=0.3.22"}
+    assert archive_core == {"package": "nirs4all", "version": "=0.4.0"}
 
     helper = SCRIPT.read_text(encoding="utf-8")
     assert "--features methods-optimizer" in helper
@@ -115,5 +115,5 @@ def test_hpo_docs_match_the_published_fail_closed_feature_contract() -> None:
     assert "Default builds leave that feature disabled and refuse HPO" in normalized_docs
     assert "no public `methods-optimizer` Cargo feature" not in normalized_docs
     assert "There is no sibling manifest or sibling source dependency" in normalized_docs
-    assert '`nirs4all_archive_core = "=0.3.22"` development dependency' in normalized_docs
+    assert '`nirs4all_archive_core = "=0.4.0"` development dependency' in normalized_docs
     assert "must not be presented as cross-source Core qualification" in normalized_docs

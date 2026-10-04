@@ -96,6 +96,7 @@ pub fn prepare_host_hpo_structural_catalogue(
     let mut covered = BTreeSet::new();
     for variant in variants {
         let candidate = pruned_plan_for_operator_models(&plan, &models, &variant)?;
+        crate::methods_classification::validate_methods_classification_plan(&candidate)?;
         let targets = candidate
             .node_plans
             .values()
@@ -362,6 +363,7 @@ pub fn resolve_host_hpo_structural_winner(
             require_finite: true,
             evaluation_scope: None,
             refit_slot_plan: None,
+            requested_rank: None,
             stacking_fit_contract: None,
             reduction_id: None,
         },

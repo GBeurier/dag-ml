@@ -254,15 +254,20 @@ pub(crate) fn materialize_native_pls_phase_controls(
             return Err(refuse("phase_controls cannot be supplied by an operator"));
         }
         node.params.extend(controls.train_params.clone());
-        node.params
-            .insert("phase_controls".into(), serde_json::to_value(controls)?);
+        let mut phase_controls = serde_json::to_value(controls)?;
+        // Struct-to-Value preserves declaration order with preserve_order.
+        // These dynamic objects must retain the legacy sorted-map encoding
+        // when a host persists a package with sorted JSON keys.
+        phase_controls.sort_all_objects();
+        node.params.insert("phase_controls".into(), phase_controls);
         node.params_fingerprint = crate::campaign::stable_json_fingerprint(&node.params)?;
     }
     if !all.is_empty() {
-        plan.campaign.metadata.insert(
-            "native_pls_phase_controls".into(),
-            serde_json::to_value(&all)?,
-        );
+        let mut provenance = serde_json::to_value(&all)?;
+        provenance.sort_all_objects();
+        plan.campaign
+            .metadata
+            .insert("native_pls_phase_controls".into(), provenance);
         plan.campaign_fingerprint = crate::campaign::stable_json_fingerprint(&plan.campaign)?;
     }
     validate_native_pls_phase_plan(plan)
@@ -544,6 +549,21 @@ mod tests {
             parsed.recipe(Phase::Refit)[0]["params"]["scale_x"],
             json!(true)
         );
+        let mut wire = serde_json::to_value(&plan).unwrap();
+        wire.sort_all_objects();
+        let restored: ExecutionPlan = serde_json::from_value(wire).unwrap();
+        assert_eq!(
+            restored.campaign_fingerprint,
+            crate::campaign::stable_json_fingerprint(&restored.campaign).unwrap()
+        );
+        let restored_node = &restored.node_plans[&NodeId::new("model:base").unwrap()];
+        assert_eq!(
+            restored_node.params_fingerprint,
+            crate::campaign::stable_json_fingerprint(&restored_node.params).unwrap()
+        );
+        for patch in &request.parameter_patches {
+            validate_native_pls_materialized_fit_patch(&restored, patch).unwrap();
+        }
         let before = crate::hpo::campaign_provenance_fingerprint(&plan.campaign).unwrap();
         plan.campaign
             .metadata

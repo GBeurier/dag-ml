@@ -12,8 +12,20 @@ from pathlib import Path
 import pytest
 
 from scripts.qualify_multimodal_methods_hpo_octave import (
-    CONTROLLER, OctaveWorker, audit, prepare_octave,
+    CONTROLLER, OctaveWorker, audit, prepare_octave, require_role_abi,
 )
+
+
+@pytest.mark.parametrize("version", ["1.2.1+abi.2.14.0", "1.2.1+abi.2.17.0", "1.2.1+abi.2.18.1"])
+def test_role_abi_accepts_additive_minor_compatibility(version):
+    require_role_abi(version)
+
+
+@pytest.mark.parametrize("version", ["1.2.1+abi.2.13.9", "1.2.1+abi.3.17.0",
+                                     "1.2.1+abi.2.17.", "1.2.1+abi.2.17.0-extra", None, 217])
+def test_role_abi_refuses_incompatible_or_malformed_runtime(version):
+    with pytest.raises(AssertionError, match="ABI major 2, minor >= 14"):
+        require_role_abi(version)
 
 
 @pytest.fixture
@@ -53,7 +65,10 @@ def fit_export(inputs):
     octave, work, sources, operators, targets = inputs
     prepared = prepare_octave(octave, work, "training", sources, operators, targets)
     with OctaveWorker(prepared) as worker:
-        result = worker.operator(task(targets["sample_ids"]))
+        native_task = task(targets["sample_ids"])
+        for field in ("data_view_receipts", "required_loss_attestations", "residual_targets", "fit_influence"):
+            native_task.pop(field)
+        result = worker.operator(native_task)
         ref = result["artifacts"][0]
         raw = worker.artifact({"operation": "export", "artifact_id": ref["id"]})
     return result, ref, raw, prepared
@@ -174,3 +189,57 @@ def test_real_prediction_refuses_recipe_feature_order_and_foreign_handles(octave
             worker.operator(current)
         worker.artifact({"operation": "release", "handle": handle})
         assert Counter(row["operation"] for row in audit(features))["PREDICT"] == 0
+
+
+@pytest.mark.parametrize("field,value", [
+    ("data_view_receipts", {"unexpected": {"receipt": "generated"}}),
+    ("required_loss_attestations", [{"loss_id": "custom"}]),
+    ("residual_targets", {"sample_ids": ["foreign"]}),
+    ("fit_influence", {"mechanism": "sample_weights", "row_weights": [1.0]}),
+    ("fit_influence", {"mechanism": "uniform_rows", "target_row_weights": [[1.0]]}),
+])
+def test_real_omitted_defaults_keep_specialized_task_refusals(octave_inputs, field, value):
+    octave, work, sources, operators, targets = octave_inputs
+    prepared = prepare_octave(octave, work, "specialized-refusal", sources, operators, targets)
+    with OctaveWorker(prepared) as worker:
+        current = task(targets["sample_ids"])
+        for optional in ("data_view_receipts", "required_loss_attestations", "residual_targets", "fit_influence"):
+            current.pop(optional)
+        current[field] = value
+        with pytest.raises(RuntimeError, match="specialized controller"):
+            worker.operator(current)
+        assert not audit(prepared)
+        assert not worker.hydrated
+
+
+def test_real_persistent_worker_runs_two_cv_fits_then_selected_refit(octave_inputs):
+    octave, work, sources, operators, targets = octave_inputs
+    prepared = prepare_octave(octave, work, "persistent-cv-refit", sources, operators, targets)
+    all_ids = targets["sample_ids"]
+    middle = len(all_ids) // 2
+    halves = [all_ids[:middle], all_ids[middle:]]
+    assert min(map(len, halves)) >= 2
+    with OctaveWorker(prepared) as worker:
+        for index in range(2):
+            train, valid = halves[index], halves[1 - index]
+            current = task(train, "FIT_CV")
+            current["fold_id"] = f"fold:persistent.{index}"
+            current["data_views"]["data:x"]["partition"] = "fold_train"
+            current["data_views"]["data:x:validation"] = {
+                **current["data_views"]["data:x"],
+                "partition": "fold_validation", "sample_ids": valid}
+            out = worker.operator(current)
+            assert out["predictions"][0]["sample_ids"] == valid
+            assert out["predictions"][0]["partition"] == "validation"
+            assert not out["artifacts"]
+            assert not worker.hydrated
+        final = worker.operator(task(all_ids))
+        assert final["predictions"][0]["sample_ids"] == all_ids
+        assert len(final["artifacts"]) == 1
+        raw = worker.artifact({"operation": "export", "artifact_id": final["artifacts"][0]["id"]})
+        assert bytes(json.loads(bytes(raw))["states"][0][:4]) == b"N4ME"
+        fit_rows = [row["sample_ids"] for row in audit(prepared) if row["operation"] == "fit"]
+        assert fit_rows == [halves[0], halves[1], all_ids]
+    counts = Counter(row["operation"] for row in audit(prepared))
+    assert counts["fit"] == counts["dispose"] == 3
+    assert counts["release"] == 1

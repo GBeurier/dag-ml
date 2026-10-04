@@ -54,6 +54,340 @@ use serde_json::json;
 #[path = "tests/structural_source_subsets/tests.rs"]
 mod structural_source_subsets;
 
+#[cfg(dag_ml_workspace_contract_fixtures)]
+mod named_dense_inputs {
+    use std::cell::{Cell, RefCell};
+
+    use super::*;
+    use crate::campaign::stable_json_fingerprint;
+    use crate::controller_adapter::HostControllerSpec;
+
+    // These matrices belong to the fixture host. Production coordination never
+    // materializes or interprets their numeric values.
+    struct NamedMatrixProvider {
+        owner: ControllerId,
+        sources: BTreeMap<String, (Vec<SampleId>, Vec<Vec<f64>>)>,
+        matrices: RefCell<BTreeMap<u64, Vec<Vec<f64>>>>,
+        relations: SampleRelationSet,
+        cohort: PredictCohort,
+        next_handle: Cell<u64>,
+        forbid_training_relations: Cell<bool>,
+        reverse_receipt: bool,
+    }
+
+    impl NamedMatrixProvider {
+        fn new(reverse_receipt: bool) -> Self {
+            let relations = sample_relations(&["s1", "s2"]);
+            let cohort = PredictCohort::from_relations(
+                PredictCohortRole::Inference,
+                sample_relations(&["heldout2", "heldout1"]),
+                vec!["y".into()],
+                "d".repeat(64),
+                None,
+            )
+            .unwrap();
+            Self {
+                owner: ControllerId::new("controller:host.named-data").unwrap(),
+                sources: BTreeMap::from([
+                    (
+                        "src0".into(),
+                        (
+                            ids(&["heldout2", "s2", "heldout1", "s1"]),
+                            vec![
+                                vec![21., 22., 23., 24.],
+                                vec![11., 12., 13., 14.],
+                                vec![31., 32., 33., 34.],
+                                vec![1., 2., 3., 4.],
+                            ],
+                        ),
+                    ),
+                    (
+                        "src1".into(),
+                        (
+                            ids(&["s1", "heldout1", "s2", "heldout2"]),
+                            vec![
+                                vec![100., 101., 102.],
+                                vec![300., 301., 302.],
+                                vec![200., 201., 202.],
+                                vec![400., 401., 402.],
+                            ],
+                        ),
+                    ),
+                ]),
+                matrices: RefCell::new(BTreeMap::new()),
+                relations,
+                cohort,
+                next_handle: Cell::new(100),
+                forbid_training_relations: Cell::new(false),
+                reverse_receipt,
+            }
+        }
+    }
+
+    fn ids(values: &[&str]) -> Vec<SampleId> {
+        values
+            .iter()
+            .map(|value| SampleId::new(*value).unwrap())
+            .collect()
+    }
+
+    fn sample_relations(values: &[&str]) -> SampleRelationSet {
+        SampleRelationSet {
+            records: values
+                .iter()
+                .map(|value| {
+                    SampleRelation::new(
+                        ObservationId::new(format!("obs:{value}")).unwrap(),
+                        SampleId::new(*value).unwrap(),
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    impl RuntimeDataProvider for NamedMatrixProvider {
+        fn materialize(&self, request: &DataMaterializationRequest) -> Result<HandleRef> {
+            assert_eq!(request.binding.output_representation, "tabular_numeric");
+            assert_eq!(request.binding.source_ids.len(), 1);
+            assert!(self.sources.contains_key(&request.binding.source_ids[0]));
+            Ok(HandleRef {
+                handle: if request.binding.source_ids[0] == "src0" {
+                    10
+                } else {
+                    20
+                },
+                kind: HandleKind::Data,
+                owner_controller: self.owner.clone(),
+            })
+        }
+
+        fn make_view(&self, request: &DataViewRequest) -> Result<HandleRef> {
+            let source = &request.binding.source_ids[0];
+            assert_eq!(
+                request.view.source_ids.as_ref(),
+                Some(&request.binding.source_ids)
+            );
+            let (available_ids, values) = &self.sources[source];
+            let wanted = request
+                .view
+                .sample_ids
+                .as_ref()
+                .expect("native ordered scope IDs");
+            let selected = wanted
+                .iter()
+                .map(|sample| {
+                    let position = available_ids
+                        .iter()
+                        .position(|available| available == sample)
+                        .unwrap();
+                    values[position].clone()
+                })
+                .collect();
+            let handle = self.next_handle.get();
+            self.next_handle.set(handle + 1);
+            self.matrices.borrow_mut().insert(handle, selected);
+            Ok(HandleRef {
+                handle,
+                kind: HandleKind::DataView,
+                owner_controller: self.owner.clone(),
+            })
+        }
+
+        fn make_view_attested(&self, request: &DataViewRequest) -> Result<AttestedDataView> {
+            let handle = self.make_view(request)?;
+            let mut sample_ids = request.view.sample_ids.clone().unwrap();
+            if self.reverse_receipt && request.binding.source_ids[0] == "src1" {
+                sample_ids.reverse();
+            }
+            let content = stable_json_fingerprint(&self.matrices.borrow()[&handle.handle])?;
+            Ok(AttestedDataView {
+                receipt: Some(DataViewReceipt {
+                    handle: handle.clone(),
+                    view_key: request.view_key.clone(),
+                    sample_ids,
+                    schema_fingerprint: request.binding.schema_fingerprint.clone(),
+                    content_fingerprint: content,
+                }),
+                handle,
+            })
+        }
+
+        fn coordinator_relations(
+            &self,
+            _binding: &DataBinding,
+        ) -> Result<Option<SampleRelationSet>> {
+            if self.forbid_training_relations.get() {
+                return Err(DagMlError::RuntimeValidation(
+                    "PREDICT cannot read training relations".into(),
+                ));
+            }
+            Ok(Some(self.relations.clone()))
+        }
+
+        fn predict_cohort(
+            &self,
+            _binding: &DataBinding,
+            phase: Phase,
+        ) -> Result<Option<PredictCohort>> {
+            assert_eq!(phase, Phase::Predict);
+            Ok(Some(self.cohort.clone()))
+        }
+    }
+
+    fn plan(provider: &NamedMatrixProvider) -> ExecutionPlan {
+        let mut contract: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../examples/fixtures/data/model_input_spec_named_dense.json"
+        ))
+        .unwrap();
+        // This fixture host stores both sources in actual float64 matrices.
+        contract["ports"][1]["metadata"]["dtype"] = json!("float64");
+        let dsl: crate::dsl::PipelineDslSpec = serde_json::from_value(json!({
+            "id":"named-runtime", "root_seed":19,
+            "split_invocation":{"id":"split:named","fold_set":two_fold_set()},
+            "steps":[{"kind":"model","id":"model:named","operator":{"type":"UserModule"},"model_input":contract}]
+        })).unwrap();
+        let mut compiled = crate::dsl::compile_pipeline_dsl_with_generation(&dsl).unwrap();
+        let node = &compiled.graph.nodes[0];
+        let mut controller =
+            HostControllerSpec::new("controller:host.named-model", "1", NodeKind::Model);
+        controller.input_ports = Some(node.ports.inputs.clone());
+        controller.output_ports = Some(node.ports.outputs.clone());
+        controller.data_requirements =
+            Some(node.metadata[crate::dsl::DSL_MODEL_INPUT_METADATA_KEY].clone());
+        let mut registry = ControllerRegistry::new();
+        registry.register(controller.derive().unwrap()).unwrap();
+        compiled.campaign_template.data_bindings.insert(
+            node.id.clone(),
+            [("nir", "src0"), ("clinical", "src1")]
+                .into_iter()
+                .map(|(name, source)| {
+                    let mut binding = data_binding(&node.id);
+                    binding.input_name = name.into();
+                    binding.feature_set_id = Some(format!("features:{source}"));
+                    binding.source_ids = vec![source.into()];
+                    binding.relation_fingerprint = Some(provider.relations.fingerprint().unwrap());
+                    binding
+                })
+                .collect(),
+        );
+        build_execution_plan(
+            "plan:named-runtime",
+            compiled.graph,
+            compiled.campaign_template,
+            &registry,
+        )
+        .unwrap()
+    }
+
+    fn collect(
+        plan: &ExecutionPlan,
+        provider: &NamedMatrixProvider,
+        phase: Phase,
+    ) -> Result<CollectedInputs> {
+        let resources = PhaseScopeResources {
+            data_provider: Some(provider),
+            ..Default::default()
+        };
+        let context = RunContext::new(RunId::new("run:named-runtime").unwrap(), Some(19));
+        let node = &plan.node_plans[&NodeId::new("model:named").unwrap()];
+        collect_input_handles(
+            plan,
+            node,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &resources,
+            &context,
+            &PhaseScope {
+                phase,
+                variant_id: Some(VariantId::new("variant:base").unwrap()),
+                variant: None,
+                fold_id: (phase == Phase::FitCv).then(|| FoldId::new("fold:0").unwrap()),
+                seed_root: Some(19),
+            },
+        )
+    }
+
+    #[test]
+    fn named_cv_and_refit_views_align_real_host_matrices_without_cross_source_concat() {
+        let provider = NamedMatrixProvider::new(false);
+        let plan = plan(&provider);
+        let cv = collect(&plan, &provider, Phase::FitCv).unwrap();
+        assert_eq!(cv.data_views.len(), 4);
+        for name in ["nir", "clinical"] {
+            assert_eq!(
+                cv.data_views[&format!("data:{name}")].sample_ids,
+                Some(ids(&["s2"]))
+            );
+            assert_eq!(
+                cv.data_views[&format!("data:{name}:validation")].sample_ids,
+                Some(ids(&["s1"]))
+            );
+        }
+        let matrices = provider.matrices.borrow();
+        assert_eq!(
+            matrices[&cv.handles["data:nir"].handle][0],
+            [11., 12., 13., 14.]
+        );
+        assert_eq!(
+            matrices[&cv.handles["data:clinical"].handle][0],
+            [200., 201., 202.]
+        );
+        drop(matrices);
+        let refit = collect(&plan, &provider, Phase::Refit).unwrap();
+        for view in refit.data_views.values() {
+            assert_eq!(view.partition, DataRequestPartition::FullTrain);
+            assert_eq!(view.sample_ids, Some(ids(&["s1", "s2"])));
+        }
+        assert!(refit.data_views.keys().all(|key| key != "data:x"));
+    }
+
+    #[test]
+    fn named_predict_views_keep_distinct_attestations_and_refuse_reordered_receipt() {
+        let provider = NamedMatrixProvider::new(false);
+        let plan = plan(&provider);
+        provider.forbid_training_relations.set(true);
+        let predicted = collect(&plan, &provider, Phase::Predict).unwrap();
+        assert_eq!(predicted.data_views.len(), 2);
+        assert_eq!(predicted.data_view_receipts.len(), 2);
+        let matrices = provider.matrices.borrow();
+        let nir = &matrices[&predicted.handles["data:nir"].handle];
+        let clinical = &matrices[&predicted.handles["data:clinical"].handle];
+        let host_prediction: Vec<_> = nir
+            .iter()
+            .zip(clinical)
+            .map(|(left, right)| left[0] + right[0])
+            .collect();
+        assert_eq!(host_prediction, [331., 421.]);
+        assert_eq!(
+            predicted.data_view_receipts["data:nir"].sample_ids,
+            ids(&["heldout1", "heldout2"])
+        );
+        assert_ne!(
+            predicted.handles["data:nir"],
+            predicted.handles["data:clinical"]
+        );
+        assert_ne!(
+            predicted.data_view_receipts["data:nir"].content_fingerprint,
+            predicted.data_view_receipts["data:clinical"].content_fingerprint
+        );
+        assert_ne!(
+            predicted.data_view_receipts["data:nir"].view_key,
+            predicted.data_view_receipts["data:clinical"].view_key
+        );
+        assert!(provider.cohort.target_content_fingerprint.is_none());
+        drop(matrices);
+        let corrupt = NamedMatrixProvider::new(true);
+        corrupt.forbid_training_relations.set(true);
+        let error = collect(&plan, &corrupt, Phase::Predict)
+            .err()
+            .expect("reordered source receipt must fail");
+        assert!(
+            error.to_string().contains("ordered sample IDs"),
+            "unexpected {error}"
+        );
+    }
+}
+
 fn structural_host_fixture() -> (ExecutionPlan, HostHpoSearchRequest) {
     let dsl: crate::PipelineDslSpec = serde_json::from_value(json!({
         "id": "dsl:structural.hpo", "root_seed": 17,
@@ -521,6 +855,111 @@ fn structural_host_worker_plans_are_pruned_and_validate_before_execution() {
     .unwrap();
     assert_eq!(outcome.result.unwrap().selected_trial_index, 0);
     assert_eq!(proposals.told, [(0, 1.0), (1, 2.0)]);
+}
+
+#[test]
+fn structural_v1_browser_refuses_native_parallel_descriptor_before_callbacks() {
+    let (plan, mut request) = structural_host_fixture();
+    assert!(request
+        .structural_catalogue
+        .as_ref()
+        .unwrap()
+        .topology_contract
+        .is_none());
+    request.trial_budget = 2;
+    request
+        .optimizer_descriptor
+        .insert("sampler".into(), json!("random"));
+    request
+        .optimizer_descriptor
+        .insert("n_jobs".into(), json!(2));
+    let options = HostHpoResumeOptions {
+        data_fingerprint: "worker:structural.native-profile".into(),
+        checkpoint: None,
+    };
+    let mut original_proposals = StructuralHostProposals::from_request(&request);
+    let window =
+        prepare_host_hpo_worker_window(&plan, &request, &options, &mut original_proposals, 2)
+            .unwrap();
+    assert_eq!(original_proposals.asked, [0, 1]);
+    let original_wire = serde_json::to_value(&request).unwrap();
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let controllers = structural_score_controllers(calls.clone());
+    let provider = InMemoryDataProvider::new(ControllerId::new("controller:data").unwrap());
+    let valid = json!({
+        "schema_version": 1, "profile": "methods_sequential_cpu_v1", "workers": 2,
+        "cpu_threads": 1, "gpu_devices": [],
+        "methods_build": {"schema_version": 1, "blas": false, "openmp": false, "cuda": false}
+    });
+    let mut accelerated = valid.clone();
+    accelerated["methods_build"]["blas"] = json!(true);
+    let mut oversized = valid.clone();
+    oversized["workers"] = json!(5);
+    for (index, (descriptor, workers)) in [
+        (valid, 2),
+        (json!(null), 2),
+        (json!({"unknown": true}), 2),
+        (accelerated, 2),
+        (oversized, 5),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        request
+            .optimizer_descriptor
+            .insert("parallel_execution".into(), descriptor);
+        request
+            .optimizer_descriptor
+            .insert("n_jobs".into(), json!(workers));
+        if index == 0 {
+            assert!(request.validate_parallel_execution(workers).is_ok());
+        }
+        let mut proposals = StructuralHostProposals::from_request(&request);
+        let error =
+            prepare_host_hpo_worker_window(&plan, &request, &options, &mut proposals, workers)
+                .unwrap_err();
+        assert!(error.to_string().contains("native-only profile"));
+        assert!(proposals.asked.is_empty());
+        for error in [
+            evaluate_host_hpo_worker_task(&window.tasks[0], &request, &controllers, &provider)
+                .unwrap_err(),
+            evaluate_host_hpo_worker_fold(
+                &window.tasks[0],
+                &request,
+                0,
+                &controllers,
+                &provider,
+                &options.data_fingerprint,
+            )
+            .unwrap_err(),
+        ] {
+            assert!(error.to_string().contains("native-only profile"));
+        }
+        let mut progress = DurableHostProgress {
+            stop_after: usize::MAX,
+            checkpoints: Vec::new(),
+        };
+        let error = complete_host_hpo_worker_window(
+            &plan,
+            &request,
+            &options,
+            window.clone(),
+            Vec::new(),
+            &mut proposals,
+            &mut progress,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("native-only profile"));
+        assert!(proposals.asked.is_empty());
+        assert!(proposals.told.is_empty());
+        assert!(progress.checkpoints.is_empty());
+        assert!(calls.lock().unwrap().is_empty());
+    }
+    request.optimizer_descriptor.remove("parallel_execution");
+    request
+        .optimizer_descriptor
+        .insert("n_jobs".into(), json!(2));
+    assert_eq!(serde_json::to_value(&request).unwrap(), original_wire);
 }
 
 #[test]
@@ -3406,6 +3845,8 @@ fn stacking_probability_selector_reduces_inner_and_outer_inputs_by_identity() {
             .map(|id| SampleId::new(*id).unwrap())
             .collect(),
         values: values.iter().map(|row| row.to_vec()).collect(),
+        feature_validity_masks: None,
+        source_presence: None,
         prediction_width: 2,
         target_names: vec!["0".to_string(), "1".to_string()],
     };
@@ -3479,6 +3920,8 @@ fn stacking_best_selector_uses_validation_score_before_meta_fit() {
         unit_ids: vec![PredictionUnitId::Sample(SampleId::new("s1").unwrap())],
         sample_ids: vec![SampleId::new("s1").unwrap()],
         values: vec![vec![value]],
+        feature_validity_masks: None,
+        source_presence: None,
         prediction_width: 1,
         target_names: vec!["y".to_string()],
     };
@@ -3487,6 +3930,7 @@ fn stacking_best_selector_uses_validation_score_before_meta_fit() {
         (format!("{second}.oof"), input(second.clone(), 2.0)),
     ]);
     let report = |producer_node, rmse| crate::metrics::RegressionMetricReport {
+        grouping_key: None,
         prediction_id: None,
         producer_node,
         producer_port: None,
@@ -3554,10 +3998,13 @@ fn stacking_fold_candidate_top_k_uses_only_inner_validation_scores() {
         unit_ids: vec![PredictionUnitId::Sample(SampleId::new("s1").unwrap())],
         sample_ids: vec![SampleId::new("s1").unwrap()],
         values: vec![vec![1.0]],
+        feature_validity_masks: None,
+        source_presence: None,
         prediction_width: 1,
         target_names: vec!["y".to_string()],
     };
     let report = |producer_node, fold, rmse| crate::metrics::RegressionMetricReport {
+        grouping_key: None,
         prediction_id: None,
         producer_node,
         producer_port: None,
@@ -12391,6 +12838,8 @@ fn prediction_feature_specs_join_in_graph_order_by_sample_identity() {
         unit_ids: Vec::new(),
         sample_ids: ids,
         values,
+        feature_validity_masks: None,
+        source_presence: None,
         prediction_width: 1,
         target_names: vec!["y".to_string()],
     };
@@ -12589,6 +13038,8 @@ fn nested_residual_prediction_feature_plan_separates_source_and_base_scopes() {
                 unit_ids: Vec::new(),
                 sample_ids: vec![final_sample.clone()],
                 values: vec![vec![value]],
+                feature_validity_masks: None,
+                source_presence: None,
                 prediction_width: 1,
                 target_names: vec!["y".to_string()],
             },
@@ -14822,6 +15273,294 @@ fn host_hpo_parallel_seals_one_batch_manifest_for_success_and_failure() {
     assert_eq!(second, &expected);
 }
 
+mod typed_parallel_profile_tests {
+    use super::*;
+
+    struct ProviderFactory;
+    impl HostHpoCandidateProviderFactory for ProviderFactory {
+        fn create(&self, _: u32) -> Result<Box<dyn RuntimeDataProvider + Send>> {
+            Ok(Box::new(InMemoryDataProvider::new(ControllerId::new(
+                "controller:data",
+            )?)))
+        }
+    }
+
+    struct Model {
+        inner: VariantScoringController,
+        trial: u32,
+        first_wave: u32,
+        barrier: Arc<std::sync::Barrier>,
+        active: Arc<AtomicUsize>,
+        maximum: Arc<AtomicUsize>,
+        dropped: Arc<AtomicUsize>,
+        failure: Option<&'static str>,
+    }
+    impl Drop for Model {
+        fn drop(&mut self) {
+            self.dropped.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    impl RuntimeController for Model {
+        fn controller_id(&self) -> &ControllerId {
+            self.inner.controller_id()
+        }
+        fn invoke(&self, task: &NodeTask) -> Result<NodeResult> {
+            let resources = task
+                .resources
+                .as_ref()
+                .expect("admitted native task resources");
+            assert_eq!(resources.cpu_threads, 1);
+            assert!(resources.gpu_devices.is_empty());
+            struct Active<'a>(&'a AtomicUsize);
+            impl Drop for Active<'_> {
+                fn drop(&mut self) {
+                    self.0.fetch_sub(1, Ordering::SeqCst);
+                }
+            }
+            let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+            self.maximum.fetch_max(active, Ordering::SeqCst);
+            let _active = Active(&self.active);
+            if self.trial < self.first_wave
+                && task
+                    .fold_id
+                    .as_ref()
+                    .is_some_and(|fold| fold.as_str() == "fold:0")
+            {
+                self.barrier.wait();
+            }
+            if self.trial == 0 {
+                match self.failure {
+                    Some("panic") => panic!("typed profile candidate panic"),
+                    Some("failure") => {
+                        return Err(DagMlError::RuntimeValidation(
+                            "typed profile candidate failure".into(),
+                        ))
+                    }
+                    _ => {}
+                }
+            }
+            self.inner.invoke(task)
+        }
+    }
+    struct ControllerFactory {
+        barrier: Arc<std::sync::Barrier>,
+        first_wave: u32,
+        active: Arc<AtomicUsize>,
+        maximum: Arc<AtomicUsize>,
+        created: Arc<AtomicUsize>,
+        dropped: Arc<AtomicUsize>,
+        trials: Arc<Mutex<Vec<u32>>>,
+        failure: Option<&'static str>,
+    }
+    impl HostHpoCandidateControllerFactory for ControllerFactory {
+        fn create(&self, trial: u32) -> Result<RuntimeControllerRegistry> {
+            self.trials.lock().unwrap().push(trial);
+            let mut registry = RuntimeControllerRegistry::new();
+            registry.register(Box::new(MockController {
+                id: ControllerId::new("controller:transform")?,
+                handle: 1,
+                emit_prediction: false,
+            }))?;
+            registry.register(Box::new(Model {
+                inner: VariantScoringController {
+                    id: ControllerId::new("controller:model")?,
+                    handle: 2,
+                    emit_targets: true,
+                },
+                trial,
+                first_wave: self.first_wave,
+                barrier: self.barrier.clone(),
+                active: self.active.clone(),
+                maximum: self.maximum.clone(),
+                dropped: self.dropped.clone(),
+                failure: self.failure,
+            }))?;
+            self.created.fetch_add(1, Ordering::SeqCst);
+            Ok(registry)
+        }
+    }
+    #[derive(Default)]
+    struct Proposals {
+        asked: Vec<u32>,
+        terminals: Vec<(u32, &'static str)>,
+    }
+    impl HostHpoProposalSource for Proposals {
+        fn ask(&mut self, trial: u32) -> Result<Option<BTreeMap<String, serde_json::Value>>> {
+            self.asked.push(trial);
+            Ok(Some(BTreeMap::from([(
+                "n_components".into(),
+                json!(trial + 1),
+            )])))
+        }
+        fn tell(&mut self, trial: u32, _: f64) -> Result<()> {
+            self.terminals.push((trial, "complete"));
+            Ok(())
+        }
+        fn fail(&mut self, trial: u32, _: &str) -> Result<()> {
+            self.terminals.push((trial, "failed"));
+            Ok(())
+        }
+    }
+    struct Progress {
+        active: Arc<AtomicUsize>,
+        created: Arc<AtomicUsize>,
+        dropped: Arc<AtomicUsize>,
+        stop_after: Option<usize>,
+        checkpoints: Vec<HostHpoCheckpoint>,
+    }
+    impl HostHpoProgress for Progress {
+        fn prepare_terminal(
+            &mut self,
+            _: &HostHpoCheckpoint,
+            _: HostHpoSearchStatus,
+        ) -> Result<()> {
+            assert_eq!(self.active.load(Ordering::SeqCst), 0);
+            assert_eq!(
+                self.created.load(Ordering::SeqCst),
+                self.dropped.load(Ordering::SeqCst)
+            );
+            Ok(())
+        }
+        fn checkpoint(
+            &mut self,
+            checkpoint: &HostHpoCheckpoint,
+            _: HostHpoSearchStatus,
+        ) -> Result<bool> {
+            self.prepare_terminal(checkpoint, HostHpoSearchStatus::Running)?;
+            self.checkpoints.push(checkpoint.clone());
+            Ok(self
+                .stop_after
+                .is_none_or(|limit| checkpoint.trials.len() < limit))
+        }
+    }
+
+    fn run_case(budget: u32, workers: usize, cancel: bool, failure: Option<&'static str>) {
+        let (plan, _, _, mut request) = durable_host_fixture(false);
+        request.trial_budget = budget;
+        request.optimizer_descriptor.extend(serde_json::from_value::<BTreeMap<String, serde_json::Value>>(json!({
+            "n_jobs":workers, "sampler":"random", "pruner":null,
+            "parallel_execution":{"schema_version":1, "profile":"methods_sequential_cpu_v1",
+                "workers":workers, "cpu_threads":1, "gpu_devices":[],
+                "methods_build":{"schema_version":1, "blas":false, "openmp":false, "cuda":false}}
+        })).unwrap());
+        let first_wave = workers.min(budget as usize);
+        let factory = ControllerFactory {
+            barrier: Arc::new(std::sync::Barrier::new(first_wave)),
+            first_wave: first_wave as u32,
+            active: Arc::new(AtomicUsize::new(0)),
+            maximum: Arc::new(AtomicUsize::new(0)),
+            created: Arc::new(AtomicUsize::new(0)),
+            dropped: Arc::new(AtomicUsize::new(0)),
+            trials: Arc::new(Mutex::new(Vec::new())),
+            failure,
+        };
+        let mut progress = Progress {
+            active: factory.active.clone(),
+            created: factory.created.clone(),
+            dropped: factory.dropped.clone(),
+            stop_after: cancel.then_some(1),
+            checkpoints: Vec::new(),
+        };
+        let mut proposals = Proposals::default();
+        let options = HostHpoResumeOptions {
+            data_fingerprint: "typed:profile:cohort".into(),
+            checkpoint: None,
+        };
+        let result = SequentialScheduler
+            .execute_resumable_parallel_host_hpo_search_with_candidate_factories(
+                &plan,
+                &ProviderFactory,
+                &factory,
+                &request,
+                &mut proposals,
+                workers,
+                &options,
+                &mut progress,
+            );
+        assert_eq!(factory.active.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            factory.created.load(Ordering::SeqCst),
+            factory.dropped.load(Ordering::SeqCst)
+        );
+        assert!(factory.maximum.load(Ordering::SeqCst) >= first_wave);
+        if let Some(failure) = failure {
+            let error = result.unwrap_err().to_string();
+            assert!(error.contains(if failure == "panic" {
+                "worker panicked"
+            } else {
+                "candidate failure"
+            }));
+            let saved = progress.checkpoints.last().unwrap();
+            saved.verify_seal().unwrap();
+            assert_eq!(saved.trials.len(), first_wave);
+            assert!(matches!(
+                &saved.trials[0],
+                HostHpoTerminalTrial::Failed { .. }
+            ));
+            assert!(matches!(
+                &saved.trials[1],
+                HostHpoTerminalTrial::Complete { .. }
+            ));
+            assert_eq!(proposals.terminals, vec![(0, "failed"), (1, "complete")]);
+            return;
+        }
+        let first = result.unwrap();
+        if cancel {
+            assert_eq!(first.status, HostHpoSearchStatus::Cancelled);
+            assert_eq!(first.checkpoint.as_ref().unwrap().trials.len(), first_wave);
+            progress.stop_after = None;
+            let resumed = SequentialScheduler
+                .execute_resumable_parallel_host_hpo_search_with_candidate_factories(
+                    &plan,
+                    &ProviderFactory,
+                    &factory,
+                    &request,
+                    &mut proposals,
+                    workers,
+                    &HostHpoResumeOptions {
+                        checkpoint: first.checkpoint,
+                        data_fingerprint: options.data_fingerprint,
+                    },
+                    &mut progress,
+                )
+                .unwrap();
+            assert_eq!(resumed.status, HostHpoSearchStatus::Completed);
+            assert_eq!(resumed.checkpoint.unwrap().trials.len(), budget as usize);
+        } else {
+            assert_eq!(first.status, HostHpoSearchStatus::Completed);
+            assert_eq!(first.checkpoint.unwrap().trials.len(), budget as usize);
+        }
+        assert_eq!(proposals.asked, (0..budget).collect::<Vec<_>>());
+        assert_eq!(
+            proposals.terminals,
+            (0..budget)
+                .map(|index| (index, "complete"))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            *factory.trials.lock().unwrap(),
+            (0..budget).collect::<Vec<_>>()
+        );
+        assert_eq!(factory.created.load(Ordering::SeqCst), budget as usize);
+        assert_eq!(factory.dropped.load(Ordering::SeqCst), budget as usize);
+    }
+
+    #[test]
+    fn bounded_profile_joins_partial_windows_and_resumes_after_cancellation() {
+        for (budget, workers, cancel) in [(1, 4, false), (3, 2, false), (5, 4, false), (5, 2, true)]
+        {
+            run_case(budget, workers, cancel, None);
+        }
+    }
+
+    #[test]
+    fn bounded_profile_failure_and_panic_preserve_sibling_terminal_and_drop_owners() {
+        for failure in ["failure", "panic"] {
+            run_case(3, 2, false, Some(failure));
+        }
+    }
+}
+
 #[test]
 fn host_hpo_durable_masked_regression_resumes_with_native_scores_and_unchanged_selection() {
     struct MaskedModel {
@@ -16082,6 +16821,168 @@ fn select_best_variant_for_target_ignores_better_sibling_port() {
     assert!(
         avg_rmse(&biased_variant.variant_id, "pred")
             > avg_rmse(&accurate_variant.variant_id, "pred")
+    );
+}
+
+#[test]
+fn independent_unit_group_select_preserves_the_declared_port_and_refuses_another_port() {
+    use crate::policy::{AggregationGroupingKey, AggregationMethod};
+
+    struct ExplicitPredictionPort(VariantScoringController);
+    impl RuntimeController for ExplicitPredictionPort {
+        fn controller_id(&self) -> &ControllerId {
+            self.0.controller_id()
+        }
+        fn invoke(&self, task: &NodeTask) -> Result<NodeResult> {
+            let influence = &task.fit_influence;
+            assert_eq!(influence.fit_sample_ids.len(), 1);
+            assert_eq!(influence.row_weights, vec![1.0]);
+            let mut result = self.0.invoke(task)?;
+            for block in &mut result.predictions {
+                block.producer_port = Some("pred".into());
+            }
+            Ok(result)
+        }
+    }
+    let node = NodeId::new("model:pls").unwrap();
+    let relations = crate::relation::SampleRelationSet {
+        records: ["s1", "s2"]
+            .into_iter()
+            .map(|id| {
+                let mut relation = crate::relation::SampleRelation::new(
+                    crate::ids::ObservationId::new(format!("obs:{id}")).unwrap(),
+                    SampleId::new(id).unwrap(),
+                );
+                relation
+                    .metadata
+                    .insert("independent_unit_id".into(), json!(format!("unit:{id}")));
+                relation
+            })
+            .collect(),
+    };
+    let mut campaign = variant_scoring_campaign(vec![("accurate", 0.0), ("biased", 1.0)]);
+    campaign.aggregation_policy = crate::policy::AggregationPolicy {
+        aggregation_level: PredictionLevel::Group,
+        selection_metric_level: PredictionLevel::Group,
+        grouping_key: Some(AggregationGroupingKey::RelationMetadata {
+            key: "independent_unit_id".into(),
+        }),
+        method: AggregationMethod::Mean,
+        ..Default::default()
+    };
+    let mut graph = simple_graph();
+    graph.nodes.retain(|node| node.kind == NodeKind::Model);
+    graph.edges.clear();
+    graph.metadata.insert(
+        "experimental_unit".into(),
+        json!({
+            "schema_version": 1, "sample_ids": ["s1", "s2"],
+            "independent_unit_ids": ["unit:s1", "unit:s2"],
+            "fit_influence_policy": "equal_sample_influence", "task_type": "regression",
+            "target_names": ["y"], "target_values": [[1.0], [2.0]]
+        }),
+    );
+    let mut weighted_manifests = ControllerRegistry::new();
+    for mut manifest in manifests().manifests().cloned() {
+        if manifest.operator_kind == NodeKind::Model {
+            manifest
+                .capabilities
+                .insert(ControllerCapability::SupportsSampleWeights);
+        }
+        weighted_manifests.register(manifest).unwrap();
+    }
+    let mut binding = data_binding(&node);
+    binding.relation_fingerprint =
+        Some(crate::relation::relation_set_fingerprint(&relations).unwrap());
+    campaign.data_bindings.insert(node.clone(), vec![binding]);
+    let plan = build_execution_plan(
+        "plan:group.select.port",
+        graph,
+        campaign,
+        &weighted_manifests,
+    )
+    .unwrap();
+    let mut controllers = RuntimeControllerRegistry::new();
+    controllers
+        .register(Box::new(MockController {
+            id: ControllerId::new("controller:transform").unwrap(),
+            handle: 1,
+            emit_prediction: false,
+        }))
+        .unwrap();
+    controllers
+        .register(Box::new(ExplicitPredictionPort(VariantScoringController {
+            id: ControllerId::new("controller:model").unwrap(),
+            handle: 2,
+            emit_targets: true,
+        })))
+        .unwrap();
+    let provider = ExcludedRelationProvider {
+        owner: ControllerId::new("controller:data.excluded").unwrap(),
+        relations,
+    };
+    let mut run_cv = |variant_plan: &ExecutionPlan, ctx: &mut RunContext| {
+        SequentialScheduler
+            .execute_campaign_phase_with_data_provider(
+                variant_plan,
+                &controllers,
+                &provider,
+                ctx,
+                Phase::FitCv,
+            )
+            .map(|_| ())
+    };
+    let run = RunId::new("run:group.select.port").unwrap();
+    let selected = select_best_variant_outcome_by_cv_for_target(
+        &plan,
+        &run,
+        Some(7),
+        RegressionMetricKind::Rmse,
+        &node,
+        Some("pred"),
+        PredictionLevel::Group,
+        &mut run_cv,
+    )
+    .unwrap()
+    .unwrap();
+    let accurate = plan
+        .variants
+        .iter()
+        .find(|v| v.choices["model_offset"].label == "accurate")
+        .unwrap();
+    assert_eq!(selected.selection.selected_variant_id, accurate.variant_id);
+    assert_eq!(selected.decision.selected_score, 0.0);
+    // The generic SELECT helper keeps its legacy optional decision metadata;
+    // the training-operation profile binds Group separately. Its explicit
+    // score-target filter must still rank the genuine Group/port reports here.
+    assert_eq!(selected.decision.metric_level, None);
+    assert!(selected
+        .selection
+        .validation_reports
+        .iter()
+        .any(|r| r.level == PredictionLevel::Group
+            && r.fold_id.as_ref().is_some_and(|id| id.as_str() == "avg")));
+    assert!(selected
+        .selection
+        .validation_reports
+        .iter()
+        .filter(|r| r.level == PredictionLevel::Group)
+        .all(|r| r.producer_port.as_deref() == Some("pred")
+            && r.grouping_key == plan.campaign.aggregation_policy.grouping_key));
+    let error = select_best_variant_outcome_by_cv_for_target(
+        &plan,
+        &run,
+        Some(7),
+        RegressionMetricKind::Rmse,
+        &node,
+        Some("other_prediction"),
+        PredictionLevel::Group,
+        &mut run_cv,
+    )
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("no cross-fold OOF average"),
+        "{error}"
     );
 }
 
@@ -22090,4 +22991,1109 @@ fn multi_operator_select_scores_each_pruned_combination_and_refits_winner() {
     assert!(!refit
         .node_plans
         .contains_key(&NodeId::new("model:right1").unwrap()));
+}
+
+/// MM05: sparse predictions remain real observations; only native feature
+/// inputs carry zero placeholders and availability indicators.
+mod prediction_availability_contract {
+    use super::*;
+    use crate::fold::KFoldSpec;
+
+    fn sample_ids() -> Vec<SampleId> {
+        (1..=12)
+            .map(|index| SampleId::new(format!("s{index}")).unwrap())
+            .collect()
+    }
+
+    fn signed(classes: bool) -> PredictionAvailability {
+        let samples = sample_ids();
+        PredictionAvailability {
+            schema_version: 1,
+            sample_ids: samples.clone(),
+            source_presence: BTreeMap::from([
+                ("nir".into(), vec![true; samples.len()]),
+                ("image".into(), vec![true; samples.len()]),
+            ]),
+            target_names: if classes {
+                vec!["class".into()]
+            } else {
+                vec!["y".into(), "z".into()]
+            },
+            target_validity_masks: vec![vec![true; if classes { 1 } else { 2 }]; samples.len()],
+            class_labels: classes.then_some(vec![0.0, 1.0]),
+            sample_labels: classes.then(|| {
+                (0..samples.len())
+                    .map(|index| Some((index % 2) as f64))
+                    .collect()
+            }),
+        }
+    }
+
+    fn base_plan() -> ExecutionPlan {
+        let outer = KFoldSpec {
+            n_splits: 3,
+            shuffle: false,
+            seed: Some(7),
+        }
+        .split("availability.outer", &sample_ids())
+        .unwrap();
+        nested_stacking_test_plan(outer, true)
+    }
+
+    fn graph_with_availability(base: &ExecutionPlan, signed: &PredictionAvailability) -> GraphSpec {
+        let mut graph = base.graph_plan.graph.clone();
+        graph.metadata.insert(
+            "prediction_availability".into(),
+            serde_json::to_value(signed).unwrap(),
+        );
+        for node in &mut graph.nodes {
+            match node.id.as_str() {
+                "model:base.a" => {
+                    node.metadata
+                        .insert("prediction_availability_source".into(), json!("nir"));
+                }
+                "model:base.b" => {
+                    node.metadata
+                        .insert("prediction_availability_source".into(), json!("image"));
+                }
+                "model:meta" => {
+                    node.metadata
+                        .insert("prediction_availability_meta".into(), json!(true));
+                }
+                _ => panic!("unexpected fixture node"),
+            }
+        }
+        graph
+    }
+
+    fn build_signed(
+        base: &ExecutionPlan,
+        signed: &PredictionAvailability,
+    ) -> Result<ExecutionPlan> {
+        build_execution_plan(
+            "plan:availability",
+            graph_with_availability(base, signed),
+            base.campaign.clone(),
+            &manifests(),
+        )
+    }
+
+    fn sparse_input(
+        port: &str,
+        samples: &[SampleId],
+        values: Vec<Vec<f64>>,
+        names: Vec<String>,
+    ) -> PredictionInputSpec {
+        PredictionInputSpec {
+            producer_node: NodeId::new("model:base.a").unwrap(),
+            source_port: port.into(),
+            target_port: "a".into(),
+            partition: PredictionPartition::Validation,
+            prediction_level: PredictionLevel::Sample,
+            fold_id: None,
+            fold_ids: Vec::new(),
+            unit_ids: samples
+                .iter()
+                .cloned()
+                .map(PredictionUnitId::Sample)
+                .collect(),
+            sample_ids: samples.to_vec(),
+            values,
+            feature_validity_masks: None,
+            source_presence: None,
+            prediction_width: names.len(),
+            target_names: names,
+        }
+    }
+
+    #[test]
+    fn full_class_distributions_expand_by_id_without_padding_prediction_blocks() {
+        let signed = signed(true);
+        let requested = vec![
+            signed.sample_ids[2].clone(),
+            signed.sample_ids[0].clone(),
+            signed.sample_ids[1].clone(),
+        ];
+        let genuine = sparse_input(
+            "proba",
+            &[requested[2].clone(), requested[0].clone()],
+            vec![vec![0.2, 0.8], vec![0.7, 0.3]],
+            vec!["0.0".into(), "1.0".into()],
+        );
+        let original = genuine.clone();
+        let input = expand_available_prediction_input(
+            &signed,
+            "nir",
+            genuine,
+            &requested,
+            &[true, false, true],
+        )
+        .unwrap();
+        assert_eq!(
+            input.prediction_width, 2,
+            "binary probabilities keep both classes"
+        );
+        assert_eq!(
+            input.values,
+            vec![vec![0.7, 0.3], vec![0.0, 0.0], vec![0.2, 0.8]]
+        );
+        assert_eq!(
+            input.feature_validity_masks,
+            Some(vec![vec![true, true], vec![false, false], vec![true, true]])
+        );
+        let matrix = join_prediction_feature_specs(
+            &NodeId::new("join:features").unwrap(),
+            &[&input],
+            &requested,
+        )
+        .unwrap();
+        assert_eq!(
+            matrix.values,
+            vec![
+                vec![0.7, 0.3, 1.0],
+                vec![0.0, 0.0, 0.0],
+                vec![0.2, 0.8, 1.0]
+            ]
+        );
+        assert_eq!(original.values, vec![vec![0.2, 0.8], vec![0.7, 0.3]]);
+        assert!(
+            expand_available_prediction_input(
+                &signed,
+                "nir",
+                original.clone(),
+                &requested,
+                &[true, true, true]
+            )
+            .is_err(),
+            "missing present prediction refuses"
+        );
+        let mut zero_distribution = original.clone();
+        zero_distribution.values[0] = vec![0.0, 0.0];
+        assert!(
+            expand_available_prediction_input(
+                &signed,
+                "nir",
+                zero_distribution,
+                &requested,
+                &[true, false, true]
+            )
+            .is_err(),
+            "a zero probability distribution never becomes authentic evidence"
+        );
+        let mut reordered = original;
+        reordered.target_names.reverse();
+        assert!(
+            expand_available_prediction_input(
+                &signed,
+                "nir",
+                reordered,
+                &requested,
+                &[true, false, true]
+            )
+            .is_err(),
+            "class columns cannot be permuted"
+        );
+    }
+
+    #[test]
+    fn entirely_absent_source_has_features_only_and_requires_paired_masks() {
+        let signed = signed(true);
+        let requested = &signed.sample_ids[..2];
+        let input = expand_available_prediction_input(
+            &signed,
+            "nir",
+            sparse_input("proba", &[], Vec::new(), Vec::new()),
+            requested,
+            &[false, false],
+        )
+        .unwrap();
+        assert_eq!(input.values, vec![vec![0.0, 0.0]; 2]);
+        assert_eq!(input.target_names, vec!["0.0", "1.0"]);
+        let mut missing_presence = input.clone();
+        missing_presence.source_presence = None;
+        assert!(missing_presence.validate_feature_availability().is_err());
+        let mut invalid_placeholder = input.clone();
+        invalid_placeholder.values[0][0] = 1.0;
+        assert!(invalid_placeholder.validate_feature_availability().is_err());
+        let mut target_mask_instead_of_presence = input;
+        target_mask_instead_of_presence
+            .feature_validity_masks
+            .as_mut()
+            .unwrap()[0][1] = true;
+        assert!(target_mask_instead_of_presence
+            .validate_feature_availability()
+            .is_err());
+        let legacy = sparse_input("pred", requested, vec![vec![2.0]; 2], vec!["y".into()]);
+        let wire = serde_json::to_value(&legacy).unwrap();
+        assert!(wire.get("feature_validity_masks").is_none());
+        assert!(wire.get("source_presence").is_none());
+        assert_eq!(
+            serde_json::from_value::<PredictionInputSpec>(wire.clone()).unwrap(),
+            legacy
+        );
+        assert_eq!(
+            serde_json::to_value(
+                serde_json::from_value::<PredictionInputSpec>(wire.clone()).unwrap()
+            )
+            .unwrap(),
+            wire,
+            "legacy wire roundtrip remains exact"
+        );
+    }
+
+    #[test]
+    fn regression_predictions_do_not_use_heldout_label_validity_as_feature_presence() {
+        let mut signed = signed(false);
+        signed.target_validity_masks[0][1] = false;
+        let requested = &signed.sample_ids[..2];
+        let input = expand_available_prediction_input(
+            &signed,
+            "nir",
+            sparse_input(
+                "pred",
+                requested,
+                vec![vec![5.0, 11.0], vec![7.0, 13.0]],
+                signed.target_names.clone(),
+            ),
+            requested,
+            &[true, true],
+        )
+        .unwrap();
+        assert_eq!(input.values[0], vec![5.0, 11.0]);
+        assert_eq!(
+            input.feature_validity_masks,
+            Some(vec![vec![true, true]; 2])
+        );
+    }
+
+    #[test]
+    fn sparse_oof_keeps_exact_native_fold_sample_identity_and_refuses_foreign_or_duplicate_evidence(
+    ) {
+        let base = base_plan();
+        let mut signed = signed(false);
+        signed.source_presence.get_mut("nir").unwrap()[0] = false;
+        let plan = build_signed(&base, &signed).unwrap();
+        let nested = nested_stacking_campaign_plan(&plan).unwrap().unwrap();
+        let folds = nested.refit_fold_set.unwrap();
+        let edge = &plan.graph_plan.graph.edges[0];
+        let mut blocks = Vec::new();
+        for fold in &folds.folds {
+            let presence = signed.presence("nir", &fold.validation_sample_ids).unwrap();
+            let ids = fold
+                .validation_sample_ids
+                .iter()
+                .zip(presence)
+                .filter_map(|(sample, present)| present.then_some(sample.clone()))
+                .collect::<Vec<_>>();
+            if !ids.is_empty() {
+                blocks.push(PredictionBlock {
+                    prediction_id: None,
+                    producer_node: edge.source.node_id.clone(),
+                    producer_port: Some(edge.source.port_name.clone()),
+                    partition: PredictionPartition::Validation,
+                    fold_id: Some(fold.fold_id.clone()),
+                    values: vec![vec![9.0, 17.0]; ids.len()],
+                    sample_ids: ids,
+                    target_names: signed.target_names.clone(),
+                });
+            }
+        }
+        let scope = PhaseScope {
+            phase: Phase::Refit,
+            variant_id: None,
+            variant: None,
+            fold_id: None,
+            seed_root: Some(1),
+        };
+        let refs = blocks.iter().collect::<Vec<_>>();
+        let input = available_oof_input(&plan, edge, &scope, &refs, &folds, &folds.sample_ids)
+            .unwrap()
+            .unwrap();
+        assert_eq!(input.sample_ids, folds.sample_ids);
+        assert_eq!(input.values[0], vec![0.0, 0.0]);
+        assert_eq!(input.values[1], vec![9.0, 17.0]);
+        assert!(blocks
+            .iter()
+            .all(|block| !block.sample_ids.contains(&signed.sample_ids[0])));
+        let mut duplicate = refs.clone();
+        duplicate.push(&blocks[0]);
+        assert!(validate_available_oof_blocks(&signed, "nir", &folds, &duplicate).is_err());
+        let mut foreign = blocks[0].clone();
+        foreign.fold_id = Some(FoldId::new("foreign").unwrap());
+        assert!(validate_available_oof_blocks(&signed, "nir", &folds, &[&foreign]).is_err());
+        let mut leak = blocks[0].clone();
+        leak.partition = PredictionPartition::Train;
+        assert!(validate_available_oof_blocks(&signed, "nir", &folds, &[&leak]).is_err());
+        assert!(
+            validate_available_oof_blocks(&signed, "nir", &folds, &refs[1..]).is_err(),
+            "missing real validation rows refuse"
+        );
+    }
+
+    #[test]
+    fn native_nested_scopes_preflight_targets_and_classes_before_any_controller() {
+        let base = base_plan();
+        let nested = nested_stacking_campaign_plan(&base).unwrap().unwrap();
+        let first_inner = &nested.outer_scopes[0].inner.inner_fold_set.folds[0];
+        let mut masked = signed(false);
+        for sample in &first_inner.train_sample_ids {
+            let index = masked
+                .sample_ids
+                .iter()
+                .position(|candidate| candidate == sample)
+                .unwrap();
+            masked.target_validity_masks[index][1] = false;
+        }
+        // The full Train and every outer scope still contain observations;
+        // rejection is caused by an actual scheduler-owned inner train scope.
+        let meta = NodeId::new("model:meta").unwrap();
+        masked
+            .validate_fit(&meta, None, &masked.sample_ids)
+            .unwrap();
+        for fold in &base.fold_set.as_ref().unwrap().folds {
+            masked
+                .validate_fit(&meta, None, &fold.train_sample_ids)
+                .unwrap();
+        }
+        let error = build_signed(&base, &masked).unwrap_err().to_string();
+        assert!(error.contains("empty native fit scope"), "{error}");
+        struct CallbackSentinel {
+            id: ControllerId,
+            calls: Arc<AtomicUsize>,
+        }
+        impl RuntimeController for CallbackSentinel {
+            fn controller_id(&self) -> &ControllerId {
+                &self.id
+            }
+            fn invoke(&self, _task: &NodeTask) -> Result<NodeResult> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                Err(DagMlError::RuntimeValidation(
+                    "numerical callback reached unexpectedly".into(),
+                ))
+            }
+        }
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut controllers = RuntimeControllerRegistry::new();
+        controllers
+            .register(Box::new(CallbackSentinel {
+                id: ControllerId::new("controller:model").unwrap(),
+                calls: calls.clone(),
+            }))
+            .unwrap();
+        // A fully re-signed external plan must still be refused by the native
+        // public scheduler before any controller; stale fingerprint refusal is
+        // not the scientific admission proof.
+        let mut inadmissible = base.clone();
+        inadmissible.graph_plan.graph = graph_with_availability(&base, &masked);
+        inadmissible.graph_fingerprint =
+            stable_json_fingerprint(&inadmissible.graph_plan.graph).unwrap();
+        let mut ctx = RunContext::new(RunId::new("run:availability.refused").unwrap(), Some(13));
+        let error = SequentialScheduler
+            .execute_campaign_phase(&inadmissible, &controllers, &mut ctx, Phase::FitCv)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("empty native fit scope"), "{error}");
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(ctx.lineage.records().next().is_none());
+
+        let valid_classification = signed(true);
+        build_signed(&base, &valid_classification).unwrap();
+        for refit_fold in &nested.refit_fold_set.unwrap().folds {
+            let mut missing_class = valid_classification.clone();
+            for sample in &refit_fold.train_sample_ids {
+                let index = missing_class
+                    .sample_ids
+                    .iter()
+                    .position(|candidate| candidate == sample)
+                    .unwrap();
+                if missing_class.sample_labels.as_ref().unwrap()[index] == Some(1.0) {
+                    missing_class.source_presence.get_mut("nir").unwrap()[index] = false;
+                }
+            }
+            assert!(
+                missing_class
+                    .validate_fit(
+                        &NodeId::new("model:base.a").unwrap(),
+                        Some("nir"),
+                        &refit_fold.train_sample_ids
+                    )
+                    .is_err(),
+                "native full-REFIT inner scopes require every class"
+            );
+            assert!(build_signed(&base, &missing_class).is_err());
+        }
+        let mut unknown_contract = serde_json::to_value(&valid_classification).unwrap();
+        unknown_contract["unattested_policy"] = json!(true);
+        assert!(serde_json::from_value::<PredictionAvailability>(unknown_contract).is_err());
+    }
+    #[test]
+    fn off_fold_absence_uses_the_separately_attested_test_or_predict_cohort() {
+        struct CohortProvider {
+            cohort: PredictCohort,
+        }
+        impl RuntimeDataProvider for CohortProvider {
+            fn materialize(&self, _request: &DataMaterializationRequest) -> Result<HandleRef> {
+                Err(DagMlError::RuntimeValidation(
+                    "unexpected data materialization".into(),
+                ))
+            }
+            fn make_view(&self, _request: &DataViewRequest) -> Result<HandleRef> {
+                Err(DagMlError::RuntimeValidation("unexpected data view".into()))
+            }
+            fn predict_cohort(
+                &self,
+                _binding: &crate::data::DataBinding,
+                phase: Phase,
+            ) -> Result<Option<PredictCohort>> {
+                assert_eq!(phase, Phase::Predict);
+                Ok(Some(self.cohort.clone()))
+            }
+            fn cv_test_cohort(
+                &self,
+                _binding: &crate::data::DataBinding,
+            ) -> Result<Option<PredictCohort>> {
+                Ok(Some(self.cohort.clone()))
+            }
+        }
+        let signed = signed(false);
+        let mut plan = build_signed(&base_plan(), &signed).unwrap();
+        let source = plan.graph_plan.graph.edges[0].source.node_id.clone();
+        plan.node_plans
+            .get_mut(&source)
+            .unwrap()
+            .data_bindings
+            .push(data_binding(&source));
+        let edge = &plan.graph_plan.graph.edges[0];
+        let ctx = RunContext::new(RunId::new("run:availability.cohort").unwrap(), Some(19));
+        for phase in [Phase::FitCv, Phase::Refit, Phase::Predict] {
+            let make_cohort = |present: bool, source_name: &str| {
+                let relations = SampleRelationSet {
+                    records: ["p2", "p1"]
+                        .iter()
+                        .map(|id| {
+                            let mut relation = SampleRelation::new(
+                                ObservationId::new(format!("obs:{id}")).unwrap(),
+                                SampleId::new(*id).unwrap(),
+                            );
+                            relation.metadata.insert(
+                                "prediction_source_presence".into(),
+                                json!({(source_name):present,"image":true}),
+                            );
+                            relation
+                        })
+                        .collect(),
+                };
+                PredictCohort::from_relations(
+                    if phase == Phase::Predict {
+                        PredictCohortRole::Inference
+                    } else {
+                        PredictCohortRole::ExternalTest
+                    },
+                    relations,
+                    signed.target_names.clone(),
+                    "a".repeat(64),
+                    (phase != Phase::Predict).then(|| "b".repeat(64)),
+                )
+                .unwrap()
+            };
+            let provider = CohortProvider {
+                cohort: make_cohort(false, "nir"),
+            };
+            let scope = PhaseScope {
+                phase,
+                variant_id: None,
+                variant: None,
+                fold_id: (phase == Phase::FitCv)
+                    .then(|| plan.fold_set.as_ref().unwrap().folds[0].fold_id.clone()),
+                seed_root: Some(19),
+            };
+            let resources = PhaseScopeResources {
+                data_provider: Some(&provider),
+                ..Default::default()
+            };
+            let input =
+                collect_available_off_fold_prediction_input(&plan, edge, &ctx, &scope, &resources)
+                    .unwrap()
+                    .unwrap()
+                    .spec;
+            assert_eq!(input.sample_ids, provider.cohort.physical_sample_ids);
+            assert!(
+                input
+                    .sample_ids
+                    .iter()
+                    .all(|id| !signed.sample_ids.contains(id)),
+                "Train metadata cannot choose Test/PREDICT IDs"
+            );
+            assert_eq!(
+                input.partition,
+                if phase == Phase::Predict {
+                    PredictionPartition::Final
+                } else {
+                    PredictionPartition::Test
+                }
+            );
+            assert_eq!(input.fold_id, scope.fold_id);
+            assert_eq!(input.values, vec![vec![0.0, 0.0]; 2]);
+            assert_eq!(input.source_presence, Some(vec![false, false]));
+            assert!(
+                ctx.prediction_store.blocks().is_empty(),
+                "no padded PredictionBlock created"
+            );
+            let missing_real_predictions = CohortProvider {
+                cohort: make_cohort(true, "nir"),
+            };
+            let resources = PhaseScopeResources {
+                data_provider: Some(&missing_real_predictions),
+                ..Default::default()
+            };
+            assert!(collect_available_off_fold_prediction_input(
+                &plan, edge, &ctx, &scope, &resources
+            )
+            .is_err());
+            let substituted_source = CohortProvider {
+                cohort: make_cohort(false, "foreign"),
+            };
+            let resources = PhaseScopeResources {
+                data_provider: Some(&substituted_source),
+                ..Default::default()
+            };
+            assert!(
+                collect_available_off_fold_prediction_input(&plan, edge, &ctx, &scope, &resources)
+                    .is_err(),
+                "even a re-signed cohort cannot substitute source identity"
+            );
+        }
+    }
+}
+
+mod independent_unit_contract {
+    use super::*;
+    use crate::fold::KFoldSpec;
+    use crate::policy::{AggregationGroupingKey, AggregationMethod};
+
+    fn base() -> ExecutionPlan {
+        let ids = (1..=12)
+            .map(|index| SampleId::new(format!("s{index}")).unwrap())
+            .collect::<Vec<_>>();
+        let outer = KFoldSpec {
+            n_splits: 3,
+            shuffle: false,
+            seed: Some(7),
+        }
+        .split("units.outer", &ids)
+        .unwrap();
+        let mut plan = nested_stacking_test_plan(outer, true);
+        plan.campaign.inner_cv = Some(crate::fold::NestedCvSpec::KFold(KFoldSpec {
+            n_splits: 3,
+            shuffle: false,
+            seed: Some(13),
+        }));
+        build_execution_plan(
+            "plan:unit.base",
+            plan.graph_plan.graph.clone(),
+            plan.campaign.clone(),
+            &manifests(),
+        )
+        .unwrap()
+    }
+
+    fn descriptor(plan: &ExecutionPlan) -> serde_json::Value {
+        let samples = &plan.fold_set.as_ref().unwrap().sample_ids;
+        json!({"schema_version":1,"sample_ids":samples,
+            "independent_unit_ids":samples.iter().map(|id| format!("unit_{}",id.as_str())).collect::<Vec<_>>(),
+            "fit_influence_policy":"equal_sample_influence","task_type":"regression",
+            "target_names":["y","z"],"target_values":vec![vec![Some(0.0),Some(0.0)];samples.len()]})
+    }
+
+    fn signed(base: &ExecutionPlan, descriptor: serde_json::Value) -> ExecutionPlan {
+        let mut graph = base.graph_plan.graph.clone();
+        graph
+            .metadata
+            .insert("experimental_unit".into(), descriptor);
+        let mut campaign = base.campaign.clone();
+        campaign.aggregation_policy = AggregationPolicy {
+            aggregation_level: PredictionLevel::Group,
+            selection_metric_level: PredictionLevel::Group,
+            grouping_key: Some(AggregationGroupingKey::RelationMetadata {
+                key: "independent_unit_id".into(),
+            }),
+            method: AggregationMethod::Mean,
+            ..Default::default()
+        };
+        let mut registry = ControllerRegistry::new();
+        for mut manifest in manifests().manifests().cloned() {
+            if manifest.operator_kind == NodeKind::Model {
+                manifest
+                    .capabilities
+                    .insert(ControllerCapability::SupportsSampleWeights);
+            }
+            registry.register(manifest).unwrap();
+        }
+        build_execution_plan("plan:independent.units", graph, campaign, &registry).unwrap()
+    }
+
+    #[test]
+    fn equal_unit_weights_follow_selected_scope_order_and_observed_target_counts() {
+        let base = base();
+        let mut desc = descriptor(&base);
+        for index in 0..3 {
+            desc["independent_unit_ids"][index] = json!("unit_a");
+        }
+        desc["target_values"][0] = json!([1.0, null]);
+        desc["target_values"][1] = json!([1.0, 7.0]);
+        desc["target_values"][2] = json!([1.0, 7.0]);
+        desc["target_values"][3] = json!([2.0, 9.0]);
+        // Use the real native task resolver; no Python recomputation or resampling.
+        let mut plan = signed(&base, descriptor(&base));
+        let mut presence = vec![true; 12];
+        presence[1] = false;
+        plan.graph_plan.graph.metadata.insert("prediction_availability".into(),json!({
+            "schema_version":1,"sample_ids":desc["sample_ids"],"source_presence":{"nir":presence,"image":vec![true;12]},
+            "target_names":["y","z"],"target_validity_masks":desc["target_values"].as_array().unwrap().iter()
+                .map(|row|row.as_array().unwrap().iter().map(|value|!value.is_null()).collect::<Vec<_>>()).collect::<Vec<_>>() }));
+        for node in &mut plan.graph_plan.graph.nodes {
+            match node.id.as_str() {
+                "model:base.a" => {
+                    node.metadata
+                        .insert("prediction_availability_source".into(), json!("nir"));
+                }
+                "model:base.b" => {
+                    node.metadata
+                        .insert("prediction_availability_source".into(), json!("image"));
+                }
+                "model:meta" => {
+                    node.metadata
+                        .insert("prediction_availability_meta".into(), json!(true));
+                }
+                _ => unreachable!(),
+            }
+        }
+        plan.graph_plan
+            .graph
+            .metadata
+            .insert("experimental_unit".into(), desc);
+        let ids = &base.fold_set.as_ref().unwrap().sample_ids;
+        let requested = vec![
+            ids[3].clone(),
+            ids[2].clone(),
+            ids[1].clone(),
+            ids[0].clone(),
+        ];
+        let view = DataProviderViewSpec {
+            sample_ids: Some(requested.clone()),
+            partition: DataRequestPartition::FoldTrain,
+            fold_id: Some(FoldId::new("scope.actual").unwrap()),
+            source_ids: None,
+            columns: None,
+            include_augmented: false,
+            include_excluded: false,
+            branch_view: None,
+            extra: BTreeMap::new(),
+        };
+        let node = &plan.node_plans[&NodeId::new("model:base.a").unwrap()];
+        let task = fit_influence_task_for_node(
+            &plan,
+            node,
+            &BTreeMap::from([("data:x".into(), view)]),
+            &BTreeMap::new(),
+            Phase::FitCv,
+        )
+        .unwrap();
+        assert_eq!(
+            task.fit_sample_ids,
+            vec![ids[3].clone(), ids[2].clone(), ids[0].clone()]
+        );
+        assert_eq!(task.row_weights, vec![1.0, 0.5, 0.5]);
+        assert_eq!(
+            task.target_row_weights,
+            Some(vec![vec![1.0, 1.0], vec![0.5, 1.0], vec![0.5, 0.0]])
+        );
+        assert_eq!(
+            task.independent_unit_ids,
+            vec![
+                format!("unit_{}", ids[3].as_str()),
+                "unit_a".to_owned(),
+                "unit_a".to_owned()
+            ]
+        );
+        let mut tampered = task.clone();
+        tampered.row_weights[1] = 1.0;
+        assert!(tampered.validate().is_err());
+        let mut tampered = task.clone();
+        tampered.target_row_weights.as_mut().unwrap()[1][1] = 0.5;
+        assert!(tampered.validate().is_err());
+        assert_eq!(
+            fit_influence_task_for_node(
+                &plan,
+                node,
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                Phase::Predict
+            )
+            .unwrap(),
+            FitInfluenceTask::default()
+        );
+    }
+
+    #[test]
+    fn fully_observed_regression_scopes_still_carry_native_target_weights() {
+        let base = base();
+        let ids = &base.fold_set.as_ref().unwrap().sample_ids;
+        for partial_elsewhere in [false, true] {
+            let mut plan = signed(&base, descriptor(&base));
+            let mut desc = descriptor(&base);
+            for index in 0..3 {
+                desc["independent_unit_ids"][index] = json!("unit_a");
+            }
+            if partial_elsewhere {
+                desc["target_values"][10] = json!([0.0, null]);
+            }
+            plan.graph_plan
+                .graph
+                .metadata
+                .insert("experimental_unit".into(), desc);
+            let requested = vec![
+                ids[3].clone(),
+                ids[2].clone(),
+                ids[1].clone(),
+                ids[0].clone(),
+            ];
+            for phase in [Phase::FitCv, Phase::Refit] {
+                let view = DataProviderViewSpec {
+                    sample_ids: Some(requested.clone()),
+                    partition: if phase == Phase::FitCv {
+                        DataRequestPartition::FoldTrain
+                    } else {
+                        DataRequestPartition::FullTrain
+                    },
+                    fold_id: (phase == Phase::FitCv).then(|| FoldId::new("scope.actual").unwrap()),
+                    source_ids: None,
+                    columns: None,
+                    include_augmented: false,
+                    include_excluded: false,
+                    branch_view: None,
+                    extra: BTreeMap::new(),
+                };
+                let node = &plan.node_plans[&NodeId::new("model:base.a").unwrap()];
+                let task = fit_influence_task_for_node(
+                    &plan,
+                    node,
+                    &BTreeMap::from([("data:x".into(), view)]),
+                    &BTreeMap::new(),
+                    phase,
+                )
+                .unwrap();
+                assert_eq!(task.fit_sample_ids, requested);
+                assert_eq!(task.row_weights, vec![1.0, 1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0]);
+                assert_eq!(
+                    task.target_row_weights,
+                    Some(
+                        task.row_weights
+                            .iter()
+                            .map(|weight| vec![*weight; 2])
+                            .collect()
+                    )
+                );
+                task.validate().unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn meta_native_fit_excludes_all_masked_rows_without_shrinking_oof_inputs() {
+        let base = base();
+        let mut plan = signed(&base, descriptor(&base));
+        let samples = base.fold_set.as_ref().unwrap().sample_ids.clone();
+        let mut desc = descriptor(&base);
+        desc["target_values"][0] = json!([null, null]);
+        desc["target_values"][1] = json!([0.0, null]);
+        plan.graph_plan
+            .graph
+            .metadata
+            .insert("experimental_unit".into(), desc);
+        let input = PredictionInputSpec {
+            producer_node: NodeId::new("model:base.a").unwrap(),
+            source_port: "oof".into(),
+            target_port: "a".into(),
+            partition: PredictionPartition::Validation,
+            prediction_level: PredictionLevel::Sample,
+            fold_id: None,
+            fold_ids: Vec::new(),
+            unit_ids: samples
+                .iter()
+                .cloned()
+                .map(PredictionUnitId::Sample)
+                .collect(),
+            sample_ids: samples.clone(),
+            values: vec![vec![1.0, 2.0]; samples.len()],
+            feature_validity_masks: Some(vec![vec![true, true]; samples.len()]),
+            source_presence: Some(vec![true; samples.len()]),
+            prediction_width: 2,
+            target_names: vec!["y".into(), "z".into()],
+        };
+        let inputs = BTreeMap::from([("model:base.a.oof".into(), input)]);
+        let node = &plan.node_plans[&NodeId::new("model:meta").unwrap()];
+        for phase in [Phase::FitCv, Phase::Refit] {
+            let task =
+                fit_influence_task_for_node(&plan, node, &BTreeMap::new(), &inputs, phase).unwrap();
+            assert_eq!(task.fit_sample_ids, samples[1..]);
+            let target_weights = task.target_row_weights.as_ref().unwrap();
+            assert_eq!(target_weights.len(), samples.len() - 1);
+            assert_eq!(target_weights[0], vec![1.0, 0.0]);
+            assert!(target_weights[1..].iter().all(|row| row == &[1.0, 1.0]));
+            assert_eq!(inputs["model:base.a.oof"].sample_ids, samples);
+            assert_eq!(inputs["model:base.a.oof"].values.len(), samples.len());
+            task.validate().unwrap();
+        }
+    }
+
+    #[test]
+    fn true_nested_inner_unit_leak_refuses_before_any_numerical_callback() {
+        let base = base();
+        let mut desc = descriptor(&base);
+        let nested = nested_stacking_campaign_plan(&base).unwrap().unwrap();
+        let outer = base.fold_set.as_ref().unwrap();
+        let mut pair = None;
+        for scope in &nested.outer_scopes {
+            for fold in &scope.inner.inner_fold_set.folds {
+                for train in &fold.train_sample_ids {
+                    for validation in &fold.validation_sample_ids {
+                        if outer.folds.iter().all(|outer| {
+                            outer.validation_sample_ids.contains(train)
+                                == outer.validation_sample_ids.contains(validation)
+                        }) {
+                            pair = Some((train.clone(), validation.clone()));
+                            break;
+                        }
+                    }
+                    if pair.is_some() {
+                        break;
+                    }
+                }
+                if pair.is_some() {
+                    break;
+                }
+            }
+            if pair.is_some() {
+                break;
+            }
+        }
+        let (train, validation) =
+            pair.expect("fixture includes a real inner-only split of one outer unit");
+        for id in [train, validation] {
+            let position = outer
+                .sample_ids
+                .iter()
+                .position(|sample| sample == &id)
+                .unwrap();
+            desc["independent_unit_ids"][position] = json!("unit_repeat");
+        }
+        let mut plan = signed(&base, descriptor(&base));
+        plan.graph_plan
+            .graph
+            .metadata
+            .insert("experimental_unit".into(), desc);
+        plan.graph_fingerprint = stable_json_fingerprint(&plan.graph_plan.graph).unwrap();
+        struct Sentinel(ControllerId, Arc<AtomicUsize>);
+        impl RuntimeController for Sentinel {
+            fn controller_id(&self) -> &ControllerId {
+                &self.0
+            }
+            fn invoke(&self, _: &NodeTask) -> Result<NodeResult> {
+                self.1.fetch_add(1, Ordering::SeqCst);
+                Err(DagMlError::RuntimeValidation("callback reached".into()))
+            }
+        }
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut controllers = RuntimeControllerRegistry::new();
+        controllers
+            .register(Box::new(Sentinel(
+                ControllerId::new("controller:model").unwrap(),
+                calls.clone(),
+            )))
+            .unwrap();
+        let mut context = RunContext::new(RunId::new("run:unit.leak").unwrap(), Some(7));
+        let error = SequentialScheduler
+            .execute_campaign_phase(&plan, &controllers, &mut context, Phase::FitCv)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("leaks an independent unit"), "{error}");
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(context.lineage.records().next().is_none());
+    }
+
+    #[test]
+    fn unit_truth_missing_class_and_weight_capability_are_preflight_contracts() {
+        let base = base();
+        let mut plan = signed(&base, descriptor(&base));
+        let mut desc = descriptor(&base);
+        desc["independent_unit_ids"][1] = desc["independent_unit_ids"][0].clone();
+        desc["target_values"][1][0] = json!(2.0);
+        plan.graph_plan
+            .graph
+            .metadata
+            .insert("experimental_unit".into(), desc);
+        assert!(plan
+            .validate_experimental_units()
+            .unwrap_err()
+            .to_string()
+            .contains("conflicting observed targets"));
+        let mut desc = descriptor(&base);
+        desc["independent_unit_ids"][0] = json!("unité avec espace");
+        plan.graph_plan
+            .graph
+            .metadata
+            .insert("experimental_unit".into(), desc);
+        assert!(plan.validate_experimental_units().is_err());
+        let mut desc = descriptor(&base);
+        desc["task_type"] = json!("classification");
+        desc["target_names"] = json!(["y"]);
+        desc["target_values"] = json!(vec![vec![Some(0.0)]; 12]);
+        desc["target_values"][0][0] = json!(1.0);
+        plan.graph_plan
+            .graph
+            .metadata
+            .insert("experimental_unit".into(), desc);
+        plan.campaign.aggregation_policy.method = AggregationMethod::Vote;
+        assert!(plan
+            .validate_experimental_units()
+            .unwrap_err()
+            .to_string()
+            .contains("missing a declared class"));
+        plan = signed(&base, descriptor(&base));
+        plan.node_plans
+            .get_mut(&NodeId::new("model:base.a").unwrap())
+            .unwrap()
+            .controller_capabilities
+            .remove(&ControllerCapability::SupportsSampleWeights);
+        assert!(plan
+            .validate_experimental_units()
+            .unwrap_err()
+            .to_string()
+            .contains("cannot honor"));
+    }
+
+    #[test]
+    fn independent_units_refuse_separate_fitting_owners_by_actual_fit_scope() {
+        let base = base();
+        for fit_scope in [
+            crate::controller::ControllerFitScope::FoldTrain,
+            crate::controller::ControllerFitScope::FullTrain,
+        ] {
+            let mut plan = signed(&base, descriptor(&base));
+            let id = NodeId::new("model:base.a").unwrap();
+            plan.graph_plan
+                .graph
+                .nodes
+                .iter_mut()
+                .find(|node| node.id == id)
+                .unwrap()
+                .kind = NodeKind::Transform;
+            plan.node_plans.get_mut(&id).unwrap().fit_scope = fit_scope;
+            assert!(plan
+                .validate_experimental_units()
+                .unwrap_err()
+                .to_string()
+                .contains("separate fitting nodes"));
+        }
+    }
+
+    #[test]
+    fn absent_statistical_contract_keeps_legacy_wire_and_oof_sample_grain() {
+        let task = FitInfluenceTask::default();
+        let wire = serde_json::to_value(task).unwrap();
+        for field in [
+            "fit_sample_ids",
+            "independent_unit_ids",
+            "target_names",
+            "target_row_weights",
+        ] {
+            assert!(wire.get(field).is_none());
+        }
+        assert!(serde_json::to_value(AggregationPolicy::default())
+            .unwrap()
+            .get("grouping_key")
+            .is_none());
+        let plan = signed(&base(), descriptor(&base()));
+        assert!(plan
+            .node_plans
+            .values()
+            .all(|node| node
+                .shape_plan
+                .as_ref()
+                .is_none_or(
+                    |shape| shape.aggregation_policy.aggregation_level == PredictionLevel::Sample
+                )));
+    }
+
+    #[test]
+    fn actual_test_cohort_unit_identity_is_attested_and_excluded_rows_are_not_test() {
+        use crate::data::{PredictCohort, PredictCohortRole};
+        use crate::ids::ObservationId;
+        use crate::relation::SampleRelation;
+        let base = base();
+        let plan = signed(&base, descriptor(&base));
+        let units = experimental_units(&plan).unwrap().unwrap();
+        let mut relations = SampleRelationSet {
+            records: base
+                .fold_set
+                .as_ref()
+                .unwrap()
+                .sample_ids
+                .iter()
+                .map(|sample| {
+                    let mut row = SampleRelation::new(
+                        ObservationId::new(format!("obs_{}", sample.as_str())).unwrap(),
+                        sample.clone(),
+                    );
+                    row.metadata.insert(
+                        "independent_unit_id".into(),
+                        json!(format!("unit_{}", sample.as_str())),
+                    );
+                    row
+                })
+                .collect(),
+        };
+        let mut excluded = SampleRelation::new(
+            ObservationId::new("obs_excluded").unwrap(),
+            SampleId::new("excluded").unwrap(),
+        );
+        excluded.excluded = true;
+        excluded
+            .metadata
+            .insert("independent_unit_id".into(), json!("unit_s1"));
+        relations.records.push(excluded);
+        units.validate_relations(&relations).unwrap();
+        let cohort = |unit: &str| {
+            let mut row = SampleRelation::new(
+                ObservationId::new("obs_test").unwrap(),
+                SampleId::new("test_only").unwrap(),
+            );
+            row.metadata
+                .insert("independent_unit_id".into(), json!(unit));
+            PredictCohort::from_relations(
+                PredictCohortRole::ExternalTest,
+                SampleRelationSet { records: vec![row] },
+                vec!["y".into(), "z".into()],
+                "a".repeat(64),
+                Some("b".repeat(64)),
+            )
+            .unwrap()
+        };
+        assert!(units
+            .validate_test_cohort(&cohort("unit_s1"))
+            .unwrap_err()
+            .to_string()
+            .contains("leaks between Train and external Test"));
+        let valid = cohort("unit_external");
+        units.validate_test_cohort(&valid).unwrap();
+        let mut tampered = valid;
+        tampered.relations.records[0]
+            .metadata
+            .insert("independent_unit_id".into(), json!("unit_other"));
+        assert!(
+            units.validate_test_cohort(&tampered).is_err(),
+            "actual cohort fingerprint must reject metadata mutation"
+        );
+    }
 }

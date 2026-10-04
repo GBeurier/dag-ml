@@ -312,14 +312,91 @@ pub fn build_archive_v3_native_refit_payloads(
     insert_json(&mut members, ARCHIVE_V3_OUTCOME_MEMBER, outcome)?;
 
     let mut n4mm = Vec::new();
+    let mut n4me = Vec::new();
+    let mut role_pipelines = Vec::new();
+    let mut methods_profiles = BTreeMap::new();
     for record in &bundle.refit_artifacts {
         let artifact = &record.artifact;
+        artifact.validate_portable()?;
+        if artifact.kind == "methods_role_pipeline" {
+            let bytes = bundle
+                .raw_artifact_payloads
+                .get(&artifact.id)
+                .ok_or_else(|| {
+                    DagMlError::RuntimeValidation(format!(
+                        "Archive V3 lacks RolePipeline RAW payload `{}`",
+                        artifact.id
+                    ))
+                })?;
+            validate_methods_role_pipeline_payload(record, bytes)?;
+            validate_methods_role_pipeline_recipe(record, bytes, &outcome.effective_plan)?;
+            if artifact.controller_id.as_str() != crate::METHODS_NATIVE_REGRESSION_CONTROLLER {
+                return refuse("Archive V3 RolePipeline requires the native Methods controller; host-language sidecars are not portable");
+            }
+            let path = artifact.uri.as_ref().expect("validated portable URI");
+            if members.insert(path.clone(), bytes.clone()).is_some() {
+                return refuse("Archive V3 native artifact paths must be unique");
+            }
+            methods_profiles.insert(path.clone(), METHODS_ROLE_PIPELINE_SEMANTIC_PROFILE);
+            let raw = sha256(bytes);
+            role_pipelines.push(json!({
+                "artifact_id": artifact.id, "kind": "methods_role_pipeline", "owner": "dag-ml",
+                "format_version": 1, "member_path": path, "raw_sha256": raw,
+                "semantic_fingerprint": raw, "semantic_profile": METHODS_ROLE_PIPELINE_SEMANTIC_PROFILE
+            }));
+            continue;
+        }
+        if artifact.kind == crate::NATIVE_ESTIMATOR_ARTIFACT_KIND {
+            if artifact.backend != Some(ArtifactBackend::Raw)
+                || artifact.plugin.is_some()
+                || artifact.plugin_version.is_some()
+                || artifact.abi_major != Some(crate::hpo::METHODS_ABI_MAJOR)
+                || artifact.abi_min_minor != Some(crate::hpo::METHODS_N4ME_MIN_ABI_MINOR)
+            {
+                return refuse("Archive V3 N4ME requires a plugin-free native estimator with its exact minimum Methods ABI");
+            }
+            let path = artifact.uri.as_deref().expect("validated portable URI");
+            if !path.starts_with("methods/") || !path.ends_with(".n4me") {
+                return refuse("Archive V3 N4ME URI must be a safe methods/*.n4me path");
+            }
+            let bytes = bundle
+                .raw_artifact_payloads
+                .get(&artifact.id)
+                .ok_or_else(|| {
+                    DagMlError::RuntimeValidation(format!(
+                        "Archive V3 lacks raw N4ME payload `{}`",
+                        artifact.id
+                    ))
+                })?;
+            let raw = sha256(bytes);
+            if !bytes.starts_with(b"N4ME")
+                || artifact.size_bytes != Some(bytes.len() as u64)
+                || artifact.content_fingerprint.as_deref() != Some(raw.as_str())
+            {
+                return refuse(
+                    "Archive V3 N4ME descriptor does not bind its actual native payload",
+                );
+            }
+            if members.insert(path.to_owned(), bytes.clone()).is_some() {
+                return refuse("Archive V3 native artifact paths must be unique");
+            }
+            methods_profiles.insert(path.to_owned(), "n4me_raw_sha256");
+            n4me.push(json!({
+                "artifact_id": artifact.id, "kind": "N4ME", "owner": "nirs4all-methods",
+                "format_version": 1, "abi_major": artifact.abi_major,
+                "abi_min_minor": artifact.abi_min_minor, "member_path": path,
+                "raw_sha256": raw, "semantic_fingerprint": raw, "semantic_profile": "n4me_raw_sha256"
+            }));
+            continue;
+        }
         if artifact.kind != "n4m_model"
             || artifact.backend != Some(ArtifactBackend::Raw)
             || artifact.plugin.is_some()
             || artifact.plugin_version.is_some()
         {
-            return refuse("Archive V3 accepts only raw plugin-free n4m_model refit artifacts");
+            return refuse(
+                "Archive V3 accepts native N4MM, N4ME or Methods RolePipeline refit artifacts only",
+            );
         }
         let path = artifact.uri.as_deref().ok_or_else(|| {
             DagMlError::RuntimeValidation(
@@ -376,11 +453,12 @@ pub fn build_archive_v3_native_refit_payloads(
             "semantic_profile": "n4mm_raw_sha256"
         }));
     }
-    if n4mm.is_empty()
-        || bundle.raw_artifact_payloads.len() != n4mm.len()
-        || bundle.refit_artifacts.len() != n4mm.len()
+    let native_count = n4mm.len() + n4me.len() + role_pipelines.len();
+    if native_count == 0
+        || bundle.raw_artifact_payloads.len() != native_count
+        || bundle.refit_artifacts.len() != native_count
     {
-        return refuse("Archive V3 N4MM members must exactly cover all refit artifacts");
+        return refuse("Archive V3 native members must exactly cover all refit artifacts");
     }
 
     let mut manifest = json!({
@@ -410,6 +488,12 @@ pub fn build_archive_v3_native_refit_payloads(
         "security": {"integrity_profile": "sha256_raw_member_inventory_v3", "signature": null},
         "workspace": null
     });
+    if !n4me.is_empty() {
+        manifest["payloads"]["methods"]["n4me"] = Value::Array(n4me);
+    }
+    if !role_pipelines.is_empty() {
+        manifest["payloads"]["methods"]["role_pipelines"] = Value::Array(role_pipelines);
+    }
     let inventory = members
         .iter()
         .map(|(path, bytes)| {
@@ -417,6 +501,8 @@ pub fn build_archive_v3_native_refit_payloads(
                 ("dagml_tcv1", package.package_fingerprint.clone())
             } else if path.ends_with(".n4mm") {
                 ("n4mm_raw_sha256", sha256(bytes))
+            } else if let Some(profile) = methods_profiles.get(path) {
+                (*profile, sha256(bytes))
             } else if path == ARCHIVE_V3_BUNDLE_MEMBER {
                 ("dagml_tcv1", bundle.bundle_fingerprint.clone())
             } else if path == ARCHIVE_V3_OUTCOME_MEMBER {
@@ -517,10 +603,43 @@ pub fn build_archive_v2_native_portable_payloads(
     let mut n4mm = Vec::new();
     let mut role_pipelines = Vec::new();
     let mut multimodal_pipelines = Vec::new();
-    let mut role_paths = BTreeSet::new();
-    let mut multimodal_paths = BTreeSet::new();
+    let mut methods_profiles = BTreeMap::new();
     for record in &package.execution_bundle.refit_artifacts {
         let artifact = &record.artifact;
+        if matches!(
+            artifact.kind.as_str(),
+            "methods_multimodal_classifier_pipeline" | "methods_role_classifier_pipeline"
+        ) {
+            let bytes = package
+                .execution_bundle
+                .raw_artifact_payloads
+                .get(&artifact.id)
+                .ok_or_else(|| {
+                    DagMlError::RuntimeValidation(
+                        "Archive V2 lacks its complete classifier RAW payload".into(),
+                    )
+                })?;
+            crate::validate_methods_classifier_payload(record, bytes, &package.effective_plan)?;
+            let path = artifact.uri.as_ref().expect("validated classifier URI");
+            if members.insert(path.clone(), bytes.clone()).is_some() {
+                return refuse("Archive V2 native artifact paths must be unique");
+            }
+            let raw = sha256(bytes);
+            let multimodal = artifact.kind == "methods_multimodal_classifier_pipeline";
+            let profile = if multimodal {
+                crate::METHODS_MULTIMODAL_CLASSIFIER_SEMANTIC_PROFILE
+            } else {
+                crate::METHODS_ROLE_CLASSIFIER_SEMANTIC_PROFILE
+            };
+            let reference = json!({"artifact_id":artifact.id,"kind":artifact.kind,"owner":"dag-ml","format_version":1,"member_path":path,"raw_sha256":raw,"semantic_fingerprint":raw,"semantic_profile":profile});
+            methods_profiles.insert(path.clone(), profile);
+            if multimodal {
+                multimodal_pipelines.push(reference);
+            } else {
+                role_pipelines.push(reference);
+            }
+            continue;
+        }
         if artifact.kind == "methods_multimodal_pipeline" {
             let bytes = package
                 .execution_bundle
@@ -540,7 +659,7 @@ pub fn build_archive_v2_native_portable_payloads(
             if members.insert(path.clone(), bytes.clone()).is_some() {
                 return refuse("Archive V2 native artifact paths must be unique");
             }
-            multimodal_paths.insert(path.clone());
+            methods_profiles.insert(path.clone(), crate::METHODS_MULTIMODAL_SEMANTIC_PROFILE);
             let raw = sha256(bytes);
             multimodal_pipelines.push(json!({"artifact_id":artifact.id,
                 "kind":"methods_multimodal_pipeline", "owner":"dag-ml", "format_version":1,
@@ -565,7 +684,7 @@ pub fn build_archive_v2_native_portable_payloads(
             if members.insert(path.clone(), bytes.clone()).is_some() {
                 return refuse("Archive V2 native artifact paths must be unique");
             }
-            role_paths.insert(path.clone());
+            methods_profiles.insert(path.clone(), METHODS_ROLE_PIPELINE_SEMANTIC_PROFILE);
             let raw = sha256(bytes);
             role_pipelines.push(json!({
                 "artifact_id": artifact.id, "kind": "methods_role_pipeline",
@@ -684,15 +803,28 @@ pub fn build_archive_v2_native_portable_payloads(
         manifest["payloads"]["methods"]["multimodal_pipelines"] =
             Value::Array(multimodal_pipelines);
     }
-    let inventory = members
+    let inventory = archive_member_inventory(&members, package, outcome, &methods_profiles);
+    manifest["member_inventory"] = Value::Array(inventory);
+    bind_raw_hashes(&mut manifest, &members);
+    Ok(ArchiveV2ReplayPayloads { manifest, members })
+}
+
+// Each validated Methods artifact supplies its own exact profile. In particular,
+// classifier wrappers must never inherit the regression profile of the same
+// role/multimodal container family.
+fn archive_member_inventory(
+    members: &BTreeMap<String, Vec<u8>>,
+    package: &PortablePredictorPackage,
+    outcome: &TrainingOutcome,
+    methods_profiles: &BTreeMap<String, &'static str>,
+) -> Vec<Value> {
+    members
         .iter()
         .map(|(path, bytes)| {
             let (semantic_profile, semantic_fingerprint) = if path == ARCHIVE_V2_PACKAGE_MEMBER {
                 ("dagml_tcv1", package.package_fingerprint.clone())
-            } else if role_paths.contains(path) {
-                (METHODS_ROLE_PIPELINE_SEMANTIC_PROFILE, sha256(bytes))
-            } else if multimodal_paths.contains(path) {
-                (crate::METHODS_MULTIMODAL_SEMANTIC_PROFILE, sha256(bytes))
+            } else if let Some(profile) = methods_profiles.get(path) {
+                (*profile, sha256(bytes))
             } else if path.ends_with(".n4mm") {
                 ("n4mm_raw_sha256", sha256(bytes))
             } else if path == ARCHIVE_V2_BUNDLE_MEMBER {
@@ -704,10 +836,7 @@ pub fn build_archive_v2_native_portable_payloads(
             };
             json!({"path": path, "regular_file": true, "raw_sha256": sha256(bytes), "uncompressed_size_bytes": bytes.len(), "semantic_fingerprint": semantic_fingerprint, "semantic_profile": semantic_profile})
         })
-        .collect::<Vec<_>>();
-    manifest["member_inventory"] = Value::Array(inventory);
-    bind_raw_hashes(&mut manifest, &members);
-    Ok(ArchiveV2ReplayPayloads { manifest, members })
+        .collect()
 }
 
 /// Validate the exact standalone predictor transport assembled by DAG-ML.
@@ -987,6 +1116,89 @@ mod tests {
     }
 
     #[test]
+    fn mixed_classifier_and_regression_inventory_retains_exact_declared_profiles() {
+        // Reuse the validated mixed regression transport for all six companion
+        // documents and its native role/N4MM members. The extra bytes are only
+        // opaque storage witnesses: they do not claim fitted classifier state
+        // validation, which remains mandatory before assembly and in real
+        // installed classifier/archive qualification.
+        let (outcome, package) = role_transport_fixture(true);
+        let archive =
+            build_archive_v2_native_portable_payloads("archive:profiles", &outcome, &package)
+                .unwrap();
+        let mut members = archive.members.clone();
+        let mut profiles = BTreeMap::new();
+        for reference in archive.manifest["payloads"]["methods"]["role_pipelines"]
+            .as_array()
+            .unwrap()
+        {
+            profiles.insert(
+                reference["member_path"].as_str().unwrap().to_owned(),
+                METHODS_ROLE_PIPELINE_SEMANTIC_PROFILE,
+            );
+        }
+        let cases = [
+            (
+                "artifacts/storage-multimodal-regression.json",
+                crate::METHODS_MULTIMODAL_SEMANTIC_PROFILE,
+                "dagml_methods_multimodal_pipeline_raw_sha256",
+            ),
+            (
+                "artifacts/storage-role-classifier.json",
+                crate::METHODS_ROLE_CLASSIFIER_SEMANTIC_PROFILE,
+                "dagml_methods_role_classifier_pipeline_raw_sha256",
+            ),
+            (
+                "artifacts/storage-multimodal-classifier.json",
+                crate::METHODS_MULTIMODAL_CLASSIFIER_SEMANTIC_PROFILE,
+                "dagml_methods_multimodal_classifier_pipeline_raw_sha256",
+            ),
+        ];
+        for (path, profile, _) in cases {
+            members.insert(
+                path.to_owned(),
+                format!("opaque storage witness {path}").into_bytes(),
+            );
+            profiles.insert(path.to_owned(), profile);
+        }
+        let inventory = archive_member_inventory(&members, &package, &outcome, &profiles);
+        assert_eq!(
+            inventory.len(),
+            archive.manifest["member_inventory"]
+                .as_array()
+                .unwrap()
+                .len()
+                + 3
+        );
+        for original in archive.manifest["member_inventory"].as_array().unwrap() {
+            let retained = inventory
+                .iter()
+                .find(|entry| entry["path"] == original["path"])
+                .unwrap();
+            assert_eq!(
+                retained, original,
+                "historical regression/companion inventory must stay exact"
+            );
+        }
+        for (path, _, expected_profile) in cases {
+            let bytes = &members[path];
+            let raw = sha256(bytes);
+            let entry = inventory
+                .iter()
+                .find(|entry| entry["path"] == path)
+                .unwrap();
+            assert_eq!(
+                entry,
+                &json!({
+                    "path": path, "regular_file": true, "raw_sha256": raw,
+                    "uncompressed_size_bytes": bytes.len(), "semantic_fingerprint": raw,
+                    "semantic_profile": expected_profile,
+                })
+            );
+        }
+    }
+
+    #[test]
     fn role_and_mixed_transport_preserve_exact_package_and_raw_closure() {
         for mixed in [false, true] {
             let (outcome, package) = role_transport_fixture(mixed);
@@ -1019,6 +1231,18 @@ mod tests {
                     reference["semantic_profile"],
                     METHODS_ROLE_PIPELINE_SEMANTIC_PROFILE
                 );
+                let entry = archive.manifest["member_inventory"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|entry| entry["path"] == path)
+                    .unwrap();
+                assert_eq!(entry["raw_sha256"], reference["raw_sha256"]);
+                assert_eq!(
+                    entry["semantic_fingerprint"],
+                    reference["semantic_fingerprint"]
+                );
+                assert_eq!(entry["semantic_profile"], reference["semantic_profile"]);
             }
             let mut missing = archive.members.clone();
             missing.remove(roles[0]["member_path"].as_str().unwrap());

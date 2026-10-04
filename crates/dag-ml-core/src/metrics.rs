@@ -279,6 +279,8 @@ pub fn reassemble_merge_targets(
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RegressionMetricReport {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grouping_key: Option<crate::policy::AggregationGroupingKey>,
     #[serde(default)]
     pub prediction_id: Option<String>,
     pub producer_node: NodeId,
@@ -310,6 +312,14 @@ pub struct RegressionMetricReport {
 
 impl RegressionMetricReport {
     pub fn validate(&self) -> Result<()> {
+        if let Some(key) = &self.grouping_key {
+            key.validate()?;
+            if self.level != PredictionLevel::Group {
+                return Err(DagMlError::OofValidation(
+                    "grouping_key requires a Group score report".into(),
+                ));
+            }
+        }
         if self.row_count == 0 {
             return Err(DagMlError::OofValidation(
                 "regression metric report has zero rows".to_string(),
@@ -388,6 +398,9 @@ impl RegressionMetricReport {
                 "target_names".to_string(),
                 serde_json::json!(self.target_names),
             );
+        }
+        if let Some(key) = &self.grouping_key {
+            metadata.insert("grouping_key".into(), serde_json::to_value(key)?);
         }
         let score = CandidateScore {
             candidate_id: candidate_id.into(),
@@ -789,6 +802,7 @@ fn score_regression_rows(
     }
 
     let report = RegressionMetricReport {
+        grouping_key: None,
         prediction_id: predictions.origin.prediction_id,
         producer_node: predictions.origin.producer_node,
         producer_port: predictions.origin.producer_port,
@@ -814,7 +828,68 @@ fn score_masked_regression_rows(
     metrics: &[RegressionMetricKind],
     target_names: Vec<String>,
 ) -> Result<RegressionMetricReport> {
-    if predictions.level != PredictionLevel::Sample {
+    score_masked_regression_rows_with_grouping(predictions, targets, metrics, target_names, false)
+}
+
+pub(crate) fn score_independent_unit_block(
+    predictions: &AggregatedPredictionBlock,
+    targets: &RegressionTargetBlock,
+    metrics: &[RegressionMetricKind],
+    key: &crate::policy::AggregationGroupingKey,
+) -> Result<RegressionMetricReport> {
+    key.validate()?;
+    if predictions.level != PredictionLevel::Group || targets.level != PredictionLevel::Group {
+        return Err(DagMlError::OofValidation(
+            "independent-unit score requires Group rows".into(),
+        ));
+    }
+    let mut report = if targets.validity_masks.is_some() {
+        predictions.validate_shape()?;
+        targets.validate_shape()?;
+        if predictions.unit_ids.iter().collect::<BTreeSet<_>>()
+            != targets.unit_ids.iter().collect::<BTreeSet<_>>()
+            || predictions.values[0].len() != targets.values[0].len()
+        {
+            return Err(DagMlError::OofValidation(
+                "independent-unit score identity/width mismatch".into(),
+            ));
+        }
+        score_masked_regression_rows_with_grouping(
+            PredictionRows {
+                level: predictions.level,
+                unit_ids: &predictions.unit_ids,
+                values: &predictions.values,
+                target_names: &predictions.target_names,
+                width: predictions.values[0].len(),
+                origin: PredictionReportOrigin {
+                    prediction_id: predictions.prediction_id.clone(),
+                    producer_node: predictions.producer_node.clone(),
+                    producer_port: predictions.producer_port.clone(),
+                    partition: predictions.partition.clone(),
+                    fold_id: predictions.fold_id.clone(),
+                },
+            },
+            targets,
+            metrics,
+            predictions.target_names.clone(),
+            true,
+        )?
+    } else {
+        score_regression_aggregated_block(predictions, targets, metrics)?
+    };
+    report.grouping_key = Some(key.clone());
+    report.validate()?;
+    Ok(report)
+}
+
+fn score_masked_regression_rows_with_grouping(
+    predictions: PredictionRows<'_>,
+    targets: &RegressionTargetBlock,
+    metrics: &[RegressionMetricKind],
+    target_names: Vec<String>,
+    independent_group: bool,
+) -> Result<RegressionMetricReport> {
+    if predictions.level != PredictionLevel::Sample && !independent_group {
         targets.require_complete_targets("group/target/observation scoring")?;
     }
     let masks = targets
@@ -848,7 +923,7 @@ fn score_masked_regression_rows(
             )));
         }
         let observed = RegressionTargetBlock {
-            level: PredictionLevel::Sample,
+            level: predictions.level,
             unit_ids: unit_ids.clone(),
             values: observed_targets,
             validity_masks: None,
@@ -856,7 +931,7 @@ fn score_masked_regression_rows(
         };
         let report = score_regression_rows(
             PredictionRows {
-                level: PredictionLevel::Sample,
+                level: predictions.level,
                 unit_ids: &unit_ids,
                 values: &observed_predictions,
                 target_names: &[],
@@ -874,6 +949,7 @@ fn score_masked_regression_rows(
         }
     }
     let report = RegressionMetricReport {
+        grouping_key: None,
         prediction_id: predictions.origin.prediction_id,
         producer_node: predictions.origin.producer_node,
         producer_port: predictions.origin.producer_port,
@@ -2093,6 +2169,7 @@ mod tests {
             .iter()
             .zip([1.0, 3.0])
             .map(|(block, rmse)| RegressionMetricReport {
+                grouping_key: None,
                 prediction_id: None,
                 producer_node: block.producer_node.clone(),
                 producer_port: block.producer_port.clone(),
@@ -2831,6 +2908,7 @@ mod tests {
         rmse: f64,
     ) -> RegressionMetricReport {
         RegressionMetricReport {
+            grouping_key: None,
             prediction_id: None,
             producer_node: NodeId::new("model:compat.0").unwrap(),
             producer_port: None,

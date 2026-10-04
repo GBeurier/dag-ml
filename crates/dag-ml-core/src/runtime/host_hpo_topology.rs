@@ -134,6 +134,7 @@ pub fn prepare_host_hpo_topology_catalogue(
         // complete OOF scope and REFIT policy before any callback can execute.
         let nested = super::super::stacking::nested_stacking_campaign_plans(&candidate)?;
         validate_pca_fit_scopes(&candidate, &nested)?;
+        crate::methods_classification::validate_methods_classification_plan(&candidate)?;
         if closure.len() > 1
             && (nested.len() != 1
                 || nested[0].meta_node_id != *sink
@@ -233,11 +234,9 @@ fn validate_pca_fit_scopes(
         ));
     }
     for node in &plan.graph_plan.graph.nodes {
-        let Some(operator) = node
-            .operator
-            .as_ref()
-            .filter(|op| op["type"] == "N4mMultimodalPipeline")
-        else {
+        let Some(operator) = node.operator.as_ref().filter(|op| {
+            op["type"] == "N4mMultimodalPipeline" || op["type"] == crate::METHODS_RAW_CLASSIFIER
+        }) else {
             continue;
         };
         let mut minimum = folds
@@ -422,6 +421,236 @@ mod tests {
             "trial_budget":3, "metric":"rmse", "direction":"minimize", "optimizer_descriptor":{},
             "structural_catalogue":catalogue}))
         .unwrap()
+    }
+
+    fn parallel_descriptor(workers: usize) -> BTreeMap<String, serde_json::Value> {
+        serde_json::from_value(json!({
+            "sampler":"random", "pruner":null, "n_jobs":workers,
+            "parallel_execution": {
+                "schema_version":1, "profile":"methods_sequential_cpu_v1",
+                "workers":workers, "cpu_threads":1, "gpu_devices":[],
+                "methods_build":{"schema_version":1, "blas":false, "openmp":false, "cuda":false}
+            }
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn topology_parallel_profile_requires_exact_resource_and_build_admission() {
+        let (dsl, registry, bindings, sinks) = fixture();
+        let mut request = request(prepare(&dsl, &registry, bindings, sinks).unwrap());
+        // Serial absence stays unchanged; every bounded parallel budget must
+        // bind the same descriptor and one-thread/no-GPU candidate resources.
+        assert!(request.validate_parallel_execution(1).unwrap().is_none());
+        assert!(request.validate_parallel_execution(2).is_err());
+        for workers in 2..=4 {
+            request.optimizer_descriptor = parallel_descriptor(workers);
+            let resources = request
+                .validate_parallel_execution(workers)
+                .unwrap()
+                .unwrap();
+            assert_eq!(resources.cpu_threads, 1);
+            assert!(resources.gpu_devices.is_empty());
+            assert!(resources.memory_bytes.is_none());
+            assert!(request.validate_parallel_execution(1).is_err());
+        }
+        let valid = parallel_descriptor(2);
+        for (path, value) in [
+            ("/n_jobs", json!(-1)),
+            ("/n_jobs", json!(3)),
+            ("/sampler", json!("tpe")),
+            ("/pruner", json!("median")),
+            ("/parallel_execution/schema_version", json!(2)),
+            ("/parallel_execution/profile", json!("accelerated")),
+            ("/parallel_execution/workers", json!(3)),
+            ("/parallel_execution/workers", json!(true)),
+            ("/parallel_execution/cpu_threads", json!(2)),
+            ("/parallel_execution/gpu_devices", json!(["0"])),
+            ("/parallel_execution/methods_build/schema_version", json!(2)),
+            ("/parallel_execution/methods_build/blas", json!(true)),
+            ("/parallel_execution/methods_build/openmp", json!(true)),
+            ("/parallel_execution/methods_build/cuda", json!(true)),
+            ("/parallel_execution/methods_build/blas", json!(0)),
+        ] {
+            let mut document = serde_json::to_value(&valid).unwrap();
+            *document.pointer_mut(path).unwrap() = value;
+            request.optimizer_descriptor = serde_json::from_value(document).unwrap();
+            assert!(
+                request.validate_parallel_execution(2).is_err(),
+                "accepted {path}"
+            );
+        }
+        for object in ["/parallel_execution", "/parallel_execution/methods_build"] {
+            let mut document = serde_json::to_value(&valid).unwrap();
+            document
+                .pointer_mut(object)
+                .unwrap()
+                .as_object_mut()
+                .unwrap()
+                .insert("unknown".into(), json!(false));
+            request.optimizer_descriptor = serde_json::from_value(document).unwrap();
+            assert!(request.validate_parallel_execution(2).is_err());
+        }
+        request.optimizer_descriptor = valid.clone();
+        request.optimizer_descriptor.insert(
+            "generated_view_mode".into(),
+            json!("checkpoint_manifest_v1"),
+        );
+        assert!(request.validate_parallel_execution(2).is_err());
+        request.optimizer_descriptor = valid;
+        request.metric = RegressionMetricKind::Accuracy;
+        assert!(request.validate_parallel_execution(2).is_err());
+        request.metric = RegressionMetricKind::Rmse;
+        request.progressive_pruning = true;
+        assert!(request.validate_parallel_execution(2).is_err());
+    }
+
+    #[test]
+    fn classifier_catalogue_refuses_parallel_rmse_even_with_a_regression_plan() {
+        let (dsl, registry, bindings, sinks) = fixture();
+        let catalogue = prepare(&dsl, &registry, bindings, sinks).unwrap();
+        let effective = plan(&catalogue, &registry);
+        for kind in [
+            crate::METHODS_RAW_CLASSIFIER,
+            crate::METHODS_META_CLASSIFIER,
+        ] {
+            let mut request = request(catalogue.clone());
+            request.optimizer_descriptor = parallel_descriptor(2);
+            let entry = &mut request.structural_catalogue.as_mut().unwrap().entries[0];
+            let node = entry
+                .graph
+                .nodes
+                .iter_mut()
+                .find(|node| node.kind == crate::NodeKind::Model)
+                .unwrap();
+            node.operator = Some(json!({"type":kind}));
+            // Refuse the classifier declaration before interpreting its forged
+            // catalogue, rather than allowing the regression metric to admit it.
+            assert!(request
+                .validate_parallel_execution(2)
+                .unwrap_err()
+                .to_string()
+                .contains("classification requires serial"));
+            assert!(request
+                .validate_parallel_execution_for_plan(2, &effective)
+                .unwrap_err()
+                .to_string()
+                .contains("classification requires serial"));
+        }
+    }
+
+    #[test]
+    fn topology_parallel_admission_precedes_callbacks_and_browser_remains_refused() {
+        use crate::{
+            HostHpoCandidateControllerFactory, HostHpoCandidateProviderFactory, HostHpoProgress,
+            HostHpoProposalSource, HostHpoResumeOptions, HostHpoSearchStatus,
+            RuntimeControllerRegistry, RuntimeDataProvider, SequentialScheduler,
+        };
+        struct NoCandidates;
+        impl HostHpoCandidateControllerFactory for NoCandidates {
+            fn create(&self, _: u32) -> Result<RuntimeControllerRegistry> {
+                panic!("no candidate controller should be created")
+            }
+        }
+        impl HostHpoCandidateProviderFactory for NoCandidates {
+            fn create(&self, _: u32) -> Result<Box<dyn RuntimeDataProvider + Send>> {
+                panic!("no candidate provider should be created")
+            }
+        }
+        struct Exhausted(usize);
+        impl HostHpoProposalSource for Exhausted {
+            fn ask(&mut self, _: u32) -> Result<Option<BTreeMap<String, serde_json::Value>>> {
+                self.0 += 1;
+                Ok(None)
+            }
+            fn tell(&mut self, _: u32, _: f64) -> Result<()> {
+                panic!("no terminal feedback expected")
+            }
+        }
+        struct Progress(usize);
+        impl HostHpoProgress for Progress {
+            fn checkpoint(
+                &mut self,
+                _: &crate::HostHpoCheckpoint,
+                _: HostHpoSearchStatus,
+            ) -> Result<bool> {
+                self.0 += 1;
+                Ok(true)
+            }
+        }
+        let (dsl, registry, bindings, sinks) = fixture();
+        let catalogue = prepare(&dsl, &registry, bindings, sinks).unwrap();
+        let plan = plan(&catalogue, &registry);
+        let mut request = request(catalogue);
+        let options = HostHpoResumeOptions {
+            data_fingerprint: "typed:parallel".into(),
+            checkpoint: None,
+        };
+        let mut proposals = Exhausted(0);
+        let mut progress = Progress(0);
+        // An unsigned/missing resource profile never reaches even the initial
+        // progress callback, optimizer ask or either candidate factory.
+        assert!(SequentialScheduler
+            .execute_resumable_parallel_host_hpo_search_with_candidate_factories(
+                &plan,
+                &NoCandidates,
+                &NoCandidates,
+                &request,
+                &mut proposals,
+                2,
+                &options,
+                &mut progress,
+            )
+            .is_err());
+        assert_eq!((proposals.0, progress.0), (0, 0));
+        request.optimizer_descriptor = parallel_descriptor(2);
+        let result = SequentialScheduler
+            .execute_resumable_parallel_host_hpo_search_with_candidate_factories(
+                &plan,
+                &NoCandidates,
+                &NoCandidates,
+                &request,
+                &mut proposals,
+                2,
+                &options,
+                &mut progress,
+            )
+            .unwrap();
+        assert_eq!(result.status, HostHpoSearchStatus::Exhausted);
+        assert_eq!(proposals.0, 1);
+        let checkpoint = result.checkpoint.unwrap();
+        assert!(checkpoint.trials.is_empty());
+        let callbacks = (proposals.0, progress.0);
+        request.optimizer_descriptor = parallel_descriptor(3);
+        assert!(SequentialScheduler
+            .execute_resumable_parallel_host_hpo_search_with_candidate_factories(
+                &plan,
+                &NoCandidates,
+                &NoCandidates,
+                &request,
+                &mut proposals,
+                3,
+                &HostHpoResumeOptions {
+                    checkpoint: Some(checkpoint),
+                    data_fingerprint: options.data_fingerprint.clone()
+                },
+                &mut progress,
+            )
+            .is_err());
+        assert_eq!((proposals.0, progress.0), callbacks);
+        request.optimizer_descriptor = parallel_descriptor(2);
+        let asked = proposals.0;
+        assert!(crate::prepare_host_hpo_worker_window(
+            &plan,
+            &request,
+            &options,
+            &mut proposals,
+            2,
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("serial candidate execution"));
+        assert_eq!(proposals.0, asked);
     }
 
     fn evidence(

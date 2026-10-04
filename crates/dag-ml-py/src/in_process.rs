@@ -68,7 +68,7 @@ use crate::{py_core_error, py_serde_error};
 /// scheduler. This does not select variants, invent folds, fit before PREDICT,
 /// or claim a portable predictor package for host-managed artifacts.
 #[pyfunction]
-#[pyo3(signature = (dsl_json, envelope_json, controller_manifests_json, op_callback, phase, training_sample_ids=None, package_id=None, artifact_callback=None))]
+#[pyo3(signature = (dsl_json, envelope_json, controller_manifests_json, op_callback, phase, training_sample_ids=None, package_id=None, artifact_callback=None, view_callback=None, resource_limits_json=None))]
 #[allow(clippy::too_many_arguments)] // Preserve the public PyO3 phase call while adding optional package capture.
 pub fn execute_phase_in_process(
     py: Python<'_>,
@@ -80,6 +80,8 @@ pub fn execute_phase_in_process(
     training_sample_ids: Option<Vec<String>>,
     package_id: Option<String>,
     artifact_callback: Option<Py<PyAny>>,
+    view_callback: Option<Py<PyAny>>,
+    resource_limits_json: Option<&str>,
 ) -> PyResult<String> {
     let phase = match phase {
         "REFIT" => Phase::Refit,
@@ -95,11 +97,20 @@ pub fn execute_phase_in_process(
             "op_callback must be callable".into(),
         )));
     }
+    if view_callback
+        .as_ref()
+        .is_some_and(|callback| !callback.bind(py).is_callable())
+    {
+        return Err(py_core_error(CoreDagMlError::RuntimeValidation(
+            "view_callback must be callable".into(),
+        )));
+    }
     if package_id.is_some() && phase != Phase::Refit {
         return Err(py_core_error(CoreDagMlError::RuntimeValidation(
             "initial full-refit package is only available for REFIT".into(),
         )));
     }
+    let resource_limits = phase_resource_limits(resource_limits_json)?;
     let envelope: ExternalDataPlanEnvelope = dag_ml_core::canonical::deserialize_external_contract(
         envelope_json,
         "explicit phase data envelope",
@@ -175,6 +186,14 @@ pub fn execute_phase_in_process(
         training_sample_ids.clone(),
     )
     .map_err(py_core_error)?;
+    let provider: Box<dyn RuntimeDataProvider> = match view_callback {
+        Some(callback) => Box::new(PyViewDataProvider {
+            inner: provider,
+            callback,
+            receipts: Arc::new(Mutex::new(BTreeMap::new())),
+        }),
+        None => Box::new(provider),
+    };
     if artifact_callback
         .as_ref()
         .is_some_and(|callback| !callback.bind(py).is_callable())
@@ -205,9 +224,9 @@ pub fn execute_phase_in_process(
                     ))
                 })?,
                 controllers: &controllers,
-                data_provider: &provider,
+                data_provider: provider.as_ref(),
                 root_seed: plan.campaign.root_seed,
-                resource_limits: None,
+                resource_limits: resource_limits.clone(),
                 scheduler: dag_ml_core::InitialRefitScheduler::Sequential,
             })
             .map_err(py_core_error)?;
@@ -219,11 +238,12 @@ pub fn execute_phase_in_process(
         .map_err(py_serde_error);
     }
     let mut context = RunContext::new(run_id, plan.campaign.root_seed);
+    context.resource_limits = resource_limits;
     let results = SequentialScheduler
         .execute_campaign_phase_with_data_provider(
             &plan,
             &controllers,
-            &provider,
+            provider.as_ref(),
             &mut context,
             phase,
         )
@@ -413,10 +433,10 @@ where
     }
 }
 
-/// Host view bridge used by the probe and scheduler-selected CV requests.
+/// Host view bridge for scheduler-selected CV and explicit phase requests.
 /// Training still requires receipts bound to consumed buffers and native identity.
-struct PyViewDataProvider {
-    inner: InMemoryDataProvider,
+struct PyViewDataProvider<I = InMemoryDataProvider> {
+    inner: I,
     callback: Py<PyAny>,
     receipts: GeneratedReceiptRegistry,
 }
@@ -807,7 +827,7 @@ struct PyViewCall<'a> {
     handle: &'a HandleRef,
 }
 
-impl RuntimeDataProvider for PyViewDataProvider {
+impl<I: RuntimeDataProvider> RuntimeDataProvider for PyViewDataProvider<I> {
     fn generated_views_enabled(&self) -> bool {
         true
     }
@@ -1342,6 +1362,32 @@ pub fn run_host_hpo_search_in_process(
             CoreDagMlError::CampaignValidation,
         )
         .map_err(py_core_error)?;
+    let n_jobs = request
+        .optimizer_descriptor
+        .get("n_jobs")
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or(1);
+    let workers = if n_jobs == -1 {
+        std::thread::available_parallelism()
+            .map(|count| count.get())
+            .unwrap_or(1)
+    } else {
+        usize::try_from(n_jobs).map_err(|_| {
+            py_core_error(CoreDagMlError::RuntimeValidation(
+                "host HPO n_jobs must be positive or -1".into(),
+            ))
+        })?
+    };
+    if workers == 0 {
+        return Err(py_core_error(CoreDagMlError::RuntimeValidation(
+            "host HPO n_jobs must be positive or -1".into(),
+        )));
+    }
+    // Refuse forged profiles before any resume-content validator, proposal,
+    // progress or candidate-factory callback can observe the request.
+    request
+        .validate_parallel_execution(workers)
+        .map_err(py_core_error)?;
     let declared_generated = request
         .optimizer_descriptor
         .get("generated_view_mode")
@@ -1390,6 +1436,9 @@ pub fn run_host_hpo_search_in_process(
         &registry,
     )
     .map_err(py_core_error)?;
+    request
+        .validate_parallel_execution_for_plan(workers, &plan)
+        .map_err(py_core_error)?;
     plan.campaign
         .validate_data_envelope_relations(&envelope)
         .map_err(py_core_error)?;
@@ -1421,28 +1470,7 @@ pub fn run_host_hpo_search_in_process(
             callback_factory,
             plan: plan.clone(),
         });
-    let n_jobs = request
-        .optimizer_descriptor
-        .get("n_jobs")
-        .and_then(serde_json::Value::as_i64)
-        .unwrap_or(1);
     if n_jobs != 1 {
-        let workers = if n_jobs == -1 {
-            std::thread::available_parallelism()
-                .map(|count| count.get())
-                .unwrap_or(1)
-        } else {
-            usize::try_from(n_jobs).map_err(|_| {
-                py_core_error(CoreDagMlError::RuntimeValidation(
-                    "host HPO n_jobs must be positive or -1".into(),
-                ))
-            })?
-        };
-        if workers == 0 {
-            return Err(py_core_error(CoreDagMlError::RuntimeValidation(
-                "host HPO n_jobs must be positive or -1".into(),
-            )));
-        }
         // n_jobs=-1 on a one-core host remains sequential.
         if workers > 1 {
             let factory = candidate_controllers.as_ref().ok_or_else(|| {
@@ -2325,6 +2353,26 @@ pub fn run_cv_refit_predict_in_process(
     .map_err(py_serde_error)
 }
 
+/// Parse and validate explicit-phase and CV budgets with the shared native contract.
+fn phase_resource_limits(
+    resource_limits_json: Option<&str>,
+) -> PyResult<Option<TrainingResourceLimits>> {
+    let resources = resource_limits_json
+        .map(serde_json::from_str::<TrainingResourceLimits>)
+        .transpose()
+        .map_err(py_serde_error)?;
+    if let Some(resources) = &resources {
+        resources
+            .validate(&dag_ml_core::TrainingSchedulerOptions {
+                kind: dag_ml_core::TrainingSchedulerKind::Sequential,
+                backend: None,
+                workers: 1,
+            })
+            .map_err(py_core_error)?;
+    }
+    Ok(resources)
+}
+
 /// Validate the shared CV + REFIT execution options.
 fn cv_refit_options(
     selection_metric: &str,
@@ -2338,17 +2386,18 @@ fn cv_refit_options(
         ));
     }
     let metric = parse_selection_metric(selection_metric).map_err(py_core_error)?;
-    let resource_limits = resource_limits_json
+    // Keep the legacy Python exception for the previously exposed CPU guard.
+    if resource_limits_json
         .map(serde_json::from_str::<TrainingResourceLimits>)
         .transpose()
-        .map_err(py_serde_error)?;
-    if let Some(resources) = &resource_limits {
-        if resources.cpu_threads == 0 {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "resource limits require cpu_threads >= 1",
-            ));
-        }
+        .map_err(py_serde_error)?
+        .is_some_and(|resources| resources.cpu_threads == 0)
+    {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "resource limits require cpu_threads >= 1",
+        ));
     }
+    let resource_limits = phase_resource_limits(resource_limits_json)?;
     Ok((metric, resource_limits))
 }
 
@@ -3683,6 +3732,7 @@ mod tests {
     struct TerminalPredictCallback {
         calls: std::sync::Mutex<Vec<String>>,
         saw_predict_refit_artifact: std::sync::Mutex<bool>,
+        resources: std::sync::Mutex<Vec<Option<TrainingResourceLimits>>>,
         explicit_phase: bool,
         portable_raw: bool,
     }
@@ -3696,6 +3746,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(task.phase.as_str().to_string());
+            self.resources.lock().unwrap().push(task.resources.clone());
             let sample_ids = match task.phase {
                 Phase::FitCv => task
                     .data_views
@@ -4065,8 +4116,18 @@ mod tests {
                     (phase == "REFIT").then(|| vec!["sample:2".into(), "sample:1".into()]),
                     None,
                     None,
-                )
+                    None,
+                 Some(r#"{"cpu_threads":1,"gpu_devices":[],"memory_bytes":4096,"wall_time_ms":1000}"#))
                 .unwrap();
+                assert_eq!(
+                    serde_json::to_value(
+                        callback.bind(py).borrow().resources.lock().unwrap()[0]
+                            .as_ref()
+                            .unwrap()
+                    )
+                    .unwrap(),
+                    serde_json::json!({"cpu_threads":1,"gpu_devices":[],"memory_bytes":4096,"wall_time_ms":1000})
+                );
                 let result: serde_json::Value = serde_json::from_str(&payload).unwrap();
                 assert_eq!(result["phase"], phase);
                 assert_eq!(result["node_results"].as_array().unwrap().len(), 1);
@@ -4141,8 +4202,21 @@ mod tests {
                 Some(vec!["sample:2".into(), "sample:1".into()]),
                 Some("package:test:initial-refit".into()),
                 None,
+                None,
+                Some(
+                    r#"{"cpu_threads":1,"gpu_devices":[],"memory_bytes":4096,"wall_time_ms":1000}"#,
+                ),
             )
             .expect("initial package executes without CV");
+            assert_eq!(
+                serde_json::to_value(
+                    callback.bind(py).borrow().resources.lock().unwrap()[0]
+                        .as_ref()
+                        .unwrap()
+                )
+                .unwrap(),
+                serde_json::json!({"cpu_threads":1,"gpu_devices":[],"memory_bytes":4096,"wall_time_ms":1000})
+            );
             let outcome: serde_json::Value = serde_json::from_str(&payload).unwrap();
             assert!(outcome["scores"]["reports"]
                 .as_array()
@@ -4248,6 +4322,8 @@ mod tests {
                 Some(vec!["sample:2".into(), "sample:1".into()]),
                 Some("package:test:python.raw".into()),
                 Some(capture_artifacts.clone_ref(py).into_any()),
+                None,
+                None,
             )
             .unwrap();
             let captured: serde_json::Value = serde_json::from_str(&captured).unwrap();
@@ -4310,7 +4386,7 @@ mod tests {
         Python::attach(|py| {
             let callback = Py::new(py, TerminalPredictCallback::default()).unwrap();
             for phase in ["FIT_CV", "PREDICT"] {
-                let error = execute_phase_in_process(py, "{}", include_str!("../../dag-ml-core/tests/fixtures/package/data/coordinator_data_plan_envelope_sample12.json"), "[]", callback.clone_ref(py).into_any(), phase, None, None, None).unwrap_err().to_string();
+                let error = execute_phase_in_process(py, "{}", include_str!("../../dag-ml-core/tests/fixtures/package/data/coordinator_data_plan_envelope_sample12.json"), "[]", callback.clone_ref(py).into_any(), phase, None, None, None, None, None).unwrap_err().to_string();
                 assert!(
                     error.contains(if phase == "FIT_CV" {
                         "REFIT or PREDICT"
@@ -4337,6 +4413,8 @@ mod tests {
                 callback.clone_ref(py).into_any(),
                 "REFIT",
                 Some(vec!["sample:1".into(), "sample:2".into()]),
+                None,
+                None,
                 None,
                 None,
             )
@@ -4372,6 +4450,8 @@ mod tests {
                     ids,
                     None,
                     None,
+                    None,
+                    None,
                 )
                 .unwrap_err()
                 .to_string();
@@ -4385,6 +4465,8 @@ mod tests {
                 callback.clone_ref(py).into_any(),
                 "PREDICT",
                 Some(vec!["sample:1".into()]),
+                None,
+                None,
                 None,
                 None,
             )
@@ -4411,6 +4493,8 @@ mod tests {
                 callback.clone_ref(py).into_any(),
                 "REFIT",
                 Some(vec!["sample:2".into(), "sample:1".into()]),
+                None,
+                None,
                 None,
                 None,
             )

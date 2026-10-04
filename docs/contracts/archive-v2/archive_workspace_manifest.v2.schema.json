@@ -143,11 +143,11 @@
             },
             "role_pipelines": {
               "type": "array",
-              "items": { "$ref": "#/$defs/role_pipeline_ref" }
+              "items": { "oneOf": [{ "$ref": "#/$defs/role_pipeline_ref" }, { "$ref": "#/$defs/role_classifier_pipeline_ref" }] }
             },
             "multimodal_pipelines": {
               "type": "array",
-              "items": { "$ref": "#/$defs/multimodal_pipeline_ref" }
+              "items": { "oneOf": [{ "$ref": "#/$defs/multimodal_pipeline_ref" }, { "$ref": "#/$defs/multimodal_classifier_pipeline_ref" }] }
             }
           }
         },
@@ -217,7 +217,89 @@
       "maxLength": 512
     },
     "semantic_profile": {
-      "enum": ["dagml_tcv1", "dagml_historical_serde_json_v1", "n4mm_raw_sha256", "dagml_methods_role_pipeline_raw_sha256", "dagml_methods_multimodal_pipeline_raw_sha256", "methods_rfc8785_jcs", "none"]
+      "enum": ["dagml_tcv1", "dagml_historical_serde_json_v1", "n4mm_raw_sha256", "dagml_methods_role_pipeline_raw_sha256", "dagml_methods_multimodal_pipeline_raw_sha256", "dagml_methods_role_classifier_pipeline_raw_sha256", "dagml_methods_multimodal_classifier_pipeline_raw_sha256", "methods_rfc8785_jcs", "none"]
+    },
+    "role_classifier_pipeline_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_id",
+        "kind",
+        "owner",
+        "format_version",
+        "member_path",
+        "raw_sha256",
+        "semantic_fingerprint",
+        "semantic_profile"
+      ],
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/id"
+        },
+        "kind": {
+          "const": "methods_role_classifier_pipeline"
+        },
+        "owner": {
+          "const": "dag-ml"
+        },
+        "format_version": {
+          "const": 1
+        },
+        "member_path": {
+          "type": "string",
+          "pattern": "^artifacts/[0-9a-f]{64}\\.json$"
+        },
+        "raw_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "semantic_fingerprint": {
+          "$ref": "#/$defs/sha256"
+        },
+        "semantic_profile": {
+          "const": "dagml_methods_role_classifier_pipeline_raw_sha256"
+        }
+      }
+    },
+    "multimodal_classifier_pipeline_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_id",
+        "kind",
+        "owner",
+        "format_version",
+        "member_path",
+        "raw_sha256",
+        "semantic_fingerprint",
+        "semantic_profile"
+      ],
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/id"
+        },
+        "kind": {
+          "const": "methods_multimodal_classifier_pipeline"
+        },
+        "owner": {
+          "const": "dag-ml"
+        },
+        "format_version": {
+          "const": 1
+        },
+        "member_path": {
+          "type": "string",
+          "pattern": "^artifacts/[0-9a-f]{64}\\.json$"
+        },
+        "raw_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "semantic_fingerprint": {
+          "$ref": "#/$defs/sha256"
+        },
+        "semantic_profile": {
+          "const": "dagml_methods_multimodal_classifier_pipeline_raw_sha256"
+        }
+      }
     },
     "role_pipeline_ref": {
       "type": "object",

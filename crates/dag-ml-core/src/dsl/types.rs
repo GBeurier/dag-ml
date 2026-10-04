@@ -7,6 +7,8 @@ use super::*;
 pub const PIPELINE_DSL_SCHEMA_VERSION: u32 = 1;
 pub const PIPELINE_DSL_SCHEMA_ID: &str =
     "https://github.com/GBeurier/dag-ml/schemas/pipeline_dsl.v1.schema.json";
+/// Typed, externally bound model inputs preserved in compiled graph metadata.
+pub const DSL_MODEL_INPUT_METADATA_KEY: &str = "dsl_model_input";
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PipelineDslSpec {
     pub id: String,
@@ -128,6 +130,9 @@ pub enum PipelineDslStep {
 pub struct PipelineDslOperatorStep {
     pub id: NodeId,
     pub operator: serde_json::Value,
+    /// Optional dense named-input contract. Absence preserves the single-X DSL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_input: Option<ModelInputSpec>,
     /// Additional prediction outputs of the same fitted operator. `oof` remains
     /// the primary scored output; these ports are available to downstream edges.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -159,6 +164,93 @@ pub struct PipelineDslOperatorStep {
     /// the node's `dsl_inner_cv` metadata.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inner_cv: Option<NestedCvSpec>,
+}
+
+/// Validate the first named-input profile without inspecting host-owned buffers.
+/// Actual dtype, shape, finiteness and row materialization remain host duties.
+pub(crate) fn validate_named_model_input_spec(spec: &ModelInputSpec) -> Result<()> {
+    spec.validate()
+        .map_err(|error| DagMlError::GraphValidation(error.to_string()))?;
+    if !(2..=4).contains(&spec.ports.len())
+        || spec.default_fusion.is_some()
+        || spec.fit_influence_policy.is_some()
+    {
+        return Err(DagMlError::GraphValidation(
+            "named model_input requires 2–4 distinct dense ports without aggregate fusion or influence policy"
+                .to_string(),
+        ));
+    }
+    let mut sources = BTreeSet::new();
+    for port in &spec.ports {
+        let representation = (port.accepted_representations.len() == 1)
+            .then(|| port.accepted_representations[0].as_str());
+        let expected = match representation {
+            Some("tabular_numeric") => Some(("table", 2)),
+            Some("signal_1d") => Some(("dense_signal", 2)),
+            Some("gray_image") => Some(("gray_image", 3)),
+            Some("rgb_image") => Some(("image_rgb", 4)),
+            Some("mc_image" | "multispectral_image") => Some(("multichannel_image", 4)),
+            Some("series_mv") => Some(("time_series", 3)),
+            _ => None,
+        };
+        let valid_port_type = expected.is_some_and(|(type_id, rank)| {
+            port.accepted_types == [type_id] && port.rank == Some(rank)
+        });
+        let mut name = port.name.bytes();
+        let identifier = name
+            .next()
+            .is_some_and(|byte| byte.is_ascii_alphabetic() || byte == b'_')
+            && name.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_');
+        if port.name == "y" || !identifier || !valid_port_type || port.multi_source || port.optional
+        {
+            return Err(DagMlError::GraphValidation(format!(
+                "named model_input port `{}` must be a required fixed numeric table/signal/image/series input with its matching type and rank, distinct from target y",
+                port.name
+            )));
+        }
+        let source = port
+            .metadata
+            .get("source_id")
+            .and_then(serde_json::Value::as_str);
+        let dtype = port
+            .metadata
+            .get("dtype")
+            .and_then(serde_json::Value::as_str);
+        let shape = port
+            .metadata
+            .get("feature_shape")
+            .and_then(serde_json::Value::as_array);
+        let valid_source = source.is_some_and(|source| {
+            !source.is_empty() && source.trim() == source && sources.insert(source)
+        });
+        let valid_shape = shape.is_some_and(|shape| {
+            port.rank
+                .is_some_and(|rank| shape.len() + 1 == rank as usize)
+                && shape
+                    .iter()
+                    .try_fold(1_u64, |size, extent| {
+                        let extent = extent.as_u64()?;
+                        if extent == 0 {
+                            return None;
+                        }
+                        size.checked_mul(extent).filter(|size| *size <= 16_777_216)
+                    })
+                    .is_some()
+                && (representation != Some("rgb_image")
+                    || shape.last().and_then(serde_json::Value::as_u64) == Some(3))
+        });
+        if port.metadata.len() != 3
+            || !valid_source
+            || !matches!(dtype, Some("float32" | "float64"))
+            || !valid_shape
+        {
+            return Err(DagMlError::GraphValidation(format!(
+                "named model_input port `{}` requires exactly a distinct source_id, float32/float64 dtype and positive bounded fixed feature_shape matching its rank",
+                port.name
+            )));
+        }
+    }
+    Ok(())
 }
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PipelineDslTuningSpec {

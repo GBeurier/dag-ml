@@ -1,0 +1,22 @@
+{
+  "dependencies": {
+    "arrow-array": "53.4.1",
+    "arrow-ipc": "53.4.1",
+    "arrow-schema": "53.4.1",
+    "parquet": "53.4.1"
+  },
+  "files": {
+    "cache.arrow": "0d497b560109fdb813ca48b036b0b2b3e0e04d99b330cd6e2151df786cd03655",
+    "native_results/manifest.json": "37120a480f7fed7ba3a5683d61fa1f3f49b2bb73d853b8d024df70d6ff8bc671",
+    "native_results/predictions.parquet": "3305ec2888db6f8a41a173420825cd56360983c60f93f70bcfd2663719d07a7e",
+    "native_results/score_set.json": "7d3bbea4ad858071a6ad7cbee4129425b7227e16b19e64f268ad52b6d85d3623"
+  },
+  "ipc_content_fingerprint": "4a728bda7393a505d136446b6492fa4518f7a907f79e1e732d2a3db2d8784e36",
+  "note": "Actual Rust 53 writer bytes; metadata HashMap order is not a byte-stability contract. Freeze this single generation with its build/log/lock provenance.",
+  "producer": "dag-ml-arrow53-fixture-producer",
+  "producer_executable_sha256": "c96d5a9e14baa0a0bc186b26e50d9b41c0ec0a9b57748e541519686ee81f38e6",
+  "producer_lock_sha256": "bc14022a0ffacb78a4b5597963f7084db97caf932a6c9a44e41717e49474cc1f",
+  "producer_manifest_sha256": "5eb29a8547b321f21c17cb63178ad1cbfa9be8cde94c4373796ce1b3d7d2cef4",
+  "producer_source_sha256": "faea526b001186522bba1fb9412348719c5e65be915aad9be41de9d01746d4c8",
+  "schema_version": 1
+}

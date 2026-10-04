@@ -705,6 +705,8 @@ def execute_phase_in_process(
     training_sample_ids: list[str] | None = None,
     package_id: str | None = None,
     artifact_callback: Any = None,
+    view_callback: Any = None,
+    resource_limits_json: Any = None,
 ) -> str:
     """Run one explicit phase without selection or synthetic CV.
 
@@ -715,6 +717,12 @@ def execute_phase_in_process(
     ``package_id`` captures an independent no-CV full-refit package during REFIT.
     A controller publishing ``Raw`` artifacts must supply ``artifact_callback``
     with an ``export`` operation returning the portable bytes.
+    ``view_callback`` receives each native request and handle before operator
+    dispatch. It must return a receipt bound to the actual host-owned buffer,
+    ordered sample IDs, view key, schema and content digests. Rust validates
+    that receipt before passing the view to a controller.
+    ``resource_limits_json`` declares the native execution budget; Rust validates
+    it before dispatch and carries it unchanged on REFIT/PREDICT tasks.
     """
     return _native_execute_phase_in_process(
         _coerce_json(dsl_json),
@@ -725,6 +733,8 @@ def execute_phase_in_process(
         training_sample_ids,
         package_id,
         artifact_callback,
+        view_callback,
+        _coerce_json(resource_limits_json) if resource_limits_json is not None else None,
     )
 
 

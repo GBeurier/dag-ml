@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GBeurier/dag-ml/schemas/prediction_availability.v1.schema.json",
+  "title": "Signed prediction availability V1",
+  "description": "Graph metadata.prediction_availability. Native execution validates exact Train identities and every scheduler-owned fit scope; target validity controls fitting/scoring separately from authentic sparse prediction-feature presence.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "sample_ids",
+    "source_presence",
+    "target_names",
+    "target_validity_masks"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "sample_ids": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/non_empty_string"
+      }
+    },
+    "source_presence": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "$ref": "#/$defs/non_empty_string"
+      },
+      "additionalProperties": {
+        "type": "array",
+        "minItems": 1,
+        "items": {
+          "type": "boolean"
+        }
+      }
+    },
+    "target_names": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/non_empty_string"
+      }
+    },
+    "target_validity_masks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "array",
+        "minItems": 1,
+        "items": {
+          "type": "boolean"
+        }
+      }
+    },
+    "class_labels": {
+      "type": "array",
+      "minItems": 2,
+      "uniqueItems": true,
+      "items": {
+        "type": "number"
+      }
+    },
+    "sample_labels": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "number"
+      }
+    }
+  },
+  "dependentRequired": {
+    "class_labels": [
+      "sample_labels"
+    ],
+    "sample_labels": [
+      "class_labels"
+    ]
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": [
+          "class_labels"
+        ]
+      },
+      "then": {
+        "properties": {
+          "target_names": {
+            "maxItems": 1
+          },
+          "target_validity_masks": {
+            "items": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 1,
+              "items": {
+                "const": true
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "non_empty_string": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    }
+  }
+}

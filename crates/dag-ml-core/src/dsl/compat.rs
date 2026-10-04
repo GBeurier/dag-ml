@@ -611,6 +611,11 @@ impl CompatDslLowerer {
         };
         let (merge_mode, include_original_data, _) = compat_merge_modes(merge_object)?;
         let operator_step = self.compat_operator_step(Some(next), "model", operator, None, None)?;
+        if operator_step.model_input.is_some() {
+            return Err(DagMlError::GraphValidation(
+                "named model_input cannot consume a prediction merge".to_string(),
+            ));
+        }
         Ok(Some(PipelineDslMergeModelStep {
             inner_cv: operator_step.inner_cv,
             id: operator_step.id,
@@ -1332,6 +1337,7 @@ impl CompatDslLowerer {
             None => fallback_shape,
         };
         let mut step = PipelineDslOperatorStep {
+            model_input: optional_object_field_from_option(object, "model_input")?,
             inner_cv: optional_object_field_from_option(object, "inner_cv")?,
             id: match object {
                 Some(object) => {
@@ -1394,6 +1400,7 @@ impl CompatDslLowerer {
         shape: Option<PipelineDslShapePlan>,
     ) -> Result<PipelineDslOperatorStep> {
         let mut step = PipelineDslOperatorStep {
+            model_input: None,
             inner_cv: None,
             id: self.next_node_id(compat_node_prefix(keyword))?,
             operator,

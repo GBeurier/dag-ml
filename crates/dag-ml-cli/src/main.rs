@@ -70,6 +70,32 @@ const PROCESS_ADAPTER_SPAWN_MAX_ATTEMPTS: usize = 5;
 /// per attempt (10ms, 20ms, 30ms, ...), capped by the attempt budget.
 const PROCESS_ADAPTER_SPAWN_RETRY_BASE: Duration = Duration::from_millis(10);
 
+/// Detached, prediction-only replay shared by Package V2 and V3. There are no
+/// sidecar/mock handles, fitting flags or host-selected scheduler on this route.
+#[derive(Debug, clap::Args)]
+struct LoadedProcessReplayArgs {
+    #[arg(long)]
+    package: PathBuf,
+    #[arg(long)]
+    request: PathBuf,
+    /// Exact native map of requirement keys to current, target-free envelopes.
+    #[arg(long)]
+    envelopes: PathBuf,
+    /// Independently installed current manifests, never inferred from a package.
+    #[arg(long)]
+    trusted_controllers: PathBuf,
+    #[arg(long)]
+    adapter: PathBuf,
+    #[arg(long)]
+    output: Option<PathBuf>,
+    #[arg(long, default_value = "outcome:cli.loaded.replay")]
+    outcome_id: String,
+    #[arg(long, default_value = "run:cli.loaded.replay")]
+    run_id: String,
+    #[arg(long, default_value_t = DEFAULT_PROCESS_TIMEOUT_MS)]
+    process_timeout_ms: u64,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 enum CliScheduler {
     Sequential,
@@ -235,6 +261,29 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Execute a signed TrainingRequest with real host controllers and emit its original outcome/package.
+    ExecuteTraining {
+        #[arg(long)]
+        request: PathBuf,
+        #[arg(long)]
+        data_envelopes: PathBuf,
+        #[arg(long)]
+        relations: PathBuf,
+        #[arg(long)]
+        influence: PathBuf,
+        #[arg(long)]
+        adapter: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long)]
+        outcome_id: String,
+        #[arg(long)]
+        run_id: String,
+        #[arg(long)]
+        bundle_id: String,
+        #[arg(long)]
+        package_id: String,
+    },
     /// Run scheduler-owned HPO with host optimizer and operator JSONL adapters.
     RunHostHpo {
         #[arg(long)]
@@ -958,6 +1007,10 @@ enum Command {
         #[arg(long, default_value_t = 1)]
         scheduler_workers: usize,
     },
+    /// Replay an exact portable predictor package through native process callbacks.
+    RunProcessLoadedPredictorReplay(LoadedProcessReplayArgs),
+    /// Replay an exact portable full-refit Package V3 through the same lifecycle.
+    RunProcessLoadedRefitReplay(LoadedProcessReplayArgs),
     RunProcessReplay {
         #[arg(long)]
         graph: PathBuf,
@@ -1064,6 +1117,76 @@ fn main() -> Result<()> {
         Command::ValidateMetricSpec { path } => {
             let spec = read_external_contract(&path, "metric spec", MetricSpec::from_json)?;
             println!("valid metric spec: {}", spec.metric_id);
+        }
+        Command::ExecuteTraining {
+            request,
+            data_envelopes,
+            relations,
+            influence,
+            adapter,
+            output,
+            outcome_id,
+            run_id,
+            bundle_id,
+            package_id,
+        } => {
+            let request = TrainingRequest::from_json(&std::fs::read_to_string(&request)?)?;
+            let projection = request.project()?;
+            let envelopes: BTreeMap<String, ExternalDataPlanEnvelope> =
+                read_json(&data_envelopes, "training data envelopes")?;
+            let relations: dag_ml_core::SampleRelationSet =
+                read_json(&relations, "training relations")?;
+            let influence: dag_ml_core::TrainingInfluenceManifest =
+                read_json(&influence, "training influence")?;
+            let mut inner =
+                InMemoryDataProvider::new(ControllerId::new("controller:data.provider")?);
+            for envelope in envelopes.values() {
+                inner.register_envelope(envelope.clone())?;
+            }
+            let bindings = projection
+                .plan
+                .node_plans
+                .values()
+                .flat_map(|node| node.data_bindings.iter().cloned())
+                .collect::<Vec<_>>();
+            let provider =
+                dag_ml_core::EnvelopeAttestedRuntimeDataProvider::new(inner, bindings, envelopes)?;
+            let scheduler = SchedulerConfig::new(CliScheduler::Sequential, 1)?;
+            let controllers = process_runtime_controllers_for_mode(
+                &projection.plan,
+                adapter,
+                true,
+                process_adapter_runtime_config(1, DEFAULT_PROCESS_TIMEOUT_MS, 0)?,
+                scheduler,
+            )?;
+            let mut store = InMemoryArtifactStore::new();
+            let outcome = dag_ml_core::execute_training(dag_ml_core::TrainingExecutionInput {
+                request: &request,
+                outcome_id,
+                run_id: RunId::new(run_id)?,
+                bundle_id: BundleId::new(bundle_id)?,
+                controllers: &controllers,
+                data_provider: &provider,
+                relations: &relations,
+                training_influence: &influence,
+                artifact_store: &mut store,
+                warnings: Vec::new(),
+                diagnostics: BTreeMap::new(),
+            })?;
+            let package = if request.options.refit {
+                Some(outcome.to_portable_predictor_package(
+                    package_id,
+                    dag_ml_core::FittedArtifactMode::AllowHostSidecar,
+                    dag_ml_core::ArtifactLoadMode::HostSidecar,
+                )?)
+            } else {
+                None
+            };
+            emit_json(
+                Some(&output),
+                &serde_json::json!({"outcome":outcome,"portable_package":package}),
+                "native training capture",
+            )?;
         }
         Command::ValidateTrainingRequest { path } => {
             let json = std::fs::read_to_string(&path).with_context(|| {
@@ -2682,6 +2805,12 @@ fn main() -> Result<()> {
                 scheduler.workers
             );
         }
+        Command::RunProcessLoadedPredictorReplay(args) => {
+            run_loaded_process_replay(args, false)?;
+        }
+        Command::RunProcessLoadedRefitReplay(args) => {
+            run_loaded_process_replay(args, true)?;
+        }
         Command::RunProcessReplay {
             graph,
             campaign,
@@ -2864,6 +2993,7 @@ fn validate_sklearn_complex_demo(
         require_finite: true,
         evaluation_scope: None,
         refit_slot_plan: None,
+        requested_rank: None,
         stacking_fit_contract: None,
         reduction_id: None,
     };
@@ -5652,6 +5782,141 @@ fn mock_runtime_controllers_with_options(
     Ok(registry)
 }
 
+/// Run the owning native loaded-package replay, with all contract refusals
+/// completed before the adapter handshake can start any persistent worker.
+fn run_loaded_process_replay(args: LoadedProcessReplayArgs, refit_v3: bool) -> Result<()> {
+    let request = read_external_contract(
+        &args.request,
+        "loaded package replay request",
+        dag_ml_core::TrainingReplayRequest::from_json,
+    )?;
+    if request.phase != Phase::Predict {
+        bail!("loaded process replay admits PREDICT only; FIT/REFIT/EXPLAIN are refused");
+    }
+    let envelopes: BTreeMap<String, ExternalDataPlanEnvelope> =
+        read_json(&args.envelopes, "loaded replay envelope map")?;
+    if envelopes.keys().collect::<BTreeSet<_>>()
+        != request.data_envelope_keys.iter().collect::<BTreeSet<_>>()
+    {
+        bail!("loaded replay envelopes must exactly cover the signed request keys");
+    }
+    for envelope in envelopes.values() {
+        envelope.validate()?;
+        if envelope.target_content_fingerprint.is_some()
+            || envelope.predict_cohort.as_ref().is_none_or(|cohort| {
+                cohort.role != dag_ml_core::PredictCohortRole::Inference
+                    || cohort.target_content_fingerprint.is_some()
+            })
+        {
+            bail!("loaded process replay requires explicit target-free inference cohorts");
+        }
+    }
+    let manifests: Vec<ControllerManifest> = read_json(
+        &args.trusted_controllers,
+        "independently trusted replay manifests",
+    )?;
+    let mut trusted = ControllerRegistry::new();
+    for manifest in manifests {
+        trusted.register(manifest)?;
+    }
+    let run_id = RunId::new(args.run_id.clone())?;
+    // Native outcome identifiers use the same strict identifier grammar.
+    RunId::new(args.outcome_id.clone())?;
+    let mut provider = InMemoryDataProvider::new(ControllerId::new("controller:data.provider")?);
+    for envelope in envelopes.values() {
+        provider.register_envelope(envelope.clone())?;
+    }
+    let scheduler = SchedulerConfig::new(CliScheduler::Sequential, 1)?;
+    let config = process_adapter_runtime_config(1, args.process_timeout_ms, 0)?;
+    if refit_v3 {
+        let package = read_external_contract(
+            &args.package,
+            "portable refit Package V3",
+            dag_ml_core::PortableRefitPackageV3::from_json,
+        )?;
+        dag_ml_core::validate_runtime_controller_manifests(
+            &package.outcome.effective_plan,
+            &trusted,
+        )?;
+        dag_ml_core::preflight_loaded_portable_refit_replay_v3(&package, &request, &envelopes)?;
+        require_portable_process_adapter(&args.adapter)?;
+        let controllers = process_runtime_controllers_for_mode(
+            &package.outcome.effective_plan,
+            args.adapter,
+            true,
+            config,
+            scheduler,
+        )?;
+        let outcome = dag_ml_core::execute_loaded_portable_refit_replay_v3(
+            dag_ml_core::LoadedPortableRefitReplayInputV3 {
+                package: &package,
+                request: &request,
+                outcome_id: args.outcome_id,
+                run_id,
+                controllers: &controllers,
+                data_provider: &provider,
+                data_envelopes: &envelopes,
+                warnings: Vec::new(),
+                diagnostics: BTreeMap::new(),
+            },
+        )?;
+        emit_json(
+            args.output.as_ref(),
+            &outcome,
+            "native loaded Package V3 replay",
+        )?;
+    } else {
+        let package = read_external_contract(
+            &args.package,
+            "portable predictor package",
+            PortablePredictorPackage::from_json,
+        )?;
+        dag_ml_core::validate_runtime_controller_manifests(&package.effective_plan, &trusted)?;
+        dag_ml_core::preflight_loaded_predictor_replay(&package, &request, &envelopes)?;
+        // No fake handles, RDS sidecars or Python objects can satisfy a portable
+        // archive. Native RAW payloads are hydrated by the existing scheduler.
+        let predictor = dag_ml_core::LoadedPredictor::new(package, BTreeMap::new())?;
+        require_portable_process_adapter(&args.adapter)?;
+        let controllers = process_runtime_controllers_for_mode(
+            &predictor.package().effective_plan,
+            args.adapter,
+            true,
+            config,
+            scheduler,
+        )?;
+        let outcome = dag_ml_core::execute_loaded_predictor_replay(
+            dag_ml_core::LoadedPredictorReplayInput {
+                predictor: &predictor,
+                request: &request,
+                outcome_id: args.outcome_id,
+                run_id,
+                controllers: &controllers,
+                data_provider: &provider,
+                data_envelopes: &envelopes,
+                warnings: Vec::new(),
+                diagnostics: BTreeMap::new(),
+            },
+        )?;
+        emit_json(
+            args.output.as_ref(),
+            &outcome,
+            "native loaded predictor replay",
+        )?;
+    }
+    Ok(())
+}
+
+fn require_portable_process_adapter(adapter: &Path) -> Result<()> {
+    let description = validate_process_adapter_description(adapter, ProcessAdapterMode::Jsonl)?;
+    if !description
+        .capabilities
+        .contains(PROCESS_ADAPTER_CAP_PORTABLE_ARTIFACT_BRIDGE)
+    {
+        bail!("loaded process replay requires portable_artifact_bridge_v1");
+    }
+    Ok(())
+}
+
 fn process_runtime_controllers(
     plan: &dag_ml_core::ExecutionPlan,
     adapter: PathBuf,
@@ -6664,6 +6929,50 @@ fn emit_json<T: Serialize>(output: Option<&PathBuf>, value: &T, label: &str) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn detached_process_replay_parser_requires_independent_trust_and_refuses_fit_flags() {
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                for name in [
+                    "run-process-loaded-predictor-replay",
+                    "run-process-loaded-refit-replay",
+                ] {
+                    let args = vec![
+                        "dag-ml",
+                        name,
+                        "--package",
+                        "package.json",
+                        "--request",
+                        "request.json",
+                        "--envelopes",
+                        "envelopes.json",
+                        "--trusted-controllers",
+                        "installed.json",
+                        "--adapter",
+                        "run-r-adapter",
+                    ];
+                    assert!(Cli::try_parse_from(args.clone()).is_ok());
+                    let mut fit = args.clone();
+                    fit.extend(["--phase", "REFIT"]);
+                    assert!(Cli::try_parse_from(fit).is_err());
+                    let mut sidecars = args.clone();
+                    sidecars.extend(["--artifact-handles", "sidecars.json"]);
+                    assert!(Cli::try_parse_from(sidecars).is_err());
+                    let missing_trust = args
+                        .into_iter()
+                        .filter(|value| {
+                            !matches!(*value, "--trusted-controllers" | "installed.json")
+                        })
+                        .collect::<Vec<_>>();
+                    assert!(Cli::try_parse_from(missing_trust).is_err());
+                }
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
 
     #[test]
     fn process_campaign_defaults_to_unbounded_task_execution() {

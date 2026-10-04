@@ -907,6 +907,7 @@ impl MethodsEstimatorController {
         task: &NodeTask,
         method: &NodeMethod,
         features: &FeatureSet,
+        prediction_port: &str,
     ) -> Result<NodeResult> {
         let context = Context::new().map_err(|error| native_error("context_create", error))?;
         let (estimator, artifact, surfaces) = match task.phase {
@@ -955,10 +956,14 @@ impl MethodsEstimatorController {
                 &estimator,
                 &rows,
                 partition,
+                prediction_port,
                 &mut scores,
             )?;
         }
-        let outputs = BTreeMap::from([("oof".to_string(), self.handle(HandleKind::Prediction))]);
+        let outputs = BTreeMap::from([(
+            prediction_port.to_string(),
+            self.handle(HandleKind::Prediction),
+        )]);
         self.result(task, method, outputs, scores, artifact)
     }
 
@@ -973,6 +978,7 @@ impl MethodsEstimatorController {
         estimator: &Estimator,
         rows: &MethodsPlsDataset,
         partition: PredictionPartition,
+        prediction_port: &str,
         scores: &mut Scores,
     ) -> Result<()> {
         let node_id = &task.node_plan.node_id;
@@ -1010,7 +1016,7 @@ impl MethodsEstimatorController {
         let fold_id = (task.phase == Phase::FitCv)
             .then(|| task.fold_id.clone())
             .flatten();
-        let producer_port = Some("oof".to_string());
+        let producer_port = Some(prediction_port.to_string());
         if self.role == N4mRole::Classifier
             && task.phase == Phase::FitCv
             && matches!(
@@ -1122,6 +1128,17 @@ impl RuntimeController for MethodsEstimatorController {
         task: &NodeTask,
         provider: &dyn RuntimeDataProvider,
     ) -> Result<NodeResult> {
+        // Retain the original direct-call contract. Scheduler invocations use
+        // the graph's declared ports through the hook below.
+        self.invoke_with_data_provider_and_prediction_ports(task, provider, &["oof".into()])
+    }
+
+    fn invoke_with_data_provider_and_prediction_ports(
+        &self,
+        task: &NodeTask,
+        provider: &dyn RuntimeDataProvider,
+        prediction_ports: &[String],
+    ) -> Result<NodeResult> {
         if Some(&task.node_plan.kind) != self.role.node_kind().as_ref() {
             return Err(DagMlError::RuntimeValidation(format!(
                 "native Methods {} controller cannot serve {:?} node `{}`",
@@ -1130,11 +1147,21 @@ impl RuntimeController for MethodsEstimatorController {
                 task.node_plan.node_id
             )));
         }
+        if matches!(self.role, N4mRole::Regressor | N4mRole::Classifier)
+            && (prediction_ports.len() != 1 || prediction_ports[0].trim().is_empty())
+        {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "native Methods model `{}` requires exactly one prediction output port, got {:?}",
+                task.node_plan.node_id, prediction_ports
+            )));
+        }
         let method = NodeMethod::from_task(task, self.role, &self.shared.catalog)?;
         let features = self.input_features(task, provider)?;
         match self.role {
             N4mRole::Transformer | N4mRole::Selector => self.transform(task, &method, &features),
-            N4mRole::Regressor | N4mRole::Classifier => self.model(task, &method, &features),
+            N4mRole::Regressor | N4mRole::Classifier => {
+                self.model(task, &method, &features, &prediction_ports[0])
+            }
             N4mRole::SampleFilter => self.sample_filter(task, &method, &features),
             role => Err(DagMlError::RuntimeValidation(format!(
                 "native Methods {} role has no native execution path",
@@ -1515,6 +1542,65 @@ mod tests {
         let mut registry = RuntimeControllerRegistry::new();
         register_methods_estimator_controllers(&mut registry, runtime()).unwrap();
         registry
+    }
+
+    #[test]
+    fn models_bind_predictions_to_the_declared_output_port() {
+        let fixture = fixture();
+        let x = rows(&fixture["x_train"]);
+        let predict = rows(&fixture["x_test"]);
+        for (method, target) in [
+            ("models.pls.cppls", "y_train"),
+            ("models.classification.pls_logistic", "labels_train"),
+        ] {
+            let y = rows(&fixture[target]).concat();
+            let provider = Provider::new(&x, &y, &predict);
+            for port in ["oof", "y_hat"] {
+                let plan = plan(
+                    vec![node(
+                        "model:port",
+                        "model",
+                        method,
+                        json!({"n_components": 2}),
+                        json!({"name": port, "kind": "prediction", "representation": null, "cardinality": "one", "description": ""}),
+                    )],
+                    Vec::new(),
+                    3,
+                    x.len(),
+                );
+                let mut ctx = RunContext::new(RunId::new("run:n4m.ports").unwrap(), Some(7));
+                ctx.variant_id = Some(plan.variants[0].variant_id.clone());
+                let results = SequentialScheduler
+                    .execute_campaign_phase_with_data_provider(
+                        &plan,
+                        &controllers(),
+                        &provider,
+                        &mut ctx,
+                        Phase::FitCv,
+                    )
+                    .unwrap();
+                assert!(!results.is_empty());
+                for result in results {
+                    assert_eq!(
+                        result
+                            .outputs
+                            .keys()
+                            .map(String::as_str)
+                            .collect::<Vec<_>>(),
+                        vec![port]
+                    );
+                    assert!(!result.predictions.is_empty());
+                    assert!(result
+                        .predictions
+                        .iter()
+                        .all(|block| block.producer_port.as_deref() == Some(port)));
+                    assert!(result
+                        .classification_probabilities
+                        .iter()
+                        .all(|block| block.producer_port.as_deref() == Some(port)));
+                }
+            }
+        }
     }
 
     /// PREDICT replay of `plan` from its REFIT records and raw N4ME payloads in

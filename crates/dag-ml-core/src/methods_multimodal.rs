@@ -183,6 +183,16 @@ fn validate_recipe(recipe: &Recipe, schemas: &BTreeMap<String, SourceSchema>) ->
     Ok(())
 }
 
+/// Shared raw encoder/schema validator; the caller validates its own head separately.
+/// The existing V1 encoder profile is conserved, without constructing or fitting a model.
+pub(crate) fn validate_methods_raw_encoder_profile(recipe: &Value, schemas: &Value) -> Result<()> {
+    let mut profile = recipe.clone();
+    profile["model"] = serde_json::json!({"method_id":"models.regularized.ridge", "params":{"alpha":1.0,"center_x":true,"center_y":true,"scale_x":false}});
+    let profile: Recipe = serde_json::from_value(profile)?;
+    let schemas: BTreeMap<String, SourceSchema> = serde_json::from_value(schemas.clone())?;
+    validate_recipe(&profile, &schemas)
+}
+
 fn parse_payload(record: &RefitArtifactRecord, bytes: &[u8]) -> Result<Payload> {
     let artifact = &record.artifact;
     artifact.validate_portable()?;

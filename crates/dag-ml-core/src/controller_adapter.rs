@@ -491,11 +491,15 @@ fn default_data_requirements(input_ports: &[PortSpec]) -> Result<Option<serde_js
         fit_influence_policy: None,
         metadata: BTreeMap::new(),
     };
-    let requirements = serde_json::to_value(&spec).map_err(|error| {
+    let mut requirements = serde_json::to_value(&spec).map_err(|error| {
         DagMlError::ControllerValidation(format!(
             "failed to encode synthesized data_requirements: {error}"
         ))
     })?;
+    // This synthesized JSON previously used serde_json's sorted-map backend.
+    // Preserve those exact bytes when a binding enables preserve_order, so a
+    // native package also survives the facade's sorted JSON serialization.
+    requirements.sort_all_objects();
     Ok(Some(requirements))
 }
 
@@ -995,6 +999,34 @@ mod tests {
             vec![REPRESENTATION_TARGET_NUMERIC.to_string()]
         );
         assert_eq!(spec.ports[0].accepted_types, vec!["target".to_string()]);
+    }
+
+    #[test]
+    fn synthesized_requirements_keep_legacy_bytes_and_sorted_manifest_roundtrip() {
+        let manifest = HostControllerSpec::new(
+            "controller:nirs4all.y_transform",
+            VERSION,
+            NodeKind::YTransform,
+        )
+        .derive()
+        .unwrap();
+        let encoded = serde_json::to_string(manifest.data_requirements.as_ref().unwrap()).unwrap();
+        assert_eq!(
+            encoded,
+            r#"{"default_fusion":null,"metadata":{},"ports":[{"accepted_representations":["target_numeric"],"accepted_types":["target"],"metadata":{},"multi_source":false,"name":"y","optional":false,"rank":null}],"schema_version":1}"#
+        );
+        let original_fingerprint = crate::campaign::stable_json_fingerprint(&manifest).unwrap();
+        let mut facade_document = serde_json::to_value(&manifest).unwrap();
+        facade_document.sort_all_objects();
+        let parsed: ControllerManifest = serde_json::from_value(facade_document).unwrap();
+        assert_eq!(
+            crate::campaign::stable_json_fingerprint(&parsed).unwrap(),
+            original_fingerprint
+        );
+        assert_eq!(
+            serde_json::to_string(parsed.data_requirements.as_ref().unwrap()).unwrap(),
+            encoded
+        );
     }
 
     /// A prediction-join consumes only OOF predictions (an opaque port), so it

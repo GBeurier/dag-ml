@@ -1,6 +1,637 @@
 // Auto-split from the former monolithic `runtime.rs` (pure refactor).
 use super::*;
 
+/// Signed observation availability. Label validity controls fitting/scoring,
+/// never whether a genuinely predicted target is a valid OOF feature.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PredictionAvailability {
+    pub schema_version: u32,
+    pub sample_ids: Vec<SampleId>,
+    pub source_presence: BTreeMap<String, Vec<bool>>,
+    pub target_names: Vec<String>,
+    pub target_validity_masks: Vec<Vec<bool>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub class_labels: Option<Vec<f64>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sample_labels: Option<Vec<Option<f64>>>,
+}
+
+pub(crate) fn prediction_availability(
+    plan: &ExecutionPlan,
+) -> Result<Option<PredictionAvailability>> {
+    plan.graph_plan
+        .graph
+        .metadata
+        .get("prediction_availability")
+        .map(|value| {
+            serde_json::from_value(value.clone()).map_err(|error| {
+                DagMlError::RuntimeValidation(format!(
+                    "invalid signed prediction availability: {error}"
+                ))
+            })
+        })
+        .transpose()
+}
+
+pub(crate) fn availability_source<'a>(
+    plan: &'a ExecutionPlan,
+    node_id: &NodeId,
+) -> Result<Option<&'a str>> {
+    let node = plan
+        .graph_plan
+        .graph
+        .nodes
+        .iter()
+        .find(|node| &node.id == node_id)
+        .ok_or_else(|| {
+            DagMlError::RuntimeValidation("availability references an unknown node".into())
+        })?;
+    node.metadata
+        .get("prediction_availability_source")
+        .map(|value| {
+            value
+                .as_str()
+                .filter(|name| !name.trim().is_empty())
+                .ok_or_else(|| {
+                    DagMlError::RuntimeValidation(
+                        "prediction availability source must be nonempty text".into(),
+                    )
+                })
+        })
+        .transpose()
+}
+
+impl PredictionAvailability {
+    fn validate(&self) -> Result<()> {
+        let rows = self.sample_ids.len();
+        if self.schema_version != 1
+            || rows == 0
+            || self.sample_ids.iter().collect::<BTreeSet<_>>().len() != rows
+            || self.source_presence.is_empty()
+            || self
+                .source_presence
+                .iter()
+                .any(|(name, mask)| name.trim().is_empty() || mask.len() != rows)
+            || self.target_names.is_empty()
+            || self.target_names.iter().any(|name| name.trim().is_empty())
+            || self.target_names.iter().collect::<BTreeSet<_>>().len() != self.target_names.len()
+            || self.target_validity_masks.len() != rows
+            || self
+                .target_validity_masks
+                .iter()
+                .any(|row| row.len() != self.target_names.len())
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "signed prediction availability has invalid identities or mask shape".into(),
+            ));
+        }
+        match (&self.class_labels, &self.sample_labels) {
+            (None, None) => Ok(()),
+            (Some(classes), Some(labels)) if self.target_names.len() == 1
+                && classes.len() >= 2 && classes.iter().all(|value| value.is_finite())
+                && classes.windows(2).all(|pair| pair[0] < pair[1])
+                && labels.len() == rows && self.target_validity_masks.iter().all(|mask| mask[0])
+                && labels.iter().all(|label| label.is_some_and(|label| label.is_finite() && classes.binary_search_by(|class| class.partial_cmp(&label).expect("finite class vocabulary")).is_ok())) => Ok(()),
+            _ => Err(DagMlError::RuntimeValidation("classification availability requires one complete target and an exact finite class vocabulary".into())),
+        }
+    }
+
+    fn positions(&self) -> BTreeMap<&SampleId, usize> {
+        self.sample_ids
+            .iter()
+            .enumerate()
+            .map(|(index, sample)| (sample, index))
+            .collect()
+    }
+
+    pub(crate) fn presence(&self, source: &str, samples: &[SampleId]) -> Result<Vec<bool>> {
+        let mask = self.source_presence.get(source).ok_or_else(|| {
+            DagMlError::RuntimeValidation(format!(
+                "undeclared prediction availability source `{source}`"
+            ))
+        })?;
+        let positions = self.positions();
+        samples
+            .iter()
+            .map(|sample| {
+                positions
+                    .get(sample)
+                    .map(|index| mask[*index])
+                    .ok_or_else(|| {
+                        DagMlError::RuntimeValidation(format!(
+                            "availability has no signed training sample `{sample}`"
+                        ))
+                    })
+            })
+            .collect()
+    }
+
+    pub(crate) fn validate_fit(
+        &self,
+        node: &NodeId,
+        source: Option<&str>,
+        samples: &[SampleId],
+    ) -> Result<()> {
+        let presence = source
+            .map(|source| self.presence(source, samples))
+            .transpose()?
+            .unwrap_or_else(|| vec![true; samples.len()]);
+        let positions = self.positions();
+        for target in 0..self.target_names.len() {
+            let active = samples
+                .iter()
+                .zip(&presence)
+                .filter_map(|(sample, present)| {
+                    positions
+                        .get(sample)
+                        .filter(|index| *present && self.target_validity_masks[**index][target])
+                        .copied()
+                })
+                .collect::<Vec<_>>();
+            if active.is_empty() {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "availability leaves an empty native fit scope for node `{node}`, target `{}`",
+                    self.target_names[target]
+                )));
+            }
+            if let (Some(classes), Some(labels)) = (&self.class_labels, &self.sample_labels) {
+                let observed = active
+                    .iter()
+                    .filter_map(|index| labels[*index])
+                    .map(|class| if class == 0.0 { 0 } else { class.to_bits() })
+                    .collect::<BTreeSet<_>>();
+                if classes.iter().any(|class| {
+                    !observed.contains(&if *class == 0.0 { 0 } else { class.to_bits() })
+                }) {
+                    return Err(DagMlError::RuntimeValidation(format!("availability leaves a missing class in a native fit scope for node `{node}`")));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn prediction_names(&self, port: &str) -> Result<Vec<String>> {
+        if matches!(port, "proba" | "probabilities") {
+            return self
+                .class_labels
+                .as_ref()
+                .ok_or_else(|| {
+                    DagMlError::OofValidation("probability input lacks signed classes".into())
+                })?
+                .iter()
+                .map(|label| serde_json::to_string(label).map_err(DagMlError::from))
+                .collect();
+        }
+        Ok(self.target_names.clone())
+    }
+}
+
+impl ExecutionPlan {
+    /// Preflight scheduler-owned outer, nested-inner and full-refit scopes.
+    /// Nothing calls a provider, optimizer or numerical controller here.
+    pub(crate) fn validate_prediction_availability(&self) -> Result<()> {
+        let signed = prediction_availability(self)?;
+        let marked = self.graph_plan.graph.nodes.iter().any(|node| {
+            node.metadata.contains_key("prediction_availability_source")
+                || node.metadata.contains_key("prediction_availability_meta")
+        });
+        let Some(signed) = signed else {
+            if marked {
+                return Err(DagMlError::RuntimeValidation(
+                    "availability node has no signed graph contract".into(),
+                ));
+            }
+            return Ok(());
+        };
+        signed.validate()?;
+        if let Some(folds) = &self.fold_set {
+            folds.validate()?;
+        }
+        if let Some(folds) = self
+            .campaign
+            .split_invocation
+            .as_ref()
+            .and_then(|split| split.fold_set.as_ref())
+        {
+            if folds.sample_ids.iter().collect::<BTreeSet<_>>()
+                != signed.sample_ids.iter().collect::<BTreeSet<_>>()
+            {
+                return Err(DagMlError::RuntimeValidation(
+                    "availability training universe differs from the signed campaign".into(),
+                ));
+            }
+        }
+        let nested = nested_stacking_campaign_plans(self)?;
+        let mut seen = BTreeSet::new();
+        let mut meta_count = 0;
+        for node in &self.graph_plan.graph.nodes {
+            let source = availability_source(self, &node.id)?;
+            let meta = node.metadata.get("prediction_availability_meta");
+            if meta.is_some_and(|value| value.as_bool() != Some(true)) {
+                return Err(DagMlError::RuntimeValidation(
+                    "availability meta marker must be true".into(),
+                ));
+            }
+            if source.is_none() && meta.is_none() {
+                continue;
+            }
+            if node.kind != NodeKind::Model || source.is_some() && meta.is_some() {
+                return Err(DagMlError::RuntimeValidation(
+                    "availability belongs to exactly one source or meta model".into(),
+                ));
+            }
+            if let Some(source) = source {
+                seen.insert(source.to_string());
+            } else {
+                meta_count += 1;
+            }
+            signed.validate_fit(&node.id, source, &signed.sample_ids)?;
+            if let Some(folds) = &self.fold_set {
+                for fold in &folds.folds {
+                    signed.validate_fit(&node.id, source, &fold.train_sample_ids)?;
+                }
+            }
+            for campaign in &nested {
+                if campaign.base_node_ids.contains(&node.id) {
+                    for outer in &campaign.outer_scopes {
+                        for fold in &outer.inner.inner_fold_set.folds {
+                            signed.validate_fit(&node.id, source, &fold.train_sample_ids)?;
+                        }
+                    }
+                    if let Some(refit) = &campaign.refit_fold_set {
+                        for fold in &refit.folds {
+                            signed.validate_fit(&node.id, source, &fold.train_sample_ids)?;
+                        }
+                    }
+                }
+            }
+        }
+        if seen != signed.source_presence.keys().cloned().collect() || meta_count == 0 {
+            return Err(DagMlError::RuntimeValidation(
+                "availability graph must cover every declared source and a meta model".into(),
+            ));
+        }
+        for edge in self
+            .graph_plan
+            .graph
+            .edges
+            .iter()
+            .filter(|edge| edge.contract.requires_oof)
+        {
+            if availability_source(self, &edge.source.node_id)?.is_none() {
+                return Err(DagMlError::RuntimeValidation(
+                    "availability OOF producer has no declared source".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Expand authentic sparse producer predictions into explicitly masked feature
+/// rows. The original PredictionBlocks are never padded or mutated.
+pub(crate) fn expand_available_prediction_input(
+    signed: &PredictionAvailability,
+    source: &str,
+    mut input: PredictionInputSpec,
+    requested: &[SampleId],
+    presence: &[bool],
+) -> Result<PredictionInputSpec> {
+    if requested.len() != presence.len()
+        || requested.iter().collect::<BTreeSet<_>>().len() != requested.len()
+    {
+        return Err(DagMlError::OofValidation(
+            "availability feature universe is not unique and aligned".into(),
+        ));
+    }
+    let names = signed.prediction_names(&input.source_port)?;
+    let width = names.len();
+    let by_id = input
+        .sample_ids
+        .iter()
+        .zip(&input.values)
+        .collect::<BTreeMap<_, _>>();
+    let expected = requested
+        .iter()
+        .zip(presence)
+        .filter_map(|(sample, present)| present.then_some(sample))
+        .collect::<BTreeSet<_>>();
+    if by_id.len() != input.sample_ids.len()
+        || by_id.keys().copied().collect::<BTreeSet<_>>() != expected
+        || input
+            .values
+            .iter()
+            .any(|row| row.len() != width || row.iter().any(|value| !value.is_finite()))
+        || !input.target_names.is_empty() && input.target_names != names
+    {
+        return Err(DagMlError::OofValidation(format!("authentic OOF rows for source `{source}` do not exactly match signed presence, width or columns")));
+    }
+    if matches!(input.source_port.as_str(), "proba" | "probabilities")
+        && input.values.iter().any(|row| {
+            row.iter().any(|value| !(0.0..=1.0).contains(value))
+                || (row.iter().sum::<f64>() - 1.0).abs() > 1e-8
+        })
+    {
+        return Err(DagMlError::OofValidation(
+            "present probability features are not authentic distributions".into(),
+        ));
+    }
+    input.values = requested
+        .iter()
+        .zip(presence)
+        .map(|(sample, present)| {
+            if *present {
+                (*by_id.get(sample).expect("exact presence checked")).clone()
+            } else {
+                vec![0.0; width]
+            }
+        })
+        .collect();
+    input.sample_ids = requested.to_vec();
+    input.unit_ids = requested
+        .iter()
+        .cloned()
+        .map(PredictionUnitId::Sample)
+        .collect();
+    input.prediction_width = width;
+    input.target_names = names;
+    input.feature_validity_masks = Some(
+        presence
+            .iter()
+            .map(|present| vec![*present; width])
+            .collect(),
+    );
+    input.source_presence = Some(presence.to_vec());
+    input.validate_feature_availability()?;
+    Ok(input)
+}
+
+pub(crate) fn validate_available_oof_blocks(
+    signed: &PredictionAvailability,
+    source: &str,
+    fold_set: &FoldSet,
+    blocks: &[&PredictionBlock],
+) -> Result<()> {
+    let folds = fold_set
+        .folds
+        .iter()
+        .map(|fold| (&fold.fold_id, fold))
+        .collect::<BTreeMap<_, _>>();
+    let mut by_fold: BTreeMap<&FoldId, BTreeSet<&SampleId>> = BTreeMap::new();
+    for block in blocks {
+        block.validate_content()?;
+        if block.partition != PredictionPartition::Validation {
+            return Err(DagMlError::OofValidation(
+                "availability OOF accepts validation predictions only".into(),
+            ));
+        }
+        let fold_id = block
+            .fold_id
+            .as_ref()
+            .filter(|fold| folds.contains_key(fold))
+            .ok_or_else(|| {
+                DagMlError::OofValidation("availability OOF has an absent or foreign fold".into())
+            })?;
+        let seen = by_fold.entry(fold_id).or_default();
+        for sample in &block.sample_ids {
+            if !seen.insert(sample) {
+                return Err(DagMlError::OofValidation(
+                    "availability OOF repeats a producer/sample within a fold".into(),
+                ));
+            }
+        }
+    }
+    for fold in &fold_set.folds {
+        let presence = signed.presence(source, &fold.validation_sample_ids)?;
+        let expected = fold
+            .validation_sample_ids
+            .iter()
+            .zip(&presence)
+            .filter_map(|(sample, present)| present.then_some(sample))
+            .collect::<BTreeSet<_>>();
+        let actual = by_fold.get(&fold.fold_id).cloned().unwrap_or_default();
+        if actual != expected {
+            return Err(DagMlError::OofValidation(format!("availability OOF for source `{source}` does not exactly cover present validation IDs in fold `{}`", fold.fold_id)));
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn available_oof_input(
+    plan: &ExecutionPlan,
+    edge: &EdgeSpec,
+    scope: &PhaseScope,
+    blocks: &[&PredictionBlock],
+    folds: &FoldSet,
+    requested: &[SampleId],
+) -> Result<Option<PredictionInputSpec>> {
+    let Some(signed) = prediction_availability(plan)? else {
+        return Ok(None);
+    };
+    let source = availability_source(plan, &edge.source.node_id)?.ok_or_else(|| {
+        DagMlError::OofValidation("availability OOF edge has an unbound producer".into())
+    })?;
+    if blocks.iter().any(|block| {
+        block.producer_node != edge.source.node_id
+            || block.producer_port.as_deref() != Some(edge.source.port_name.as_str())
+    }) {
+        return Err(DagMlError::OofValidation(
+            "availability OOF producer or port differs from its signed edge".into(),
+        ));
+    }
+    validate_available_oof_blocks(&signed, source, folds, blocks)?;
+    let mut input = prediction_input_spec(
+        edge,
+        scope,
+        blocks,
+        folds.partition_mode == FoldPartitionMode::Resampled,
+    )?;
+    let presence = signed.presence(source, requested)?;
+    input = expand_available_prediction_input(&signed, source, input, requested, &presence)?;
+    // A fold with no present validation samples has no probability block. Its
+    // participation is still independently proven by the exact signed mask.
+    input.fold_ids = folds
+        .folds
+        .iter()
+        .map(|fold| fold.fold_id.clone())
+        .collect();
+    input.fold_ids.sort();
+    Ok(Some(input))
+}
+
+fn availability_refit_folds(plan: &ExecutionPlan, edge: &EdgeSpec) -> Result<FoldSet> {
+    let nested = nested_stacking_campaign_plan_for_node(plan, edge.target.node_id.clone())?;
+    if let Some(refit) = nested.and_then(|nested| nested.refit_fold_set) {
+        return Ok(refit);
+    }
+    Ok(required_fold_set_for_oof(plan, edge)?.clone())
+}
+
+pub(crate) fn collect_available_off_fold_prediction_input(
+    plan: &ExecutionPlan,
+    edge: &EdgeSpec,
+    ctx: &RunContext,
+    scope: &PhaseScope,
+    resources: &PhaseScopeResources<'_>,
+) -> Result<Option<CollectedPredictionInput>> {
+    let collect_authentic = || {
+        if scope.phase == Phase::FitCv {
+            collect_cv_fold_test_prediction_input(plan, edge, ctx, scope)
+        } else {
+            collect_off_fold_prediction_input(plan, edge, ctx, scope)
+        }
+    };
+    let Some(signed) = prediction_availability(plan)? else {
+        return collect_authentic();
+    };
+    let source = availability_source(plan, &edge.source.node_id)?.ok_or_else(|| {
+        DagMlError::OofValidation("availability off-fold producer lacks a source".into())
+    })?;
+    let source_plan = &plan.node_plans[&edge.source.node_id];
+    let binding = source_plan.data_bindings.first().ok_or_else(|| {
+        DagMlError::OofValidation(
+            "availability off-fold producer has no attested data binding".into(),
+        )
+    })?;
+    let provider = resources.data_provider.ok_or_else(|| {
+        DagMlError::OofValidation(
+            "availability off-fold input needs its attested cohort provider".into(),
+        )
+    })?;
+    let cohort = if scope.phase == Phase::Predict {
+        provider.predict_cohort(binding, scope.phase)?
+    } else {
+        provider.cv_test_cohort(binding)?
+    };
+    let Some(cohort) = cohort else {
+        if collect_authentic()?.is_some() {
+            return Err(DagMlError::OofValidation(
+                "availability predictions have no independently attested cohort".into(),
+            ));
+        }
+        return Ok(None);
+    };
+    cohort.validate()?;
+    let mut by_sample = BTreeMap::new();
+    for record in &cohort.relations.records {
+        let masks = record
+            .metadata
+            .get("prediction_source_presence")
+            .and_then(serde_json::Value::as_object)
+            .ok_or_else(|| {
+                DagMlError::OofValidation("availability cohort lacks signed source presence".into())
+            })?;
+        if masks.keys().collect::<BTreeSet<_>>()
+            != signed.source_presence.keys().collect::<BTreeSet<_>>()
+        {
+            return Err(DagMlError::OofValidation(
+                "availability cohort source names disagree with training".into(),
+            ));
+        }
+        let present = masks
+            .get(source)
+            .and_then(serde_json::Value::as_bool)
+            .ok_or_else(|| {
+                DagMlError::OofValidation("availability cohort presence must be boolean".into())
+            })?;
+        if by_sample
+            .insert(record.sample_id.clone(), present)
+            .is_some_and(|previous| previous != present)
+        {
+            return Err(DagMlError::OofValidation(
+                "availability cohort has conflicting source presence".into(),
+            ));
+        }
+    }
+    let requested = &cohort.physical_sample_ids;
+    let presence = requested
+        .iter()
+        .map(|sample| {
+            by_sample.get(sample).copied().ok_or_else(|| {
+                DagMlError::OofValidation("availability cohort has an undeclared sample".into())
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let input = collect_authentic()?;
+    let (handle, spec) = match input {
+        Some(input) => (input.handle, input.spec),
+        None => (
+            HandleRef {
+                handle: deterministic_oof_handle(plan, edge, ctx, scope)?,
+                kind: HandleKind::Prediction,
+                owner_controller: source_plan.controller_id.clone(),
+            },
+            PredictionInputSpec {
+                producer_node: edge.source.node_id.clone(),
+                source_port: edge.source.port_name.clone(),
+                target_port: edge.target.port_name.clone(),
+                partition: if scope.phase == Phase::FitCv {
+                    PredictionPartition::Test
+                } else {
+                    expected_off_fold_partition(scope.phase)
+                },
+                prediction_level: PredictionLevel::Sample,
+                fold_id: scope.fold_id.clone(),
+                fold_ids: Vec::new(),
+                unit_ids: Vec::new(),
+                sample_ids: Vec::new(),
+                values: Vec::new(),
+                feature_validity_masks: None,
+                source_presence: None,
+                prediction_width: 0,
+                target_names: Vec::new(),
+            },
+        ),
+    };
+    Ok(Some(CollectedPredictionInput {
+        handle,
+        spec: expand_available_prediction_input(&signed, source, spec, requested, &presence)?,
+    }))
+}
+
+pub(crate) fn validate_available_target_masks(
+    plan: &ExecutionPlan,
+    result: &NodeResult,
+) -> Result<()> {
+    let Some(signed) = prediction_availability(plan)? else {
+        return Ok(());
+    };
+    let positions = signed.positions();
+    for block in &result.regression_targets {
+        if block.target_names != signed.target_names {
+            return Err(DagMlError::RuntimeValidation(
+                "availability target names disagree with the signed graph".into(),
+            ));
+        }
+        for (row, unit) in block.unit_ids.iter().enumerate() {
+            let PredictionUnitId::Sample(sample) = unit else {
+                return Err(DagMlError::RuntimeValidation(
+                    "availability targets must be sample-level".into(),
+                ));
+            };
+            if let Some(index) = positions.get(sample) {
+                let actual = block
+                    .validity_masks
+                    .as_ref()
+                    .map(|masks| masks[row].clone())
+                    .unwrap_or_else(|| vec![true; signed.target_names.len()]);
+                if actual != signed.target_validity_masks[*index] {
+                    return Err(DagMlError::RuntimeValidation("availability target validity differs from its original signed training mask".into()));
+                }
+                if signed
+                    .sample_labels
+                    .as_ref()
+                    .is_some_and(|labels| labels[*index] != Some(block.values[row][0]))
+                {
+                    return Err(DagMlError::RuntimeValidation("availability classification truth differs from the original signed native class ID".into()));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Materialize one prediction-to-Data join in graph-edge order. The scheduler
 /// supplies the required training identities from the current fold scope; a
 /// host cannot silently use the outer validation rows as fitting features.
@@ -38,6 +669,7 @@ fn join_prediction_feature_specs_for_partition(
     let mut rows = vec![Vec::new(); required_samples.len()];
     let mut seen_ports = BTreeSet::new();
     for source in sources {
+        source.validate_feature_availability()?;
         if source.partition != expected_partition
             || source.prediction_level != PredictionLevel::Sample
         {
@@ -101,6 +733,20 @@ fn join_prediction_feature_specs_for_partition(
                 .unwrap_or_else(|| format!("p{column}"));
             columns.push(format!(
                 "{}.{}__{target}",
+                source.producer_node, source.source_port
+            ));
+        }
+        if let Some(presence) = &source.source_presence {
+            let by_id = source
+                .sample_ids
+                .iter()
+                .zip(presence)
+                .collect::<BTreeMap<_, _>>();
+            for (index, sample) in required_samples.iter().enumerate() {
+                rows[index].push(if *by_id[sample] { 1.0 } else { 0.0 });
+            }
+            columns.push(format!(
+                "{}.{}__presence",
                 source.producer_node, source.source_port
             ));
         }
@@ -1252,7 +1898,12 @@ pub(crate) fn filter_prediction_blocks_for_edge_source_port<'a>(
         .into_iter()
         .filter_map(
             |block| match prediction_block_matches_edge_source_port(plan, edge, block) {
-                Ok(true) => Some(Ok(block)),
+                Ok(true) => Some(
+                    crate::methods_classification::validate_methods_classification_block(
+                        plan, block,
+                    )
+                    .map(|()| block),
+                ),
                 Ok(false) => None,
                 Err(error) => Some(Err(error)),
             },
@@ -1457,6 +2108,8 @@ pub(crate) fn collect_off_fold_prediction_input(
                 .collect(),
             sample_ids: block.sample_ids.clone(),
             values: block.values.clone(),
+            feature_validity_masks: None,
+            source_presence: None,
             prediction_width: width,
             target_names,
         },
@@ -1537,6 +2190,8 @@ pub(crate) fn collect_cv_fold_test_prediction_input(
                 .collect(),
             sample_ids: block.sample_ids.clone(),
             values: block.values.clone(),
+            feature_validity_masks: None,
+            source_presence: None,
             prediction_width: width,
             target_names: if block.target_names.is_empty() {
                 (0..width).map(|index| format!("p{index}")).collect()
@@ -1650,6 +2305,33 @@ pub(crate) fn collect_oof_prediction_input(
     let Some(blocks) = blocks else {
         return Ok(None);
     };
+    let availability_input = if matches!(scope.phase, Phase::FitCv | Phase::Refit)
+        && prediction_availability(plan)?.is_some()
+    {
+        let folds = if scope.phase == Phase::FitCv {
+            let mut folds = match resources.fold_set_override {
+                Some(folds) => folds,
+                None => required_fold_set_for_oof(plan, edge)?,
+            }
+            .clone();
+            let fold_id = scope
+                .fold_id
+                .as_ref()
+                .expect("FIT_CV validation checked the fold");
+            folds.folds.retain(|fold| &fold.fold_id == fold_id);
+            folds
+        } else {
+            availability_refit_folds(plan, edge)?.clone()
+        };
+        let requested = if scope.phase == Phase::FitCv {
+            &folds.folds[0].validation_sample_ids
+        } else {
+            &folds.sample_ids
+        };
+        available_oof_input(plan, edge, scope, &blocks, &folds, requested)?
+    } else {
+        None
+    };
     let handle = materialize_oof_prediction_handle(
         plan,
         edge,
@@ -1660,13 +2342,16 @@ pub(crate) fn collect_oof_prediction_input(
     )?;
     Ok(Some(CollectedPredictionInput {
         handle,
-        spec: prediction_input_spec(
-            edge,
-            scope,
-            &blocks,
-            scope.phase == Phase::Refit
-                && plan_oof_partition_mode(plan) == FoldPartitionMode::Resampled,
-        )?,
+        spec: match availability_input {
+            Some(input) => input,
+            None => prediction_input_spec(
+                edge,
+                scope,
+                &blocks,
+                scope.phase == Phase::Refit
+                    && plan_oof_partition_mode(plan) == FoldPartitionMode::Resampled,
+            )?,
+        },
     }))
 }
 
@@ -1767,9 +2452,6 @@ pub(crate) fn validate_fit_cv_oof_edge<'a>(
         Some(fold_id),
     );
     let blocks = filter_prediction_blocks_for_edge_source_port(plan, edge, blocks)?;
-    if blocks.is_empty() {
-        return Err(missing_oof_edge_error(edge, Some(fold_id)));
-    }
     // MANDATORY exact OOF coverage (spec rule 3 + audit R-P0-2): a `requires_oof` stacking edge that
     // reaches here must have exactly one validation prediction per fold-validation sample, exact and
     // unique. This was previously gated by `requires_fold_alignment` — making completeness conditional,
@@ -1788,6 +2470,18 @@ pub(crate) fn validate_fit_cv_oof_edge<'a>(
         .ok_or_else(|| {
             DagMlError::OofValidation(format!("unknown stacking OOF fold `{fold_id}`"))
         })?;
+    if let Some(signed) = prediction_availability(plan)? {
+        let source = availability_source(plan, &edge.source.node_id)?.ok_or_else(|| {
+            DagMlError::OofValidation("availability edge lacks its signed producer source".into())
+        })?;
+        let mut current = fold_set.clone();
+        current.folds.retain(|fold| &fold.fold_id == fold_id);
+        validate_available_oof_blocks(&signed, source, &current, &blocks)?;
+        return Ok(blocks);
+    }
+    if blocks.is_empty() {
+        return Err(missing_oof_edge_error(edge, Some(fold_id)));
+    }
     validate_declared_stacking_missing_policy(plan, edge, &blocks, &fold.validation_sample_ids)?;
     validate_oof_blocks_match_fold(edge, fold_set, fold_id, &blocks)?;
     Ok(blocks)
@@ -1866,6 +2560,13 @@ pub(crate) fn validate_refit_oof_edge<'a>(
         blocks
     };
     let blocks = filter_prediction_blocks_for_edge_source_port(plan, edge, blocks)?;
+    if let Some(signed) = prediction_availability(plan)? {
+        let source = availability_source(plan, &edge.source.node_id)?.ok_or_else(|| {
+            DagMlError::OofValidation("availability REFIT edge lacks its signed source".into())
+        })?;
+        validate_available_oof_blocks(&signed, source, fold_set, &blocks)?;
+        return Ok(Some(blocks));
+    }
     validate_declared_stacking_missing_policy(plan, edge, &blocks, &fold_set.sample_ids)?;
     // No validation OOF at all, under the default full-coverage policy, means the CV phase was never
     // run for this producer (e.g. a direct REFIT without a prior FIT_CV). Report it as a missing-OOF
@@ -2151,6 +2852,8 @@ pub(crate) fn prediction_input_spec(
             .collect(),
         sample_ids,
         values,
+        feature_validity_masks: None,
+        source_presence: None,
         prediction_width: prediction_width.unwrap_or_default(),
         target_names: target_names.unwrap_or_default(),
     })
@@ -2235,6 +2938,8 @@ pub(crate) fn aggregated_prediction_input_spec(
         sample_ids: Vec::new(),
         // Aggregated (unit-level) OOF crosses as opaque handle, not per-sample rows.
         values: Vec::new(),
+        feature_validity_masks: None,
+        source_presence: None,
         prediction_width: prediction_width.unwrap_or_default(),
         target_names: target_names.unwrap_or_default(),
     })
@@ -2258,6 +2963,8 @@ pub(crate) fn prediction_input_spec_from_requirement(
         // Replay-cache requirement: OOF rows are materialized by the host via the
         // prediction-cache handle, not carried inline in the spec.
         values: Vec::new(),
+        feature_validity_masks: None,
+        source_presence: None,
         prediction_width: requirement.prediction_width,
         target_names: requirement.target_names.clone(),
     })

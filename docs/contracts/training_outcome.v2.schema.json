@@ -70,6 +70,24 @@
       "items": { "$ref": "#/$defs/oof_average_block" },
       "default": []
     },
+    "variant_oof_averages": {
+      "description": "Native SELECT evidence for non-selected ranked variants; never used as selected predictor training or replay inputs. Empty vectors are omitted.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["variant_id", "oof_averages"],
+        "properties": {
+          "variant_id": { "$ref": "#/$defs/identifier" },
+          "oof_averages": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "$ref": "#/$defs/oof_average_block" }
+          }
+        }
+      }
+    },
     "ensemble_averages": {
       "description": "Selected variant's native train/test CV ensembles; never selection evidence. Empty vectors are omitted by the native writer.",
       "type": "array",

@@ -580,8 +580,19 @@ fn validate_aggregation_controller_sample_input(
     }
     let requested = requested_unit_order.iter().collect::<BTreeSet<_>>();
     let mut covered = BTreeSet::new();
+    let grouping_index = policy
+        .grouping_key
+        .as_ref()
+        .filter(|_| policy.aggregation_level == PredictionLevel::Group)
+        .map(|key| key.index(relations))
+        .transpose()?;
     for sample_id in &block.sample_ids {
-        let unit_id = unit_for_sample(relations, policy.aggregation_level, sample_id)?;
+        let unit_id = unit_for_sample(
+            relations,
+            policy.aggregation_level,
+            sample_id,
+            grouping_index.as_ref(),
+        )?;
         if !requested.contains(&unit_id) {
             return Err(DagMlError::OofValidation(format!(
                 "sample prediction `{sample_id}` maps to unexpected aggregation unit `{unit_id}`"
@@ -894,7 +905,7 @@ pub fn aggregate_sample_predictions_by_unit(
         let aggregated = AggregatedPredictionBlock {
             prediction_id: block.prediction_id.clone(),
             producer_node: block.producer_node.clone(),
-            producer_port: None,
+            producer_port: block.producer_port.clone(),
             partition: block.partition.clone(),
             fold_id: block.fold_id.clone(),
             level: PredictionLevel::Sample,
@@ -931,8 +942,19 @@ pub fn aggregate_sample_predictions_by_unit(
         .map(|unit_id| (unit_id, SampleAccumulator::new(width, store_rows)))
         .collect::<BTreeMap<_, _>>();
 
+    let grouping_index = policy
+        .grouping_key
+        .as_ref()
+        .filter(|_| requested_level == PredictionLevel::Group)
+        .map(|key| key.index(relations))
+        .transpose()?;
     for (sample_id, row) in block.sample_ids.iter().zip(block.values.iter()) {
-        let unit_id = unit_for_sample(relations, requested_level, sample_id)?;
+        let unit_id = unit_for_sample(
+            relations,
+            requested_level,
+            sample_id,
+            grouping_index.as_ref(),
+        )?;
         if !requested.contains(&unit_id) {
             return Err(DagMlError::OofValidation(format!(
                 "sample prediction `{sample_id}` maps to unexpected aggregation unit `{unit_id}`"
@@ -1000,7 +1022,7 @@ pub fn aggregate_sample_predictions_by_unit(
             .as_ref()
             .map(|prediction_id| format!("{prediction_id}:{suffix}")),
         producer_node: block.producer_node.clone(),
-        producer_port: None,
+        producer_port: block.producer_port.clone(),
         partition: block.partition.clone(),
         fold_id: block.fold_id.clone(),
         level: requested_level,
@@ -1020,6 +1042,7 @@ fn unit_for_sample(
     relations: &SampleRelationSet,
     level: PredictionLevel,
     sample_id: &SampleId,
+    grouping_index: Option<&crate::policy::AggregationGroupIndex<'_>>,
 ) -> Result<PredictionUnitId> {
     match level {
         PredictionLevel::Sample => Ok(PredictionUnitId::Sample(sample_id.clone())),
@@ -1032,15 +1055,23 @@ fn unit_for_sample(
                     "sample `{sample_id}` is missing target id for target aggregation"
                 ))
             }),
-        PredictionLevel::Group => relations
-            .group_for_sample(sample_id)
-            .cloned()
-            .map(PredictionUnitId::Group)
-            .ok_or_else(|| {
-                DagMlError::OofValidation(format!(
-                    "sample `{sample_id}` is missing group id for group aggregation"
-                ))
-            }),
+        PredictionLevel::Group => {
+            if let Some(index) = grouping_index {
+                index
+                    .group_for_sample(sample_id)
+                    .map(PredictionUnitId::Group)
+            } else {
+                relations
+                    .group_for_sample(sample_id)
+                    .cloned()
+                    .map(PredictionUnitId::Group)
+                    .ok_or_else(|| {
+                        DagMlError::OofValidation(format!(
+                            "sample `{sample_id}` is missing group id for group aggregation"
+                        ))
+                    })
+            }
+        }
         PredictionLevel::Observation => Err(DagMlError::OofValidation(
             "sample prediction aggregation cannot output observation-level predictions".to_string(),
         )),
@@ -2352,6 +2383,45 @@ mod tests {
         .unwrap();
         assert_eq!(by_group.level, PredictionLevel::Group);
         assert_eq!(by_group.values, vec![vec![8.0], vec![30.0]]);
+    }
+
+    #[test]
+    fn sample_unit_aggregation_preserves_explicit_ports_and_legacy_absence() {
+        let relations = SampleRelationSet {
+            records: vec![relation_with_units(
+                "obs:1", "sample:1", "target:1", "group:1",
+            )],
+        };
+        for port in [None, Some("oof"), Some("y_hat"), Some("other_prediction")] {
+            let block = PredictionBlock {
+                prediction_id: None,
+                producer_node: NodeId::new("model:ports").unwrap(),
+                producer_port: port.map(str::to_string),
+                partition: PredictionPartition::Validation,
+                fold_id: Some(FoldId::new("avg").unwrap()),
+                sample_ids: vec![sid("sample:1")],
+                values: vec![vec![4.0]],
+                target_names: vec!["y".into()],
+            };
+            for unit in [
+                PredictionUnitId::Sample(sid("sample:1")),
+                PredictionUnitId::Target(TargetId::new("target:1").unwrap()),
+                PredictionUnitId::Group(GroupId::new("group:1").unwrap()),
+            ] {
+                let policy = AggregationPolicy {
+                    aggregation_level: unit.level(),
+                    method: AggregationMethod::Mean,
+                    ..Default::default()
+                };
+                let aggregated =
+                    aggregate_sample_predictions_by_unit(&block, &relations, &policy, &[unit])
+                        .unwrap();
+                assert_eq!(aggregated.producer_port, block.producer_port);
+                assert_eq!(aggregated.producer_node, block.producer_node);
+                assert_eq!(aggregated.values, block.values);
+                assert_eq!(aggregated.fold_id, block.fold_id);
+            }
+        }
     }
 
     #[test]

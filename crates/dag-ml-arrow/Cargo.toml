@@ -10,9 +10,9 @@ repository.workspace = true
 homepage.workspace = true
 
 [dependencies]
-arrow-array = "53"
-arrow-ipc = "53"
-arrow-schema = "53"
+arrow-array = "59.0.0"
+arrow-ipc = "59.0.0"
+arrow-schema = "59.0.0"
 dag-ml-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true

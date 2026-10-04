@@ -15,6 +15,103 @@
     }
   ],
   "$defs": {
+    "named_dense_model_input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ports"
+      ],
+      "description": "Opt-in named dense model contract; Rust also validates distinct port/source IDs, manifest equality and one binding per input. Metadata describes host buffers; the core does not inspect them.",
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "ports": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 4,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "accepted_representations",
+              "accepted_types",
+              "rank",
+              "metadata"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+                "not": {
+                  "const": "y"
+                }
+              },
+              "accepted_representations": {
+                "const": [
+                  "tabular_numeric"
+                ]
+              },
+              "accepted_types": {
+                "const": [
+                  "table"
+                ]
+              },
+              "rank": {
+                "const": 2
+              },
+              "multi_source": {
+                "const": false
+              },
+              "optional": {
+                "const": false
+              },
+              "metadata": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "source_id",
+                  "dtype",
+                  "feature_shape"
+                ],
+                "properties": {
+                  "source_id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "dtype": {
+                    "enum": [
+                      "float32",
+                      "float64"
+                    ]
+                  },
+                  "feature_shape": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 1,
+                    "items": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 4294967295
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "default_fusion": {
+          "type": "null"
+        },
+        "fit_influence_policy": {
+          "type": "null"
+        },
+        "metadata": {
+          "$ref": "#/$defs/json_object"
+        }
+      }
+    },
     "identifier": {
       "type": "string",
       "minLength": 1,
@@ -150,6 +247,16 @@
       "additionalProperties": true,
       "required": ["kind", "id", "operator"],
       "properties": {
+        "model_input": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/named_dense_model_input"
+            }
+          ]
+        },
         "kind": {
           "$ref": "#/$defs/canonical_step_kind"
         },
@@ -423,6 +530,16 @@
       "type": "object",
       "additionalProperties": true,
       "properties": {
+        "model_input": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/named_dense_model_input"
+            }
+          ]
+        },
         "class": {
           "$ref": "#/$defs/non_empty_string"
         },

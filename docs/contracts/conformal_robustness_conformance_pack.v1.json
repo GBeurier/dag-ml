@@ -20,7 +20,7 @@
   "artifacts": [
     {
       "path": "docs/contracts/campaign_spec.schema.json",
-      "sha256": "989310a05c28901a5b9580875972c68b49fe263b303495548a81c8410f0d197e",
+      "sha256": "e11dde8ba4042f02ff524ffbcce22f44a86d1c09245a0dd31889a29bc4c43b1c",
       "kind": "schema_dependency"
     },
     {
@@ -125,7 +125,7 @@
     },
     {
       "path": "docs/contracts/node_task.schema.json",
-      "sha256": "dc6c4eeab7767dec1b5a69b8c4a42f14fa9c8c62a384d9919559b39da573e1e6",
+      "sha256": "3b1e8b4e807c36153e3c0ef6b7408365121f65a5671f8343aee1217644f74d01",
       "kind": "schema_dependency"
     },
     {
@@ -160,12 +160,12 @@
     },
     {
       "path": "docs/contracts/selection_decision.schema.json",
-      "sha256": "7f1d955a2dda4111c86cc76d196ae3fb81dc82304e7b8a0238c43334b0bd133b",
+      "sha256": "94e79c6826822cf5c34164f99c195d2dc1e29acc27f0f55f5f1301893f39d66b",
       "kind": "schema_dependency"
     },
     {
       "path": "docs/contracts/selection_policy.schema.json",
-      "sha256": "a6196da912f5775ddd319698649adf04f7e91406f504a8669c8c3d5c2caf99e4",
+      "sha256": "24efff513cf486b4b5db68180f703e9ed6c62bbee73bd7dd688d28577e0d04c3",
       "kind": "schema_dependency"
     },
     {
@@ -463,5 +463,5 @@
       ]
     }
   ],
-  "pack_checksum": "bacf1d87b3491bbf234a7c703590a04261db32f0ead49a67616a5f80879fd359"
+  "pack_checksum": "b191ef36b490f931c71b2c506bd13b435b943cb833604d3008aed26007aaef25"
 }

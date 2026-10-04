@@ -213,6 +213,9 @@ pub struct SelectionPolicy {
     pub evaluation_scope: Option<EvaluationScope>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refit_slot_plan: Option<RefitSlotPlan>,
+    /// One-based native selection rank; omission retains winner-only semantics.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_rank: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stacking_fit_contract: Option<StackingFitContract>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -227,6 +230,11 @@ impl SelectionPolicy {
             ));
         }
         self.metric.validate()?;
+        if self.requested_rank == Some(0) {
+            return Err(DagMlError::CampaignValidation(
+                "selection requested_rank must be positive".into(),
+            ));
+        }
         if let Some(refit_slot_plan) = &self.refit_slot_plan {
             refit_slot_plan.validate()?;
         }
@@ -263,6 +271,9 @@ pub struct SelectionDecision {
     pub evaluation_scope: Option<EvaluationScope>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refit_slot_plan: Option<RefitSlotPlan>,
+    /// One-based native selection rank; omission retains winner-only semantics.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_rank: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reduction_id: Option<String>,
     pub selected_score: f64,
@@ -299,9 +310,16 @@ impl SelectionDecision {
                 self.policy_id
             )));
         }
-        if self.ranked_candidates[0].candidate_id != self.selected_candidate_id {
+        let rank = self.requested_rank.unwrap_or(1);
+        let selected = rank
+            .checked_sub(1)
+            .and_then(|index| self.ranked_candidates.get(index));
+        if selected.is_none_or(|candidate| {
+            candidate.candidate_id != self.selected_candidate_id
+                || candidate.score != self.selected_score
+        }) {
             return Err(DagMlError::CampaignValidation(format!(
-                "selection `{}` first ranked candidate does not match selected candidate",
+                "selection `{}` requested ranked candidate does not match selected candidate and score",
                 self.policy_id
             )));
         }
@@ -386,9 +404,13 @@ pub fn select_candidate(
             rank: idx + 1,
         })
         .collect::<Vec<_>>();
-    let selected = ranked_candidates
-        .first()
-        .expect("candidates were checked as non-empty");
+    let rank = policy.requested_rank.unwrap_or(1);
+    let selected = ranked_candidates.get(rank - 1).ok_or_else(|| {
+        DagMlError::CampaignValidation(format!(
+            "selection requested_rank {rank} exceeds {} scored candidates",
+            ranked_candidates.len()
+        ))
+    })?;
     let decision = SelectionDecision {
         policy_id: policy.id.clone(),
         selected_candidate_id: selected.candidate_id.clone(),
@@ -397,6 +419,7 @@ pub fn select_candidate(
         metric_level: policy.required_metric_level,
         evaluation_scope: policy.evaluation_scope,
         refit_slot_plan: policy.refit_slot_plan.clone(),
+        requested_rank: policy.requested_rank,
         reduction_id: policy.reduction_id.clone(),
         selected_score: selected.score,
         ranked_candidates,
@@ -552,6 +575,7 @@ mod tests {
             require_finite: true,
             evaluation_scope: None,
             refit_slot_plan: None,
+            requested_rank: None,
             stacking_fit_contract: None,
             reduction_id: None,
         }

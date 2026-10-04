@@ -1,0 +1,15 @@
+{
+  "artifacts": [
+    {
+      "uri": "../never-opened-model.bin"
+    }
+  ],
+  "engine": "dag-ml",
+  "files": {
+    "predictions": "predictions.parquet",
+    "score_set": "score_set.json"
+  },
+  "fixture_producer": "rust-parquet-53.4.1",
+  "schema_version": 2,
+  "score_set_hash": "7d3bbea4ad858071a6ad7cbee4129425b7227e16b19e64f268ad52b6d85d3623"
+}

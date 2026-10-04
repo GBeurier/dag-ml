@@ -613,6 +613,10 @@ impl ExecutionPlan {
                 )));
             }
         }
+        crate::methods_classification::validate_methods_classification_plan(self)?;
+        crate::python_torch_profile::validate_torch_plan(self)?;
+        self.validate_prediction_availability()?;
+        self.validate_experimental_units()?;
         Ok(())
     }
 
@@ -702,6 +706,7 @@ fn validate_data_binding_requirements(
     node: &NodeSpec,
 ) -> Result<()> {
     let branch_view = branch_view_plan_from_node_metadata(node)?;
+    validate_named_model_binding_contract(node_id, plan, manifest, node, branch_view.as_ref())?;
     let Some(model_input) = manifest.model_input_spec()? else {
         for binding in &plan.data_bindings {
             let effective_source_ids = effective_binding_source_ids(binding, branch_view.as_ref())?;
@@ -767,6 +772,80 @@ fn validate_data_binding_requirements(
             manifest,
             branch_view.as_ref(),
         )?;
+    }
+    Ok(())
+}
+
+fn validate_named_model_binding_contract(
+    node_id: &NodeId,
+    plan: &NodePlan,
+    manifest: &ControllerManifest,
+    node: &NodeSpec,
+    branch_view: Option<&BranchViewPlan>,
+) -> Result<()> {
+    let Some(value) = node.metadata.get(crate::dsl::DSL_MODEL_INPUT_METADATA_KEY) else {
+        return Ok(());
+    };
+    let refuse = |message: &str| {
+        DagMlError::Planning(format!("node `{node_id}` named model_input: {message}"))
+    };
+    if !matches!(node.kind, NodeKind::Model | NodeKind::Tuner) {
+        return Err(refuse("only model/tuner nodes may declare named inputs"));
+    }
+    let declared: ModelInputSpec = serde_json::from_value(value.clone())
+        .map_err(|error| refuse(&format!("invalid declaration: {error}")))?;
+    crate::dsl::validate_named_model_input_spec(&declared)
+        .map_err(|error| refuse(&error.to_string()))?;
+    if manifest.model_input_spec()?.as_ref() != Some(&declared) {
+        return Err(refuse(
+            "controller data_requirements must equal the declared contract",
+        ));
+    }
+    for ports in [&node.ports.inputs, &manifest.input_ports] {
+        let data_ports = ports.iter().filter(|port| port.kind == PortKind::Data);
+        if data_ports.clone().count() != declared.ports.len()
+            || !declared.ports.iter().all(|requirement| {
+                data_ports.clone().any(|port| {
+                    port.name == requirement.name
+                        && port.representation.as_deref()
+                            == Some(requirement.accepted_representations[0].as_str())
+                        && port.cardinality == crate::graph::PortCardinality::One
+                })
+            })
+            || !ports
+                .iter()
+                .any(|port| port.name == "y" && port.kind == PortKind::Target)
+        {
+            return Err(refuse(
+                "graph/controller ports must match every named Data input and separate Target y",
+            ));
+        }
+    }
+    if plan.data_bindings.len() != declared.ports.len() {
+        return Err(refuse(
+            "exactly one DataBinding is required for every named input",
+        ));
+    }
+    for port in &declared.ports {
+        let bindings: Vec<_> = plan
+            .data_bindings
+            .iter()
+            .filter(|binding| binding.input_name == port.name)
+            .collect();
+        if bindings.len() != 1 {
+            return Err(refuse("missing or duplicate DataBinding for a named input"));
+        }
+        let binding = bindings[0];
+        let source = port.metadata["source_id"]
+            .as_str()
+            .expect("validated source_id");
+        if binding.source_ids != [source]
+            || effective_binding_source_ids(binding, branch_view)? != [source]
+            || binding.output_representation != port.accepted_representations[0]
+            || !binding.require_relations
+        {
+            return Err(refuse("DataBinding must preserve its exact source_id, declared representation and sample relations"));
+        }
     }
     Ok(())
 }
@@ -1517,6 +1596,135 @@ mod tests {
         ArtifactPolicy, ControllerCapability, ControllerFitScope, ControllerManifest, RngPolicy,
     };
     use crate::fold::{FoldPartitionMode, FoldTrainExclusion};
+
+    mod named_nd_inputs {
+        use super::*;
+        include!("plan_named_nd_tests.rs");
+    }
+
+    #[cfg(dag_ml_workspace_contract_fixtures)]
+    mod named_dense_inputs {
+        use super::*;
+        use serde_json::json;
+
+        fn fixture() -> (GraphSpec, CampaignSpec, ControllerRegistry) {
+            let contract: serde_json::Value = serde_json::from_str(include_str!(
+                "../../../examples/fixtures/data/model_input_spec_named_dense.json"
+            ))
+            .unwrap();
+            let dsl: crate::dsl::PipelineDslSpec = serde_json::from_value(json!({
+                "id":"named-plan", "steps":[{
+                    "kind":"model", "id":"model:named", "operator":{"type":"UserModule"},
+                    "model_input":contract
+                }]
+            }))
+            .unwrap();
+            let graph = crate::dsl::compile_pipeline_dsl(&dsl).unwrap();
+            let node = &graph.nodes[0];
+            let mut controller = manifest("controller:named", NodeKind::Model);
+            controller.input_ports = node.ports.inputs.clone();
+            controller.output_ports = node.ports.outputs.clone();
+            controller.data_requirements =
+                Some(node.metadata[crate::dsl::DSL_MODEL_INPUT_METADATA_KEY].clone());
+            let mut registry = ControllerRegistry::new();
+            registry.register(controller).unwrap();
+            let mut campaign = campaign("campaign:named");
+            campaign.data_bindings.insert(
+                node.id.clone(),
+                [("nir", "src0"), ("clinical", "src1")]
+                    .into_iter()
+                    .map(|(name, source)| {
+                        let mut binding = data_binding(&node.id);
+                        binding.input_name = name.into();
+                        binding.feature_set_id = Some(format!("features:{source}"));
+                        binding.source_ids = vec![source.into()];
+                        binding
+                    })
+                    .collect(),
+            );
+            (graph, campaign, registry)
+        }
+
+        #[test]
+        fn complete_named_binding_contract_survives_native_plan_roundtrip() {
+            let (graph, campaign, registry) = fixture();
+            let plan = build_execution_plan("plan:named", graph, campaign, &registry).unwrap();
+            let node = &plan.node_plans[&NodeId::new("model:named").unwrap()];
+            assert_eq!(node.data_bindings.len(), 2);
+            assert_eq!(node.data_bindings[0].input_name, "nir");
+            assert_eq!(node.data_bindings[0].source_ids, ["src0"]);
+            assert_eq!(node.data_bindings[1].input_name, "clinical");
+            assert_eq!(node.data_bindings[1].source_ids, ["src1"]);
+            let restored: ExecutionPlan =
+                serde_json::from_slice(&serde_json::to_vec(&plan).unwrap()).unwrap();
+            restored.validate().unwrap();
+            assert_eq!(restored.graph, plan.graph);
+            assert_eq!(restored.node_plans, plan.node_plans);
+        }
+
+        #[test]
+        fn named_bindings_refuse_omission_duplicates_source_swap_and_source_concat() {
+            for mutation in 0..5 {
+                let (graph, mut campaign, registry) = fixture();
+                let bindings = campaign
+                    .data_bindings
+                    .get_mut(&NodeId::new("model:named").unwrap())
+                    .unwrap();
+                match mutation {
+                    0 => {
+                        bindings.pop();
+                    }
+                    1 => {
+                        bindings[1] = bindings[0].clone();
+                    }
+                    2 => {
+                        bindings[0].source_ids = vec!["src1".into()];
+                    }
+                    3 => {
+                        bindings[0].source_ids.push("src1".into());
+                    }
+                    4 => {
+                        bindings[0].require_relations = false;
+                    }
+                    _ => unreachable!(),
+                }
+                assert!(
+                    build_execution_plan("plan:invalid-named", graph, campaign, &registry).is_err(),
+                    "accepted mutation {mutation}"
+                );
+            }
+        }
+
+        #[test]
+        fn named_plan_refuses_foreign_graph_ports_and_divergent_controller_contract() {
+            for mutation in 0..4 {
+                let (mut graph, campaign, registry) = fixture();
+                match mutation {
+                    0 => {
+                        graph.nodes[0].ports.inputs[0].name = "foreign".into();
+                    }
+                    1 => {
+                        graph.nodes[0].ports.inputs[0].representation =
+                            Some("feature_block_set".into());
+                    }
+                    2 => {
+                        graph.nodes[0]
+                            .metadata
+                            .get_mut(crate::dsl::DSL_MODEL_INPUT_METADATA_KEY)
+                            .unwrap()["ports"][0]["metadata"]["dtype"] = json!("float32");
+                    }
+                    3 => {
+                        graph.nodes[0].ports.inputs.pop();
+                    }
+                    _ => unreachable!(),
+                }
+                assert!(
+                    build_execution_plan("plan:foreign-named", graph, campaign, &registry).is_err(),
+                    "accepted mutation {mutation}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn params_fingerprint_pins_serde_json_binary64_spelling() {

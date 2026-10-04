@@ -11,7 +11,10 @@ pub(crate) use std::collections::{BTreeMap, BTreeSet};
 pub(crate) use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 pub(crate) use crate::controller::ControllerRegistry;
-pub(crate) use crate::data::{BranchViewMode, BranchViewPlan, DataBinding, DataViewSelector};
+pub(crate) use crate::data::{
+    BranchViewMode, BranchViewPlan, DataBinding, DataViewSelector, ModelInputPortSpec,
+    ModelInputSpec,
+};
 pub(crate) use crate::error::{DagMlError, Result};
 pub(crate) use crate::fold::NestedCvSpec;
 pub(crate) use crate::generation::{
@@ -62,6 +65,9 @@ pub(crate) use alias::*;
 pub(crate) use compat::*;
 pub(crate) use compat_helpers::*;
 pub(crate) use generation::*;
+
+#[cfg(test)]
+mod named_nd_tests;
 
 #[cfg(test)]
 mod tests;

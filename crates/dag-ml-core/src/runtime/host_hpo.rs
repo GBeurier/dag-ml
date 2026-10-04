@@ -55,7 +55,207 @@ pub struct HostHpoSearchRequest {
     pub structural_catalogue: Option<HostHpoStructuralCatalogue>,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HostHpoMethodsBuildProfile {
+    schema_version: u32,
+    blas: bool,
+    openmp: bool,
+    cuda: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HostHpoParallelExecutionProfile {
+    schema_version: u32,
+    profile: String,
+    workers: usize,
+    cpu_threads: u32,
+    gpu_devices: Vec<String>,
+    methods_build: HostHpoMethodsBuildProfile,
+}
+
 impl HostHpoSearchRequest {
+    fn validate_browser_execution(&self) -> Result<()> {
+        if self.structural_catalogue.as_ref().is_some_and(|catalogue| {
+            catalogue
+                .entries
+                .iter()
+                .any(|entry| entry.graph.metadata.contains_key("python_torch_profile"))
+        }) {
+            return Err(DagMlError::RuntimeValidation(
+                "Python Torch topology requires native serial host execution".into(),
+            ));
+        }
+        if self
+            .structural_catalogue
+            .as_ref()
+            .is_some_and(|catalogue| catalogue.topology_contract.is_some())
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "topology HPO currently requires serial candidate execution".into(),
+            ));
+        }
+        if self.optimizer_descriptor.contains_key("parallel_execution") {
+            return Err(DagMlError::RuntimeValidation(
+                "parallel_execution is a native-only profile and is not supported by browser HPO"
+                    .into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Admit only the declared bounded sequential-numerics profile for typed
+    /// Methods recipes. The host attests its actual library build; core signs
+    /// that declaration into the objective/checkpoint and enforces its budget.
+    /// Historical serial descriptors and generic host parallelism stay intact.
+    pub fn validate_parallel_execution(
+        &self,
+        workers: usize,
+    ) -> Result<Option<crate::training::TrainingResourceLimits>> {
+        if workers > 1
+            && self.structural_catalogue.as_ref().is_some_and(|catalogue| {
+                catalogue
+                    .entries
+                    .iter()
+                    .any(|entry| entry.graph.metadata.contains_key("python_torch_profile"))
+            })
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "Python Torch topology requires serial candidate execution".into(),
+            ));
+        }
+        if workers > 1
+            && self.structural_catalogue.as_ref().is_some_and(|catalogue| {
+                catalogue.entries.iter().any(|entry| {
+                    entry.graph.nodes.iter().any(|node| {
+                        node.operator.as_ref().is_some_and(|operator| {
+                            matches!(
+                                operator.get("type").and_then(serde_json::Value::as_str),
+                                Some(
+                                    crate::METHODS_RAW_CLASSIFIER | crate::METHODS_META_CLASSIFIER
+                                )
+                            )
+                        })
+                    })
+                })
+            })
+        {
+            return Err(DagMlError::RuntimeValidation("Methods classification requires serial candidate execution regardless of the objective metric".into()));
+        }
+        let typed_methods = self.structural_catalogue.as_ref().is_some_and(|catalogue| {
+            catalogue.topology_contract.is_some()
+                || catalogue.entries.iter().any(|entry| {
+                    entry.graph.nodes.iter().any(|node| {
+                        node.operator
+                            .as_ref()
+                            .and_then(|operator| operator.get("type"))
+                            .and_then(serde_json::Value::as_str)
+                            .is_some_and(|kind| {
+                                matches!(
+                                    kind,
+                                    "N4mMultimodalPipeline" | crate::METHODS_RAW_CLASSIFIER
+                                )
+                            })
+                    })
+                })
+        });
+        let declaration = self.optimizer_descriptor.get("parallel_execution");
+        if typed_methods || declaration.is_some() {
+            let declared_workers = match self.optimizer_descriptor.get("n_jobs") {
+                None => Some(1),
+                Some(value) => value.as_u64().and_then(|value| usize::try_from(value).ok()),
+            };
+            if declared_workers != Some(workers) {
+                return Err(DagMlError::RuntimeValidation(
+                    "typed host HPO n_jobs must match the actual worker budget".into(),
+                ));
+            }
+            if workers > 1 && declaration.is_none() {
+                return Err(DagMlError::RuntimeValidation(
+                    "typed parallel host HPO requires a sequential Methods build profile".into(),
+                ));
+            }
+        }
+        let Some(declaration) = declaration else {
+            return Ok(None);
+        };
+        let profile: HostHpoParallelExecutionProfile = serde_json::from_value(declaration.clone())
+            .map_err(|error| {
+                DagMlError::RuntimeValidation(format!(
+                    "invalid typed host HPO parallel_execution declaration: {error}"
+                ))
+            })?;
+        if profile.schema_version != 1
+            || profile.profile != "methods_sequential_cpu_v1"
+            || !(2..=4).contains(&workers)
+            || profile.workers != workers
+            || profile.cpu_threads != 1
+            || !profile.gpu_devices.is_empty()
+            || profile.methods_build.schema_version != 1
+            || profile.methods_build.blas
+            || profile.methods_build.openmp
+            || profile.methods_build.cuda
+            || !matches!(
+                self.metric,
+                RegressionMetricKind::Mse
+                    | RegressionMetricKind::Rmse
+                    | RegressionMetricKind::Mae
+                    | RegressionMetricKind::R2
+            )
+            || self
+                .optimizer_descriptor
+                .get("sampler")
+                .and_then(serde_json::Value::as_str)
+                != Some("random")
+            || self
+                .optimizer_descriptor
+                .get("pruner")
+                .is_some_and(|value| !value.is_null() && value.as_str() != Some("none"))
+            || self.progressive_pruning
+            || self
+                .optimizer_descriptor
+                .contains_key("generated_view_mode")
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "typed parallel host HPO requires regression, workers 2..4, random sampling, no pruning, and the sequential Methods CPU profile".into(),
+            ));
+        }
+        Ok(Some(crate::training::TrainingResourceLimits {
+            cpu_threads: 1,
+            memory_bytes: None,
+            gpu_devices: Vec::new(),
+            wall_time_ms: None,
+        }))
+    }
+
+    /// Inspect the actual graph as well as the signed catalogue. A regression
+    /// metric or an absent catalogue cannot relabel a classifier as parallel-safe.
+    pub fn validate_parallel_execution_for_plan(
+        &self,
+        workers: usize,
+        plan: &ExecutionPlan,
+    ) -> Result<Option<crate::training::TrainingResourceLimits>> {
+        if workers > 1 && crate::python_torch_profile::has_torch_profile(plan) {
+            return Err(DagMlError::RuntimeValidation(
+                "Python Torch topology requires serial candidate execution".into(),
+            ));
+        }
+        if workers > 1
+            && plan.graph_plan.graph.nodes.iter().any(|node| {
+                node.operator.as_ref().is_some_and(|operator| {
+                    matches!(
+                        operator.get("type").and_then(serde_json::Value::as_str),
+                        Some(crate::METHODS_RAW_CLASSIFIER | crate::METHODS_META_CLASSIFIER)
+                    )
+                })
+            })
+        {
+            return Err(DagMlError::RuntimeValidation("Methods classification requires serial candidate execution regardless of the objective metric".into()));
+        }
+        self.validate_parallel_execution(workers)
+    }
+
     fn phase_index(&self, trial_index: u32) -> Option<u32> {
         if self.phase_trial_budgets.is_empty() {
             return None;
@@ -71,6 +271,8 @@ impl HostHpoSearchRequest {
     }
 
     pub(super) fn validate_parameter_bindings(&self, plan: &ExecutionPlan) -> Result<()> {
+        crate::methods_classification::validate_methods_classifier_search(plan, self)?;
+        crate::python_torch_profile::validate_torch_search(plan, self)?;
         if let Some(catalogue) = &self.structural_catalogue {
             if catalogue.topology_contract.is_some() && self.progressive_pruning {
                 return Err(DagMlError::RuntimeValidation(
@@ -389,10 +591,39 @@ pub struct HostHpoInterruptedTrial {
     pub params: BTreeMap<String, serde_json::Value>,
 }
 
+fn canonical_checkpoint_trials(trials: &[HostHpoTerminalTrial]) -> Vec<HostHpoTerminalTrial> {
+    let mut trials = trials.to_vec();
+    for trial in &mut trials {
+        let (params, manifest) = match trial {
+            HostHpoTerminalTrial::Complete { evidence } => {
+                (&mut evidence.params, &mut evidence.generated_view_manifest)
+            }
+            HostHpoTerminalTrial::Pruned { evidence } => {
+                (&mut evidence.params, &mut evidence.generated_view_manifest)
+            }
+            HostHpoTerminalTrial::Failed {
+                params,
+                generated_view_manifest,
+                ..
+            } => (params, generated_view_manifest),
+        };
+        for value in params.values_mut() {
+            value.sort_all_objects();
+        }
+        if let Some(value) = manifest {
+            value.sort_all_objects();
+        }
+    }
+    trials
+}
+
 impl HostHpoCheckpoint {
     fn seal(&mut self) -> Result<()> {
-        self.fingerprint =
-            stable_json_fingerprint(&(self.schema_version, &self.binding, &self.trials))?;
+        // Only dynamic JSON objects use canonical key ordering. Keep the
+        // typed schema field order and every scientific array order unchanged,
+        // matching checkpoints written before serde_json/preserve_order.
+        let trials = canonical_checkpoint_trials(&self.trials);
+        self.fingerprint = stable_json_fingerprint(&(self.schema_version, &self.binding, &trials))?;
         Ok(())
     }
 
@@ -421,8 +652,9 @@ impl HostHpoCheckpoint {
             if prepared.schema_version != self.schema_version
                 || prepared.binding != self.binding
                 || prepared.trials.len() != self.trials.len() + 1
-                || stable_json_fingerprint(&prepared.trials[..self.trials.len()])?
-                    != stable_json_fingerprint(&self.trials)?
+                || stable_json_fingerprint(&canonical_checkpoint_trials(
+                    &prepared.trials[..self.trials.len()],
+                ))? != stable_json_fingerprint(&canonical_checkpoint_trials(&self.trials))?
                 || prepared
                     .trials
                     .last()
@@ -578,6 +810,7 @@ fn host_hpo_candidate_plan(
     };
     candidate_plan.variants = vec![variant];
     candidate_plan.validate()?;
+    crate::methods_classification::validate_methods_classification_plan(&candidate_plan)?;
     Ok(candidate_plan)
 }
 
@@ -629,15 +862,7 @@ pub fn prepare_host_hpo_worker_window(
     proposals: &mut dyn HostHpoProposalSource,
     max_workers: usize,
 ) -> Result<HostHpoWorkerWindow> {
-    if request
-        .structural_catalogue
-        .as_ref()
-        .is_some_and(|catalogue| catalogue.topology_contract.is_some())
-    {
-        return Err(DagMlError::RuntimeValidation(
-            "topology HPO currently requires serial candidate execution".into(),
-        ));
-    }
+    request.validate_browser_execution()?;
     plan.validate()?;
     if max_workers < 2 || request.trial_budget == 0 || request.optimizer_descriptor.is_empty() {
         return Err(DagMlError::RuntimeValidation(
@@ -715,6 +940,7 @@ pub fn evaluate_host_hpo_worker_task(
     controllers: &RuntimeControllerRegistry,
     provider: &dyn RuntimeDataProvider,
 ) -> Result<HostHpoTrialEvidence> {
+    request.validate_browser_execution()?;
     validate_structural_worker_task(task, request)?;
     task.candidate_plan.validate()?;
     let [variant] = task.candidate_plan.variants.as_slice() else {
@@ -784,6 +1010,7 @@ pub fn evaluate_host_hpo_worker_fold(
     provider: &dyn RuntimeDataProvider,
     data_fingerprint: &str,
 ) -> Result<HostHpoWorkerFoldResult> {
+    request.validate_browser_execution()?;
     validate_structural_worker_task(task, request)?;
     task.candidate_plan.validate()?;
     let [variant] = task.candidate_plan.variants.as_slice() else {
@@ -865,6 +1092,7 @@ pub fn validate_host_hpo_worker_fold_result(
         .iter()
         .filter(|report| {
             report.producer_node == *target_node
+                && report_matches_statistical_policy(report, &task.candidate_plan)
                 && report.partition == PredictionPartition::Validation
                 && report.fold_id.as_ref() == Some(&fold.fold_id)
         })
@@ -982,6 +1210,7 @@ pub fn complete_host_hpo_worker_window(
     proposals: &mut dyn HostHpoProposalSource,
     progress: &mut dyn HostHpoProgress,
 ) -> Result<HostHpoSearchOutcome> {
+    request.validate_browser_execution()?;
     let expected_checkpoint = prepare_host_hpo_checkpoint(plan, request, options)?;
     if stable_json_fingerprint(&expected_checkpoint)?
         != stable_json_fingerprint(&window.checkpoint)?
@@ -1083,6 +1312,7 @@ pub fn complete_host_hpo_worker_window(
                             .iter()
                             .filter(|report| {
                                 report.producer_node == *target_node
+                                    && report_matches_statistical_policy(report, plan)
                                     && report.partition == PredictionPartition::Validation
                                     && report.fold_id.as_ref() == Some(&fold.fold_id)
                             })
@@ -1151,6 +1381,7 @@ pub fn complete_host_hpo_worker_window(
                         .iter()
                         .filter(|report| {
                             report.producer_node == *target_node
+                                && report_matches_statistical_policy(report, plan)
                                 && report.partition == PredictionPartition::Validation
                                 && report.fold_id.as_ref() == Some(&fold.fold_id)
                         })
@@ -1276,6 +1507,7 @@ pub fn complete_host_hpo_worker_window(
             .map(|trial| host_hpo_candidate(plan, request, trial))
             .collect::<Result<Vec<_>>>()?;
         let policy = SelectionPolicy {
+            requested_rank: None,
             id: "select:host_hpo".into(),
             metric: SelectionMetric {
                 name: request.metric.name().into(),
@@ -1431,6 +1663,7 @@ impl SequentialScheduler {
         proposals: &mut dyn HostHpoProposalSource,
         mut durable: Option<(&HostHpoResumeOptions, &mut dyn HostHpoProgress)>,
     ) -> Result<HostHpoSearchOutcome> {
+        request.validate_parallel_execution_for_plan(1, plan)?;
         plan.validate()?;
         if request.trial_budget == 0 || request.optimizer_descriptor.is_empty() {
             return Err(DagMlError::RuntimeValidation(
@@ -1537,6 +1770,7 @@ impl SequentialScheduler {
                 variant.seed.or(plan.campaign.root_seed),
             );
             context.variant_id = Some(variant.variant_id.clone());
+            context.resource_limits = crate::python_torch_profile::torch_resources(&candidate_plan);
             let candidate_provider = provider_factory
                 .map(|factory| factory.create(trial_index))
                 .transpose()?;
@@ -1725,6 +1959,7 @@ impl SequentialScheduler {
             });
         }
         let policy = SelectionPolicy {
+            requested_rank: None,
             id: "select:host_hpo".into(),
             metric: SelectionMetric {
                 name: request.metric.name().into(),
@@ -1876,15 +2111,8 @@ impl SequentialScheduler {
                 "parallel host HPO requires at least two workers".into(),
             ));
         }
-        if request
-            .structural_catalogue
-            .as_ref()
-            .is_some_and(|catalogue| catalogue.topology_contract.is_some())
-        {
-            return Err(DagMlError::RuntimeValidation(
-                "topology HPO currently requires serial candidate execution".into(),
-            ));
-        }
+        let parallel_resources =
+            request.validate_parallel_execution_for_plan(max_parallel_trials, plan)?;
         plan.validate()?;
         if request.trial_budget == 0 || request.optimizer_descriptor.is_empty() {
             return Err(DagMlError::RuntimeValidation(
@@ -1997,6 +2225,7 @@ impl SequentialScheduler {
                     RunId::new(format!("run:host_hpo:{next}"))?,
                     variant.seed.or(plan.campaign.root_seed),
                 );
+                context.resource_limits = parallel_resources.clone();
                 context.variant_id = Some(variant.variant_id.clone());
                 pending.push((
                     next,
@@ -2234,6 +2463,7 @@ impl SequentialScheduler {
             });
         }
         let policy = SelectionPolicy {
+            requested_rank: None,
             id: "select:host_hpo".into(),
             metric: SelectionMetric {
                 name: request.metric.name().into(),
@@ -2280,6 +2510,11 @@ fn host_hpo_objective_fingerprint(request: &HostHpoSearchRequest) -> Result<Stri
             descriptor.remove(key);
         }
     }
+    // With serde_json/preserve_order, Map::remove swaps the last entry into
+    // the removed slot. Resume-only keys must not reorder the scientific
+    // objective or change its identity. Preserve the canonical object order
+    // of the historical BTreeMap-backed Python binding, including nested maps.
+    value.sort_all_objects();
     stable_json_fingerprint(&value)
 }
 
@@ -2393,6 +2628,7 @@ pub fn prepare_host_hpo_checkpoint(
                         .iter()
                         .filter(|report| {
                             report.producer_node == *target_node
+                                && report_matches_statistical_policy(report, plan)
                                 && report.partition == PredictionPartition::Validation
                                 && report.fold_id.as_ref() == Some(&fold.fold_id)
                         })
@@ -2537,6 +2773,7 @@ fn host_hpo_score(
         .iter()
         .filter(|report| {
             report.producer_node == *target_node
+                && report_matches_statistical_policy(report, plan)
                 && report.partition == PredictionPartition::Validation
                 && report.fold_id.as_ref().is_some_and(|fold| {
                     if request.fold_score_reduction.is_some() {
@@ -2639,9 +2876,179 @@ fn reduce_host_hpo_fold_scores(
     Ok(score)
 }
 
+fn report_matches_statistical_policy(
+    report: &crate::metrics::RegressionMetricReport,
+    plan: &ExecutionPlan,
+) -> bool {
+    let policy = &plan.campaign.aggregation_policy;
+    policy.grouping_key.is_none()
+        || (report.level == policy.selection_metric_level
+            && report.grouping_key == policy.grouping_key)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn checkpoint_json_object_order_preserves_legacy_seal_and_rejects_content_tamper() {
+        let mut checkpoint: HostHpoCheckpoint = serde_json::from_str(
+            r#"{"schema_version":1,"binding":{"objective_fingerprint":"objective",
+            "graph_fingerprint":"graph","controller_fingerprint":"controllers",
+            "campaign_fingerprint":"campaign","fold_set_fingerprint":"folds",
+            "data_fingerprint":"data"},"trials":[{"state":"failed","trial_index":0,
+            "params":{"model":{"z":2,"a":1}},"variant_id":"trial:0","error":"fit failed",
+            "generated_view_manifest":{"views":[{"sample_ids":["s2","s1"],
+            "content":{"z":"sha-z","a":"sha-a"}}],"schema_version":1}}],"fingerprint":""}"#,
+        )
+        .unwrap();
+        checkpoint.seal().unwrap();
+        assert_eq!(
+            checkpoint.fingerprint,
+            "c012ba760617bcc51bb630baa6341292eab941691f2ab3b0dadb6657e1e3485f"
+        );
+        // Legacy typed struct field order; only JSON object keys are sorted.
+        let legacy: HostHpoCheckpoint = serde_json::from_str(
+            r#"{"schema_version":1,"binding":{"objective_fingerprint":"objective",
+            "graph_fingerprint":"graph","controller_fingerprint":"controllers",
+            "campaign_fingerprint":"campaign","fold_set_fingerprint":"folds",
+            "data_fingerprint":"data"},"trials":[{"state":"failed","trial_index":0,
+            "params":{"model":{"a":1,"z":2}},"variant_id":"trial:0","error":"fit failed",
+            "generated_view_manifest":{"schema_version":1,"views":[{"content":{"a":"sha-a","z":"sha-z"},
+            "sample_ids":["s2","s1"]}]}}],"fingerprint":""}"#,
+        ).unwrap();
+        assert_eq!(
+            checkpoint.fingerprint,
+            stable_json_fingerprint(&(legacy.schema_version, &legacy.binding, &legacy.trials,))
+                .unwrap()
+        );
+        let mut sorted_wire = serde_json::to_value(&checkpoint).unwrap();
+        sorted_wire.sort_all_objects(); // SDK checkpoint json.dump(sort_keys=True).
+        let restored: HostHpoCheckpoint = serde_json::from_value(sorted_wire.clone()).unwrap();
+        restored.verify_seal().unwrap();
+        assert_eq!(restored.fingerprint, checkpoint.fingerprint);
+        let mut changed = sorted_wire.clone();
+        changed["trials"][0]["generated_view_manifest"]["views"][0]["content"]["a"] =
+            serde_json::json!("foreign-content");
+        assert!(serde_json::from_value::<HostHpoCheckpoint>(changed)
+            .unwrap()
+            .verify_seal()
+            .is_err());
+        let mut changed = sorted_wire;
+        changed["trials"][0]["generated_view_manifest"]["views"][0]["sample_ids"] =
+            serde_json::json!(["s1", "s2"]);
+        assert!(serde_json::from_value::<HostHpoCheckpoint>(changed)
+            .unwrap()
+            .verify_seal()
+            .is_err());
+
+        // Recovery must compare canonical prospective prefixes too, without
+        // changing the original checkpoint or accepting a tampered prefix.
+        let mut prepared = checkpoint.clone();
+        prepared.trials.push(HostHpoTerminalTrial::Failed {
+            trial_index: 1,
+            params: BTreeMap::new(),
+            variant_id: VariantId::new("trial:1").unwrap(),
+            error: "fit failed".into(),
+            generated_view_manifest: None,
+        });
+        prepared.seal().unwrap();
+        assert_eq!(
+            restored
+                .clone()
+                .recover_interrupted_trials(Some(prepared), Vec::new())
+                .unwrap()
+                .trials
+                .len(),
+            2
+        );
+        let mut malformed = restored.clone();
+        if let HostHpoTerminalTrial::Failed { params, .. } = &mut malformed.trials[0] {
+            params.insert("extra".into(), serde_json::json!(1));
+        }
+        assert!(malformed
+            .recover_interrupted_trials(None, Vec::new())
+            .is_err());
+    }
+
+    #[test]
+    fn objective_identity_ignores_resume_controls_and_json_object_order() {
+        let original: HostHpoSearchRequest = serde_json::from_str(
+            r#"{"target_node":"model:base","trial_budget":2,"metric":"rmse","direction":"minimize",
+            "optimizer_descriptor":{"sampler":"random","n_trials":2,"seed":7,"storage":"first",
+            "model_params":{"n_components":[1,2],"alpha":[0,1]}}}"#,
+        )
+        .unwrap();
+        let resumed: HostHpoSearchRequest = serde_json::from_str(
+            r#"{"target_node":"model:base","trial_budget":3,"metric":"rmse","direction":"minimize",
+            "optimizer_descriptor":{"resume":true,"storage":"second","n_trials":3,"seed":7,
+            "model_params":{"alpha":[0,1],"n_components":[1,2]},"sampler":"random"}}"#,
+        )
+        .unwrap();
+        let expected = host_hpo_objective_fingerprint(&original).unwrap();
+        // SHA-256 of the legacy recursively key-sorted JSON objective; this
+        // remains the same with and without serde_json's preserve_order feature.
+        assert_eq!(
+            expected,
+            "db558102f5eb6cebc7047a8447d430e35573df3124d2009d63e4df9e958fb37c"
+        );
+        assert_eq!(expected, host_hpo_objective_fingerprint(&resumed).unwrap());
+        let mut changed = resumed;
+        changed
+            .optimizer_descriptor
+            .get_mut("model_params")
+            .unwrap()["n_components"] = serde_json::json!([1, 3]);
+        assert_ne!(expected, host_hpo_objective_fingerprint(&changed).unwrap());
+    }
+
+    #[test]
+    fn torch_effective_plan_cannot_bypass_serial_admission_with_a_regression_metric() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../examples/fixtures/training/python_training_smoke.v1.json"
+        ))
+        .unwrap();
+        let training: crate::TrainingRequest =
+            serde_json::from_value(fixture["request"].clone()).unwrap();
+        let mut manifests = crate::ControllerRegistry::new();
+        for manifest in training.controller_manifests {
+            manifests.register(manifest).unwrap();
+        }
+        let mut plan = crate::build_execution_plan(
+            "plan:torch.refusal",
+            training.graph,
+            training.campaign,
+            &manifests,
+        )
+        .unwrap();
+        let request: HostHpoSearchRequest = serde_json::from_value(serde_json::json!({
+            "target_node":"model:base","trial_budget":2,"metric":"rmse","direction":"minimize",
+            "optimizer_descriptor":{"sampler":"random","n_jobs":2}}))
+        .unwrap();
+        assert!(
+            request
+                .validate_parallel_execution_for_plan(2, &plan)
+                .is_ok(),
+            "historical generic parallel route unchanged"
+        );
+        plan.node_plans
+            .values_mut()
+            .find(|node| node.kind == crate::NodeKind::Model)
+            .unwrap()
+            .params
+            .insert(
+                "factory_path".into(),
+                serde_json::json!(crate::python_torch_profile::TORCH_FACTORY),
+            );
+        assert!(request
+            .validate_parallel_execution_for_plan(2, &plan)
+            .unwrap_err()
+            .to_string()
+            .contains("serial"));
+        assert!(
+            crate::python_torch_profile::validate_torch_plan(&plan).is_err(),
+            "known factory without signed metadata must refuse"
+        );
+    }
 
     #[test]
     fn fold_reduction_is_not_global_oof_and_honors_metric_direction() {

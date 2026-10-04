@@ -48,6 +48,12 @@ from scripts.validate_archive_v1_contract import (  # noqa: E402
 )
 
 
+from scripts.validate_classification_state import (
+    RAW_KIND as CLASSIFIER_RAW_KIND, META_KIND as CLASSIFIER_META_KIND,
+    RAW_PROFILE as CLASSIFIER_RAW_PROFILE, META_PROFILE as CLASSIFIER_META_PROFILE,
+    validate_payload as validate_classifier_payload,
+)
+
 ARCHIVE_ROOT = ROOT / "docs/contracts/archive-v2"
 SCHEMA_NAME = "archive_workspace_manifest.v2.schema.json"
 POSITIVE_NAME = "native_portable_replay.json"
@@ -663,35 +669,9 @@ ROLE_PIPELINE_PROFILE = "dagml_methods_role_pipeline_raw_sha256"
 MULTIMODAL_PIPELINE_PROFILE = "dagml_methods_multimodal_pipeline_raw_sha256"
 
 
-def validate_multimodal_pipeline_payload(record: dict[str, Any], payload: bytes, plan: dict[str, Any]) -> None:
-    """Validate complete declarative U07 state binding, without native hydration."""
-    artifact = record["artifact"]
-    digest = hashlib.sha256(payload).hexdigest()
-    owners = {f"dagml.methods.{host}.multimodal": f"controller:methods.{host}.multimodal"
-              for host in ("python", "wasm", "r", "octave")}
-    owner = owners.get(artifact.get("plugin"))
-    require(0 < len(payload) <= 134_217_728 and owner is not None
-            and record.get("controller_id") == artifact.get("controller_id") == owner
-            and artifact.get("kind") == "methods_multimodal_pipeline"
-            and artifact.get("backend") == "raw" and artifact.get("plugin_version") == "1.0.0"
-            and artifact.get("native_predictor_descriptor") is None and artifact.get("native_estimator_descriptor") is None
-            and artifact.get("size_bytes") == len(payload) and artifact.get("content_fingerprint") == digest
-            and artifact.get("uri") == f"artifacts/{digest}.json", "native_model_refusal",
-            "Complete Methods multimodal predictor must bind bounded RAW bytes and its exact owner")
-    saved = load_json_bytes(payload, artifact["uri"])
-    require(isinstance(saved, dict) and set(saved) == {"schema", "node_id", "params_fingerprint", "target_names", "recipe", "source_schemas", "state"}
-            and saved["schema"] == "dagml.methods.multimodal.v1" and saved["node_id"] == record["node_id"]
-            and saved["params_fingerprint"] == record["params_fingerprint"], "native_model_refusal", "Closed complete multimodal wrapper required")
-    names = saved["target_names"]
-    require(isinstance(names, list) and len(names) == 1 and isinstance(names[0], str) and 0 < len(names[0].encode()) <= 4096,
-            "native_model_refusal", "Complete U07 predictor requires one named target")
-    state = saved["state"]
-    require(isinstance(state, list) and 28 <= len(state) <= 67_108_864
-            and all(type(byte) is int and 0 <= byte <= 255 for byte in state)
-            and bytes(state[:12]) == b"N4MF" + (1).to_bytes(4, "little") + (2).to_bytes(4, "little"),
-            "native_model_refusal", "Complete Methods state must use N4MF format1 ABImajor2")
+def validate_raw_encoder_recipe(recipe: dict[str, Any], schemas: dict[str, Any]) -> None:
+    """Shared closed encoder declarations; each codec validates its own head."""
     order = ["nir", "image", "series", "metadata"]
-    recipe, schemas = saved["recipe"], saved["source_schemas"]
     require(isinstance(recipe, dict) and set(recipe) == {"schema_version", "fusion", "source_order", "encoders", "source_weights", "model"}
             and type(recipe["schema_version"]) is int and recipe["schema_version"] == 1 and recipe["fusion"] == "early"
             and isinstance(recipe["source_order"], list) and 1 <= len(recipe["source_order"]) <= len(order)
@@ -731,6 +711,37 @@ def validate_multimodal_pipeline_payload(record: dict[str, Any], payload: bytes,
                 and 0 < encoder["n_components"] <= min(2**31-1, math.prod(schemas[name]["input_shape"]))
                 and encoder["whiten"] is False and type(encoder["random_state"]) is int and 0 <= encoder["random_state"] <= 2**32-1,
                 "native_model_refusal", "Closed native unwhitened U07 PCA recipe required")
+
+
+def validate_multimodal_pipeline_payload(record: dict[str, Any], payload: bytes, plan: dict[str, Any]) -> None:
+    """Validate complete declarative U07 state binding, without native hydration."""
+    artifact = record["artifact"]
+    digest = hashlib.sha256(payload).hexdigest()
+    owners = {f"dagml.methods.{host}.multimodal": f"controller:methods.{host}.multimodal"
+              for host in ("python", "wasm", "r", "octave")}
+    owner = owners.get(artifact.get("plugin"))
+    require(0 < len(payload) <= 134_217_728 and owner is not None
+            and record.get("controller_id") == artifact.get("controller_id") == owner
+            and artifact.get("kind") == "methods_multimodal_pipeline"
+            and artifact.get("backend") == "raw" and artifact.get("plugin_version") == "1.0.0"
+            and artifact.get("native_predictor_descriptor") is None and artifact.get("native_estimator_descriptor") is None
+            and artifact.get("size_bytes") == len(payload) and artifact.get("content_fingerprint") == digest
+            and artifact.get("uri") == f"artifacts/{digest}.json", "native_model_refusal",
+            "Complete Methods multimodal predictor must bind bounded RAW bytes and its exact owner")
+    saved = load_json_bytes(payload, artifact["uri"])
+    require(isinstance(saved, dict) and set(saved) == {"schema", "node_id", "params_fingerprint", "target_names", "recipe", "source_schemas", "state"}
+            and saved["schema"] == "dagml.methods.multimodal.v1" and saved["node_id"] == record["node_id"]
+            and saved["params_fingerprint"] == record["params_fingerprint"], "native_model_refusal", "Closed complete multimodal wrapper required")
+    names = saved["target_names"]
+    require(isinstance(names, list) and len(names) == 1 and isinstance(names[0], str) and 0 < len(names[0].encode()) <= 4096,
+            "native_model_refusal", "Complete U07 predictor requires one named target")
+    state = saved["state"]
+    require(isinstance(state, list) and 28 <= len(state) <= 67_108_864
+            and all(type(byte) is int and 0 <= byte <= 255 for byte in state)
+            and bytes(state[:12]) == b"N4MF" + (1).to_bytes(4, "little") + (2).to_bytes(4, "little"),
+            "native_model_refusal", "Complete Methods state must use N4MF format1 ABImajor2")
+    recipe, schemas = saved["recipe"], saved["source_schemas"]
+    validate_raw_encoder_recipe(recipe, schemas)
     model = recipe["model"]
     require(isinstance(model, dict) and set(model) == {"method_id", "params"}
             and model["method_id"] == "models.regularized.ridge" and isinstance(model["params"], dict)
@@ -1004,12 +1015,12 @@ def validate_package_portability(package: Any) -> None:
             "Archive V2 refit artifact ids must be unique",
         )
         require(
-            artifact.get("kind") in {"n4m_model", "methods_role_pipeline", "methods_multimodal_pipeline"}
+            artifact.get("kind") in {"n4m_model", "methods_role_pipeline", "methods_multimodal_pipeline", CLASSIFIER_RAW_KIND, CLASSIFIER_META_KIND}
             and artifact.get("backend") == "raw",
             "native_model_refusal",
             f"artifact `{artifact_id}` must use an accepted raw Methods codec",
         )
-        if artifact.get("kind") in {"methods_role_pipeline", "methods_multimodal_pipeline"}:
+        if artifact.get("kind") in {"methods_role_pipeline", "methods_multimodal_pipeline", CLASSIFIER_RAW_KIND, CLASSIFIER_META_KIND}:
             records_by_id[artifact_id] = record
             continue
         uri = artifact.get("uri")
@@ -1054,7 +1065,12 @@ def validate_package_portability(package: Any) -> None:
             "native_model_refusal",
             f"raw artifact payload `{artifact_id}` does not match its bundle reference",
         )
-        if artifact["kind"] == "methods_role_pipeline":
+        if artifact["kind"] in {CLASSIFIER_RAW_KIND, CLASSIFIER_META_KIND}:
+            try:
+                validate_classifier_payload(records_by_id[artifact_id], payload, package["effective_plan"], load_json_bytes, validate_raw_encoder_recipe)
+            except (ValueError, KeyError, TypeError, OverflowError) as error:
+                raise ArchiveV2ContractError(f"native_model_refusal: {error}") from error
+        elif artifact["kind"] == "methods_role_pipeline":
             validate_role_pipeline_payload(records_by_id[artifact_id], payload)
             validate_role_pipeline_recipe(records_by_id[artifact_id], payload, package["effective_plan"])
         elif artifact["kind"] == "methods_multimodal_pipeline":
@@ -1290,16 +1306,16 @@ def validate_archive_v2_payloads(
     for artifact_id, raw_payload in raw_artifact_payloads.items():
         reference = n4mm_by_id[artifact_id]
         artifact = refit_by_id[artifact_id]
-        is_role = artifact["kind"] == "methods_role_pipeline"
-        is_multimodal = artifact["kind"] == "methods_multimodal_pipeline"
+        is_role = artifact["kind"] in {"methods_role_pipeline", CLASSIFIER_META_KIND}
+        is_multimodal = artifact["kind"] in {"methods_multimodal_pipeline", CLASSIFIER_RAW_KIND}
         if is_multimodal:
-            require(reference in methods.get("multimodal_pipelines", []) and reference.get("kind") == "methods_multimodal_pipeline"
+            require(reference in methods.get("multimodal_pipelines", []) and reference.get("kind") == artifact["kind"]
                     and reference.get("owner") == "dag-ml" and reference.get("format_version") == 1,
                     "native_model_refusal", "Complete multimodal artifact must use its own manifest family")
         elif is_role:
             require(
                 reference in methods.get("role_pipelines", [])
-                and reference.get("kind") == "methods_role_pipeline"
+                and reference.get("kind") == artifact["kind"]
                 and reference.get("owner") == "dag-ml"
                 and reference.get("format_version") == 1,
                 "native_model_refusal", "RolePipeline artifact must use its own manifest family",
@@ -1328,7 +1344,7 @@ def validate_archive_v2_payloads(
         )
         raw_sha256 = hashlib.sha256(payloads[reference["member_path"]]).hexdigest()
         require(
-            reference["semantic_profile"] == (MULTIMODAL_PIPELINE_PROFILE if is_multimodal else ROLE_PIPELINE_PROFILE if is_role else "n4mm_raw_sha256")
+            reference["semantic_profile"] == (CLASSIFIER_RAW_PROFILE if artifact["kind"] == CLASSIFIER_RAW_KIND else CLASSIFIER_META_PROFILE if artifact["kind"] == CLASSIFIER_META_KIND else MULTIMODAL_PIPELINE_PROFILE if is_multimodal else ROLE_PIPELINE_PROFILE if is_role else "n4mm_raw_sha256")
             and reference["semantic_fingerprint"] == raw_sha256,
             "native_model_refusal",
             f"Methods member `{artifact_id}` must use its exact raw SHA-256 semantic profile",
