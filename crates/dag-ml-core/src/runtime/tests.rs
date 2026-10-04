@@ -72,6 +72,7 @@ mod named_dense_inputs {
         cohort: PredictCohort,
         next_handle: Cell<u64>,
         forbid_training_relations: Cell<bool>,
+        advertise_receipts: Cell<bool>,
         reverse_receipt: bool,
     }
 
@@ -119,6 +120,7 @@ mod named_dense_inputs {
                 cohort,
                 next_handle: Cell::new(100),
                 forbid_training_relations: Cell::new(false),
+                advertise_receipts: Cell::new(true),
                 reverse_receipt,
             }
         }
@@ -146,6 +148,10 @@ mod named_dense_inputs {
     }
 
     impl RuntimeDataProvider for NamedMatrixProvider {
+        fn generated_views_enabled(&self) -> bool {
+            self.advertise_receipts.get()
+        }
+
         fn materialize(&self, request: &DataMaterializationRequest) -> Result<HandleRef> {
             assert_eq!(request.binding.output_representation, "tabular_numeric");
             assert_eq!(request.binding.source_ids.len(), 1);
@@ -313,6 +319,7 @@ mod named_dense_inputs {
         let plan = plan(&provider);
         let cv = collect(&plan, &provider, Phase::FitCv).unwrap();
         assert_eq!(cv.data_views.len(), 4);
+        assert_eq!(cv.data_view_receipts.len(), 4);
         for name in ["nir", "clinical"] {
             assert_eq!(
                 cv.data_views[&format!("data:{name}")].sample_ids,
@@ -334,11 +341,30 @@ mod named_dense_inputs {
         );
         drop(matrices);
         let refit = collect(&plan, &provider, Phase::Refit).unwrap();
+        assert_eq!(refit.data_view_receipts.len(), 2);
         for view in refit.data_views.values() {
             assert_eq!(view.partition, DataRequestPartition::FullTrain);
             assert_eq!(view.sample_ids, Some(ids(&["s1", "s2"])));
         }
         assert!(refit.data_views.keys().all(|key| key != "data:x"));
+    }
+
+    #[test]
+    fn named_fit_receipts_require_provider_opt_in() {
+        let provider = NamedMatrixProvider::new(false);
+        let plan = plan(&provider);
+        provider.advertise_receipts.set(false);
+        for phase in [Phase::FitCv, Phase::Refit] {
+            let error = collect(&plan, &provider, phase)
+                .err()
+                .expect("a receipt-producing provider must advertise scoped views");
+            assert!(
+                error
+                    .to_string()
+                    .contains("generated-view capability and receipt disagree"),
+                "unexpected {error}"
+            );
+        }
     }
 
     #[test]
@@ -1126,6 +1152,7 @@ fn structural_host_parallel_and_sequential_factories_return_identical_native_evi
     assert_eq!(parallel_tasks.len(), 8);
 }
 
+#[cfg(dag_ml_workspace_contract_fixtures)]
 #[test]
 fn structural_host_winner_request_preserves_output_alias_and_target_order_for_nonfirst_recipe() {
     let (old_plan, old_request) = structural_host_fixture();

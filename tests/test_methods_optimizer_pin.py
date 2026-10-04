@@ -12,7 +12,7 @@ except ModuleNotFoundError:  # Python 3.10 in the current workspace.
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "test_methods_optimizer_local.sh"
-METHODS_RUNTIME_SOURCE_SHA = "42a6f56de3e22199ea7299992ba7c441ba5b1fb0"
+METHODS_RUNTIME_SOURCE_SHA = "dcc570b3647f77cf0428dd346078f442ed5cd032"
 
 
 def _probe(library_path: str | None) -> subprocess.CompletedProcess[str]:
@@ -26,8 +26,7 @@ def _probe(library_path: str | None) -> subprocess.CompletedProcess[str]:
         cwd=ROOT,
         env=env,
         text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         check=False,
     )
 
@@ -112,8 +111,14 @@ def test_hpo_docs_match_the_published_fail_closed_feature_contract() -> None:
 
     assert "opt-in public `methods-optimizer` Cargo feature" in normalized_docs
     assert f"published dynamic `n4m` {binding_version} binding" in normalized_docs
-    assert "Default builds leave that feature disabled and refuse HPO" in normalized_docs
+    assert (
+        "Default builds leave that feature disabled and refuse HPO" in normalized_docs
+    )
     assert "no public `methods-optimizer` Cargo feature" not in normalized_docs
-    assert "There is no sibling manifest or sibling source dependency" in normalized_docs
-    assert '`nirs4all_archive_core = "=0.4.0"` development dependency' in normalized_docs
+    assert (
+        "There is no sibling manifest or sibling source dependency" in normalized_docs
+    )
+    assert (
+        '`nirs4all_archive_core = "=0.4.0"` development dependency' in normalized_docs
+    )
     assert "must not be presented as cross-source Core qualification" in normalized_docs

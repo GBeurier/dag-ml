@@ -6,7 +6,7 @@
   "artifacts": [
     {
       "path": ".github/workflows/ci.yml",
-      "sha256": "1c7e7956d6b297b0918d67bbee1f553d62df75e9995dfa9dc5f9ac7b84065572",
+      "sha256": "bdcbb27669527f26d43d023550995d32c2d94f1437cab7f4e2c909cccc469966",
       "kind": "ci_gate"
     },
     {
@@ -131,7 +131,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/plan.rs",
-      "sha256": "cd7361b462bf5622e9a9bc44fa7ebf70db78688dfded8e8ca04178bef00c9d2c",
+      "sha256": "adec8dc86e3531fb11569b49e70b7233afc54eda1bb99432dda27cacc7973c0b",
       "kind": "native_plan_validator"
     },
     {
@@ -161,7 +161,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/runtime/host_hpo.rs",
-      "sha256": "81bf3b9933a9acf16e5107f868299acec0b2a05ee364d4f1f041c15cb9d069d1",
+      "sha256": "db1a91aacf83acbe8e0614ca7de200a529991e1393f59901253c384728074524",
       "kind": "native_hpo_runtime_session"
     },
     {
@@ -211,7 +211,7 @@
     },
     {
       "path": "crates/dag-ml-py/Cargo.lock",
-      "sha256": "446dd1028332b6db65f5fafdc34f663e2eded4cb4b4efa5864774822994902d0",
+      "sha256": "9cbac7c057333c3f720c6f885d9322fa355f0800519268e02af0f7d1f2fb3e8b",
       "kind": "python_binding_lockfile"
     },
     {
@@ -271,7 +271,7 @@
     },
     {
       "path": "docs/HPO_METHODS_ADAPTER.md",
-      "sha256": "88ca74535cefe9d3b0e8435c8f568f94e510cac748bde7991b50fd63e7f3a66a",
+      "sha256": "c9cd52c9c107e89288a6e1b7365bf2020d36743b6e5e68850182902894bd986d",
       "kind": "hpo_documentation"
     },
     {
@@ -286,7 +286,7 @@
     },
     {
       "path": "docs/contracts/abi_snapshot.v1.json",
-      "sha256": "76b68df0b4fd4c36a686a02c96325797c17a182f77a4869740c2a22f01651029",
+      "sha256": "1e6ce603c4f16b5e4c0e53cccd9da5d81f4d5d4e4628e135fddc61cbc1a0734b",
       "kind": "c_abi_snapshot"
     },
     {
@@ -669,5 +669,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "5c02467fa1f707ea84ef0431cdef72f0e782e1ac40d07b3206615e3531d40393"
+  "pack_checksum": "c334326833b6bed1a4fe7f887dc646e9d0213cc4a880be6375188c97c3aadc7e"
 }

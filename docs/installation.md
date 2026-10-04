@@ -2,7 +2,9 @@
 
 ## Prerequisites
 
-- Rust stable plus the MSRV toolchain `1.83.0`.
+- Rust stable plus the runtime MSRV toolchain `1.85.0`. Checking all targets
+  also requires `1.88.0` because the retained Core 0.4.0 V2 test oracle uses
+  formats dependencies with that minimum; it is not a runtime DAG dependency.
 - Python 3.11 or newer for validation scripts, Sphinx and Python binding
   smokes.
 - Node.js 20 or 22 plus `wasm-pack` for WASM package smokes.
@@ -13,7 +15,8 @@
 
 ```bash
 cargo fmt --all --check
-cargo +1.83.0 check --workspace --all-targets
+cargo +1.85.0 check --workspace --locked
+cargo +1.88.0 check --workspace --all-targets --locked
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 DAG_ML_DATA_REPO=../dag-ml-data python3 scripts/validate_contracts.py

@@ -3001,6 +3001,7 @@ mod tests {
         assert_ne!(expected, host_hpo_objective_fingerprint(&changed).unwrap());
     }
 
+    #[cfg(dag_ml_workspace_contract_fixtures)]
     #[test]
     fn torch_effective_plan_cannot_bypass_serial_admission_with_a_regression_metric() {
         let fixture: serde_json::Value = serde_json::from_str(include_str!(

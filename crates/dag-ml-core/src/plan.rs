@@ -1658,7 +1658,7 @@ mod tests {
             let restored: ExecutionPlan =
                 serde_json::from_slice(&serde_json::to_vec(&plan).unwrap()).unwrap();
             restored.validate().unwrap();
-            assert_eq!(restored.graph, plan.graph);
+            assert_eq!(restored.graph_plan.graph, plan.graph_plan.graph);
             assert_eq!(restored.node_plans, plan.node_plans);
         }
 

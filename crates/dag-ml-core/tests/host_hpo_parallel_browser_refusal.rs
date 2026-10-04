@@ -1,4 +1,5 @@
 //! Public worker APIs used by the browser must not accept a native-only profile.
+#![cfg(dag_ml_workspace_contract_fixtures)]
 use std::collections::BTreeMap;
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
