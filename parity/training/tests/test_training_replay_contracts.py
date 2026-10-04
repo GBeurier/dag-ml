@@ -103,9 +103,7 @@ def test_conformal_runtime_source_mutation_is_rejected_by_both_validators(
 ) -> None:
     """The base and replay authorities both close over native conformal code."""
     base_pack = load_json(BASE_PACK)
-    assert relative_path in {
-        artifact["path"] for artifact in base_pack["artifacts"]
-    }
+    assert relative_path in {artifact["path"] for artifact in base_pack["artifacts"]}
 
     isolated_root = tmp_path / "base-root"
     for artifact in base_pack["artifacts"]:
@@ -340,6 +338,7 @@ def test_v1_schemas_remain_port_absent_and_v2_is_port_explicit() -> None:
     report_v2 = copy.deepcopy(score_v2["$defs"]["regression_metric_report"])
     report_v2["required"].remove("producer_port")
     report_v2["properties"].pop("producer_port")
+    report_v2 = _without_independent_unit_report_extension(report_v2)
     assert report_v2 == report_v1
 
     legacy_node_result = load_json(
@@ -403,16 +402,70 @@ def test_all_v2_schema_families_preserve_v1_constraints_exactly() -> None:
         v1_document = load_json(ROOT / "docs/contracts" / v1_name)
         v2_document = load_json(ROOT / "docs/contracts" / v2_name)
         v1_root = _json_pointer(v1_document, v1_pointer) if v1_pointer else v1_document
-        if v2_name in {"execution_bundle.v2.schema.json", "training_outcome.v2.schema.json"}:
+        if v2_name in {
+            "execution_bundle.v2.schema.json",
+            "training_outcome.v2.schema.json",
+        }:
             # This additive evidence stays optional so existing V2 payloads
             # retain their meaning, and non-null state uses the complete DTO.
             field = "methods_hpo_fold_state"
             assert field not in v1_root["properties"]
             assert field not in v2_document["required"]
             assert v2_document["properties"][field]["anyOf"] == [
-                {"$ref": "https://github.com/GBeurier/dag-ml/schemas/methods_hpo_fold_state.v1.schema.json"},
+                {
+                    "$ref": "https://github.com/GBeurier/dag-ml/schemas/methods_hpo_fold_state.v1.schema.json"
+                },
                 {"type": "null"},
             ]
+        if v2_name == "training_outcome.v2.schema.json":
+            v2_document = copy.deepcopy(v2_document)
+            # Optional native averages are separate evidence; legacy outputs
+            # and their constraints remain unchanged when these fields are absent.
+            block = v2_document["$defs"]["oof_average_block"]
+            assert block == {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["predictions", "y_true"],
+                "properties": {
+                    "predictions": {
+                        "$ref": "https://github.com/GBeurier/dag-ml/schemas/node_result.v2.schema.json#/$defs/aggregated_prediction_block"
+                    },
+                    "y_true": {
+                        "$ref": "https://github.com/GBeurier/dag-ml/schemas/node_result.v1.schema.json#/$defs/regression_target_block"
+                    },
+                },
+            }
+            for field in ("oof_averages", "ensemble_averages", "variant_oof_averages"):
+                assert field not in v1_root["properties"]
+                assert field not in v2_document["required"]
+                extension = v2_document["properties"].pop(field)
+                extension.pop("description")
+                expected = {
+                    "type": "array",
+                    "default": [],
+                    "items": {"$ref": "#/$defs/oof_average_block"},
+                }
+                if field == "variant_oof_averages":
+                    expected["items"] = {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["variant_id", "oof_averages"],
+                        "properties": {
+                            "variant_id": {"$ref": "#/$defs/identifier"},
+                            "oof_averages": {
+                                "type": "array",
+                                "minItems": 1,
+                                "items": {"$ref": "#/$defs/oof_average_block"},
+                            },
+                        },
+                    }
+                assert extension == expected
+        bound_v2 = load_json(
+            ROOT / "docs/contracts/bound_training_output.v2.schema.json"
+        )
+        assert bound_v2["properties"]["refit_test_cohort"] == {
+            "$ref": "https://github.com/GBeurier/dag-ml/schemas/coordinator_data_plan_envelope.v2.schema.json#/$defs/predict_cohort"
+        }
         v1 = _normalize_v2_schema_delta(
             _dereference_schema(v1_root, v1_document, schemas, frozenset())
         )
@@ -466,7 +519,9 @@ def test_every_v2_positive_root_is_rejected_by_its_v1_schema() -> None:
             )
 
 
-def test_v2_prediction_cache_namespace_fingerprints_are_required_and_non_empty() -> None:
+def test_v2_prediction_cache_namespace_fingerprints_are_required_and_non_empty() -> (
+    None
+):
     registry, schemas = base.build_local_schema_registry()
     outcome = load_json(FIXTURES / "training_outcome_port_explicit.v2.json")
     bundle_schema = schemas[
@@ -697,6 +752,123 @@ def _dereference_schema(
     }
 
 
+def _without_independent_unit_report_extension(value: dict[str, Any]) -> dict[str, Any]:
+    """Remove only the closed, optional MM03 report delta after verifying it."""
+    result = copy.deepcopy(value)
+    properties = result["properties"]
+    assert "grouping_key" not in result["required"]
+    grouping = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["kind", "key"],
+        "properties": {
+            "kind": {"const": "relation_metadata"},
+            "key": {"const": "independent_unit_id"},
+        },
+    }
+    assert properties.pop("grouping_key") in (
+        {"$ref": "#/$defs/aggregation_grouping_key"},
+        grouping,
+    )
+    assert result.pop("allOf") == [
+        {
+            "if": {"required": ["grouping_key"]},
+            "then": {
+                "required": ["level"],
+                "properties": {"level": {"const": "group"}},
+            },
+        }
+    ]
+    return result
+
+
+def _without_training_only_output_extensions(value: dict[str, Any]) -> dict[str, Any]:
+    """Verify exact training markers, then select their absent legacy profile."""
+    result = copy.deepcopy(value)
+    properties = result["properties"]
+    assert "artifact_only" not in result["required"]
+    assert "refit_test_cohort" not in result["required"]
+    assert properties.pop("artifact_only") == {"type": "boolean", "default": False}
+    properties.pop("refit_test_cohort")
+    payloads = ("predictions", "observation_predictions", "aggregated_predictions")
+    legacy_nonempty = [{"properties": {name: {"minItems": 1}}} for name in payloads]
+    assert result.pop("allOf") == [
+        {
+            "if": {
+                "required": ["artifact_only"],
+                "properties": {"artifact_only": {"const": True}},
+            },
+            "then": {
+                "not": {"required": ["refit_test_cohort"]},
+                "properties": {
+                    "binding": {
+                        "properties": {"prediction_source": {"const": "final_refit"}}
+                    },
+                    **{name: {"maxItems": 0} for name in payloads},
+                },
+            },
+            "else": {"anyOf": legacy_nonempty},
+        },
+        {
+            "if": {"required": ["refit_test_cohort"]},
+            "then": {
+                "properties": {
+                    "binding": {
+                        "properties": {
+                            "prediction_source": {"const": "final_refit"},
+                            "prediction_level": {"const": "sample"},
+                        }
+                    },
+                    "refit_test_cohort": {
+                        "properties": {"role": {"const": "external_test"}}
+                    },
+                    "predictions": {
+                        "minItems": 1,
+                        "items": {
+                            "properties": {
+                                "partition": {"const": "test"},
+                                "fold_id": {"type": "null"},
+                            }
+                        },
+                    },
+                    "observation_predictions": {"maxItems": 0},
+                    "aggregated_predictions": {"maxItems": 0},
+                }
+            },
+        },
+    ]
+    assert "anyOf" not in result
+    result["anyOf"] = legacy_nonempty
+    return result
+
+
+def test_v2_independent_unit_report_extension_is_closed_and_requires_group() -> None:
+    registry, schemas = base.build_local_schema_registry()
+    schema = _v1_schema(schemas, "score_set.v2.schema.json")
+    score = copy.deepcopy(
+        load_json(FIXTURES / "training_outcome_port_explicit.v2.json")["score_set"]
+    )
+    report = score["reports"][0]
+    report["level"] = "group"
+    report["grouping_key"] = {"kind": "relation_metadata", "key": "independent_unit_id"}
+    base.validate_draft_2020_instance(score, schema, registry, "group-score")
+    for field, value in (
+        ("level", "sample"),
+        ("grouping_key", {"kind": "relation_metadata", "key": "group_id"}),
+        ("grouping_key", {"key": "independent_unit_id"}),
+        (
+            "grouping_key",
+            {"kind": "relation_metadata", "key": "independent_unit_id", "extra": True},
+        ),
+    ):
+        invalid = copy.deepcopy(score)
+        invalid["reports"][0][field] = value
+        with pytest.raises(base.ContractError):
+            base.validate_draft_2020_instance(
+                invalid, schema, registry, "invalid-group-score"
+            )
+
+
 def _normalize_v2_schema_delta(value: Any) -> Any:
     if isinstance(value, list):
         return [_normalize_v2_schema_delta(member) for member in value]
@@ -707,6 +879,14 @@ def _normalize_v2_schema_delta(value: Any) -> Any:
         }:
             return "dag-ml-json-prediction-blocks-vN"
         return value
+    properties = value.get("properties", {})
+    if (
+        "grouping_key" in properties
+        and {"partition", "level", "metrics"} <= properties.keys()
+    ):
+        value = _without_independent_unit_report_extension(value)
+    if "artifact_only" in properties and "refit_test_cohort" in properties:
+        value = _without_training_only_output_extensions(value)
     normalized: dict[str, Any] = {}
     v2_only_fields = {
         "schema_version",
