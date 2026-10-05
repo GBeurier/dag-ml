@@ -337,7 +337,7 @@ jobs:
           N4M_LIBRARY_PATH: ${{ github.workspace }}/external/nirs4all-methods/build/dev-release/cpp/src/libn4m.so
           DAG_ML_REQUIRE_METHODS_CLI_TEST: "1"
         run: |
-          python -m pip install numpy
+          python -m pip install numpy scikit-learn
           mkdir -p external/nirs4all-methods/bindings/python/src/pls4all/lib
           cp external/nirs4all-methods/build/dev-release/cpp/src/libn4m.so external/nirs4all-methods/bindings/python/src/pls4all/lib/libn4m.so
           cargo test -p dag-ml-cli --test initial_full_refit cli_replays_portable_methods_pls_payload_in_fresh_process
@@ -522,6 +522,8 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: ${{ matrix.node-version }}
+      - name: Test exact native integer transport
+        run: node --test scripts/test_wasm_exact_integers.cjs
       - name: Install wasm-pack
         run: cargo install wasm-pack --version "$WASM_PACK_VERSION" --locked
       - name: Build WASM nodejs package

@@ -166,7 +166,7 @@ Les archives créées avec l'ancien ordre dépendant des features doivent être 
 
 ## Corrections complémentaires — R1–R5
 
-Les cinq reproductions du second passage sont corrigées. Les sources ont d'abord été modifiées et testées dans une copie isolée pendant le gel des revues de l'autre tâche, puis intégrées après dégel, réservation explicite des fichiers et vérification des SHA de base. La liste des fichiers et empreintes finales est dans [applied-sources.json](../../_audits/2026-10-05-dagml-reaudit/fixes/applied-sources.json). Les modifications préexistantes, locks et binaires du checkout partagé ont été préservés.
+Les cinq reproductions du second passage sont corrigées. Les sources ont d'abord été modifiées et testées dans une copie isolée pendant le gel des revues de l'autre tâche, puis intégrées après dégel, réservation explicite des fichiers et vérification des SHA de base. La liste des fichiers et empreintes finales est dans `_audits/2026-10-05-dagml-reaudit/fixes/applied-sources.json`. Les modifications préexistantes, locks et binaires du checkout partagé ont été préservés.
 
 | ID | Correction | Régression vérifiée |
 | --- | --- | --- |
@@ -190,6 +190,6 @@ Le sélecteur natif a aussi révélé une assertion devenue obsolète après A2-
 | Contrats | Contrats locaux et croisés `dag-ml-data` passés sur la copie qualifiée, après synchronisation des digests de sources W1/D4. Aucun changement des fixtures ou goldens numériques. |
 | CLI | Validation de `examples/minimal_graph.json` passée. |
 
-Les [logs de correction](../../_audits/2026-10-05-dagml-reaudit/fixes/) distinguent les tentatives intermédiaires des résultats finaux. Le runtime Methods est explicitement `/home/delete/nirs4all/nirs4all-methods/build/dev-release/cpp/src/libn4m.so` ; la fixture estimator utilise `N4M_ESTIMATOR_ROLES_FIXTURE` absolu, car le lien relatif externe de la copie isolée ne résout pas le sibling original.
+Les logs de correction dans `_audits/2026-10-05-dagml-reaudit/fixes/` distinguent les tentatives intermédiaires des résultats finaux. Ces chemins désignent des preuves conservées dans le workspace d'audit, hors du dépôt DAG-ML et du site public. Le runtime Methods est explicitement `/home/delete/nirs4all/nirs4all-methods/build/dev-release/cpp/src/libn4m.so` ; la fixture estimator utilise `N4M_ESTIMATOR_ROLES_FIXTURE` absolu, car le lien relatif externe de la copie isolée ne résout pas le sibling original.
 
 **Impact de qualification :** R3 change les IDs dérivés affectés ; R2 change les labels auparavant ambigus ; les nouveaux candidats host HPO transportent l'objectif nécessaire à R1 et les anciens sans cette liaison sont refusés. Les graphes/archives/checkpoints concernés doivent être régénérés. La reconstruction des bindings, le rafraîchissement commun des packs originaux après les autres changements et la qualification finale sont confiés au root d'intégration. Le guard de fraîcheur du checkout rapporte un état Rust/binaire tous deux modifiés : il exige un smoke d'import du binaire public reconstruit, et ne constitue pas une preuve que ce binaire contient R1–R5. Aucun binaire n'a été reconstruit ou remplacé par cette tâche.

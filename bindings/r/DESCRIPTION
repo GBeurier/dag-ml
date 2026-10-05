@@ -1,6 +1,6 @@
 Package: dagml
 Title: R Binding for DAG-ML Local Implementations
-Version: 0.3.35
+Version: 0.3.36
 Authors@R: person("Gregory", "Beurier", email = "gregory.beurier@cirad.fr", role = c("aut", "cre"))
 Description: Provides R bindings for native DAG-ML phase execution, host
     hyperparameter search, cross-validation, refit, prediction and bundle

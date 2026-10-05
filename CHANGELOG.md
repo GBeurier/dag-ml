@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.36
+
+- Repair the required Methods CLI Python dependency and R/Octave HPO wrapper smoke arguments.
+- Preserve exact native u64 seed tokens in Node 20/22 WASM smoke and worker transports, keeping replay and pruning validation strict.
+- Include the retained bug audit reports in documentation navigation and render local evidence paths without broken public links.
+- Retain the reviewed 0.3.35 native implementations and published external dependencies; publish DAG-ML alone.
+
 ## 0.3.35
 
 - Harden native validation, stable archive identities, replay alignment, resource bounds and HPO/lifecycle invariants covered by the DAG bug audit and re-audit regressions.

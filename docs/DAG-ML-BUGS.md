@@ -2,6 +2,8 @@
 
 Suivi de validation et corrections : [DAG-ML-BUGS-RESOLUTION.md](DAG-ML-BUGS-RESOLUTION.md). Les constats originaux ci-dessous sont conservés pour le réaudit.
 
+Les chemins `_audits/` cités dans ce rapport désignent des preuves conservées dans le workspace d'audit, hors du dépôt DAG-ML et du site public.
+
 **Second passage, 2026-10-05 : les cinq défauts reproduits R1–R5 sont corrigés (deux Medium, trois Low).** Quatre complètent des correctifs A2 ; le cinquième concerne le nouveau helper multimodal. Voir le [réaudit ciblé](#réaudit-ciblé-du-2026-10-05--r1r5) et la [résolution complémentaire](DAG-ML-BUGS-RESOLUTION.md#corrections-complémentaires--r1r5). Les 117 constats et les totaux du premier passage restent historiques.
 
 Date: 2026-10-05. Repository state: `main` at `867f357` (workspace version 0.3.34).
@@ -1310,7 +1312,7 @@ Areas checked with no real bug found: JS controllers (N4mWasmRegressionControlle
 
 ## Réaudit ciblé du 2026-10-05 — R1–R5
 
-État examiné : `main`, HEAD `867f3576592ec390e2a16ced53cc027c022cde27`, version 0.3.34, **avec les corrections et ajouts non commités présents dans le checkout**. Les SHA-256 des sources examinées sont conservés dans [audited-sources.json](../../_audits/2026-10-05-dagml-reaudit/audited-sources.json), relevés à 11:33:56 UTC. Ils ont été recoupés après les tests ; aucun de ces fichiers n'avait changé.
+État examiné : `main`, HEAD `867f3576592ec390e2a16ced53cc027c022cde27`, version 0.3.34, **avec les corrections et ajouts non commités présents dans le checkout**. Les SHA-256 des sources examinées sont conservés dans `_audits/2026-10-05-dagml-reaudit/audited-sources.json`, relevés à 11:33:56 UTC. Ils ont été recoupés après les tests ; aucun de ces fichiers n'avait changé.
 
 Ce passage utilise le rapport de résolution comme liste d'exclusion : pas de nouvelle analyse complète des 117 points, pas de réouverture des cinq faux positifs ni des compatibilités historiques A4-08/A4-11. La revue cible les changements de validation, de canonicalisation, de génération, de runtime et les nouveaux helpers publics. Les autres pistes examinées ne sont pas présentées comme des bugs sans preuve suffisante. Ce n'est pas une nouvelle couverture exhaustive de tous les bindings.
 
@@ -1322,7 +1324,7 @@ Ce passage utilise le rapport de résolution comme liste d'exclusion : pas de no
 | R4 | Low | Corrigé | Ajout après l'audit initial | Le helper de préparation multimodale paniquait sur une source JSON non objet. |
 | R5 | Low | Corrigé | Complément A2-13 | Le plan acceptait deux edges vers un port déclaré One par le contrôleur résolu. |
 
-Les descriptions et numéros de ligne suivants décrivent les reproductions **avant correction**. Les sources corrigées sont identifiées dans [applied-sources.json](../../_audits/2026-10-05-dagml-reaudit/fixes/applied-sources.json).
+Les descriptions et numéros de ligne suivants décrivent les reproductions **avant correction**. Les sources corrigées sont identifiées dans `_audits/2026-10-05-dagml-reaudit/fixes/applied-sources.json`.
 
 ### R1 — L'exemption par préfixe laisse passer une variante incohérente
 
@@ -1384,7 +1386,7 @@ La nouvelle réconciliation vérifie le nom, le kind et la représentation, mais
 
 ### Preuves, validation et limites
 
-Les sources des witnesses, fixtures et logs sont dans le [dossier de preuves local](../../_audits/2026-10-05-dagml-reaudit/README.md). Le passage de constat a fait passer **19 tests : cinq witnesses confirmant les défauts présents et les 14 régressions existantes du premier audit**, importées sans modification. Un witness passant signifiait que le bug était reproduit ; ce harness initial et son log sont conservés comme preuve historique. Aucune source de production n'avait été modifiée à ce stade.
+Les sources des witnesses, fixtures et logs sont dans le dossier de preuves local `_audits/2026-10-05-dagml-reaudit/README.md`. Le passage de constat a fait passer **19 tests : cinq witnesses confirmant les défauts présents et les 14 régressions existantes du premier audit**, importées sans modification. Un witness passant signifiait que le bug était reproduit ; ce harness initial et son log sont conservés comme preuve historique. Aucune source de production n'avait été modifiée à ce stade.
 
 Commande exécutée depuis `dag-ml/` :
 
