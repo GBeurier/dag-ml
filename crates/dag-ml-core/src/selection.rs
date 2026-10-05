@@ -490,7 +490,25 @@ fn compare_scores(
         MetricObjective::Minimize => left.1.total_cmp(&right.1),
         MetricObjective::Maximize => right.1.total_cmp(&left.1),
     };
-    score_order.then_with(|| left.0.cmp(&right.0))
+    score_order.then_with(|| {
+        match (
+            left.0.rsplit_once(":trial:"),
+            right.0.rsplit_once(":trial:"),
+        ) {
+            (Some((left_scope, left_id)), Some((right_scope, right_id)))
+                if left_scope == right_scope
+                    && (left_scope == "hpo" || left_scope.starts_with("hpo:scope:")) =>
+            {
+                match (left_id.parse::<u64>(), right_id.parse::<u64>()) {
+                    (Ok(left_id), Ok(right_id)) => {
+                        left_id.cmp(&right_id).then_with(|| left.0.cmp(&right.0))
+                    }
+                    _ => left.0.cmp(&right.0),
+                }
+            }
+            _ => left.0.cmp(&right.0),
+        }
+    })
 }
 
 fn validate_candidate_metric_level(

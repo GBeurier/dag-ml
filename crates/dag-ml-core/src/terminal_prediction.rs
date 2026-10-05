@@ -572,6 +572,32 @@ fn terminal_prediction_bindings(plan: &ExecutionPlan) -> Vec<crate::data::DataBi
 struct BorrowedRuntimeDataProvider<'a>(&'a dyn RuntimeDataProvider);
 
 impl RuntimeDataProvider for BorrowedRuntimeDataProvider<'_> {
+    fn generated_views_enabled(&self) -> bool {
+        self.0.generated_views_enabled()
+    }
+
+    fn generated_view_manifest(&self) -> Result<Option<serde_json::Value>> {
+        self.0.generated_view_manifest()
+    }
+
+    fn generated_view_manifest_on_failure(&self) -> Result<Option<serde_json::Value>> {
+        self.0.generated_view_manifest_on_failure()
+    }
+
+    fn refit_sample_ids(
+        &self,
+        binding: &crate::data::DataBinding,
+    ) -> Result<Option<Vec<crate::SampleId>>> {
+        self.0.refit_sample_ids(binding)
+    }
+
+    fn cv_test_cohort(
+        &self,
+        binding: &crate::data::DataBinding,
+    ) -> Result<Option<crate::data::PredictCohort>> {
+        self.0.cv_test_cohort(binding)
+    }
+
     fn materialize(
         &self,
         request: &crate::runtime::DataMaterializationRequest,
@@ -649,6 +675,32 @@ struct TerminalCohortAttestedRuntimeDataProvider<'a, P> {
 impl<P: RuntimeDataProvider> RuntimeDataProvider
     for TerminalCohortAttestedRuntimeDataProvider<'_, P>
 {
+    fn generated_views_enabled(&self) -> bool {
+        self.inner.generated_views_enabled()
+    }
+
+    fn generated_view_manifest(&self) -> Result<Option<serde_json::Value>> {
+        self.inner.generated_view_manifest()
+    }
+
+    fn generated_view_manifest_on_failure(&self) -> Result<Option<serde_json::Value>> {
+        self.inner.generated_view_manifest_on_failure()
+    }
+
+    fn refit_sample_ids(
+        &self,
+        binding: &crate::data::DataBinding,
+    ) -> Result<Option<Vec<crate::SampleId>>> {
+        self.inner.refit_sample_ids(binding)
+    }
+
+    fn cv_test_cohort(
+        &self,
+        binding: &crate::data::DataBinding,
+    ) -> Result<Option<crate::data::PredictCohort>> {
+        self.inner.cv_test_cohort(binding)
+    }
+
     fn materialize(
         &self,
         request: &crate::runtime::DataMaterializationRequest,

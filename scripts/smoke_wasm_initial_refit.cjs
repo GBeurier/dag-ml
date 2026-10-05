@@ -3,12 +3,20 @@
 const fs = require("fs");
 const path = require("path");
 
+// These contracts carry u64 seeds. Keep their exact JSON tokens when a
+// fixture is parsed and an embedded plan is sent back to the native module.
+function parseExactIntegers(text) {
+  return JSON.parse(text, (_key, value, context) =>
+    typeof value === "number" && !Number.isSafeInteger(value) && /^-?\d+$/u.test(context.source)
+      ? JSON.rawJSON(context.source) : value);
+}
+
 module.exports = function smokeInitialFullRefit(dagMl, repo) {
   const fixtureDir = path.join(repo, "crates", "dag-ml-core", "tests", "fixtures", "initial_full_refit");
   const fixtureJson = fs.readFileSync(path.join(fixtureDir, "package.json"), "utf8");
   const refitResultJson = fs.readFileSync(path.join(fixtureDir, "refit_node_result.json"), "utf8");
   dagMl.validate_initial_full_refit_package_json(fixtureJson);
-  const fixture = JSON.parse(fixtureJson);
+  const fixture = parseExactIntegers(fixtureJson);
   const cohortRequest = {
     role: "external_test",
     relations: { records: [{
@@ -97,7 +105,7 @@ module.exports = function smokeInitialFullRefit(dagMl, repo) {
   const secondBinding = structuredClone(campaign.data_bindings["model:initial"][0]);
   secondBinding.node_id = "model:second";
   campaign.data_bindings["model:second"] = [secondBinding];
-  const multiPlan = JSON.parse(dagMl.build_execution_plan_json(
+  const multiPlan = parseExactIntegers(dagMl.build_execution_plan_json(
     "plan:wasm.multi-output", JSON.stringify(graph), JSON.stringify(campaign),
     JSON.stringify(manifests),
   ));
@@ -141,15 +149,16 @@ module.exports = function smokeInitialFullRefit(dagMl, repo) {
     "package:wasm.multi-output", "run:wasm.multi.refit", "12345", multiInvoke,
   ));
   const multiPackage = multiCapture.initial_full_refit_package;
+  const multiPackageJson = multiCapture.initial_full_refit_package_json;
   if (multiCalls !== 2 || multiPackage.outputs.length !== 2 || multiPackage.artifacts.length !== 2) {
     throw new Error("WASM initial refit failed to capture two independent outputs");
   }
   const multiEnvelope = dagMl.initial_full_refit_predict_envelope_json(
-    JSON.stringify(multiPackage), JSON.stringify(cohortRequest),
+    multiPackageJson, JSON.stringify(cohortRequest),
   );
   const multiHandles = Object.assign({}, ...multiCapture.node_results.map(result => result.artifact_handles));
   const multiReplay = JSON.parse(dagMl.replay_initial_full_refit_json(
-    JSON.stringify(multiPackage), multiEnvelope,
+    multiPackageJson, multiEnvelope,
     JSON.stringify(multiPackage.outputs.map(output => output.output_id)),
     JSON.stringify(multiHandles), "run:wasm.multi.predict", multiInvoke,
   ));
@@ -198,16 +207,17 @@ module.exports = function smokeInitialFullRefit(dagMl, repo) {
     portableInvoke(captureStats),
   ));
   const rawPackage = rawCapture.initial_full_refit_package;
+  const rawPackageJson = rawCapture.initial_full_refit_package_json;
   if (captureStats.nodes !== 2 || captureStats.exports !== 2 ||
       Object.keys(rawPackage.raw_artifact_payloads).length !== 2) {
     throw new Error("WASM failed to embed both raw model payloads");
   }
   const rawEnvelope = dagMl.initial_full_refit_predict_envelope_json(
-    JSON.stringify(rawPackage), JSON.stringify(cohortRequest),
+    rawPackageJson, JSON.stringify(cohortRequest),
   );
   const replayStats = {nodes:0, exports:0, hydrates:0, releases:0};
   const rawReplay = JSON.parse(dagMl.replay_initial_full_refit_json(
-    JSON.stringify(rawPackage), rawEnvelope,
+    rawPackageJson, rawEnvelope,
     JSON.stringify(rawPackage.outputs.map(output => output.output_id)),
     "{}", "run:wasm.multi-raw.predict", portableInvoke(replayStats),
   ));

@@ -323,7 +323,7 @@ pub(crate) fn reassemble_branch_merge_off_fold(
             )));
         }
         let block = blocks[0];
-        block.validate_shape()?;
+        block.validate_content()?;
         match &partition {
             None => partition = Some(block.partition.clone()),
             Some(existing) if existing != &block.partition => {
@@ -365,6 +365,14 @@ pub(crate) fn reassemble_branch_merge_off_fold(
                 let PredictionUnitId::Sample(sample_id) = unit_id else {
                     continue;
                 };
+                if by_sample_target
+                    .get(sample_id)
+                    .is_some_and(|prior| prior != row)
+                {
+                    return Err(DagMlError::RuntimeValidation(format!(
+                        "merged branches disagree on truth for sample `{sample_id}`"
+                    )));
+                }
                 by_sample_target.insert(sample_id.clone(), row.clone());
             }
         }
@@ -445,7 +453,7 @@ pub(crate) fn reassemble_branch_merge_off_fold(
         values,
         target_names: reassembled.target_names.clone(),
     };
-    merged.validate_shape()?;
+    merged.validate_content()?;
 
     let lineage = LineageRecord {
         record_id: LineageId::new(format!(
@@ -505,7 +513,7 @@ pub(crate) fn reassemble_off_fold_concat(
     let first = branch_blocks
         .first()
         .expect("at least one branch block present");
-    let width = first.validate_shape()?;
+    let width = first.validate_content()?;
     let target_names = if first.target_names.is_empty() {
         (0..width).map(|idx| format!("p{idx}")).collect::<Vec<_>>()
     } else {
@@ -513,7 +521,7 @@ pub(crate) fn reassemble_off_fold_concat(
     };
     let mut by_sample: BTreeMap<SampleId, Vec<f64>> = BTreeMap::new();
     for block in branch_blocks {
-        let block_width = block.validate_shape()?;
+        let block_width = block.validate_content()?;
         if block_width != width {
             return Err(DagMlError::OofValidation(format!(
                 "merge node `{merge_node}` received mismatched off-fold prediction widths ({width} vs {block_width})"
@@ -665,7 +673,7 @@ pub(crate) fn reassemble_separation_merge(
             )));
         }
         let block = blocks[0];
-        let block_width = block.validate_shape()?;
+        let block_width = block.validate_content()?;
         match width {
             None => width = Some(block_width),
             Some(existing) if existing != block_width => {
@@ -737,6 +745,14 @@ pub(crate) fn reassemble_separation_merge(
                 let PredictionUnitId::Sample(sample_id) = unit_id else {
                     continue;
                 };
+                if by_sample_target
+                    .get(sample_id)
+                    .is_some_and(|prior| prior != row)
+                {
+                    return Err(DagMlError::RuntimeValidation(format!(
+                        "merged branches disagree on truth for sample `{sample_id}`"
+                    )));
+                }
                 by_sample_target.insert(sample_id.clone(), row.clone());
             }
         }
@@ -815,7 +831,7 @@ pub(crate) fn reassemble_separation_merge(
         values,
         target_names,
     };
-    merged.validate_shape()?;
+    merged.validate_content()?;
 
     let lineage = LineageRecord {
         record_id: LineageId::new(format!(
@@ -951,7 +967,7 @@ pub(crate) fn reassemble_fusion_merge(
             )));
         }
         let block = blocks[0];
-        block.validate_shape()?;
+        block.validate_content()?;
         for sample_id in &block.sample_ids {
             if !expected.contains(sample_id) {
                 return Err(DagMlError::OofValidation(format!(
@@ -991,6 +1007,14 @@ pub(crate) fn reassemble_fusion_merge(
                 let PredictionUnitId::Sample(sample_id) = unit_id else {
                     continue;
                 };
+                if by_sample_target
+                    .get(sample_id)
+                    .is_some_and(|prior| prior != row)
+                {
+                    return Err(DagMlError::RuntimeValidation(format!(
+                        "merged branches disagree on truth for sample `{sample_id}`"
+                    )));
+                }
                 by_sample_target.insert(sample_id.clone(), row.clone());
             }
         }
@@ -1082,7 +1106,7 @@ pub(crate) fn reassemble_fusion_merge(
         values,
         target_names,
     };
-    merged.validate_shape()?;
+    merged.validate_content()?;
 
     let lineage = LineageRecord {
         record_id: LineageId::new(format!(
@@ -1480,7 +1504,7 @@ pub(crate) fn sample_ids_for_partition(
             // guarantees the ⊆ direction), so an out-of-fold (test/leakage) sample can never
             // silently enter the refit universe.
             debug_assert!(
-                {
+                fold_set.partition_mode == crate::fold::FoldPartitionMode::Resampled || {
                     let in_a_fold: BTreeSet<&SampleId> = fold_set
                         .folds
                         .iter()

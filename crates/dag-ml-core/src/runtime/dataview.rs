@@ -235,7 +235,11 @@ pub(crate) fn validate_optional_fingerprint(
     let Some(fingerprint) = fingerprint else {
         return Ok(());
     };
-    if fingerprint.len() != 64 || !fingerprint.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+    if fingerprint.len() != 64
+        || !fingerprint
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
         return Err(DagMlError::RuntimeValidation(format!(
             "data output provenance for `{producer_node}` has invalid {label}"
         )));
@@ -378,6 +382,11 @@ pub struct AttestedDataView {
 pub trait RuntimeDataProvider {
     fn materialize(&self, request: &DataMaterializationRequest) -> Result<HandleRef>;
     fn make_view(&self, request: &DataViewRequest) -> Result<HandleRef>;
+    /// Discard a view created for a callback/attestation that failed. Providers
+    /// retaining view resources override this rollback hook.
+    fn discard_view(&self, _handle: &HandleRef) -> Result<()> {
+        Ok(())
+    }
     /// Opt in before materialization so generated-view cohort guards can run
     /// without changing the historical static REFIT and FIT_CV paths.
     fn generated_views_enabled(&self) -> bool {
@@ -838,6 +847,9 @@ impl MethodsPlsPredictDataProvider {
 }
 
 impl RuntimeDataProvider for MethodsPlsPredictDataProvider {
+    fn discard_view(&self, handle: &HandleRef) -> Result<()> {
+        self.inner.discard_view(handle)
+    }
     fn materialize(&self, request: &DataMaterializationRequest) -> Result<HandleRef> {
         self.inner.materialize(request)
     }
@@ -1121,6 +1133,28 @@ impl<P> EnvelopeAttestedRuntimeDataProvider<P> {
 }
 
 impl<P: RuntimeDataProvider> RuntimeDataProvider for EnvelopeAttestedRuntimeDataProvider<P> {
+    fn discard_view(&self, handle: &HandleRef) -> Result<()> {
+        self.inner.discard_view(handle)
+    }
+    fn generated_views_enabled(&self) -> bool {
+        self.inner.generated_views_enabled()
+    }
+
+    fn generated_view_manifest(&self) -> Result<Option<serde_json::Value>> {
+        self.inner.generated_view_manifest()
+    }
+
+    fn generated_view_manifest_on_failure(&self) -> Result<Option<serde_json::Value>> {
+        self.inner.generated_view_manifest_on_failure()
+    }
+
+    fn refit_sample_ids(
+        &self,
+        binding: &crate::data::DataBinding,
+    ) -> Result<Option<Vec<crate::SampleId>>> {
+        self.inner.refit_sample_ids(binding)
+    }
+
     fn materialize(&self, request: &DataMaterializationRequest) -> Result<HandleRef> {
         self.validate_request_binding(&request.node_id, &request.input_name, &request.binding)?;
         self.validate_predict_cohort_request(
@@ -1215,6 +1249,14 @@ impl<P: RuntimeDataProvider> RuntimeDataProvider for EnvelopeAttestedRuntimeData
 pub trait RuntimeController: Send + Sync {
     fn controller_id(&self) -> &ControllerId;
     fn invoke(&self, task: &NodeTask) -> Result<NodeResult>;
+    /// Retain controller-local transient buffers for the run context's lifetime.
+    /// A cloned context shares the lease; dropping the last context releases it.
+    fn retain_run_resources(
+        &self,
+        _run_id: &RunId,
+    ) -> Result<Option<std::sync::Arc<dyn std::fmt::Debug + Send + Sync>>> {
+        Ok(None)
+    }
 
     /// Export a raw, portable artifact payload after REFIT.  The scheduler
     /// immediately transfers this into the durable bundle; implementations

@@ -149,10 +149,9 @@ impl NativePredictorPipelineV1 {
         }
         if self.fingerprint_algorithm != NATIVE_PREDICTOR_PIPELINE_FINGERPRINT_FNV1A64_V1
             || self.native_fingerprint.len() != 16
-            || !self
-                .native_fingerprint
-                .bytes()
-                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+            || !self.native_fingerprint.bytes().all(|byte| {
+                byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte) && !byte.is_ascii_uppercase()
+            })
         {
             return Err(DagMlError::RuntimeValidation(
                 "native predictor pipeline has an invalid native fingerprint".to_string(),
@@ -647,6 +646,7 @@ impl InMemoryArtifactStore {
                 )
             })
             .collect::<BTreeSet<_>>();
+        let mut staged = self.clone();
         let mut records = Vec::new();
         for artifact in &result.artifacts {
             let handle = result.artifact_handles.get(&artifact.id).ok_or_else(|| {
@@ -692,9 +692,10 @@ impl InMemoryArtifactStore {
                     })
                     .collect(),
             };
-            self.register(&record, handle.clone())?;
+            staged.register(&record, handle.clone())?;
             records.push(record);
         }
+        *self = staged;
         Ok(records)
     }
 
@@ -1019,7 +1020,9 @@ impl FileArtifactPayloadStore {
                     ))
                 })?;
             }
-            if source_path != output_path {
+            if source_path != output_path
+                && fs::canonicalize(&source_path).ok() != fs::canonicalize(&output_path).ok()
+            {
                 fs::copy(&source_path, &output_path).map_err(|err| {
                     DagMlError::RuntimeValidation(format!(
                         "failed to copy artifact payload `{}` from {} to {}: {err}",
@@ -1400,15 +1403,12 @@ impl InMemoryLineageRecorder {
 
     pub fn record(&mut self, record: LineageRecord) -> Result<()> {
         record.validate()?;
-        if self
-            .records
-            .insert(record.record_id.clone(), record)
-            .is_some()
-        {
+        if self.records.contains_key(&record.record_id) {
             return Err(DagMlError::RuntimeValidation(
                 "duplicate lineage record id".to_string(),
             ));
         }
+        self.records.insert(record.record_id.clone(), record);
         Ok(())
     }
 

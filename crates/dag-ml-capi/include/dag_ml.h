@@ -641,6 +641,7 @@ typedef struct DagMlInitialFullRefitPredictRequest {
     const DagMlControllerBinding *controller_bindings;
     size_t controller_binding_count;
 } DagMlInitialFullRefitPredictRequest;
+/* These initial-full-refit calls use the same borrowed-only vtable contract. */
 DagMlStatusCode dagml_initial_full_refit_execute_json(const DagMlInitialFullRefitExecuteRequest *request, DagMlOwnedBytes *out_json, DagMlString *error_out);
 DagMlStatusCode dagml_initial_full_refit_predict_json(const DagMlInitialFullRefitPredictRequest *request, DagMlOwnedBytes *out_json, DagMlString *error_out);
 DagMlStatusCode dagml_align_named_source_rows_json(const uint8_t *request_ptr, size_t request_len, DagMlOwnedBytes *out_json, DagMlString *error_out);
@@ -664,6 +665,11 @@ DagMlStatusCode dagml_replay_request_validate_for_bundle_with_prediction_cache_p
 DagMlStatusCode dagml_research_provenance_export_json(const uint8_t *plan_ptr, size_t plan_len, const uint8_t *bundle_ptr, size_t bundle_len, const uint8_t *lineage_ptr, size_t lineage_len, const uint8_t *envelopes_ptr, size_t envelopes_len, const uint8_t *prediction_cache_manifest_ptr, size_t prediction_cache_manifest_len, const uint8_t *artifact_manifest_ptr, size_t artifact_manifest_len, DagMlOwnedBytes *out_json, DagMlString *error_out);
 DagMlStatusCode dagml_openlineage_run_event_json(const uint8_t *plan_ptr, size_t plan_len, const uint8_t *bundle_ptr, size_t bundle_len, const uint8_t *lineage_ptr, size_t lineage_len, const uint8_t *envelopes_ptr, size_t envelopes_len, const uint8_t *prediction_cache_manifest_ptr, size_t prediction_cache_manifest_len, const uint8_t *artifact_manifest_ptr, size_t artifact_manifest_len, DagMlBytesView namespace, DagMlBytesView event_time, DagMlOwnedBytes *out_json, DagMlString *error_out);
 DagMlStatusCode dagml_mock_replay_execute_json(const uint8_t *plan_ptr, size_t plan_len, const uint8_t *bundle_ptr, size_t bundle_len, const uint8_t *request_ptr, size_t request_len, const uint8_t *envelopes_ptr, size_t envelopes_len, DagMlOwnedBytes *out_json, DagMlString *error_out);
+/* Execution borrows every vtable and rejects owned controller/artifact/cache
+ * tables before consuming them. The caller retains every owner on all returns.
+ * Handles transfer only on OK. Returned JSON bytes are released on all statuses;
+ * on errors/malformed JSON, the host owns cleanup of undiscoverable handles.
+ * Optional JSON buffers with len == 0 are omitted, irrespective of ptr. */
 DagMlStatusCode dagml_replay_execute_json(const uint8_t *plan_ptr, size_t plan_len, const uint8_t *bundle_ptr, size_t bundle_len, const uint8_t *request_ptr, size_t request_len, const uint8_t *envelopes_ptr, size_t envelopes_len, DagMlBytesView data_owner_controller_id, DagMlHandle dataset, DagMlDataVTable data_provider, DagMlArtifactStoreVTable artifact_store, const DagMlPredictionCacheVTable *prediction_cache_store, const DagMlControllerBinding *controller_bindings, size_t controller_binding_count, DagMlOwnedBytes *out_json, DagMlString *error_out);
 /* Execute native COMPILE/PLAN -> FIT_CV -> SELECT -> optional REFIT. After the
  * required request and out_result pointers are accepted, once the

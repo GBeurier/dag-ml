@@ -709,7 +709,7 @@ fn execute_plan_phase(
     plan: &ExecutionPlan,
     trusted_manifests: &ControllerRegistry,
     run_id: &str,
-    root_seed: u32,
+    root_seed: u64,
     phase: Phase,
     js_invoke: &js_sys::Function,
 ) -> CoreResult<Vec<NodeResult>> {
@@ -723,7 +723,7 @@ fn execute_plan_phase(
     }
 
     let run = RunId::new(run_id)?;
-    let mut ctx = RunContext::new(run, Some(u64::from(root_seed)));
+    let mut ctx = RunContext::new(run, Some(root_seed));
     SequentialScheduler.execute_campaign_phase(plan, &controllers, &mut ctx, phase)
 }
 
@@ -758,8 +758,15 @@ pub fn execute_campaign_phase_json(
         .map_err(js_core_error)?;
 
     let phase = parse_phase(phase)?;
-    let results = execute_plan_phase(&plan, &registry, run_id, root_seed, phase, js_invoke)
-        .map_err(js_core_error)?;
+    let results = execute_plan_phase(
+        &plan,
+        &registry,
+        run_id,
+        u64::from(root_seed),
+        phase,
+        js_invoke,
+    )
+    .map_err(js_core_error)?;
     serde_json::to_string(&results).map_err(js_serde_error)
 }
 
@@ -785,12 +792,66 @@ pub fn execute_execution_plan_phase_json(
         &plan,
         &trusted_manifests,
         run_id,
-        root_seed,
+        u64::from(root_seed),
         phase,
         js_invoke,
     )
     .map_err(js_core_error)?;
     serde_json::to_string(&results).map_err(js_serde_error)
+}
+
+/// Full-width seed variant for JavaScript hosts. Pass an exact decimal u64 string.
+#[wasm_bindgen]
+pub fn execute_execution_plan_phase_u64_json(
+    execution_plan_json: &str,
+    trusted_controller_manifests_json: &str,
+    run_id: &str,
+    root_seed: &str,
+    phase: &str,
+    js_invoke: &js_sys::Function,
+) -> Result<String, JsValue> {
+    let seed = root_seed
+        .parse::<u64>()
+        .map_err(|_| JsValue::from_str("root_seed must be an exact decimal u64"))?;
+    let plan = ExecutionPlan::from_json(execution_plan_json).map_err(js_core_error)?;
+    let trusted = controller_registry_from_json(trusted_controller_manifests_json)?;
+    let results = execute_plan_phase(
+        &plan,
+        &trusted,
+        run_id,
+        seed,
+        parse_phase(phase)?,
+        js_invoke,
+    )
+    .map_err(js_core_error)?;
+    serde_json::to_string(&results).map_err(js_serde_error)
+}
+
+#[wasm_bindgen]
+#[allow(clippy::too_many_arguments)]
+pub fn execute_campaign_phase_u64_json(
+    plan_id: &str,
+    graph_json: &str,
+    campaign_json: &str,
+    controller_manifests_json: &str,
+    run_id: &str,
+    root_seed: &str,
+    phase: &str,
+    js_invoke: &js_sys::Function,
+) -> Result<String, JsValue> {
+    let graph = parse_and_validate::<GraphSpec>(graph_json, GraphSpec::validate)?;
+    let campaign = parse_and_validate::<CampaignSpec>(campaign_json, CampaignSpec::validate)?;
+    let registry = controller_registry_from_json(controller_manifests_json)?;
+    let plan = build_execution_plan(plan_id.to_string(), graph, campaign, &registry)
+        .map_err(js_core_error)?;
+    execute_execution_plan_phase_u64_json(
+        &serde_json::to_string(&plan).map_err(js_serde_error)?,
+        controller_manifests_json,
+        run_id,
+        root_seed,
+        phase,
+        js_invoke,
+    )
 }
 
 #[cfg(test)]

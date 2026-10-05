@@ -603,6 +603,9 @@ pub(crate) fn compat_branch_id(value: &serde_json::Value, index: usize) -> Strin
         .unwrap_or_else(|| format!("choice{index}"))
 }
 pub(crate) fn sanitize_branch_id(input: &str, index: usize) -> String {
+    if validate_branch_id(input).is_ok() {
+        return input.to_string();
+    }
     let sanitized = sanitize_generation_label(input);
     if sanitized == "value" {
         format!("branch{index}")
@@ -732,6 +735,16 @@ pub(crate) fn compat_grid_rows(
             Ok((key.clone(), values))
         })
         .collect::<Result<Vec<_>>>()?;
+    let mut entries = entries;
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    let cardinality = entries
+        .iter()
+        .try_fold(1usize, |n, (_, values)| n.checked_mul(values.len()));
+    if entries.len() > 256 || cardinality.is_none_or(|n| n > 10_000) {
+        return Err(DagMlError::GraphValidation(
+            "compat grid exceeds allocation limit".into(),
+        ));
+    }
     let mut rows = Vec::new();
     build_compat_grid_rows(&entries, 0, &mut BTreeMap::new(), &mut rows);
     Ok(rows)
@@ -850,7 +863,8 @@ pub(crate) fn compat_log_range_generator(
         .or_else(|| spec.get("num"))
         .and_then(serde_json::Value::as_u64)
         .ok_or_else(|| DagMlError::GraphValidation(format!("{path}._log_range_ lacks count/num")))?
-        as usize;
+        .try_into()
+        .map_err(|_| DagMlError::GraphValidation(format!("{path} count exceeds usize")))?;
     Ok(PipelineDslParamGenerator::LogRange {
         name: optional_object_field(object, "name")?,
         param,
@@ -985,8 +999,9 @@ pub(crate) fn compat_sample_rows(
         .or_else(|| object.get("count"))
         .and_then(serde_json::Value::as_u64)
         .ok_or_else(|| DagMlError::GraphValidation(format!("{path}._sample_ lacks num/count")))?
-        as usize;
-    if count == 0 {
+        .try_into()
+        .map_err(|_| DagMlError::GraphValidation(format!("{path} count exceeds usize")))?;
+    if count == 0 || count > 10_000 {
         return Err(DagMlError::GraphValidation(format!(
             "{path}._sample_ count cannot be zero"
         )));
@@ -1019,6 +1034,13 @@ pub(crate) fn compat_sample_rows(
                         "{path}._sample_ unsupported deterministic distribution `{other}`"
                     )));
                 }
+            };
+            let sampled = if index == 0 {
+                from
+            } else if index == count - 1 {
+                to
+            } else {
+                sampled
             };
             let mut row = BTreeMap::new();
             let value = serde_json::Value::Number(

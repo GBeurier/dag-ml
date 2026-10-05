@@ -265,13 +265,15 @@ pub unsafe extern "C" fn dagml_local_implementation_registry_invoke_loss(
     out_result_json: *mut DagMlOwnedBytes,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    invocation_boundary(out_result_json, error_out, "loss", || {
-        let registry = registry_ref(registry)?;
-        let loss = parse_loss_reference(loss_reference_json)?;
-        validate_local_descriptor(registry, &loss.implementation)?;
-        validate_invocation_json(request_json)?;
-        let callback = registry_lock(registry)?.resolve_loss(&loss)?.clone();
-        callback.invoke(request_json)
+    crate::ffi_status_boundary(error_out, || {
+        invocation_boundary(out_result_json, error_out, "loss", || {
+            let registry = registry_ref(registry)?;
+            let loss = parse_loss_reference(loss_reference_json)?;
+            validate_local_descriptor(registry, &loss.implementation)?;
+            validate_invocation_json(request_json)?;
+            let callback = registry_lock(registry)?.resolve_loss(&loss)?.clone();
+            callback.invoke(request_json)
+        })
     })
 }
 
@@ -291,28 +293,30 @@ pub unsafe extern "C" fn dagml_local_implementation_registry_invoke_training_los
     out_attestation_json: *mut DagMlOwnedBytes,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    training_invocation_boundary(
-        out_result_json,
-        out_attestation_json,
-        error_out,
-        "training loss invocation",
-        || {
-            let registry = registry_ref(registry)?;
-            let role = parse_training_loss_role(training_loss_role_json)?;
-            validate_local_descriptor(registry, &role.loss.implementation)?;
-            let phase = parse_phase_for_registry(phase)?;
-            let attestation = LossExecutionAttestation::for_role(&role, phase)?;
-            validate_invocation_json(request_json)?;
-            let callback = registry_lock(registry)?.resolve_loss(&role.loss)?.clone();
-            let result = callback.invoke(request_json)?;
-            let attestation = serde_json::to_vec(&attestation).map_err(|error| {
-                DagMlError::RuntimeValidation(format!(
-                    "failed to serialize loss execution attestation: {error}"
-                ))
-            })?;
-            Ok((result, attestation))
-        },
-    )
+    crate::ffi_status_boundary(error_out, || {
+        training_invocation_boundary(
+            out_result_json,
+            out_attestation_json,
+            error_out,
+            "training loss invocation",
+            || {
+                let registry = registry_ref(registry)?;
+                let role = parse_training_loss_role(training_loss_role_json)?;
+                validate_local_descriptor(registry, &role.loss.implementation)?;
+                let phase = parse_phase_for_registry(phase)?;
+                let attestation = LossExecutionAttestation::for_role(&role, phase)?;
+                validate_invocation_json(request_json)?;
+                let callback = registry_lock(registry)?.resolve_loss(&role.loss)?.clone();
+                let result = callback.invoke(request_json)?;
+                let attestation = serde_json::to_vec(&attestation).map_err(|error| {
+                    DagMlError::RuntimeValidation(format!(
+                        "failed to serialize loss execution attestation: {error}"
+                    ))
+                })?;
+                Ok((result, attestation))
+            },
+        )
+    })
 }
 
 /// Selects one active loss directly from an exact native `NodeTask`.
@@ -334,27 +338,29 @@ pub unsafe extern "C" fn dagml_node_task_training_loss_binding(
     out_attestation_json: *mut DagMlOwnedBytes,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    training_invocation_boundary(
-        out_training_loss_role_json,
-        out_attestation_json,
-        error_out,
-        "training loss binding",
-        || {
-            let task = parse_node_task(node_task_json)?;
-            let (role, attestation) = task.training_loss_binding(role_index)?;
-            let role = serde_json::to_vec(role).map_err(|error| {
-                DagMlError::RuntimeValidation(format!(
-                    "failed to serialize task training loss role: {error}"
-                ))
-            })?;
-            let attestation = serde_json::to_vec(attestation).map_err(|error| {
-                DagMlError::RuntimeValidation(format!(
-                    "failed to serialize task loss execution attestation: {error}"
-                ))
-            })?;
-            Ok((role, attestation))
-        },
-    )
+    crate::ffi_status_boundary(error_out, || {
+        training_invocation_boundary(
+            out_training_loss_role_json,
+            out_attestation_json,
+            error_out,
+            "training loss binding",
+            || {
+                let task = parse_node_task(node_task_json)?;
+                let (role, attestation) = task.training_loss_binding(role_index)?;
+                let role = serde_json::to_vec(role).map_err(|error| {
+                    DagMlError::RuntimeValidation(format!(
+                        "failed to serialize task training loss role: {error}"
+                    ))
+                })?;
+                let attestation = serde_json::to_vec(attestation).map_err(|error| {
+                    DagMlError::RuntimeValidation(format!(
+                        "failed to serialize task loss execution attestation: {error}"
+                    ))
+                })?;
+                Ok((role, attestation))
+            },
+        )
+    })
 }
 
 /// Resolves and invokes one active loss directly from an exact native
@@ -375,27 +381,29 @@ pub unsafe extern "C" fn dagml_local_implementation_registry_invoke_task_trainin
     out_attestation_json: *mut DagMlOwnedBytes,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    training_invocation_boundary(
-        out_result_json,
-        out_attestation_json,
-        error_out,
-        "training loss invocation",
-        || {
-            let registry = registry_ref(registry)?;
-            let task = parse_node_task(node_task_json)?;
-            let (role, attestation) = task.training_loss_binding(role_index)?;
-            validate_local_descriptor(registry, &role.loss.implementation)?;
-            validate_invocation_json(request_json)?;
-            let callback = registry_lock(registry)?.resolve_loss(&role.loss)?.clone();
-            let result = callback.invoke(request_json)?;
-            let attestation = serde_json::to_vec(attestation).map_err(|error| {
-                DagMlError::RuntimeValidation(format!(
-                    "failed to serialize task loss execution attestation: {error}"
-                ))
-            })?;
-            Ok((result, attestation))
-        },
-    )
+    crate::ffi_status_boundary(error_out, || {
+        training_invocation_boundary(
+            out_result_json,
+            out_attestation_json,
+            error_out,
+            "training loss invocation",
+            || {
+                let registry = registry_ref(registry)?;
+                let task = parse_node_task(node_task_json)?;
+                let (role, attestation) = task.training_loss_binding(role_index)?;
+                validate_local_descriptor(registry, &role.loss.implementation)?;
+                validate_invocation_json(request_json)?;
+                let callback = registry_lock(registry)?.resolve_loss(&role.loss)?.clone();
+                let result = callback.invoke(request_json)?;
+                let attestation = serde_json::to_vec(attestation).map_err(|error| {
+                    DagMlError::RuntimeValidation(format!(
+                        "failed to serialize task loss execution attestation: {error}"
+                    ))
+                })?;
+                Ok((result, attestation))
+            },
+        )
+    })
 }
 
 /// Invokes a registered local metric with an opaque, strict JSON request.
@@ -412,13 +420,15 @@ pub unsafe extern "C" fn dagml_local_implementation_registry_invoke_metric(
     out_result_json: *mut DagMlOwnedBytes,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    invocation_boundary(out_result_json, error_out, "metric", || {
-        let registry = registry_ref(registry)?;
-        let metric = parse_metric_reference(metric_reference_json)?;
-        validate_local_descriptor(registry, &metric.implementation)?;
-        validate_invocation_json(request_json)?;
-        let callback = registry_lock(registry)?.resolve_metric(&metric)?.clone();
-        callback.invoke(request_json)
+    crate::ffi_status_boundary(error_out, || {
+        invocation_boundary(out_result_json, error_out, "metric", || {
+            let registry = registry_ref(registry)?;
+            let metric = parse_metric_reference(metric_reference_json)?;
+            validate_local_descriptor(registry, &metric.implementation)?;
+            validate_invocation_json(request_json)?;
+            let callback = registry_lock(registry)?.resolve_metric(&metric)?.clone();
+            callback.invoke(request_json)
+        })
     })
 }
 
@@ -477,13 +487,15 @@ pub unsafe extern "C" fn dagml_local_implementation_registry_descriptors_json(
     out_json: *mut DagMlOwnedBytes,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    invocation_boundary(out_json, error_out, "descriptor inspection", || {
-        let registry = registry_ref(registry)?;
-        let guard = registry_lock(registry)?;
-        serde_json::to_vec(&guard.descriptors().collect::<Vec<_>>()).map_err(|error| {
-            DagMlError::RuntimeValidation(format!(
-                "failed to serialize local implementation descriptors: {error}"
-            ))
+    crate::ffi_status_boundary(error_out, || {
+        invocation_boundary(out_json, error_out, "descriptor inspection", || {
+            let registry = registry_ref(registry)?;
+            let guard = registry_lock(registry)?;
+            serde_json::to_vec(&guard.descriptors().collect::<Vec<_>>()).map_err(|error| {
+                DagMlError::RuntimeValidation(format!(
+                    "failed to serialize local implementation descriptors: {error}"
+                ))
+            })
         })
     })
 }

@@ -14,14 +14,15 @@
 #' @param operator_persistent Keep an operator process per candidate across folds.
 #' @param parallel_trials Positive number of candidate trials to run concurrently.
 #'   DAG-ML starts an isolated operator-adapter process for each candidate.
-#' @param adapter_timeout_ms Positive adapter response timeout.
+#' @param adapter_timeout_ms Positive optimizer response timeout.
+#' @param operator_timeout_ms Operator timeout; zero disables the limit.
 #' @return The native HPO result decoded as a list, without simplifying arrays.
 #' @export
 dagml_host_hpo_search <- function(
     plan, envelope, request, operator_adapter, optimizer_adapter,
     cli = "dag-ml-cli", checkpoint = NULL, output = NULL,
     operator_persistent = FALSE, parallel_trials = 1L,
-    adapter_timeout_ms = 30000L) {
+    adapter_timeout_ms = 30000L, operator_timeout_ms = 0L) {
   scalar_path <- function(value, label, must_exist = TRUE) {
     if (!is.character(value) || length(value) != 1L || is.na(value) ||
         !nzchar(trimws(value))) {
@@ -48,6 +49,11 @@ dagml_host_hpo_search <- function(
       adapter_timeout_ms < 1 || adapter_timeout_ms != floor(adapter_timeout_ms)) {
     stop("adapter_timeout_ms must be a positive integer", call. = FALSE)
   }
+  if (!is.numeric(operator_timeout_ms) || length(operator_timeout_ms) != 1L ||
+      is.na(operator_timeout_ms) || !is.finite(operator_timeout_ms) ||
+      operator_timeout_ms < 0 || operator_timeout_ms != floor(operator_timeout_ms)) {
+    stop("operator_timeout_ms must be a nonnegative integer", call. = FALSE)
+  }
   if (!is.logical(operator_persistent) || length(operator_persistent) != 1L ||
       is.na(operator_persistent)) {
     stop("operator_persistent must be TRUE or FALSE", call. = FALSE)
@@ -65,6 +71,7 @@ dagml_host_hpo_search <- function(
     "--optimizer-adapter", shQuote(optimizer_adapter), "--parallel-trials",
     format(parallel_trials, scientific = FALSE, trim = TRUE),
     "--adapter-timeout-ms", format(adapter_timeout_ms, scientific = FALSE, trim = TRUE),
+    "--operator-timeout-ms", format(operator_timeout_ms, scientific = FALSE, trim = TRUE),
     "--output", shQuote(output)
   )
   if (operator_persistent) args <- c(args, "--operator-persistent")

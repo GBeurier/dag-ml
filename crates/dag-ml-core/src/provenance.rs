@@ -235,6 +235,48 @@ pub fn validate_research_provenance_package_files(
         artifact_manifest.as_ref(),
     )?;
 
+    let export = build_research_provenance_export(
+        &plan,
+        &bundle,
+        &lineage,
+        &data_envelopes,
+        prediction_cache_manifest.as_ref(),
+        artifact_manifest.as_ref(),
+    )?;
+    let packaged_prov: Value = parse_package_json(
+        require_package_file(files, PROV_JSONLD_FILE)?,
+        PROV_JSONLD_FILE,
+    )?;
+    if packaged_prov != export.prov_jsonld {
+        return Err(DagMlError::RuntimeValidation(
+            "packaged PROV differs from its validated execution evidence".into(),
+        ));
+    }
+    let mut expected_crate = export.ro_crate_metadata;
+    // The metadata file is added after annotation by the writer and cannot
+    // checksum itself.
+    let contract_files = files
+        .iter()
+        .filter(|(path, _)| path.as_str() != RO_CRATE_METADATA_FILE)
+        .map(|(path, bytes)| {
+            (
+                path.clone(),
+                ResearchProvenancePackageFile {
+                    path: path.clone(),
+                    sha256: sha256_hex(bytes),
+                    size_bytes: bytes.len(),
+                    bytes: bytes.clone(),
+                },
+            )
+        })
+        .collect();
+    annotate_ro_crate_package_files(&mut expected_crate, &contract_files)?;
+    if expected_crate != ro_crate_metadata {
+        return Err(DagMlError::RuntimeValidation(
+            "packaged RO-Crate differs from its validated execution evidence".into(),
+        ));
+    }
+
     Ok(ResearchProvenancePackageValidation {
         schema_version: RESEARCH_PROVENANCE_SCHEMA_VERSION,
         plan_id: plan.id.to_string(),
@@ -315,7 +357,7 @@ pub fn build_openlineage_run_event(
         "eventType": "COMPLETE",
         "eventTime": options.event_time.as_str(),
         "run": {
-            "runId": openlineage_run_id(plan, bundle),
+            "runId": openlineage_run_id(plan, bundle, lineage),
             "facets": {
                 "dagml_reproducibility": dagml_openlineage_reproducibility_run_facet(plan, bundle),
                 "dagml_oof_safety": dagml_openlineage_oof_safety_run_facet(bundle, lineage),
@@ -636,7 +678,7 @@ fn build_prov_jsonld(
     for record in lineage {
         for input_id in &record.input_lineage {
             used.insert(
-                format!("dagml:used:{}:{}", record.record_id, input_id),
+                prov_edge_id("used", &[record.record_id.as_str(), input_id.as_str()]),
                 json!({
                     "prov:activity": lineage_activity_id(record),
                     "prov:entity": lineage_record_entity_id(input_id),
@@ -689,7 +731,7 @@ fn build_prov_jsonld(
     for record in &bundle.refit_artifacts {
         for key in &record.data_requirement_keys {
             was_derived_from.insert(
-                format!("dagml:derived:{}:data:{key}", record.artifact.id),
+                prov_edge_id("derived:data", &[record.artifact.id.as_str(), key]),
                 json!({
                     "prov:generatedEntity": artifact_entity_id(&record.artifact.id),
                     "prov:usedEntity": data_requirement_entity_id(key),
@@ -699,7 +741,7 @@ fn build_prov_jsonld(
         }
         for key in &record.prediction_requirement_keys {
             was_derived_from.insert(
-                format!("dagml:derived:{}:prediction:{key}", record.artifact.id),
+                prov_edge_id("derived:prediction", &[record.artifact.id.as_str(), key]),
                 json!({
                     "prov:generatedEntity": artifact_entity_id(&record.artifact.id),
                     "prov:usedEntity": prediction_requirement_entity_id(key),
@@ -721,7 +763,10 @@ fn build_prov_jsonld(
     for record in lineage {
         for input_id in &record.input_lineage {
             was_derived_from.insert(
-                format!("dagml:derived:lineage:{}:{input_id}", record.record_id),
+                prov_edge_id(
+                    "derived:lineage",
+                    &[record.record_id.as_str(), input_id.as_str()],
+                ),
                 json!({
                     "prov:generatedEntity": lineage_record_entity_id(&record.record_id),
                     "prov:usedEntity": lineage_record_entity_id(input_id),
@@ -908,7 +953,14 @@ fn add_json_package_file<T: Serialize + ?Sized>(
     label: &str,
 ) -> Result<()> {
     validate_package_path(path)?;
-    let mut bytes = serde_json::to_vec_pretty(value).map_err(|err| {
+    // Model bytes are JSON arrays in the existing bundle schema. Avoid an
+    // extra line and indentation per byte when exporting large payloads.
+    let serialized = if path == EXECUTION_BUNDLE_FILE {
+        serde_json::to_vec(value)
+    } else {
+        serde_json::to_vec_pretty(value)
+    };
+    let mut bytes = serialized.map_err(|err| {
         DagMlError::RuntimeValidation(format!("failed to serialize {label}: {err}"))
     })?;
     bytes.push(b'\n');
@@ -1033,14 +1085,84 @@ fn validate_openlineage_namespace(namespace: &str) -> Result<()> {
 }
 
 fn validate_openlineage_event_time(event_time: &str) -> Result<()> {
-    if event_time.trim().is_empty() || !event_time.contains('T') {
+    let valid = (|| -> Option<()> {
+        if !event_time.is_ascii() || event_time.len() < 20 {
+            return None;
+        }
+        let bytes = event_time.as_bytes();
+        for (index, delimiter) in [(4, b'-'), (7, b'-'), (10, b'T'), (13, b':'), (16, b':')] {
+            if bytes[index] != delimiter && !(index == 10 && bytes[index] == b't') {
+                return None;
+            }
+        }
+        let number = |start: usize, end: usize| -> Option<u32> {
+            let part = &event_time[start..end];
+            part.bytes()
+                .all(|byte| byte.is_ascii_digit())
+                .then(|| part.parse().ok())
+                .flatten()
+        };
+        let year = number(0, 4)?;
+        let month = number(5, 7)?;
+        let day = number(8, 10)?;
+        let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+        let days = match month {
+            1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+            4 | 6 | 9 | 11 => 30,
+            2 => {
+                if leap {
+                    29
+                } else {
+                    28
+                }
+            }
+            _ => return None,
+        };
+        if day == 0
+            || day > days
+            || number(11, 13)? > 23
+            || number(14, 16)? > 59
+            || number(17, 19)? > 60
+        {
+            return None;
+        }
+        let mut tail = &event_time[19..];
+        if let Some(fraction) = tail.strip_prefix('.') {
+            let length = fraction
+                .bytes()
+                .take_while(|byte| byte.is_ascii_digit())
+                .count();
+            if length == 0 {
+                return None;
+            }
+            tail = &fraction[length..];
+        }
+        if tail != "Z" && tail != "z" {
+            if tail.len() != 6
+                || !matches!(tail.as_bytes()[0], b'+' | b'-')
+                || tail.as_bytes()[3] != b':'
+            {
+                return None;
+            }
+            if !tail[1..3]
+                .bytes()
+                .chain(tail[4..6].bytes())
+                .all(|byte| byte.is_ascii_digit())
+            {
+                return None;
+            }
+            let hour = tail[1..3].parse::<u32>().ok()?;
+            let minute = tail[4..6].parse::<u32>().ok()?;
+            if hour > 23 || minute > 59 {
+                return None;
+            }
+        }
+        Some(())
+    })()
+    .is_some();
+    if !valid {
         return Err(DagMlError::RuntimeValidation(
-            "OpenLineage event_time must be a non-empty RFC3339-like timestamp".to_string(),
-        ));
-    }
-    if event_time.chars().any(char::is_control) {
-        return Err(DagMlError::RuntimeValidation(
-            "OpenLineage event_time contains control characters".to_string(),
+            "OpenLineage event_time must be an RFC3339 timestamp".into(),
         ));
     }
     Ok(())
@@ -1051,6 +1173,7 @@ fn dagml_openlineage_reproducibility_run_facet(
     bundle: &ExecutionBundle,
 ) -> Value {
     json!({
+        "_producer": "https://github.com/GBeurier/dag-ml",
         "_schemaURL": format!("{DAGML_OPENLINEAGE_FACET_SCHEMA_URL}#/$defs/DagmlReproducibilityRunFacet"),
         "plan_id": plan.id,
         "bundle_id": bundle.bundle_id,
@@ -1068,6 +1191,7 @@ fn dagml_openlineage_oof_safety_run_facet(
     lineage: &[LineageRecord],
 ) -> Value {
     json!({
+        "_producer": "https://github.com/GBeurier/dag-ml",
         "_schemaURL": format!("{DAGML_OPENLINEAGE_FACET_SCHEMA_URL}#/$defs/DagmlOofSafetyRunFacet"),
         "prediction_requirement_count": bundle.prediction_requirements.len(),
         "prediction_cache_count": bundle.prediction_caches.len(),
@@ -1079,6 +1203,7 @@ fn dagml_openlineage_oof_safety_run_facet(
 
 fn dagml_openlineage_plan_job_facet(plan: &ExecutionPlan, bundle: &ExecutionBundle) -> Value {
     json!({
+        "_producer": "https://github.com/GBeurier/dag-ml",
         "_schemaURL": format!("{DAGML_OPENLINEAGE_FACET_SCHEMA_URL}#/$defs/DagmlPlanJobFacet"),
         "plan_id": plan.id,
         "bundle_id": bundle.bundle_id,
@@ -1104,7 +1229,8 @@ fn openlineage_input_datasets(
                 "name": key,
                 "facets": {
                     "dagml_contract": {
-                        "_schemaURL": format!("{DAGML_OPENLINEAGE_FACET_SCHEMA_URL}#/$defs/DagmlDatasetContractFacet"),
+                        "_producer": "https://github.com/GBeurier/dag-ml",
+        "_schemaURL": format!("{DAGML_OPENLINEAGE_FACET_SCHEMA_URL}#/$defs/DagmlDatasetContractFacet"),
                         "node_id": requirement.node_id,
                         "input_name": requirement.input_name,
                         "schema_fingerprint": requirement.schema_fingerprint,
@@ -1130,7 +1256,8 @@ fn openlineage_output_datasets(
         "name": bundle.bundle_id,
         "facets": {
             "dagml_contract": {
-                "_schemaURL": format!("{DAGML_OPENLINEAGE_FACET_SCHEMA_URL}#/$defs/DagmlDatasetContractFacet"),
+                "_producer": "https://github.com/GBeurier/dag-ml",
+        "_schemaURL": format!("{DAGML_OPENLINEAGE_FACET_SCHEMA_URL}#/$defs/DagmlDatasetContractFacet"),
                 "schema_version": bundle.schema_version,
                 "plan_id": bundle.plan_id,
                 "selected_variant_id": bundle.selected_variant_id,
@@ -1146,7 +1273,8 @@ fn openlineage_output_datasets(
             "name": cache.cache_id,
             "facets": {
                 "dagml_contract": {
-                    "_schemaURL": format!("{DAGML_OPENLINEAGE_FACET_SCHEMA_URL}#/$defs/DagmlDatasetContractFacet"),
+                    "_producer": "https://github.com/GBeurier/dag-ml",
+        "_schemaURL": format!("{DAGML_OPENLINEAGE_FACET_SCHEMA_URL}#/$defs/DagmlDatasetContractFacet"),
                     "requirement_key": cache.requirement_key,
                     "prediction_level": cache.prediction_level,
                     "row_count": cache.row_count,
@@ -1163,7 +1291,8 @@ fn openlineage_output_datasets(
             "name": artifact.artifact.id,
             "facets": {
                 "dagml_contract": {
-                    "_schemaURL": format!("{DAGML_OPENLINEAGE_FACET_SCHEMA_URL}#/$defs/DagmlDatasetContractFacet"),
+                    "_producer": "https://github.com/GBeurier/dag-ml",
+        "_schemaURL": format!("{DAGML_OPENLINEAGE_FACET_SCHEMA_URL}#/$defs/DagmlDatasetContractFacet"),
                     "node_id": artifact.node_id,
                     "controller_id": artifact.controller_id,
                     "backend": artifact.artifact.backend,
@@ -1181,9 +1310,23 @@ fn openlineage_output_datasets(
     outputs
 }
 
-fn openlineage_run_id(plan: &ExecutionPlan, bundle: &ExecutionBundle) -> String {
-    let input = format!("dag-ml/openlineage/run/{}/{}", plan.id, bundle.bundle_id);
-    let digest = Sha256::digest(input.as_bytes());
+fn openlineage_run_id(
+    plan: &ExecutionPlan,
+    bundle: &ExecutionBundle,
+    lineage: &[LineageRecord],
+) -> String {
+    let run_ids = lineage
+        .iter()
+        .map(|record| record.run_id.as_str())
+        .collect::<BTreeSet<_>>();
+    let input = serde_json::to_vec(&(
+        "dag-ml/openlineage/run",
+        &plan.id,
+        &bundle.bundle_id,
+        run_ids,
+    ))
+    .expect("string tuple is serializable");
+    let digest = Sha256::digest(&input);
     let mut bytes = [0u8; 16];
     bytes.copy_from_slice(&digest[..16]);
     bytes[6] = (bytes[6] & 0x0f) | 0x50;
@@ -1389,11 +1532,23 @@ fn sha256_hex(bytes: &[u8]) -> String {
     out
 }
 
+fn prov_edge_id(kind: &str, components: &[&str]) -> String {
+    let encoded = components
+        .iter()
+        .map(|part| format!("{}:{part}", part.len()))
+        .collect::<String>();
+    format!("dagml:{kind}:{encoded}")
+}
+
 fn lineage_artifact_index(lineage: &[LineageRecord]) -> BTreeMap<ArtifactId, String> {
     let mut index = BTreeMap::new();
     for record in lineage {
         for artifact in &record.artifact_refs {
-            index.insert(artifact.id.clone(), lineage_activity_id(record));
+            if record.phase == crate::Phase::Refit {
+                index
+                    .entry(artifact.id.clone())
+                    .or_insert_with(|| lineage_activity_id(record));
+            }
         }
     }
     index

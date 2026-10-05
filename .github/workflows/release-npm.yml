@@ -12,7 +12,7 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -85,6 +85,14 @@ jobs:
       - name: Decide publish
         id: gate
         run: |
+          if [ "${{ inputs.publish }}" = "true" ] && [[ "${{ github.ref }}" != refs/tags/v* ]]; then
+            echo "ERROR: npm publication requires a release tag."
+            exit 1
+          fi
+          if [ "${{ inputs.publish }}" = "true" ] && [[ "${GITHUB_REF_NAME}" == *-* ]]; then
+            echo "ERROR: npm publication requires a stable release tag."
+            exit 1
+          fi
           if [ "${{ github.event_name }}" = "push" ] && [[ "${GITHUB_REF_NAME}" == v* ]] && [[ "${GITHUB_REF_NAME}" != *-* ]]; then
             echo "do=true" >> "$GITHUB_OUTPUT"
           elif [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.publish }}" = "true" ]; then

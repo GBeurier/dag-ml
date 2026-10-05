@@ -470,6 +470,89 @@ impl ExecutionPlan {
                     manifest.controller_id
                 )));
             }
+            for (direction, ports, implemented) in [
+                ("input", &graph_node.ports.inputs, &manifest.input_ports),
+                ("output", &graph_node.ports.outputs, &manifest.output_ports),
+            ] {
+                if implemented.is_empty() {
+                    continue;
+                } // legacy generic invoke controllers
+                for port in ports {
+                    let incoming_count = self
+                        .graph_plan
+                        .graph
+                        .edges
+                        .iter()
+                        .filter(|edge| {
+                            edge.target.node_id == *node_id && edge.target.port_name == port.name
+                        })
+                        .count();
+                    // The signed Methods classifier validates raw multimodal views
+                    // and its virtual OOF lane against its recipe, below.
+                    if (direction == "input" || port.name == "oof")
+                        && crate::methods_classification::methods_operator_classification(
+                            graph_node
+                                .operator
+                                .as_ref()
+                                .unwrap_or(&serde_json::Value::Null),
+                        )?
+                        .is_some()
+                    {
+                        continue;
+                    }
+                    let compatible = implemented.iter().any(|candidate| {
+                        let name_matches = candidate.name == port.name
+                            || candidate.cardinality == crate::graph::PortCardinality::Many
+                            || (direction == "input"
+                                && manifest
+                                    .capabilities
+                                    .contains(&ControllerCapability::ConsumesOofPredictions))
+                            || (direction == "output"
+                                && port.kind == PortKind::Prediction
+                                && implemented
+                                    .iter()
+                                    .filter(|p| p.kind == PortKind::Prediction)
+                                    .count()
+                                    == 1);
+                        let oof_features = direction == "input"
+                            && port.kind == PortKind::Prediction
+                            && candidate.kind == PortKind::Data
+                            && manifest
+                                .capabilities
+                                .contains(&ControllerCapability::ConsumesOofPredictions);
+                        name_matches
+                            && (candidate.kind == port.kind || oof_features)
+                            && (direction != "input"
+                                || candidate.cardinality == crate::graph::PortCardinality::Many
+                                || incoming_count <= 1)
+                            && (candidate.representation.is_none()
+                                || port.representation.is_none()
+                                || candidate.representation == port.representation)
+                    });
+                    if !compatible {
+                        return Err(DagMlError::Planning(format!(
+                            "node `{node_id}` {direction} port `{}` is not supported by controller `{}`",
+                            port.name, manifest.controller_id
+                        )));
+                    }
+                }
+            }
+            if plan.data_bindings
+                != self
+                    .campaign
+                    .data_bindings
+                    .get(node_id)
+                    .cloned()
+                    .unwrap_or_default()
+                || plan.shape_plan != self.campaign.shape_plans.get(node_id).cloned()
+            {
+                return Err(DagMlError::Planning(format!(
+                    "node plan `{node_id}` data bindings or shape plan differ from the campaign"
+                )));
+            }
+            if let Some(shape) = &plan.shape_plan {
+                shape.validate()?;
+            }
             for binding in &plan.data_bindings {
                 if binding.node_id != *node_id {
                     return Err(DagMlError::Planning(format!(
@@ -499,6 +582,18 @@ impl ExecutionPlan {
             }
         }
         self.validate_oof_controller_capabilities()?;
+        let declared_folds = self
+            .campaign
+            .split_invocation
+            .as_ref()
+            .and_then(|split| split.fold_set.as_ref());
+        if self.fold_set.as_ref() != declared_folds {
+            return Err(DagMlError::Planning(
+                "execution plan fold_set differs from the campaign split".into(),
+            ));
+        }
+        validate_search_space_fingerprint(&self.graph_plan.graph, &self.campaign)?;
+        validate_generation_override_targets(&self.graph_plan.graph, &self.variants)?;
         if let Some(fold_set) = &self.fold_set {
             fold_set.validate()?;
         }
@@ -507,8 +602,18 @@ impl ExecutionPlan {
                 "execution plan has no variants".to_string(),
             ));
         }
+        let canonical_variants =
+            enumerate_variants(&self.campaign.generation, self.campaign.root_seed)?;
+        let mut ids = BTreeSet::new();
         for variant in &self.variants {
             variant.validate()?;
+            if !ids.insert(&variant.variant_id) {
+                return Err(DagMlError::Planning(format!(
+                    "execution plan repeats variant `{}`",
+                    variant.variant_id
+                )));
+            }
+            validate_variant_identity(variant, self.campaign.root_seed, &canonical_variants)?;
         }
         Ok(())
     }
@@ -1356,6 +1461,115 @@ pub fn build_execution_plan(
     };
     plan.validate()?;
     Ok(plan)
+}
+
+fn validate_variant_identity(
+    variant: &VariantPlan,
+    root_seed: Option<u64>,
+    canonical_variants: &[VariantPlan],
+) -> Result<()> {
+    let invalid = || {
+        DagMlError::Planning(format!(
+            "variant `{}` identity, fingerprint or seed differs from its choices",
+            variant.variant_id
+        ))
+    };
+    let id = variant.variant_id.as_str();
+    let mut base_choices = variant.choices.clone();
+    let expected_fingerprint;
+    if id.starts_with("variant:") {
+        let derived = crate::generation::variant_from_choices(base_choices.clone(), root_seed)?;
+        if *variant != derived {
+            return Err(invalid());
+        }
+        expected_fingerprint = derived.fingerprint;
+    } else if let Some(index) = id.strip_prefix("host_hpo:trial:") {
+        let trial_index = index.parse::<u32>().map_err(|_| invalid())?;
+        if id != format!("host_hpo:trial:{trial_index:010}") {
+            return Err(invalid());
+        }
+        let choice = base_choices.remove("host_hpo").ok_or_else(invalid)?;
+        let objective = choice
+            .value
+            .get("objective_fingerprint")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+            .ok_or_else(invalid)?;
+        if choice.label != format!("trial:{trial_index}")
+            || choice
+                .value
+                .get("trial_index")
+                .and_then(serde_json::Value::as_u64)
+                != Some(u64::from(trial_index))
+            || choice.active_subsequence.is_some()
+            || choice.param_overrides.is_empty()
+        {
+            return Err(invalid());
+        }
+        let base = crate::generation::variant_from_choices(base_choices.clone(), root_seed)?;
+        expected_fingerprint =
+            stable_json_fingerprint(&(&base.fingerprint, &variant.choices, objective))?;
+        if variant.seed != base.seed {
+            return Err(invalid());
+        }
+    } else {
+        let (namespace, trial) = if let Some(trial) = id.strip_prefix("hpo:trial:") {
+            (None, trial)
+        } else if let Some(scoped) = id.strip_prefix("hpo:scope:") {
+            let (namespace, trial) = scoped.rsplit_once(":trial:").ok_or_else(invalid)?;
+            if namespace.is_empty() {
+                return Err(invalid());
+            }
+            (Some(namespace), trial)
+        } else {
+            return Err(invalid());
+        };
+        let trial_id = trial.parse::<i64>().map_err(|_| invalid())?;
+        if trial_id < 0 || trial != trial_id.to_string() {
+            return Err(invalid());
+        }
+        let choice = base_choices
+            .remove("native_methods_hpo")
+            .ok_or_else(invalid)?;
+        if choice.label != format!("trial:{trial_id}")
+            || choice.value != serde_json::json!({"trial_id": trial_id})
+            || choice.active_subsequence.is_some()
+            || choice.param_overrides.len() != 1
+        {
+            return Err(invalid());
+        }
+        let base = crate::generation::variant_from_choices(base_choices.clone(), root_seed)?;
+        expected_fingerprint = match namespace {
+            Some(namespace) => stable_json_fingerprint(&(
+                base.fingerprint.as_str(),
+                namespace,
+                &variant.choices,
+                trial_id,
+            ))?,
+            None => {
+                stable_json_fingerprint(&(base.fingerprint.as_str(), &variant.choices, trial_id))?
+            }
+        };
+        if variant.seed != base.seed {
+            return Err(invalid());
+        }
+    }
+    if variant.fingerprint != expected_fingerprint {
+        return Err(invalid());
+    }
+    let base = crate::generation::variant_from_choices(base_choices, root_seed)?;
+    let operator_choice = !base.choices.is_empty()
+        && base
+            .choices
+            .values()
+            .all(|choice| choice.active_subsequence.is_some() && choice.param_overrides.is_empty());
+    if !canonical_variants.contains(&base) && !operator_choice {
+        return Err(DagMlError::Planning(format!(
+            "variant `{}` is outside the campaign generation",
+            variant.variant_id
+        )));
+    }
+    Ok(())
 }
 
 fn validate_search_space_fingerprint(graph: &GraphSpec, campaign: &CampaignSpec) -> Result<()> {

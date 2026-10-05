@@ -26,7 +26,7 @@ pub enum RegressionMetricKind {
     Mae,
     R2,
     /// Classification accuracy: fraction of predictions whose label matches the target (integer
-    /// label encoding, matched within 0.5). Meaningless on continuous regression targets (≈0) but
+    /// label encoding, matched after rounding both labels). Meaningless on continuous regression targets (≈0) but
     /// always emitted so the host can score classification natively without a separate code path.
     Accuracy,
     /// Balanced classification accuracy: the macro-average of per-class recall (mean over the
@@ -1014,7 +1014,7 @@ pub(crate) fn compute_metric_per_target(
                     .iter()
                     .zip(targets.iter())
                     .filter(|(prediction, target)| {
-                        (prediction[target_idx] - target[target_idx]).abs() < 0.5
+                        prediction[target_idx].round() == target[target_idx].round()
                     })
                     .count() as f64
                     / predictions.len() as f64
@@ -1057,7 +1057,7 @@ fn weighted_f1_for_target(target_idx: usize, predictions: &[&[f64]], targets: &[
 /// Balanced classification accuracy for one target column: the macro-average of per-class recall over
 /// the integer labels present in `y_true`, matching scikit-learn's `balanced_accuracy_score`. Labels
 /// are matched the same way as [`RegressionMetricKind::Accuracy`] — a prediction counts for true class
-/// `c` when `|pred - c| < 0.5` — so the two metrics share one label-encoding convention. Returns the
+/// `c` when rounded class identities agree — so the two metrics share one label-encoding convention. Returns the
 /// unweighted mean of `correct_in_class / count_in_class`; an empty target set yields `0.0` (the rows
 /// are non-empty here because the scoring path rejects zero-row blocks before this is reached).
 fn balanced_accuracy_for_target(
@@ -1072,7 +1072,7 @@ fn balanced_accuracy_for_target(
         let class = true_value.round() as i64;
         let entry = per_class.entry(class).or_insert((0, 0));
         entry.1 += 1;
-        if (prediction[target_idx] - true_value).abs() < 0.5 {
+        if prediction[target_idx].round() == true_value.round() {
             entry.0 += 1;
         }
     }
@@ -1270,6 +1270,26 @@ pub fn cross_fold_validation_reports_with_probabilities(
     metrics: &[RegressionMetricKind],
     partition_mode: FoldPartitionMode,
 ) -> Result<CrossFoldValidation> {
+    cross_fold_validation_reports_with_classification(
+        prediction_blocks,
+        probability_blocks,
+        target_records,
+        metrics,
+        partition_mode,
+        &BTreeSet::new(),
+    )
+}
+
+/// Score explicitly typed classification producers by vote when probabilities
+/// are unavailable, even when regression metrics are retained in the report.
+pub fn cross_fold_validation_reports_with_classification(
+    prediction_blocks: &[PredictionBlock],
+    probability_blocks: &[ClassificationProbabilityBlock],
+    target_records: &[RegressionTargetRecord],
+    metrics: &[RegressionMetricKind],
+    partition_mode: FoldPartitionMode,
+    classification_producers: &BTreeSet<NodeId>,
+) -> Result<CrossFoldValidation> {
     let mut producers: Vec<(NodeId, Option<String>)> = Vec::new();
     let mut by_producer: BTreeMap<(NodeId, Option<String>), Vec<PredictionBlock>> = BTreeMap::new();
     for block in prediction_blocks {
@@ -1310,12 +1330,32 @@ pub fn cross_fold_validation_reports_with_probabilities(
             // No y_true was emitted for this producer (e.g. mock controllers) — nothing to score.
             continue;
         }
-        let average = reduce_predictions_across_folds(blocks, None, "avg")?;
-        // Keep the averaged edge feature in the per-sample result. A matching full
-        // class distribution, when present, supplies labels for classification
-        // scoring without changing the feature consumed by downstream learners.
+        let mut average = reduce_predictions_across_folds(blocks, None, "avg")?;
+        // Attested probabilities determine the class used for scoring while
+        // retaining the original numeric stacking feature. Without probabilities,
+        // repeated class identities must be voted rather than averaged.
         let probability_average =
             average_validation_probabilities(blocks, probability_blocks, &average)?;
+        if probability_average.is_none()
+            && (classification_producers.contains(producer)
+                || (!metrics.is_empty()
+                    && metrics.iter().all(|metric| {
+                        matches!(
+                            metric,
+                            RegressionMetricKind::Accuracy
+                                | RegressionMetricKind::BalancedAccuracy
+                                | RegressionMetricKind::F1
+                        )
+                    })))
+        {
+            average = reduce_classification_folds(
+                blocks,
+                &[],
+                None,
+                "avg",
+                PredictionPartition::Validation,
+            )?;
+        }
         reports.push(if let Some(probabilities) = probability_average.as_ref() {
             score_prediction_with_class_probabilities(&average, probabilities, &targets, metrics)?
         } else {
@@ -1768,9 +1808,9 @@ fn validation_score_weights(scores: &[f64], objective: MetricObjective) -> Vec<f
     match objective {
         MetricObjective::Maximize => {
             if min < 0.0 {
-                scores.iter().map(|score| score - min).collect()
+                scores.iter().map(|score| (score - min).max(1e-8)).collect()
             } else {
-                scores.to_vec()
+                scores.iter().map(|score| score.max(1e-8)).collect()
             }
         }
         MetricObjective::Minimize => scores

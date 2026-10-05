@@ -5692,16 +5692,21 @@ fn lifecycle_marker_count(dir: &Path, prefix: &str) -> usize {
 }
 
 fn python_has_sklearn(root: &Path) -> bool {
-    Command::new("python3")
+    let available = Command::new("python3")
         .current_dir(root)
-        .args(["-c", "import sklearn"])
+        .args(["-c", "import sklearn, joblib"])
         .status()
         .map(|status| status.success())
-        .unwrap_or(false)
+        .unwrap_or(false);
+    assert!(
+        available || std::env::var_os("DAG_ML_REQUIRE_SKLEARN_TEST").is_none(),
+        "required sklearn/joblib adapter dependencies are unavailable"
+    );
+    available
 }
 
 fn r_has_prospectr(root: &Path) -> bool {
-    Command::new("Rscript")
+    let available = Command::new("Rscript")
         .current_dir(root)
         .args([
             "-e",
@@ -5709,11 +5714,16 @@ fn r_has_prospectr(root: &Path) -> bool {
         ])
         .status()
         .map(|status| status.success())
-        .unwrap_or(false)
+        .unwrap_or(false);
+    assert!(
+        available || std::env::var_os("DAG_ML_REQUIRE_R_ADAPTER_TEST").is_none(),
+        "required R prospectr adapter dependencies are unavailable"
+    );
+    available
 }
 
 fn r_has_mdatools(root: &Path) -> bool {
-    Command::new("Rscript")
+    let available = Command::new("Rscript")
         .current_dir(root)
         .args([
             "-e",
@@ -5721,7 +5731,12 @@ fn r_has_mdatools(root: &Path) -> bool {
         ])
         .status()
         .map(|status| status.success())
-        .unwrap_or(false)
+        .unwrap_or(false);
+    assert!(
+        available || std::env::var_os("DAG_ML_REQUIRE_R_ADAPTER_TEST").is_none(),
+        "required R mdatools adapter dependencies are unavailable"
+    );
+    available
 }
 
 #[test]

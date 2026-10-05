@@ -220,7 +220,7 @@ fn parse_payload(record: &RefitArtifactRecord, bytes: &[u8]) -> Result<Payload> 
     let text = std::str::from_utf8(bytes).map_err(|error| {
         DagMlError::RuntimeValidation(format!("Methods multimodal payload is not UTF-8: {error}"))
     })?;
-    crate::canonical::parse_typed_json(text).map_err(|error| {
+    crate::canonical::parse_bounded_typed_json(text, 4_000_000).map_err(|error| {
         DagMlError::RuntimeValidation(format!(
             "Methods multimodal payload is outside strict TCV1 JSON: {error}"
         ))
@@ -336,9 +336,21 @@ pub fn validate_methods_multimodal_pipeline_recipe(
                         "Methods multimodal PCA count must be an integer".into(),
                     )
                 })?;
-                expected.encoders.get_mut("image").ok_or_else(|| {
-                    DagMlError::RuntimeValidation("Methods multimodal has no image encoder".into())
-                })?["n_components"] = Value::from(count);
+                expected
+                    .encoders
+                    .get_mut("image")
+                    .ok_or_else(|| {
+                        DagMlError::RuntimeValidation(
+                            "Methods multimodal has no image encoder".into(),
+                        )
+                    })?
+                    .as_object_mut()
+                    .ok_or_else(|| {
+                        DagMlError::RuntimeValidation(
+                            "Methods image encoder must be an object".into(),
+                        )
+                    })?
+                    .insert("n_components".into(), Value::from(count));
             }
             _ => {
                 return refuse(

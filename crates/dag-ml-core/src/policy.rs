@@ -741,6 +741,14 @@ impl DataModelShapePlan {
         self.aggregation_policy.validate()?;
         self.augmentation_policy.validate()?;
         self.selection_policy.validate()?;
+        if matches!(
+            self.fit_rows,
+            FitBoundary::FoldValidation | FitBoundary::Predict
+        ) {
+            return Err(DagMlError::CampaignValidation(
+                "fit_rows cannot select validation or predict rows".into(),
+            ));
+        }
         if self.selection_policy.scope == FeatureSelectionScope::SupervisedFoldTrain
             && self.fit_rows != FitBoundary::FoldTrain
         {
@@ -754,7 +762,10 @@ impl DataModelShapePlan {
 }
 
 fn is_hex_fingerprint(value: &str) -> bool {
-    value.len() == 64 && value.chars().all(|ch| ch.is_ascii_hexdigit())
+    value.len() == 64
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_digit() || ('a'..='f').contains(&ch))
 }
 
 fn default_granularity() -> Granularity {

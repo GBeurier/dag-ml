@@ -331,6 +331,18 @@ impl SampleRelationSet {
                     )));
                 }
             }
+            if policy.forbid_origin_cross_fold
+                && record.is_augmented
+                && record.origin_sample_id.is_none()
+                && !policy.unsafe_flags.contains(
+                    crate::policy::AugmentationPolicy::ALLOW_SAMPLE_AUGMENTATION_WITHOUT_ORIGIN,
+                )
+            {
+                return Err(DagMlError::CampaignValidation(format!(
+                    "augmented relation `{}` requires origin_sample_id",
+                    record.observation_id
+                )));
+            }
             if policy.require_group_ids && record.group_id.is_none() {
                 return Err(DagMlError::CampaignValidation(format!(
                     "relation `{}` is missing required group id",
@@ -358,20 +370,12 @@ impl SampleRelationSet {
             if policy.forbid_origin_cross_fold {
                 for record in &self.records {
                     if let Some(origin_sample_id) = &record.origin_sample_id {
-                        let sample_partition =
-                            partitions.get(&record.sample_id).ok_or_else(|| {
-                                DagMlError::CampaignValidation(format!(
-                                    "fold `{}` does not contain sample `{}`",
-                                    fold.fold_id, record.sample_id
-                                ))
-                            })?;
-                        let origin_partition =
-                            partitions.get(origin_sample_id).ok_or_else(|| {
-                                DagMlError::CampaignValidation(format!(
-                                    "fold `{}` does not contain origin sample `{}`",
-                                    fold.fold_id, origin_sample_id
-                                ))
-                            })?;
+                        let (Some(sample_partition), Some(origin_partition)) = (
+                            partitions.get(&record.sample_id),
+                            partitions.get(origin_sample_id),
+                        ) else {
+                            continue;
+                        };
                         if sample_partition != origin_partition {
                             return Err(DagMlError::CampaignValidation(format!(
                                 "fold `{}` leaks origin sample `{}` into {:?} sample `{}`",

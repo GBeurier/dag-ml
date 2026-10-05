@@ -319,16 +319,27 @@ impl HpoParameter {
         }
         match self {
             Self::Int {
-                low, high, step, ..
-            } if low > high || *step <= 0 => Err(HpoError::InvalidSearchSpace {
-                reason: format!(
-                    "integer parameter `{}` has invalid bounds or step",
-                    self.name()
-                ),
-            }),
+                low,
+                high,
+                step,
+                log,
+                ..
+            } if low > high || *step <= 0 || (*log && *low <= 0) => {
+                Err(HpoError::InvalidSearchSpace {
+                    reason: format!(
+                        "integer parameter `{}` has invalid bounds or step",
+                        self.name()
+                    ),
+                })
+            }
             Self::Float {
-                low, high, step, ..
-            } if !low.is_finite()
+                low,
+                high,
+                step,
+                log,
+                ..
+            } if (*log && *low <= 0.0)
+                || !low.is_finite()
                 || !high.is_finite()
                 || !step.is_finite()
                 || low > high
@@ -341,13 +352,27 @@ impl HpoParameter {
                     ),
                 })
             }
-            Self::Categorical { values, .. } if values.is_empty() => {
+            Self::Categorical { values, .. }
+                if values.is_empty()
+                    || values
+                        .iter()
+                        .any(|v| matches!(v, HpoCategory::Float(f) if !f.is_finite()))
+                    || values
+                        .iter()
+                        .enumerate()
+                        .any(|(i, v)| values[..i].contains(v)) =>
+            {
                 Err(HpoError::InvalidSearchSpace {
                     reason: format!("categorical parameter `{}` has no values", self.name()),
                 })
             }
             Self::Ordinal { values, .. }
-                if values.is_empty() || values.iter().any(|value| !value.is_finite()) =>
+                if values.is_empty()
+                    || values.iter().any(|value| !value.is_finite())
+                    || values
+                        .iter()
+                        .enumerate()
+                        .any(|(i, v)| values[..i].contains(v)) =>
             {
                 Err(HpoError::InvalidSearchSpace {
                     reason: format!("ordinal parameter `{}` is invalid", self.name()),
@@ -355,7 +380,12 @@ impl HpoParameter {
             }
             Self::SortedTuple {
                 length, low, high, ..
-            } if *length <= 0 || !low.is_finite() || !high.is_finite() || low > high => {
+            } if *length <= 0
+                || *length > 4096
+                || !low.is_finite()
+                || !high.is_finite()
+                || low > high =>
+            {
                 Err(HpoError::InvalidSearchSpace {
                     reason: format!("sorted tuple parameter `{}` is invalid", self.name()),
                 })
@@ -1356,137 +1386,159 @@ impl crate::runtime::RuntimeTunerSession for MethodsHpoSession {
     }
 
     fn ask(&mut self) -> crate::Result<Option<crate::runtime::RuntimeHpoProposal>> {
-        if self.context.portable_profile.as_deref() == Some(crate::METHODS_PLS_ROLE_PROFILE) {
-            let trial = self
-                .study
-                .ask()
-                .map_err(|e| crate::DagMlError::RuntimeValidation(e.to_string()))?;
-            let mut overrides = BTreeMap::new();
-            for name in self.context.parameter_paths.keys() {
-                let p = trial.parameters.get(name).ok_or_else(|| {
-                    crate::DagMlError::RuntimeValidation(
-                        "native HPOv2 omitted an active axis".into(),
-                    )
-                })?;
-                if !p.active {
-                    return Err(crate::DagMlError::RuntimeValidation(
-                        "native HPOv2 axis inactive".into(),
-                    ));
-                }
-                let value = match name.as_str() {
-                    "n_components"
-                        if p.integer
-                            && p.value.fract() == 0.0
-                            && (1.0..=3.0).contains(&p.value) =>
-                    {
-                        serde_json::json!(p.value as i64)
-                    }
-                    "scale"
-                        if p.native_kind == Some(HpoNativeParameterKind::Categorical)
-                            && p.category_type == Some(HpoCategoryType::Boolean)
-                            && matches!(p.category_index, Some(0 | 1)) =>
-                    {
-                        serde_json::json!(p.category_index == Some(1))
-                    }
-                    _ => {
-                        return Err(crate::DagMlError::RuntimeValidation(
-                            "native HPOv2 emitted an invalid typed PLS control".into(),
-                        ))
-                    }
-                };
-                overrides.insert(name.clone(), value);
-            }
-            let mut variant = self.context.base_variant.clone();
-            variant.choices.insert(
-                "native_methods_hpo".into(),
-                crate::generation::GenerationChoice {
-                    label: format!("trial:{}", trial.id),
-                    value: serde_json::json!({"trial_id":trial.id}),
-                    param_overrides: vec![crate::generation::GenerationParamOverride {
-                        node_id: self.context.target_node_id.clone(),
-                        params: overrides,
-                    }],
-                    active_subsequence: None,
-                },
-            );
-            variant.variant_id = crate::VariantId::new(match &self.context.proposal_namespace {
-                Some(namespace) => format!("hpo:scope:{namespace}:trial:{}", trial.id),
-                None => format!("hpo:trial:{}", trial.id),
-            })?;
-            variant.fingerprint = if let Some(namespace) = &self.context.proposal_namespace {
-                crate::campaign::stable_json_fingerprint(&(
-                    self.context.base_variant.fingerprint.as_str(),
-                    namespace,
-                    &variant.choices,
-                    trial.id,
-                ))?
-            } else {
-                crate::campaign::stable_json_fingerprint(&(
-                    self.context.base_variant.fingerprint.as_str(),
-                    &variant.choices,
-                    trial.id,
-                ))?
-            };
-            return Ok(Some(crate::runtime::RuntimeHpoProposal {
-                trial_id: trial.id,
-                variant,
-            }));
-        }
-        let trial = self
-            .study
-            .ask()
-            .map_err(|error| crate::DagMlError::RuntimeValidation(error.to_string()))?;
-        if self.context.study.search_space.parameters.len() != 1
-            || self.context.parameter_paths.len() != 1
-            || self.context.parameter_paths.get("n_components") != Some(&"n_components".to_string())
-            || !matches!(self.context.study.search_space.parameters.first(), Some(HpoParameter::Int { name, low: 1, high: 3, step: 1, log: false }) if name == "n_components")
+        let portable =
+            self.context.portable_profile.as_deref() == Some(crate::METHODS_PLS_ROLE_PROFILE);
+        if !portable
+            && (self.context.study.search_space.parameters.len() != 1
+                || self.context.parameter_paths.len() != 1
+                || self.context.parameter_paths.get("n_components")
+                    != Some(&"n_components".to_string())
+                || !matches!(self.context.study.search_space.parameters.first(), Some(HpoParameter::Int { name, low: 1, high: 3, step: 1, log: false }) if name == "n_components"))
         {
             return Err(crate::DagMlError::RuntimeValidation(
                 "Methods HPO v1 accepts only active integer n_components=1..3 mapped directly to the target model".to_string(),
             ));
         }
-        let parameter = trial.parameters.get("n_components").ok_or_else(|| {
-            crate::DagMlError::RuntimeValidation(
-                "native Methods HPO trial omitted active n_components".to_string(),
-            )
-        })?;
-        if !parameter.active
-            || !parameter.integer
-            || parameter.value.fract() != 0.0
-            || !(1.0..=3.0).contains(&parameter.value)
-        {
-            return Err(crate::DagMlError::RuntimeValidation(
-                "native Methods HPO emitted invalid n_components outside V1 integer bounds"
-                    .to_string(),
-            ));
-        }
-        let mut variant = self.context.base_variant.clone();
-        variant.choices.insert(
-            "native_methods_hpo".to_string(),
-            crate::generation::GenerationChoice {
-                label: format!("trial:{}", trial.id),
-                value: serde_json::json!({"trial_id": trial.id}),
-                param_overrides: vec![crate::generation::GenerationParamOverride {
-                    node_id: self.context.target_node_id.clone(),
-                    params: BTreeMap::from([(
-                        "n_components".to_string(),
-                        serde_json::json!(parameter.value as i64),
-                    )]),
-                }],
-                active_subsequence: None,
-            },
-        );
-        variant.variant_id = crate::VariantId::new(format!("hpo:trial:{}", trial.id))
+        let trial = self
+            .study
+            .ask()
             .map_err(|error| crate::DagMlError::RuntimeValidation(error.to_string()))?;
-        variant.fingerprint = crate::campaign::stable_json_fingerprint(&(
-            self.context.base_variant.fingerprint.as_str(),
-            &variant.choices,
-            trial.id,
-        ))?;
-        Ok(Some(crate::runtime::RuntimeHpoProposal {
-            trial_id: trial.id,
-            variant,
-        }))
+        let proposal = (|| {
+            if portable {
+                let mut overrides = BTreeMap::new();
+                for name in self.context.parameter_paths.keys() {
+                    let p = trial.parameters.get(name).ok_or_else(|| {
+                        crate::DagMlError::RuntimeValidation(
+                            "native HPOv2 omitted an active axis".into(),
+                        )
+                    })?;
+                    if !p.active {
+                        return Err(crate::DagMlError::RuntimeValidation(
+                            "native HPOv2 axis inactive".into(),
+                        ));
+                    }
+                    let value = match name.as_str() {
+                        "n_components"
+                            if p.integer
+                                && p.value.fract() == 0.0
+                                && (1.0..=3.0).contains(&p.value) =>
+                        {
+                            serde_json::json!(p.value as i64)
+                        }
+                        "scale"
+                            if p.native_kind == Some(HpoNativeParameterKind::Categorical)
+                                && p.category_type == Some(HpoCategoryType::Boolean)
+                                && matches!(p.category_index, Some(0 | 1)) =>
+                        {
+                            serde_json::json!(p.category_index == Some(1))
+                        }
+                        _ => {
+                            return Err(crate::DagMlError::RuntimeValidation(
+                                "native HPOv2 emitted an invalid typed PLS control".into(),
+                            ))
+                        }
+                    };
+                    overrides.insert(name.clone(), value);
+                }
+                let mut variant = self.context.base_variant.clone();
+                variant.choices.insert(
+                    "native_methods_hpo".into(),
+                    crate::generation::GenerationChoice {
+                        label: format!("trial:{}", trial.id),
+                        value: serde_json::json!({"trial_id":trial.id}),
+                        param_overrides: vec![crate::generation::GenerationParamOverride {
+                            node_id: self.context.target_node_id.clone(),
+                            params: overrides,
+                        }],
+                        active_subsequence: None,
+                    },
+                );
+                variant.variant_id =
+                    crate::VariantId::new(match &self.context.proposal_namespace {
+                        Some(namespace) => format!("hpo:scope:{namespace}:trial:{}", trial.id),
+                        None => format!("hpo:trial:{}", trial.id),
+                    })?;
+                variant.fingerprint = if let Some(namespace) = &self.context.proposal_namespace {
+                    crate::campaign::stable_json_fingerprint(&(
+                        self.context.base_variant.fingerprint.as_str(),
+                        namespace,
+                        &variant.choices,
+                        trial.id,
+                    ))?
+                } else {
+                    crate::campaign::stable_json_fingerprint(&(
+                        self.context.base_variant.fingerprint.as_str(),
+                        &variant.choices,
+                        trial.id,
+                    ))?
+                };
+                return Ok(Some(crate::runtime::RuntimeHpoProposal {
+                    trial_id: trial.id,
+                    variant,
+                }));
+            }
+            let parameter = trial.parameters.get("n_components").ok_or_else(|| {
+                crate::DagMlError::RuntimeValidation(
+                    "native Methods HPO trial omitted active n_components".to_string(),
+                )
+            })?;
+            if !parameter.active
+                || !parameter.integer
+                || parameter.value.fract() != 0.0
+                || !(1.0..=3.0).contains(&parameter.value)
+            {
+                return Err(crate::DagMlError::RuntimeValidation(
+                    "native Methods HPO emitted invalid n_components outside V1 integer bounds"
+                        .to_string(),
+                ));
+            }
+            let mut variant = self.context.base_variant.clone();
+            variant.choices.insert(
+                "native_methods_hpo".to_string(),
+                crate::generation::GenerationChoice {
+                    label: format!("trial:{}", trial.id),
+                    value: serde_json::json!({"trial_id": trial.id}),
+                    param_overrides: vec![crate::generation::GenerationParamOverride {
+                        node_id: self.context.target_node_id.clone(),
+                        params: BTreeMap::from([(
+                            "n_components".to_string(),
+                            serde_json::json!(parameter.value as i64),
+                        )]),
+                    }],
+                    active_subsequence: None,
+                },
+            );
+            variant.variant_id = crate::VariantId::new(format!("hpo:trial:{}", trial.id))
+                .map_err(|error| crate::DagMlError::RuntimeValidation(error.to_string()))?;
+            variant.fingerprint = crate::campaign::stable_json_fingerprint(&(
+                self.context.base_variant.fingerprint.as_str(),
+                &variant.choices,
+                trial.id,
+            ))?;
+            Ok(Some(crate::runtime::RuntimeHpoProposal {
+                trial_id: trial.id,
+                variant,
+            }))
+        })();
+        if let Err(error) = &proposal {
+            self.study
+                .tell(
+                    trial.id,
+                    HpoTerminal::Failed {
+                        failure: HpoFailure {
+                            code: "DAGML_INVALID_PROPOSAL".into(),
+                            message: error.to_string(),
+                            retryable: false,
+                        },
+                    },
+                )
+                .map_err(|terminal_error| {
+                    crate::DagMlError::RuntimeValidation(format!(
+                "{error}; also failed to terminalize rejected native proposal: {terminal_error}"
+            ))
+                })?;
+        }
+        proposal
     }
 
     fn report_intermediate(

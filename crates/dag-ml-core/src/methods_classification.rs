@@ -68,6 +68,17 @@ pub(crate) fn methods_classifier_recipe(
             BTreeSet::from(["n_components", "max_iter"]),
         )
     };
+    if (raw
+        && (recipe.as_object().is_none()
+            || recipe["model"].as_object().is_none()
+            || recipe["model"]["params"].as_object().is_none()))
+        || (!raw
+            && (recipe.as_array().is_none_or(|steps| steps.is_empty())
+                || recipe[0].as_object().is_none()
+                || recipe[0]["params"].as_object().is_none()))
+    {
+        return refuse("classifier recipe parameters must be objects");
+    }
     for (name, value) in params {
         if !allowed.contains(name.as_str()) {
             return refuse("unknown effective classifier parameter");

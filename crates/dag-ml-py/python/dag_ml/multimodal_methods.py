@@ -8,7 +8,13 @@ import json
 import math
 from typing import Any
 
-import numpy as np
+try:
+    import numpy as np
+except ImportError as error:
+    raise ImportError(
+        "Python Methods multimodal execution requires dag-ml[multimodal] "
+        "(nirs4all-methods, NumPy and scikit-learn)"
+    ) from error
 
 SCHEMA = "dagml.methods.multimodal.v1"
 KIND = "methods_multimodal_pipeline"
@@ -17,6 +23,18 @@ MAX_PAYLOAD = 134_217_728
 MAX_STATE = 67_108_864
 PARAMETERS = {"model__alpha", "source_weights__image", "transformers__image__n_components"}
 DECLARATIONS = {"recipe", "source_schemas"}
+
+
+def _methods_pipeline() -> Any:
+    """Require the optional published host facade before numerical execution."""
+    try:
+        from n4m import MultimodalPipeline
+    except ImportError as error:
+        raise ImportError(
+            "Python Methods multimodal execution requires dag-ml[multimodal] "
+            "(nirs4all-methods, NumPy and scikit-learn)"
+        ) from error
+    return MultimodalPipeline
 
 
 def require(condition: bool, message: str) -> None:
@@ -267,7 +285,7 @@ class MethodsMultimodalController:
             ids, blocks = self._features(task, "predict")
             return self._result(task, ids, blocks, entry["model"])
         require(self.allow_fit, "Fitting is disabled for replay")
-        from n4m import MultimodalPipeline
+        MultimodalPipeline = _methods_pipeline()
         ids, blocks = self._features(task, "fold_train" if phase == "FIT_CV" else "full_train")
         valid_ids, valid = self._features(task, "fold_validation") if phase == "FIT_CV" else (ids, blocks)
         require(phase != "FIT_CV" or not set(ids).intersection(valid_ids), "Training/validation overlap")
@@ -327,7 +345,7 @@ class MethodsMultimodalController:
         validate_recipe(saved["recipe"], saved["source_schemas"])
         require(saved["node_id"] == request["node_id"] and saved["params_fingerprint"] == request["params_fingerprint"] and saved["target_names"] == self.target_names and saved["node_id"] in self.operators and saved["source_schemas"] == self.operators[saved["node_id"]]["source_schemas"], "Complete predictor node, target or source schema mismatch")
         require(saved["recipe"] == recipe_for_node(self.operators[saved["node_id"]], self.node_params.get(saved["node_id"], {})), "Complete predictor selected recipe mismatch before hydration")
-        from n4m import MultimodalPipeline
+        MultimodalPipeline = _methods_pipeline()
         model = MultimodalPipeline.from_state(bytes(saved["state"]), recipe=saved["recipe"], source_schemas=self._selected_schemas(saved["node_id"]))
         try:
             handle = self._keep({"model": model, "saved": saved, "artifact": copy.deepcopy(artifact)})

@@ -46,10 +46,12 @@ impl DagMlHostHpoFeedbackCallbacks {
             self.invoke.expect("validated")(self.user_data, bytes_view(&encoded), &mut bytes)
         };
         if status != DagMlStatusCode::OK {
+            let detail = unsafe { host_callback_error_detail(bytes) };
             if !bytes.ptr.is_null() {
                 unsafe { self.release_bytes.expect("validated")(self.user_data, bytes) };
             }
-            callback_status(status, "feedback")?;
+            callback_status(status, "feedback")
+                .map_err(|error| DagMlError::RuntimeValidation(format!("{error}{detail}")))?;
         }
         if bytes.ptr.is_null() {
             return Err(DagMlError::RuntimeValidation(
@@ -140,7 +142,13 @@ impl HostHpoProposalSource for CProposals {
         phase_index: Option<u32>,
     ) -> dag_ml_core::Result<Option<BTreeMap<String, serde_json::Value>>> {
         let mut bytes = DagMlOwnedBytes::default();
-        let phase = phase_index.map_or(-1, |index| index as i32);
+        let phase = phase_index
+            .map(i32::try_from)
+            .transpose()
+            .map_err(|_| {
+                DagMlError::RuntimeValidation("HPO phase index exceeds the signed ABI width".into())
+            })?
+            .unwrap_or(-1);
         let status = unsafe {
             self.callbacks.ask.expect("validated")(
                 self.callbacks.user_data,
@@ -150,6 +158,7 @@ impl HostHpoProposalSource for CProposals {
             )
         };
         if status != DagMlStatusCode::OK {
+            let detail = unsafe { host_callback_error_detail(bytes) };
             if !bytes.ptr.is_null() {
                 unsafe {
                     self.callbacks.release_proposal_bytes.expect("validated")(
@@ -158,7 +167,8 @@ impl HostHpoProposalSource for CProposals {
                     )
                 };
             }
-            callback_status(status, "ask")?;
+            callback_status(status, "ask")
+                .map_err(|error| DagMlError::RuntimeValidation(format!("{error}{detail}")))?;
         }
         if bytes.ptr.is_null() {
             if bytes.len != 0 {

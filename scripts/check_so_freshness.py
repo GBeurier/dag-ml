@@ -44,6 +44,7 @@ RUST_FILES = (
     "crates/dag-ml-core/Cargo.toml",
     "crates/dag-ml-results/Cargo.toml",
     "crates/dag-ml-py/Cargo.toml",
+    "crates/dag-ml-py/Cargo.lock",
     "Cargo.toml",
     "Cargo.lock",
 )
@@ -51,6 +52,62 @@ RUST_SUFFIX = ".rs"
 TEST_ONLY_RUST_FILENAMES = {"tests.rs"}
 
 NOTICE = "check_so_freshness:"
+
+
+def rust_code_tokens(source: str) -> tuple[str, ...]:
+    """Remove Rust comments, retaining literals and dereference expressions."""
+    tokens: list[str] = []
+    i = 0
+    while i < len(source):
+        if source[i].isspace():
+            i += 1
+            continue
+        if source.startswith("//", i):
+            end = source.find("\n", i)
+            i = len(source) if end < 0 else end
+            continue
+        if source.startswith("/*", i):
+            depth = 1
+            i += 2
+            while i < len(source) and depth:
+                if source.startswith("/*", i):
+                    depth += 1
+                    i += 2
+                elif source.startswith("*/", i):
+                    depth -= 1
+                    i += 2
+                else:
+                    i += 1
+            if depth:
+                tokens.append("unterminated block comment")
+            continue
+        raw = re.match(r'(?:br|r)(#*)"', source[i:])
+        if raw:
+            end = source.find('"' + raw.group(1), i + raw.end())
+            end = len(source) if end < 0 else end + 1 + len(raw.group(1))
+            tokens.append(source[i:end])
+            i = end
+            continue
+        if source[i] == '"' or source.startswith('b"', i):
+            end = i + (2 if source[i] == "b" else 1)
+            while end < len(source):
+                if source[end] == "\\":
+                    end += 2
+                elif source[end] == '"':
+                    end += 1
+                    break
+                else:
+                    end += 1
+            tokens.append(source[i:end])
+            i = end
+            continue
+        character = re.match(r"'(?:\\(?:u\{[0-9a-fA-F_]+\}|x[0-9a-fA-F]{2}|.)|[^'\\\n])'", source[i:])
+        word = re.match(r"[\w]+", source[i:])
+        token = character or word
+        end = i + token.end() if token else i + 1
+        tokens.append(source[i:end])
+        i = end
+    return tuple(tokens)
 
 
 def is_git_repo(repo: Path) -> bool:
@@ -151,27 +208,17 @@ def rust_commit_requires_rebuild(repo: Path, commit: str, relative: str) -> bool
                     return False
     if not relative.endswith(RUST_SUFFIX):
         return True
-    result = subprocess.run(
-        ["git", "diff", "--unified=0", "--no-ext-diff", f"{commit}^!", "--", relative],
-        cwd=repo,
-        capture_output=True,
-        text=True,
-        check=False,
+    before = subprocess.run(
+        ["git", "show", f"{commit}^:{relative}"], cwd=repo,
+        capture_output=True, text=True, check=False,
     )
-    if result.returncode != 0:
+    after = subprocess.run(
+        ["git", "show", f"{commit}:{relative}"], cwd=repo,
+        capture_output=True, text=True, check=False,
+    )
+    if before.returncode != 0 or after.returncode != 0:
         return True
-    for line in result.stdout.splitlines():
-        if not line or line.startswith(("+++", "---", "@@")):
-            continue
-        if line[0] not in "+-":
-            continue
-        text = line[1:].strip()
-        if not text:
-            continue
-        if text.startswith(("//", "/*", "*", "*/")):
-            continue
-        return True
-    return False
+    return rust_code_tokens(before.stdout) != rust_code_tokens(after.stdout)
 
 
 def rust_paths_requiring_rebuild_after(repo: Path, paths: list[str], so_ts: int) -> list[str]:
@@ -347,6 +394,20 @@ def self_test() -> int:
 
     failures: list[str] = []
 
+    # Dereferences and code after a block comment are compiled code, while
+    # comment markers inside literals retain their exact bytes.
+    for before, after, equal in [
+        ("*out = 1;", "*out = 2;", False),
+        ("/* before */ *out = 1;", "/* after */ *out = 1;", True),
+        ("/* before */ *out = 1;", "/* after */ *out = 2;", False),
+        ('r#"/* a */"#', 'r#"/* b */"#', False),
+        ("/* a /* nested */ b */ fn x() {}", "fn x() {} // comment", True),
+    ]:
+        if (rust_code_tokens(before) == rust_code_tokens(after)) != equal:
+            failures.append(f"Rust token comparison failed: {before!r}, {after!r}")
+    if "crates/dag-ml-py/Cargo.lock" not in RUST_FILES:
+        failures.append("standalone Python Cargo.lock must be a tracked build input")
+
     # Case 1: FRESH — .so committed last, so its commit time wins.
     with tempfile.TemporaryDirectory() as tmp:
         repo = Path(tmp)
@@ -420,6 +481,20 @@ def self_test() -> int:
         git(repo, "commit", "-q", "-m", "core dependency change", ts=3_000_000)
         if check(repo) != 1:
             failures.append("core Cargo.lock change expected exit 1")
+
+    # Standalone maturin resolves this lockfile independently of the workspace.
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp)
+        scaffold(repo)
+        lock = repo / "crates/dag-ml-py/Cargo.lock"
+        lock.write_text('version = 4\n', encoding="utf-8")
+        git(repo, "add", "-A")
+        git(repo, "commit", "-q", "-m", "initial with standalone lock", ts=1_000_000)
+        lock.write_text('version = 4\n# dependency revision\n', encoding="utf-8")
+        git(repo, "add", "crates/dag-ml-py/Cargo.lock")
+        git(repo, "commit", "-q", "-m", "standalone dependency change", ts=2_000_000)
+        if check(repo) != 1:
+            failures.append("standalone Cargo.lock change expected exit 1")
 
     if failures:
         for line in failures:

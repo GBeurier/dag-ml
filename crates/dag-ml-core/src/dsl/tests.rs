@@ -2370,8 +2370,8 @@ fn compiles_sequential_filter_and_or_generator_surface() {
     assert_eq!(
         merge_inputs,
         vec![
-            "generator_model_choices_choice0_oof",
-            "generator_model_choices_choice1_oof"
+            "generator_model_choices_choice0_5a1333c7_oof",
+            "generator_model_choices_choice1_c6ec8fbb_oof"
         ]
     );
 }
@@ -3013,6 +3013,18 @@ fn compile_operator_variant_models_populates_variant_labels() {
 /// This is an INDEPENDENT member oracle (derived from the minted node ids, not the labels under test),
 /// so a wrong-prune with the right count still fails. The Vec preserves choice order for the
 /// order-parity lock.
+fn original_node_suffix(node_id: &NodeId) -> &str {
+    let suffix = node_id.as_str().rsplit('.').next().unwrap();
+    match suffix.rsplit_once('_') {
+        Some((original, digest))
+            if digest.len() == 8 && digest.bytes().all(|byte| byte.is_ascii_hexdigit()) =>
+        {
+            original
+        }
+        _ => suffix,
+    }
+}
+
 fn operator_survivor_members(model: &OperatorVariantModel) -> Vec<BTreeSet<String>> {
     model
         .dimension
@@ -3023,11 +3035,8 @@ fn operator_survivor_members(model: &OperatorVariantModel) -> Vec<BTreeSet<Strin
             model.active_nodes[key]
                 .iter()
                 .map(|node_id| {
-                    node_id
-                        .as_str()
-                        .rsplit('.')
-                        .next()
-                        .and_then(|suffix| suffix.strip_prefix("t_"))
+                    original_node_suffix(node_id)
+                        .strip_prefix("t_")
                         .unwrap_or_else(|| panic!("unexpected active node id `{node_id}`"))
                         .to_string()
                 })
@@ -3611,11 +3620,8 @@ fn model_terminated_constrained_or_pick_mutex_lowers_native_with_model_tail() {
             models[0].active_nodes[key]
                 .iter()
                 .filter_map(|node_id| {
-                    node_id
-                        .as_str()
-                        .rsplit('.')
-                        .next()
-                        .and_then(|suffix| suffix.strip_prefix("t_"))
+                    original_node_suffix(node_id)
+                        .strip_prefix("t_")
                         .map(str::to_string)
                 })
                 .collect::<BTreeSet<_>>()
@@ -3641,7 +3647,7 @@ fn model_terminated_constrained_or_pick_mutex_lowers_native_with_model_tail() {
         let key = choice.active_subsequence.as_ref().unwrap();
         let model_nodes = models[0].active_nodes[key]
             .iter()
-            .filter(|node_id| node_id.as_str().ends_with(".m_base"))
+            .filter(|node_id| original_node_suffix(node_id) == "m_base")
             .count();
         assert_eq!(
             model_nodes, 1,

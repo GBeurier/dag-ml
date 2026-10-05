@@ -501,7 +501,7 @@ impl FilePredictionCacheStore {
         bundle.validate()?;
         let root = root.into();
         let manifest: FilePredictionCacheManifest = read_runtime_json(
-            &root.join(FILE_PREDICTION_CACHE_MANIFEST_FILE),
+            &contained_prediction_cache_path(&root, FILE_PREDICTION_CACHE_MANIFEST_FILE)?,
             "prediction cache manifest",
         )?;
         manifest.validate_against_bundle(bundle)?;
@@ -550,12 +550,30 @@ impl FilePredictionCacheStore {
                 ))
             })?;
         let payload: crate::bundle::BundlePredictionCachePayload = read_runtime_json(
-            &self.root.join(&entry.file_name),
+            &contained_prediction_cache_path(&self.root, &entry.file_name)?,
             "prediction cache payload",
         )?;
         validate_prediction_cache_payload_matches_record(&payload, record)?;
         Ok(payload)
     }
+}
+
+fn contained_prediction_cache_path(root: &Path, name: &str) -> Result<PathBuf> {
+    validate_prediction_cache_file_name(name)?;
+    let canonical_root = fs::canonicalize(root).map_err(|error| {
+        DagMlError::RuntimeValidation(format!("cannot resolve prediction cache root: {error}"))
+    })?;
+    let path = fs::canonicalize(canonical_root.join(name)).map_err(|error| {
+        DagMlError::RuntimeValidation(format!(
+            "cannot resolve prediction cache file `{name}`: {error}"
+        ))
+    })?;
+    if !path.starts_with(&canonical_root) {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "prediction cache file `{name}` escapes its store root"
+        )));
+    }
+    Ok(path)
 }
 
 impl RuntimePredictionCacheStore for FilePredictionCacheStore {
@@ -629,7 +647,13 @@ pub(crate) fn prediction_cache_payload_file_name(
 }
 
 pub(crate) fn validate_prediction_cache_file_name(file_name: &str) -> Result<()> {
-    if file_name == "." || file_name == ".." || file_name.contains('/') || file_name.contains('\\')
+    if file_name == "."
+        || file_name == ".."
+        || file_name.contains('/')
+        || file_name.contains('\\')
+        || file_name.contains(':')
+        || file_name.is_empty()
+        || file_name.chars().any(char::is_control)
     {
         return Err(DagMlError::RuntimeValidation(format!(
             "prediction cache file name `{file_name}` must be a plain file name"

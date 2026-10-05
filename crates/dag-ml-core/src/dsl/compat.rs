@@ -8,7 +8,7 @@ pub(crate) struct CompatGenerationAttachment {
     variants: Vec<PipelineDslVariantChoice>,
     param_generators: Vec<PipelineDslParamGenerator>,
 }
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct CompatDslLowerer {
     node_counter: usize,
     generator_counter: usize,
@@ -97,6 +97,11 @@ impl CompatDslLowerer {
         values: &[serde_json::Value],
         path: &str,
     ) -> Result<Vec<PipelineDslStep>> {
+        let mut canonical_values = values.to_vec();
+        for value in &mut canonical_values {
+            value.sort_all_objects();
+        }
+        let values = canonical_values.as_slice();
         let mut lowered = Vec::new();
         let mut index = 0usize;
         while index < values.len() {
@@ -143,12 +148,16 @@ impl CompatDslLowerer {
             let steps = self.lower_value_as_steps(&values[index], &current_path)?;
             if let [PipelineDslStep::Generator(generator)] = steps.as_slice() {
                 if !generator_step_has_prediction(generator) {
-                    if let Some((combined, consumed)) = self.combine_data_generator_with_following(
-                        generator.clone(),
-                        &values[index + 1..],
-                        path,
-                        index + 1,
-                    )? {
+                    let mut scratch = self.clone();
+                    if let Some((combined, consumed)) = scratch
+                        .combine_data_generator_with_following(
+                            generator.clone(),
+                            &values[index + 1..],
+                            path,
+                            index + 1,
+                        )?
+                    {
+                        *self = scratch;
                         lowered.push(PipelineDslStep::Generator(combined));
                         index += consumed + 1;
                         continue;
@@ -610,6 +619,9 @@ impl CompatDslLowerer {
             return Ok(None);
         };
         let (merge_mode, include_original_data, _) = compat_merge_modes(merge_object)?;
+        if matches!(merge_mode.as_str(), "features" | "sources") {
+            return Ok(None);
+        }
         let operator_step = self.compat_operator_step(Some(next), "model", operator, None, None)?;
         if operator_step.model_input.is_some() {
             return Err(DagMlError::GraphValidation(

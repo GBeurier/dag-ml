@@ -629,7 +629,7 @@ pub fn join_oof_features(
     let mut columns = Vec::new();
 
     for block in blocks {
-        let width = block.validate_shape()?;
+        let width = block.validate_content()?;
         let mut seen = BTreeSet::new();
         let mut by_sample = BTreeMap::new();
         for (sample_id, values) in block.sample_ids.iter().zip(block.values.iter()) {
@@ -690,7 +690,7 @@ pub fn join_oof_campaign_features(
         if !included_partitions.contains(&block.partition) {
             continue;
         }
-        let width = block.validate_shape()?;
+        let width = block.validate_content()?;
         let target_names = normalized_targets(block, width);
         let producer = producers
             .entry(block.producer_node.clone())
@@ -818,7 +818,7 @@ pub fn validate_prediction_blocks_against_folds(
         .map(|fold| (&fold.fold_id, fold))
         .collect::<BTreeMap<_, _>>();
     for block in blocks {
-        block.validate_shape()?;
+        block.validate_content()?;
         let Some(fold_id) = &block.fold_id else {
             if matches!(
                 block.partition,

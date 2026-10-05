@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.35
+
+- Harden native validation, stable archive identities, replay alignment, resource bounds and HPO/lifecycle invariants covered by the DAG bug audit and re-audit regressions.
+- Add the fixed native multimodal archive replay profile and preserve raw source contracts across Python, JS/WASM, R and Octave hosts.
+- Bind native global and fold HPO resumes to the sealed immediate-parent package fingerprint without embedding recursive parent transport.
+- Forward optional cohort authority through C data materialization callbacks while preserving the JSON emitted when it is absent.
+- Refresh ABI/source conformance manifests for the reviewed source closure.
+- Release DAG-ML alone; retain published external dependency versions and do not propagate the broader ADR-10 release train.
+
 ## 0.3.34
 
 - Keep the verified Rust 1.85 runtime minimum and check the retained Core V2 oracle targets separately on Rust 1.88.

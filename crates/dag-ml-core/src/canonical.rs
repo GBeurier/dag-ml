@@ -163,6 +163,20 @@ pub fn parse_typed_json(input: &str) -> Result<TypedCanonicalValue, Tcv1Error> {
     Ok(value)
 }
 
+pub(crate) fn parse_bounded_typed_json(
+    input: &str,
+    max_nodes: usize,
+) -> Result<TypedCanonicalValue, Tcv1Error> {
+    let mut parser = Parser::new(input);
+    parser.remaining_nodes = max_nodes;
+    let value = parser.parse_value(0)?;
+    parser.skip_whitespace();
+    if parser.offset != input.len() {
+        return Err(parser.invalid("trailing data after the JSON value"));
+    }
+    Ok(value)
+}
+
 /// Parse exactly one strict UTF-8 JSON document while retaining numeric kind.
 pub fn parse_typed_json_bytes(input: &[u8]) -> Result<TypedCanonicalValue, Tcv1Error> {
     let input = std::str::from_utf8(input).map_err(|error| Tcv1Error::InvalidUtf8 {
@@ -334,6 +348,7 @@ struct Parser<'a> {
     input: &'a str,
     bytes: &'a [u8],
     offset: usize,
+    remaining_nodes: usize,
 }
 
 impl<'a> Parser<'a> {
@@ -342,10 +357,15 @@ impl<'a> Parser<'a> {
             input,
             bytes: input.as_bytes(),
             offset: 0,
+            remaining_nodes: usize::MAX,
         }
     }
 
     fn parse_value(&mut self, depth: usize) -> Result<TypedCanonicalValue, Tcv1Error> {
+        self.remaining_nodes = self
+            .remaining_nodes
+            .checked_sub(1)
+            .ok_or_else(|| self.invalid("JSON value exceeds its structural element budget"))?;
         if depth > MAX_NESTING_DEPTH {
             return Err(Tcv1Error::NestingTooDeep);
         }
@@ -756,6 +776,13 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn bounded_payload_parser_checks_node_count_during_parsing() {
+        assert!(parse_bounded_typed_json("[0,1,2]", 4).is_ok());
+        assert!(parse_bounded_typed_json("[0,1,2]", 3).is_err());
+        assert!(parse_bounded_typed_json("[[],[]]", 2).is_err());
+    }
 
     fn parse(input: &str) -> TypedCanonicalValue {
         parse_typed_json(input).expect("valid strict JSON")

@@ -5,7 +5,8 @@
 dagml_host_hpo_search(plan, envelope, request, operator_adapter,
   optimizer_adapter, cli = "dag-ml-cli", checkpoint = NULL,
   output = NULL, operator_persistent = FALSE, parallel_trials = 1L,
-  adapter_timeout_ms = 30000L)
+  adapter_timeout_ms = 30000L,
+  operator_timeout_ms = 0L)
 }
 \arguments{
 \item{plan, envelope, request}{Paths to DAG-ML JSON contracts.}
@@ -16,6 +17,7 @@ dagml_host_hpo_search(plan, envelope, request, operator_adapter,
 \item{operator_persistent}{Keep a candidate-local operator process across folds.}
 \item{parallel_trials}{Positive number of concurrent candidate trials. DAG-ML starts isolated operator-adapter processes.}
 \item{adapter_timeout_ms}{Positive adapter response timeout in milliseconds.}
+\item{operator_timeout_ms}{Operator task timeout in milliseconds. Zero disables it. The optimizer timeout remains separate.}
 }
 \value{Native HPO outcome decoded as an R list without simplifying JSON arrays.}
 \description{Calls the DAG-ML CLI HPO scheduler. The native core owns trial execution,

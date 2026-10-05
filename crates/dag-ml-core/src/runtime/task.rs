@@ -488,6 +488,20 @@ impl RuntimeHpoExecutionContext {
                 "runtime HPO study identity must not be empty".to_string(),
             ));
         }
+        let expected_direction = match self.selection.metric.objective() {
+            crate::MetricObjective::Minimize => crate::HpoDirection::Minimize,
+            crate::MetricObjective::Maximize => crate::HpoDirection::Maximize,
+        };
+        if serde_json::to_value(self.study.optimizer.metric)?
+            != serde_json::to_value(self.selection.metric)?
+            || (self.study.optimizer.direction != crate::HpoDirection::Auto
+                && self.study.optimizer.direction != self.selection.direction)
+            || self.selection.direction != expected_direction
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "runtime HPO metric/direction do not match the study and selection".into(),
+            ));
+        }
         self.study.search_space.validate().map_err(|error| {
             DagMlError::RuntimeValidation(format!("runtime HPO search space is invalid: {error}"))
         })?;

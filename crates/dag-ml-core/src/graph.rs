@@ -268,7 +268,18 @@ impl GraphSpec {
         let mut indegree: BTreeMap<NodeId, usize> =
             nodes.keys().cloned().map(|id| (id, 0)).collect();
 
+        let mut edge_keys = BTreeSet::new();
+        let mut inbound = BTreeMap::new();
         for edge in &self.edges {
+            let key = (
+                &edge.source.node_id,
+                &edge.source.port_name,
+                &edge.target.node_id,
+                &edge.target.port_name,
+            );
+            if !edge_keys.insert(key) {
+                return Err(DagMlError::GraphValidation("duplicate graph edge".into()));
+            }
             let source = nodes.get(&edge.source.node_id).ok_or_else(|| {
                 DagMlError::GraphValidation(format!(
                     "edge source node `{}` does not exist",
@@ -308,6 +319,20 @@ impl GraphSpec {
                     source_port.kind,
                     target_port.kind
                 )));
+            }
+            let count = inbound
+                .entry((&edge.target.node_id, &edge.target.port_name))
+                .or_insert(0usize);
+            *count += 1;
+            if *count > 1
+                && matches!(
+                    target_port.cardinality,
+                    PortCardinality::One | PortCardinality::Optional
+                )
+            {
+                return Err(DagMlError::GraphValidation(
+                    "multiple edges feed a single input port".into(),
+                ));
             }
             validate_edge_contract(edge, source_port, target_port)?;
             if edge.contract.requires_oof && edge.contract.kind != PortKind::Prediction {
@@ -845,7 +870,14 @@ mod tests {
                     vec![port("pred", PortKind::Prediction)],
                     vec![port("pred", PortKind::Prediction)],
                 ),
-                node("model:d", vec![port("pred", PortKind::Prediction)], vec![]),
+                node(
+                    "model:d",
+                    vec![PortSpec {
+                        cardinality: PortCardinality::Many,
+                        ..port("pred", PortKind::Prediction)
+                    }],
+                    vec![],
+                ),
             ],
             edges: vec![
                 edge("model:a", "pred", "model:b", "pred"),

@@ -152,6 +152,9 @@ pub fn read_native_results(run_dir: impl AsRef<Path>) -> Result<NativeResultsVie
     }
 
     let predictions = read_prediction_rows(&run_dir.join(PREDICTIONS_FILENAME))?;
+    for row in &predictions {
+        validate_prediction_row(row)?;
+    }
     Ok(NativeResultsView {
         manifest,
         score_set,
@@ -165,7 +168,7 @@ pub fn read_native_results(run_dir: impl AsRef<Path>) -> Result<NativeResultsVie
 /// This function writes only the three fixed V2 files and refuses to overwrite
 /// any of them. It validates exactly the payload that the reader will consume,
 /// reserves one writer, writes temporary sibling files first, then publishes
-/// them with exclusive hard links (the manifest last). The manifest is the
+/// them with hard links or exclusive-create copies (the manifest last). The manifest is the
 /// commit marker: readers cannot accept a partially published directory.
 /// Ordinary errors roll back this writer's files. After an abrupt process
 /// termination, an unfinished directory and reservation are left intact;
@@ -263,7 +266,31 @@ fn publish_result_files(temporary: &[PathBuf; 3], destinations: &[PathBuf; 3]) -
     // Same-directory hard links fail atomically if a destination exists,
     // including a dangling symlink. Never use rename's replace semantics.
     for index in [1, 2, 0] {
-        if let Err(error) = std::fs::hard_link(&temporary[index], &destinations[index]) {
+        let publish =
+            std::fs::hard_link(&temporary[index], &destinations[index]).or_else(|error| {
+                if !matches!(
+                    error.kind(),
+                    io::ErrorKind::Unsupported | io::ErrorKind::PermissionDenied
+                ) {
+                    return Err(error);
+                }
+                // Exclusive creation keeps the same no-overwrite guarantee on
+                // filesystems that cannot hard-link. Manifest is still committed last.
+                let mut output = OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&destinations[index])?;
+                let copied = (|| {
+                    let mut input = std::fs::File::open(&temporary[index])?;
+                    io::copy(&mut input, &mut output)?;
+                    output.sync_all()
+                })();
+                if copied.is_err() {
+                    let _ = std::fs::remove_file(&destinations[index]);
+                }
+                copied
+            });
+        if let Err(error) = publish {
             for path in published.iter().rev() {
                 let _ = std::fs::remove_file(path);
             }
@@ -636,6 +663,19 @@ fn validate_shape(field: &str, values: &[f64], shape: &[i64]) -> Result<()> {
 }
 
 fn validate_prediction_row(row: &NativePredictionRow) -> Result<()> {
+    if row
+        .y_true
+        .iter()
+        .chain(&row.y_pred)
+        .chain(&row.y_proba)
+        .chain(&row.weights)
+        .chain(row.val_score.iter())
+        .chain(row.test_score.iter())
+        .chain(row.train_score.iter())
+        .any(|value| !value.is_finite())
+    {
+        return Err(validation("prediction rows must contain finite numbers"));
+    }
     if row.arrays_present == row.y_pred.is_empty() {
         return Err(validation(
             "prediction row arrays_present must agree with whether y_pred is present",
@@ -870,17 +910,85 @@ fn required_i64(object: &Map<String, Value>, key: &str, label: &str) -> Result<i
         .ok_or_else(|| validation(format!("{label}.{key} must be an integer")))
 }
 
-fn score_set_hash(score_set: &Value) -> String {
+/// SHA-256 of the canonical ScoreSet JSON used by the native V2 manifest.
+///
+/// This preserves Python JSON float notation and integer/float identity, so
+/// host facades can construct manifests without duplicating the serializer.
+pub fn score_set_hash(score_set: &Value) -> String {
     let canonical = canonical_json(score_set);
     let mut hasher = Sha256::new();
     hasher.update(canonical.as_bytes());
     format!("{:x}", hasher.finalize())
 }
 
+// Python json.dumps uses repr's exponent notation (including sign and two
+// digits) outside [1e-4, 1e16). Both encoders use the shortest round-tripping
+// binary64 digits; only their notation thresholds differ.
+fn python_float_json(value: f64) -> String {
+    let text = serde_json::Number::from_f64(value)
+        .expect("finite JSON number")
+        .to_string();
+    let absolute = value.abs();
+    if absolute == 0.0 {
+        return text;
+    }
+    let scientific = !(1e-4..1e16).contains(&absolute);
+    let (mantissa, exponent) = if let Some((mantissa, exponent)) = text.split_once('e') {
+        (
+            mantissa.to_string(),
+            exponent.parse::<i32>().expect("JSON exponent"),
+        )
+    } else {
+        let negative = text.starts_with('-');
+        let unsigned = text.trim_start_matches('-');
+        let decimal = unsigned.find('.').unwrap_or(unsigned.len());
+        let digits = unsigned.replace('.', "");
+        let first = digits.find(|ch| ch != '0').expect("nonzero float");
+        let significant = digits[first..].trim_end_matches('0');
+        let mantissa = if significant.len() == 1 {
+            significant.to_string()
+        } else {
+            format!("{}.{}", &significant[..1], &significant[1..])
+        };
+        (
+            format!("{}{mantissa}", if negative { "-" } else { "" }),
+            decimal as i32 - first as i32 - 1,
+        )
+    };
+    if scientific {
+        format!("{}e{exponent:+03}", mantissa.trim_end_matches(".0"))
+    } else if text.contains('e') {
+        let negative = mantissa.starts_with('-');
+        let digits = mantissa.trim_start_matches('-').replace('.', "");
+        let decimal = exponent + 1;
+        let fixed = if decimal <= 0 {
+            format!("0.{}{digits}", "0".repeat((-decimal) as usize))
+        } else if decimal as usize >= digits.len() {
+            format!(
+                "{}{}.0",
+                digits,
+                "0".repeat(decimal as usize - digits.len())
+            )
+        } else {
+            format!(
+                "{}.{}",
+                &digits[..decimal as usize],
+                &digits[decimal as usize..]
+            )
+        };
+        format!("{}{fixed}", if negative { "-" } else { "" })
+    } else {
+        text
+    }
+}
+
 fn canonical_json(value: &Value) -> String {
     match value {
         Value::Null => "null".to_owned(),
         Value::Bool(value) => value.to_string(),
+        Value::Number(value) if value.is_f64() => {
+            python_float_json(value.as_f64().expect("binary64 number"))
+        }
         Value::Number(value) => value.to_string(),
         Value::String(value) => {
             serde_json::to_string(value).expect("string serialization cannot fail")
@@ -933,6 +1041,24 @@ mod tests {
         read_native_results, score_set_hash, write_native_results, NativeResultsError,
         PREDICTIONS_FILENAME,
     };
+
+    #[test]
+    fn float_hash_encoding_matches_python_json_at_notation_boundaries() {
+        // Expected strings are produced by CPython json.dumps for binary64 inputs.
+        for (value, expected) in [
+            (1e-6, "1e-06"),
+            (-1e-6, "-1e-06"),
+            (1e-4, "0.0001"),
+            (1e16, "1e+16"),
+            (1e20, "1e+20"),
+            (1.0, "1.0"),
+            (-0.0, "-0.0"),
+            (1.2345678901234567e-12, "1.2345678901234567e-12"),
+        ] {
+            assert_eq!(super::canonical_json(&json!(value)), expected);
+        }
+        assert_eq!(super::canonical_json(&json!(1)), "1");
+    }
 
     #[test]
     fn reads_a_valid_v2_native_results_directory() {

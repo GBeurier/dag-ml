@@ -298,7 +298,8 @@ pub(crate) fn expand_available_prediction_input(
     requested: &[SampleId],
     presence: &[bool],
 ) -> Result<PredictionInputSpec> {
-    if requested.len() != presence.len()
+    if input.values.len() != input.sample_ids.len()
+        || requested.len() != presence.len()
         || requested.iter().collect::<BTreeSet<_>>().len() != requested.len()
     {
         return Err(DagMlError::OofValidation(
@@ -599,6 +600,7 @@ pub(crate) fn validate_available_target_masks(
     };
     let positions = signed.positions();
     for block in &result.regression_targets {
+        block.validate_shape()?;
         if block.target_names != signed.target_names {
             return Err(DagMlError::RuntimeValidation(
                 "availability target names disagree with the signed graph".into(),
@@ -1125,6 +1127,8 @@ pub(crate) fn apply_stacking_prediction_aggregations(
                         &blocks,
                         scores,
                         selector.metric.as_deref().unwrap_or("rmse"),
+                        candidate_score_folds,
+                        candidate_variant,
                     );
                     crate::aggregation::reduce_mean_within_branch(
                         &blocks,
@@ -1261,6 +1265,24 @@ impl StackingFoldSelectionRequest {
                 self.metric
             ))
         })?;
+        if kind.objective() == crate::selection::MetricObjective::Minimize
+            && self.reports.iter().any(|report| {
+                report.producer_node == self.producer_node
+                    && report.partition == PredictionPartition::Validation
+                    && report
+                        .fold_id
+                        .as_ref()
+                        .is_some_and(|fold| self.fold_ids.contains(fold))
+                    && report
+                        .metrics
+                        .get(&self.metric)
+                        .is_some_and(|score| *score < 0.0)
+            })
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "stacking error metrics cannot be negative".into(),
+            ));
+        }
         let higher_better = kind.objective() == crate::selection::MetricObjective::Maximize;
         let mut weights = self
             .fold_ids
@@ -1281,7 +1303,7 @@ impl StackingFoldSelectionRequest {
                         } else if *score >= 0.0 {
                             1.0 / (score + 1e-10)
                         } else {
-                            score.abs()
+                            0.0
                         }
                     })
             })
@@ -1379,26 +1401,41 @@ impl StackingProducerSelectionRequest {
                 "stacking selection needs a valid top_k and metric".to_string(),
             ));
         }
-        let mut ranked = self
-            .producer_nodes
-            .iter()
-            .enumerate()
-            .filter_map(|(index, producer)| {
-                self.reports
-                    .iter()
-                    .find(|report| {
-                        report.producer_node == *producer
-                            && report.partition == PredictionPartition::Validation
-                            && report.fold_id.is_some()
-                            && report
+        let mut ranked =
+            self.producer_nodes
+                .iter()
+                .enumerate()
+                .filter_map(|(index, producer)| {
+                    self.reports
+                        .iter()
+                        .filter(|report| {
+                            report.producer_node == *producer
+                                && report.partition == PredictionPartition::Validation
+                                && report.level == PredictionLevel::Sample
+                                && report.fold_id.as_ref().is_some_and(|fold| {
+                                    self.fold_ids.is_empty() || self.fold_ids.contains(fold)
+                                })
+                                && self.variant_id.as_ref().is_none_or(|variant| {
+                                    report.variant_id.as_ref() == Some(variant)
+                                })
+                        })
+                        .filter_map(|report| {
+                            report
                                 .metrics
                                 .get(&self.metric)
-                                .is_some_and(|score| score.is_finite())
-                    })
-                    .and_then(|report| report.metrics.get(&self.metric))
-                    .map(|score| (index, *score))
-            })
-            .collect::<Vec<_>>();
+                                .copied()
+                                .filter(|v| v.is_finite())
+                        })
+                        .collect::<Vec<_>>()
+                        .split_first()
+                        .map(|(first, rest)| {
+                            (
+                                index,
+                                (first + rest.iter().sum::<f64>()) / (rest.len() + 1) as f64,
+                            )
+                        })
+                })
+                .collect::<Vec<_>>();
         if ranked.is_empty() {
             return Ok(self.producer_nodes.iter().take(limit).cloned().collect());
         }
@@ -1678,31 +1715,43 @@ fn select_stacking_inputs<'a>(
 }
 
 /// Legacy weighted mean uses inverse validation error and falls back to equal
-/// weights when any model lacks a score. The first report for each producer is
-/// chosen consistently so refit and replay do not depend on later score rows.
+/// weights when no usable validation evidence remains. Fold/variant scoping
+/// matches producer selection; weights use the mean of eligible fold scores.
 fn stacking_model_weights(
     blocks: &[PredictionBlock],
     scores: &[RegressionMetricReport],
     metric: &str,
+    folds: Option<&BTreeSet<FoldId>>,
+    variant: Option<&VariantId>,
 ) -> Option<Vec<f64>> {
     let higher_better = crate::metrics::RegressionMetricKind::from_name(metric)
         .is_some_and(|kind| kind.objective() == crate::selection::MetricObjective::Maximize);
     let weights = blocks
         .iter()
         .map(|block| {
-            let score = scores
+            let matching = scores
                 .iter()
-                .find(|report| {
+                .filter(|report| {
                     report.producer_node == block.producer_node
+                        && report.producer_port == block.producer_port
                         && report.partition == PredictionPartition::Validation
-                        && report.fold_id.is_some()
-                        && report.metrics.contains_key(metric)
+                        && report.level == PredictionLevel::Sample
+                        && report
+                            .fold_id
+                            .as_ref()
+                            .is_some_and(|fold| folds.is_none_or(|ids| ids.contains(fold)))
+                        && variant.is_none_or(|id| report.variant_id.as_ref() == Some(id))
                 })
-                .and_then(|report| report.metrics.get(metric));
+                .filter_map(|report| report.metrics.get(metric))
+                .filter(|value| value.is_finite())
+                .copied()
+                .collect::<Vec<_>>();
+            let score = (!matching.is_empty())
+                .then(|| matching.iter().sum::<f64>() / matching.len() as f64);
             match score {
                 Some(score) if score.is_finite() && higher_better => score.max(0.0),
-                Some(score) if score.is_finite() && *score >= 0.0 => 1.0 / (score + 1e-10),
-                Some(score) if score.is_finite() => score.abs(),
+                Some(score) if score.is_finite() && score >= 0.0 => 1.0 / (score + 1e-10),
+                Some(_) => 0.0,
                 _ => 0.0,
             }
         })
@@ -2075,7 +2124,7 @@ pub(crate) fn collect_off_fold_prediction_input(
         )));
     }
     let block = blocks[0];
-    let width = block.validate_shape()?;
+    let width = block.validate_content()?;
     let target_names = if block.target_names.is_empty() {
         (0..width).map(|index| format!("p{index}")).collect()
     } else {
@@ -2163,7 +2212,7 @@ pub(crate) fn collect_cv_fold_test_prediction_input(
             blocks.len()
         )));
     }
-    let width = block.validate_shape()?;
+    let width = block.validate_content()?;
     let source_plan = plan
         .node_plans
         .get(&edge.source.node_id)
@@ -2771,7 +2820,7 @@ pub(crate) fn prediction_input_spec(
     let mut prediction_width = None;
     let mut target_names = None;
     for block in blocks {
-        let width = block.validate_shape()?;
+        let width = block.validate_content()?;
         for (sample_id, row) in block.sample_ids.iter().zip(block.values.iter()) {
             let rows = rows_by_sample.entry(sample_id).or_default();
             if !allow_cross_fold_duplicates && !rows.is_empty() {

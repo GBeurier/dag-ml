@@ -221,7 +221,7 @@ impl ArrowPredictionCacheStore {
             let bytes = predictions_to_arrow_ipc(payload)?;
             let ipc_fingerprint = sha256_hex(&bytes);
             let file_name = format!("prediction-cache-{}.arrow", &ipc_fingerprint[..16]);
-            fs::write(root.join(&file_name), &bytes).map_err(|error| {
+            atomic_write(&root.join(&file_name), &bytes).map_err(|error| {
                 DagMlError::RuntimeValidation(format!(
                     "failed to write Arrow prediction cache `{}`: {error}",
                     root.join(&file_name).display()
@@ -389,12 +389,41 @@ fn write_json<T: Serialize>(path: &Path, value: &T, label: &str) -> Result<()> {
         DagMlError::RuntimeValidation(format!("failed to serialize {label}: {error}"))
     })?;
     bytes.push(b'\n');
-    fs::write(path, bytes).map_err(|error| {
+    atomic_write(path, &bytes).map_err(|error| {
         DagMlError::RuntimeValidation(format!(
             "failed to write {label} at `{}`: {error}",
             path.display()
         ))
     })
+}
+
+fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    static NEXT_TEMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let suffix = NEXT_TEMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let temporary = path.with_file_name(format!(
+        ".{}.{}.{}.tmp",
+        path.file_name().unwrap().to_string_lossy(),
+        std::process::id(),
+        suffix
+    ));
+    let result = (|| {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&temporary, path)?;
+        #[cfg(unix)]
+        std::fs::File::open(path.parent().unwrap())?.sync_all()?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
 }
 
 fn cache_schema(payload: &BundlePredictionCachePayload) -> Result<Schema> {
@@ -440,14 +469,6 @@ fn cache_schema(payload: &BundlePredictionCachePayload) -> Result<Schema> {
     metadata.insert(
         METADATA_KEY_ROW_COUNT.to_string(),
         payload.row_count.to_string(),
-    );
-    metadata.insert(
-        METADATA_KEY_CACHE_NAMESPACE_FINGERPRINTS.to_string(),
-        serde_json::to_string(&payload.cache_namespace_fingerprints).map_err(|error| {
-            DagMlError::RuntimeValidation(format!(
-                "failed to serialize cache namespace fingerprints for Arrow metadata: {error}"
-            ))
-        })?,
     );
 
     let fields = vec![
