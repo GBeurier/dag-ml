@@ -410,6 +410,18 @@ impl SequentialScheduler {
                 hpo.trial_budget_total
             )));
         }
+        for node in plan
+            .node_plans
+            .values()
+            .filter(|node| node.supported_phases.contains(&Phase::FitCv))
+        {
+            if controllers.get(&node.controller_id).is_none() {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "native HPO FIT_CV controller `{}` for node `{}` is not registered",
+                    node.controller_id, node.node_id
+                )));
+            }
+        }
         let remaining_trials = hpo.trial_budget_total - history_at_start;
         let mut candidates = Vec::new();
         let mut proposed_variant_ids = BTreeSet::new();
@@ -422,6 +434,7 @@ impl SequentialScheduler {
         let mut terminal_trials = BTreeMap::new();
         let mut completed_proposals = Vec::new();
         let mut completed_reports = Vec::new();
+        let mut first_candidate_error: Option<String> = None;
 
         for _ in 0..remaining_trials {
             let Some(proposal) = session.ask()? else {
@@ -451,6 +464,21 @@ impl SequentialScheduler {
                     proposal.variant.variant_id
                 )));
             }
+            let allowed = hpo.parameter_paths.values().collect::<BTreeSet<_>>();
+            for (dimension, choice) in &proposal.variant.choices {
+                if hpo.base_variant.choices.get(dimension) == Some(choice) {
+                    continue;
+                }
+                if choice.param_overrides.iter().any(|patch| {
+                    patch.node_id != hpo.target_node_id
+                        || patch.params.keys().any(|key| !allowed.contains(key))
+                }) || choice.active_subsequence.is_some()
+                {
+                    return Err(DagMlError::RuntimeValidation(
+                        "native HPO proposal changes undeclared parameters or topology".into(),
+                    ));
+                }
+            }
             let mut candidate_plan = plan.clone();
             candidate_plan.variants = vec![proposal.variant.clone()];
             candidate_plan.validate()?;
@@ -476,6 +504,12 @@ impl SequentialScheduler {
             let evaluation = match evaluation {
                 Ok(evaluation) => evaluation,
                 Err(error) => {
+                    // Runtime refusals can represent an invalid numerical
+                    // candidate. OOF, graph, plan and contract errors are fatal.
+                    if !matches!(error, DagMlError::RuntimeValidation(_)) {
+                        return Err(error);
+                    }
+                    first_candidate_error.get_or_insert_with(|| error.to_string());
                     session.tell(
                         proposal.trial_id,
                         RuntimeHpoTerminal::Failed {
@@ -494,9 +528,11 @@ impl SequentialScheduler {
                 terminal_trials.insert(proposal.trial_id, HpoTrialTerminalState::Pruned);
                 continue;
             }
-            if let Err(error) = candidate_ctx
-                .collect_cross_fold_validation_scores(plan_oof_partition_mode(&candidate_plan))
-            {
+            if let Err(error) = candidate_ctx.collect_cross_fold_validation_scores_for_target(
+                plan_oof_partition_mode(&candidate_plan),
+                hpo.selection.metric,
+                Some(&hpo.selection.producer_node),
+            ) {
                 session.tell(
                     proposal.trial_id,
                     RuntimeHpoTerminal::Failed {
@@ -508,7 +544,7 @@ impl SequentialScheduler {
                     },
                 )?;
                 terminal_trials.insert(proposal.trial_id, HpoTrialTerminalState::Failed);
-                continue;
+                return Err(error);
             }
             let report = candidate_ctx
                 .score_collector
@@ -518,6 +554,8 @@ impl SequentialScheduler {
                         && report.producer_port.as_deref()
                             == Some(hpo.selection.producer_port.as_str())
                         && report.partition == PredictionPartition::Validation
+                        && report.level == plan.campaign.aggregation_policy.selection_metric_level
+                        && report.grouping_key == plan.campaign.aggregation_policy.grouping_key
                         && report
                             .fold_id
                             .as_ref()
@@ -597,7 +635,7 @@ impl SequentialScheduler {
         }
 
         let history_at_checkpoint = session.trial_history_len()?;
-        if history_at_checkpoint != hpo.trial_budget_total {
+        if history_at_checkpoint > hpo.trial_budget_total {
             return Err(DagMlError::RuntimeValidation(format!(
                 "runtime HPO native history ended at {history_at_checkpoint}, expected total trial budget {}",
                 hpo.trial_budget_total
@@ -617,15 +655,18 @@ impl SequentialScheduler {
         validate_hpo_checkpoint_result(
             &checkpoint,
             hpo,
+            plan,
             &trial_variants,
             &terminal_trials,
             history_at_start,
         )?;
         let incumbent = session.incumbent(&incumbent_variants)?.ok_or_else(|| {
-            DagMlError::RuntimeValidation(
-                "native HPO campaign has no completed native incumbent after terminalization"
-                    .to_string(),
-            )
+            let detail = first_candidate_error.as_ref()
+                .map(|error| format!("; first candidate failure: {error}"))
+                .unwrap_or_default();
+            DagMlError::RuntimeValidation(format!(
+                "native HPO campaign has no completed native incumbent after terminalization{detail}"
+            ))
         })?;
         if incumbent.metric != hpo.selection.metric.name()
             || incumbent.direction != hpo.selection.direction
@@ -705,6 +746,8 @@ impl SequentialScheduler {
                         && report.producer_port.as_deref()
                             == Some(feedback.selection.producer_port.as_str())
                         && report.partition == PredictionPartition::Validation
+                        && report.level == plan.campaign.aggregation_policy.selection_metric_level
+                        && report.grouping_key == plan.campaign.aggregation_policy.grouping_key
                         && report.fold_id == fold_id
                 })
                 .collect::<Vec<_>>();
@@ -809,6 +852,8 @@ impl SequentialScheduler {
             .filter(|report| {
                 report.producer_node == *target_node
                     && report.partition == PredictionPartition::Validation
+                    && report.level == plan.campaign.aggregation_policy.selection_metric_level
+                    && report.grouping_key == plan.campaign.aggregation_policy.grouping_key
                     && report.fold_id.as_ref() == Some(&fold.fold_id)
             })
             .collect::<Vec<_>>();
@@ -1067,7 +1112,21 @@ impl SequentialScheduler {
         phase: Phase,
     ) -> Result<Vec<NodeResult>> {
         plan.validate()?;
-        if phase == Phase::FitCv && !nested_stacking_campaign_plans(plan)?.is_empty() {
+        if plan.variants.len() > 1
+            && ctx.variant_id.is_none()
+            && (plan
+                .graph_plan
+                .graph
+                .edges
+                .iter()
+                .any(|edge| edge.contract.requires_oof)
+                || plan.campaign.aggregation_policy.grouping_key.is_some())
+        {
+            return Err(DagMlError::RuntimeValidation("run context mixes several variants; prediction dependencies and grouped scoring require a variant-specific RunContext".into()));
+        }
+        if matches!(phase, Phase::FitCv | Phase::Refit)
+            && !nested_stacking_campaign_plans(plan)?.is_empty()
+        {
             return Err(DagMlError::RuntimeValidation(
                 "nested stacking FIT_CV requires execute_campaign_phase_with_data_provider so the scheduler can materialize parent-bound inner folds"
                     .to_string(),
@@ -1157,7 +1216,17 @@ impl SequentialScheduler {
                         "local HPO selected variant lacks proposal".into(),
                     )
                 })?;
-            choice.param_overrides[0].params = scope.winner_params.clone();
+            let [proposal_override] = choice.param_overrides.as_mut_slice() else {
+                return Err(DagMlError::RuntimeValidation(
+                    "local HPO requires exactly one target override".into(),
+                ));
+            };
+            if proposal_override.node_id != state.target_node_id {
+                return Err(DagMlError::RuntimeValidation(
+                    "local HPO override targets another node".into(),
+                ));
+            }
+            proposal_override.params = scope.winner_params.clone();
             execution.fingerprint = stable_json_fingerprint(&(
                 &variant.fingerprint,
                 &scope.scope_id,
@@ -1193,6 +1262,18 @@ impl SequentialScheduler {
         phase: Phase,
     ) -> Result<Vec<NodeResult>> {
         plan.validate()?;
+        if plan.variants.len() > 1
+            && ctx.variant_id.is_none()
+            && (plan
+                .graph_plan
+                .graph
+                .edges
+                .iter()
+                .any(|edge| edge.contract.requires_oof)
+                || plan.campaign.aggregation_policy.grouping_key.is_some())
+        {
+            return Err(DagMlError::RuntimeValidation("run context mixes several variants; prediction dependencies and grouped scoring require a variant-specific RunContext".into()));
+        }
         if phase == Phase::FitCv {
             ctx.configure_global_oof_aggregation(plan, data_provider)?;
             let campaigns = nested_stacking_campaign_plans(plan)?;
@@ -1274,6 +1355,18 @@ impl SequentialScheduler {
         phase: Phase,
     ) -> Result<Vec<NodeResult>> {
         plan.validate()?;
+        if plan.variants.len() > 1
+            && ctx.variant_id.is_none()
+            && (plan
+                .graph_plan
+                .graph
+                .edges
+                .iter()
+                .any(|edge| edge.contract.requires_oof)
+                || plan.campaign.aggregation_policy.grouping_key.is_some())
+        {
+            return Err(DagMlError::RuntimeValidation("run context mixes several variants; prediction dependencies and grouped scoring require a variant-specific RunContext".into()));
+        }
         if phase == Phase::FitCv {
             ctx.configure_global_oof_aggregation(plan, data_provider)?;
             let campaigns = nested_stacking_campaign_plans(plan)?;
@@ -1281,6 +1374,9 @@ impl SequentialScheduler {
                 // FIT_CV produces no refit artifacts. Keep the data-provider
                 // route canonical rather than silently using an artifact store
                 // that cannot participate in the inner-OOF proof.
+                if phase == Phase::FitCv {
+                    ctx.configure_global_oof_aggregation(plan, data_provider)?;
+                }
                 let mut results = Vec::new();
                 for nested in &campaigns {
                     results.extend(self.execute_nested_stacking_fit_cv(
@@ -1790,6 +1886,11 @@ impl SequentialScheduler {
     ) -> Result<Vec<NodeResult>> {
         let mut scoped_plan = plan.clone();
         scoped_plan.fold_set = Some(fold_set.clone());
+        if let Some(split) = &mut scoped_plan.campaign.split_invocation {
+            split.fold_set = Some(fold_set.clone());
+        }
+        scoped_plan.campaign_fingerprint =
+            crate::campaign::stable_json_fingerprint(&scoped_plan.campaign)?;
         let mut results = Vec::new();
         for level in plan.node_parallel_levels_for_phase(Phase::FitCv)? {
             for node_id in level {
@@ -2328,6 +2429,9 @@ impl SequentialScheduler {
         direct_sample_prediction_only: bool,
     ) -> Result<Vec<NodeResult>> {
         replay.bundle.validate_against_plan(replay.plan)?;
+        if replay.replay_request.phase == Phase::Refit {
+            replay.bundle.validate_refit_oof_requirements(replay.plan)?;
+        }
         ctx.stacking_weight_scores = replay
             .bundle
             .scores
@@ -2421,6 +2525,8 @@ impl SequentialScheduler {
         scope: PhaseScope,
         mut resources: PhaseScopeResources<'_>,
     ) -> Result<Vec<NodeResult>> {
+        ctx.retain_controller_resources(controllers)?;
+        ctx.record_variant_scope(scope.variant_id.as_ref());
         if plan.campaign.aggregation_policy.grouping_key.is_some()
             && matches!(scope.phase, Phase::FitCv | Phase::Refit)
         {
@@ -2862,7 +2968,21 @@ impl ParallelScheduler {
         phase: Phase,
     ) -> Result<Vec<NodeResult>> {
         plan.validate()?;
-        if phase == Phase::FitCv && !nested_stacking_campaign_plans(plan)?.is_empty() {
+        if plan.variants.len() > 1
+            && ctx.variant_id.is_none()
+            && (plan
+                .graph_plan
+                .graph
+                .edges
+                .iter()
+                .any(|edge| edge.contract.requires_oof)
+                || plan.campaign.aggregation_policy.grouping_key.is_some())
+        {
+            return Err(DagMlError::RuntimeValidation("run context mixes several variants; prediction dependencies and grouped scoring require a variant-specific RunContext".into()));
+        }
+        if matches!(phase, Phase::FitCv | Phase::Refit)
+            && !nested_stacking_campaign_plans(plan)?.is_empty()
+        {
             return Err(DagMlError::RuntimeValidation(
                 "nested stacking FIT_CV is scheduler-serial by construction; use SequentialScheduler so inner OOF evidence is retained before outer evaluation"
                     .to_string(),
@@ -2920,10 +3040,24 @@ impl ParallelScheduler {
         phase: Phase,
     ) -> Result<Vec<NodeResult>> {
         plan.validate()?;
+        if plan.variants.len() > 1
+            && ctx.variant_id.is_none()
+            && (plan
+                .graph_plan
+                .graph
+                .edges
+                .iter()
+                .any(|edge| edge.contract.requires_oof)
+                || plan.campaign.aggregation_policy.grouping_key.is_some())
+        {
+            return Err(DagMlError::RuntimeValidation("run context mixes several variants; prediction dependencies and grouped scoring require a variant-specific RunContext".into()));
+        }
         if phase == Phase::FitCv {
             ctx.configure_global_oof_aggregation(plan, data_provider)?;
         }
-        if phase == Phase::FitCv && !nested_stacking_campaign_plans(plan)?.is_empty() {
+        if matches!(phase, Phase::FitCv | Phase::Refit)
+            && !nested_stacking_campaign_plans(plan)?.is_empty()
+        {
             return Err(DagMlError::RuntimeValidation(
                 "nested stacking FIT_CV is scheduler-serial by construction; use SequentialScheduler so inner OOF evidence is retained before outer evaluation"
                     .to_string(),
@@ -2985,7 +3119,21 @@ impl ParallelScheduler {
         phase: Phase,
     ) -> Result<Vec<NodeResult>> {
         plan.validate()?;
-        if phase == Phase::FitCv && !nested_stacking_campaign_plans(plan)?.is_empty() {
+        if plan.variants.len() > 1
+            && ctx.variant_id.is_none()
+            && (plan
+                .graph_plan
+                .graph
+                .edges
+                .iter()
+                .any(|edge| edge.contract.requires_oof)
+                || plan.campaign.aggregation_policy.grouping_key.is_some())
+        {
+            return Err(DagMlError::RuntimeValidation("run context mixes several variants; prediction dependencies and grouped scoring require a variant-specific RunContext".into()));
+        }
+        if matches!(phase, Phase::FitCv | Phase::Refit)
+            && !nested_stacking_campaign_plans(plan)?.is_empty()
+        {
             return Err(DagMlError::RuntimeValidation(
                 "nested stacking FIT_CV is scheduler-serial by construction; use SequentialScheduler so inner OOF evidence is retained before outer evaluation"
                     .to_string(),
@@ -3044,6 +3192,9 @@ impl ParallelScheduler {
         ctx: &mut RunContext,
     ) -> Result<Vec<NodeResult>> {
         replay.bundle.validate_against_plan(replay.plan)?;
+        if replay.replay_request.phase == Phase::Refit {
+            replay.bundle.validate_refit_oof_requirements(replay.plan)?;
+        }
         ctx.stacking_weight_scores = replay
             .bundle
             .scores
@@ -3136,6 +3287,8 @@ impl ParallelScheduler {
         scope: PhaseScope,
         mut resources: PhaseScopeResources<'_>,
     ) -> Result<Vec<NodeResult>> {
+        ctx.retain_controller_resources(controllers)?;
+        ctx.record_variant_scope(scope.variant_id.as_ref());
         if plan.campaign.aggregation_policy.grouping_key.is_some()
             && matches!(scope.phase, Phase::FitCv | Phase::Refit)
         {
@@ -3525,6 +3678,7 @@ enum HpoTrialTerminalState {
 fn validate_hpo_checkpoint_result(
     checkpoint: &RuntimeHpoCheckpointResult,
     hpo: &RuntimeHpoExecutionContext,
+    plan: &ExecutionPlan,
     trial_variants: &BTreeMap<i64, VariantId>,
     terminal_trials: &BTreeMap<i64, HpoTrialTerminalState>,
     history_at_start: u32,
@@ -3549,7 +3703,7 @@ fn validate_hpo_checkpoint_result(
             "runtime HPO scheduler proposal count does not fit u32".to_string(),
         )
     })?;
-    if checkpoint.trial_history_len != hpo.trial_budget_total
+    if checkpoint.trial_history_len > hpo.trial_budget_total
         || checkpoint.trial_history_len < history_at_start
         || checkpoint.trial_history_len - history_at_start != proposed_count
     {
@@ -3627,6 +3781,8 @@ fn validate_hpo_checkpoint_result(
         if report.producer_node != hpo.selection.producer_node
             || report.producer_port.as_deref() != Some(hpo.selection.producer_port.as_str())
             || report.partition != PredictionPartition::Validation
+            || report.level != plan.campaign.aggregation_policy.selection_metric_level
+            || report.grouping_key != plan.campaign.aggregation_policy.grouping_key
             || report
                 .fold_id
                 .as_ref()
@@ -3850,7 +4006,26 @@ mod hpo_scheduler_tests {
                     if self.history_len != 0 || self.proposal_count != 1 {
                         variant.variant_id = VariantId::new(format!("hpo:trial:{trial_id}"))
                             .map_err(|error| DagMlError::RuntimeValidation(error.to_string()))?;
-                        variant.fingerprint = format!("hpo-test-{trial_id}");
+                        variant.choices.insert(
+                            "native_methods_hpo".into(),
+                            crate::generation::GenerationChoice {
+                                label: format!("trial:{trial_id}"),
+                                value: serde_json::json!({"trial_id": trial_id}),
+                                param_overrides: vec![crate::generation::GenerationParamOverride {
+                                    node_id: context.target_node_id.clone(),
+                                    params: BTreeMap::from([(
+                                        "n_components".into(),
+                                        serde_json::json!(1),
+                                    )]),
+                                }],
+                                active_subsequence: None,
+                            },
+                        );
+                        variant.fingerprint = stable_json_fingerprint(&(
+                            context.base_variant.fingerprint.as_str(),
+                            &variant.choices,
+                            trial_id,
+                        ))?;
                     }
                     Ok(RuntimeHpoProposal { trial_id, variant })
                 })
@@ -4417,7 +4592,16 @@ mod hpo_scheduler_tests {
         // refuse it before the session factory, model or intermediate path.
         let mut resampled_plan = plan.clone();
         resampled_plan.fold_set.as_mut().unwrap().partition_mode = FoldPartitionMode::Resampled;
+        resampled_plan
+            .campaign
+            .split_invocation
+            .as_mut()
+            .unwrap()
+            .fold_set = resampled_plan.fold_set.clone();
+        resampled_plan.campaign_fingerprint =
+            stable_json_fingerprint(&resampled_plan.campaign).unwrap();
         let mut resampled_hpo = hpo.clone();
+        resampled_hpo.provenance.campaign_fingerprint = resampled_plan.campaign_fingerprint.clone();
         resampled_hpo.provenance.fold_set_fingerprint =
             Some(stable_json_fingerprint(resampled_plan.fold_set.as_ref().unwrap()).unwrap());
         let trace_len_before = trace.lock().unwrap().len();
@@ -4439,6 +4623,13 @@ mod hpo_scheduler_tests {
         // with the same zero-session/zero-model/zero-intermediate guarantee.
         let mut empty_plan = plan.clone();
         empty_plan.fold_set.as_mut().unwrap().folds.clear();
+        empty_plan
+            .campaign
+            .split_invocation
+            .as_mut()
+            .unwrap()
+            .fold_set = empty_plan.fold_set.clone();
+        empty_plan.campaign_fingerprint = stable_json_fingerprint(&empty_plan.campaign).unwrap();
         let trace_len_before = trace.lock().unwrap().len();
         let error = SequentialScheduler
             .execute_hpo_campaign(&empty_plan, &controllers, &provider, &ctx, &hpo)
@@ -4450,7 +4641,16 @@ mod hpo_scheduler_tests {
         // a final aggregate is not a substitute for real fold progression.
         let mut no_fold_plan = plan.clone();
         no_fold_plan.fold_set = None;
+        no_fold_plan
+            .campaign
+            .split_invocation
+            .as_mut()
+            .unwrap()
+            .fold_set = None;
+        no_fold_plan.campaign_fingerprint =
+            stable_json_fingerprint(&no_fold_plan.campaign).unwrap();
         let mut no_fold_hpo = hpo.clone();
+        no_fold_hpo.provenance.campaign_fingerprint = no_fold_plan.campaign_fingerprint.clone();
         no_fold_hpo.provenance.fold_set_fingerprint = None;
         let trace_len_before = trace.lock().unwrap().len();
         let error = SequentialScheduler
@@ -4878,7 +5078,7 @@ fn attach_nested_stacking_input_lineage(
         .iter()
         .cloned()
         .collect::<BTreeSet<_>>();
-    if declared.into_iter().collect::<Vec<_>>() != inferred {
+    if declared != inferred.iter().cloned().collect::<BTreeSet<_>>() {
         return Err(DagMlError::RuntimeValidation(format!(
             "nested stacking meta lineage for node `{}` does not match inner OOF evidence",
             task.node_plan.node_id
@@ -4921,6 +5121,22 @@ fn data_output_scope_key(
         scope.fold_id.clone(),
         fold_set_id,
     )
+}
+
+pub(crate) fn validate_nested_relation_scope(
+    relations: &crate::SampleRelationSet,
+    folds: &FoldSet,
+    policy: &crate::LeakageUnitPolicy,
+) -> Result<()> {
+    let universe = folds.sample_ids.iter().collect::<BTreeSet<_>>();
+    let mut scoped = relations.clone();
+    scoped
+        .records
+        .retain(|record| universe.contains(&record.sample_id));
+    if !scoped.records.is_empty() {
+        scoped.validate_against_fold_set(folds, policy)?;
+    }
+    Ok(())
 }
 
 pub(crate) fn collect_input_handles(
@@ -5133,6 +5349,22 @@ pub(crate) fn collect_input_handles(
             .map(|relations| relations.excluded_sample_ids())
             .unwrap_or_default();
         let scope_fold_set = resources.fold_set_override.or(plan.fold_set.as_ref());
+        if let (Some(relations), Some(folds)) = (&coordinator_relations, scope_fold_set) {
+            if resources.fold_set_override.is_some() {
+                validate_nested_relation_scope(relations, folds, &plan.campaign.leakage_policy)?;
+            }
+            if !resources.suppress_inner_cv {
+                if let Some(inner) =
+                    inner_fold_set_for_scope(&plan.campaign, scope_fold_set, node_plan, scope)?
+                {
+                    validate_nested_relation_scope(
+                        relations,
+                        &inner,
+                        &plan.campaign.leakage_policy,
+                    )?;
+                }
+            }
+        }
         for binding in &node_plan.data_bindings {
             let refit_test_view =
                 scope.phase == Phase::Refit && binding.view_policy.include_refit_test_view;

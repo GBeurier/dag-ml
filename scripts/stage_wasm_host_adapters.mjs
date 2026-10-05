@@ -16,7 +16,7 @@ if (metadata.name !== "dag-ml-wasm" || metadata.types !== "dag_ml_wasm.d.ts" ||
 for (const name of ["dag_ml_wasm.js", "dag_ml_wasm_bg.wasm", "dag_ml_wasm.d.ts"]) {
   if (!fs.statSync(path.join(packageDir, name)).isFile()) throw new Error("Missing generated WASM file");
 }
-const extras = ["n4m_controller.mjs", "n4m_controller.d.ts", "n4m_hpo_optimizer.mjs", "n4m_hpo_optimizer.d.ts"];
+const extras = ["n4m_controller.mjs", "n4m_controller.d.ts", "n4m_hpo_optimizer.mjs", "n4m_hpo_optimizer.d.ts", "n4m_multimodal_controller.mjs", "multimodal_archive.mjs", "multimodal_dataset_replay.mjs"];
 for (const name of extras) fs.copyFileSync(path.join(repo, "bindings/js", name), path.join(packageDir, name));
 metadata.files = [...new Set([...metadata.files, ...extras])];
 metadata.exports = {
@@ -24,6 +24,7 @@ metadata.exports = {
   ".": { types: "./dag_ml_wasm.d.ts", default: "./dag_ml_wasm.js" },
   "./n4m-controller": { types: "./n4m_controller.d.ts", import: "./n4m_controller.mjs" },
   "./n4m-optimizer": { types: "./n4m_hpo_optimizer.d.ts", import: "./n4m_hpo_optimizer.mjs" },
+  "./multimodal_dataset_replay": { import: "./multimodal_dataset_replay.mjs" },
   // Preserve existing direct access to generated JS/WASM/package files.
   "./*": "./*",
 };

@@ -239,6 +239,8 @@ impl PyLocalImplementationRegistry {
                     "Python metric callback raised an exception: {error}"
                 )))
             })?;
+        crate::in_process::validate_python_finiteness(&callback_result, 0)
+            .map_err(py_core_error)?;
         let values: Vec<MetricEvaluationValue> =
             depythonize(&callback_result).map_err(|error| {
                 py_core_error(CoreDagMlError::RuntimeValidation(format!(

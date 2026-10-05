@@ -650,7 +650,11 @@ impl PipelineCompiler {
                     })?,
                 );
             }
-            branch_metadata.extend(extra_metadata.clone());
+            for (key, value) in &extra_metadata {
+                branch_metadata
+                    .entry(key.clone())
+                    .or_insert_with(|| value.clone());
+            }
             for branch_step in &branch.steps {
                 self.compile_sequence_step(
                     branch_step,
@@ -732,7 +736,11 @@ impl PipelineCompiler {
             let mut choice_state =
                 SequenceCompileState::with_target(current_data.clone(), current_target.cloned());
             let mut choice_metadata = generator_choice_metadata(step, &choice)?;
-            choice_metadata.extend(extra_metadata.clone());
+            for (key, value) in &extra_metadata {
+                choice_metadata
+                    .entry(key.clone())
+                    .or_insert_with(|| value.clone());
+            }
             for choice_step in &choice.steps {
                 self.compile_sequence_step(
                     choice_step,
@@ -2289,7 +2297,7 @@ pub(crate) fn validate_merge_selector_select(
             "pipeline DSL merge `{merge_id}` selector {selector_index} top_k must be positive"
         )));
     }
-    if top_k as usize > matched.len() {
+    if usize::try_from(top_k).map_or(true, |limit| limit > matched.len()) {
         return Err(DagMlError::GraphValidation(format!(
             "pipeline DSL merge `{merge_id}` selector {selector_index} top_k={top_k} exceeds {} matched prediction inputs", matched.len()
         )));
@@ -2494,6 +2502,11 @@ pub(crate) fn branch_input_prefix(branch_id: &str, index: usize) -> String {
         .to_string();
     if sanitized.is_empty() {
         format!("branch{index}")
+    } else if sanitized != branch_id {
+        format!(
+            "{sanitized}_{}",
+            &crate::stable_json_fingerprint(&branch_id).expect("string fingerprint")[..8]
+        )
     } else {
         sanitized
     }
@@ -2520,6 +2533,10 @@ pub(crate) fn branch_prediction_input_name(
         .to_string();
     if model.is_empty() {
         format!("{branch}_model{prediction_index}_oof")
+    } else if model != node_id.as_str() {
+        let fingerprint =
+            crate::campaign::stable_json_fingerprint(node_id.as_str()).expect("string fingerprint");
+        format!("{branch}_{model}_{}_oof", &fingerprint[..8])
     } else {
         format!("{branch}_{model}_oof")
     }

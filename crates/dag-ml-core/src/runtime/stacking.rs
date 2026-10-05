@@ -205,7 +205,15 @@ fn resolve_capacity_kfold(
         ));
     }
     let mut last_error = String::new();
-    for splits in requested.min_splits..=requested.max_splits {
+    let max_splits = fold_set
+        .folds
+        .iter()
+        .map(|fold| fold.train_sample_ids.len())
+        .chain(std::iter::once(fold_set.sample_ids.len()))
+        .min()
+        .unwrap_or(0)
+        .min(requested.max_splits);
+    for splits in requested.min_splits..=max_splits {
         let policy = crate::fold::NestedCvSpec::KFold(crate::fold::KFoldSpec {
             n_splits: splits,
             shuffle: requested.shuffle,
@@ -655,6 +663,10 @@ pub(crate) fn nested_stacking_campaign_plan_for_node(
                 .as_ref()
                 .and_then(|split| split.fold_set.as_ref())
                 .is_some_and(|root| root.id == fold_set.id)
+                && !fold_set
+                    .folds
+                    .iter()
+                    .any(|fold| fold.fold_id.as_str().starts_with("stacking.refit"))
             {
                 "stacking.refit".to_string()
             } else {

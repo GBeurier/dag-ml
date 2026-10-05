@@ -150,9 +150,44 @@
   )
 }
 
+.dagml_raw_json_scalar <- function(text, path) {
+  # jsonlite's bigint_as_char still rounds integers above signed i64.
+  # Tokenize valid JSON and locate this exact member without decoding numbers.
+  pattern <- '"(?:[^"\\\\]|\\\\.)*"|-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?|true|false|null|[{}\\[\\]:,]'
+  tokens <- regmatches(text, gregexpr(pattern, text, perl = TRUE))[[1L]]
+  skip <- function(index) {
+    if (!tokens[index] %in% c("{", "[")) return(index + 1L)
+    depth <- 1L
+    index <- index + 1L
+    while (depth > 0L && index <= length(tokens)) {
+      if (tokens[index] %in% c("{", "[")) depth <- depth + 1L
+      if (tokens[index] %in% c("}", "]")) depth <- depth - 1L
+      index <- index + 1L
+    }
+    index
+  }
+  locate <- function(index, remaining) {
+    if (!length(remaining)) return(tokens[index])
+    if (tokens[index] != "{") return(NULL)
+    index <- index + 1L
+    while (index <= length(tokens) && tokens[index] != "}") {
+      key <- jsonlite::fromJSON(tokens[index], simplifyVector = FALSE)
+      if (key == remaining[1L]) return(locate(index + 2L, remaining[-1L]))
+      index <- skip(index + 2L)
+      if (tokens[index] == ",") index <- index + 1L
+    }
+    NULL
+  }
+  locate(1L, path)
+}
+
 .dagml_node_result_json <- function(value, task) {
   if (is.character(value) && length(value) == 1L && !is.na(value)) {
-    result <- jsonlite::fromJSON(value, simplifyVector = FALSE)
+    result <- jsonlite::fromJSON(value, simplifyVector = FALSE, bigint_as_char = TRUE)
+    seed_token <- .dagml_raw_json_scalar(value, c("lineage", "seed"))
+    if (!is.null(seed_token) && grepl("^(0|[1-9][0-9]*)$", seed_token)) {
+      result$lineage$seed <- seed_token
+    }
   } else {
     result <- value
   }
@@ -164,6 +199,18 @@
   }
   if (is.null(result$lineage$seed)) {
     result$lineage$seed <- task$seed
+  }
+  if (is.numeric(result$lineage$seed) && abs(result$lineage$seed) > 2^53 - 1) {
+    .dagml_stop("large lineage.seed must be supplied as exact JSON text or a decimal string")
+  }
+  if (is.character(result$lineage$seed)) {
+    seed <- result$lineage$seed
+    if (length(seed) != 1L || is.na(seed) || !grepl("^(0|[1-9][0-9]*)$", seed)) {
+      .dagml_stop("lineage.seed must be an exact unsigned decimal integer")
+    }
+    result$lineage$seed <- "__DAGML_U64_SEED__"
+    text <- .dagml_json_text(result, "NodeResult")
+    return(sub('"__DAGML_U64_SEED__"', seed, text, fixed = TRUE))
   }
   .dagml_json_text(result, "NodeResult")
 }
@@ -189,7 +236,9 @@
   callbacks <- lapply(controllers, function(callback) {
     force(callback)
     function(controller_id, task_json) {
-      task <- jsonlite::fromJSON(task_json, simplifyVector = FALSE)
+      task <- jsonlite::fromJSON(task_json, simplifyVector = FALSE, bigint_as_char = TRUE)
+      seed_token <- .dagml_raw_json_scalar(task_json, "seed")
+      if (!is.null(seed_token) && seed_token != "null") task$seed <- seed_token
       .dagml_node_result_json(callback(controller_id, task_json), task)
     }
   })

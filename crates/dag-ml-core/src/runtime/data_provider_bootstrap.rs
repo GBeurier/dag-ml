@@ -72,6 +72,10 @@ pub struct DataProviderMaterialization {
 
 pub trait RuntimeDataProviderSource: Send + Sync {
     fn materialize(&self, task: &NodeTask) -> Result<DataProviderMaterialization>;
+    /// Release a materialization rejected before ownership reaches the caller.
+    fn release(&self, _handle: &HandleRef) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -93,6 +97,21 @@ struct SourceController {
     id: ControllerId,
     source: Box<dyn RuntimeDataProviderSource>,
     materialization: Arc<Mutex<Option<DataProviderMaterialization>>>,
+}
+
+impl Drop for SourceController {
+    fn drop(&mut self) {
+        if let Some(materialized) = self
+            .materialization
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+        {
+            if let Err(error) = self.source.release(&materialized.handle) {
+                crate::observability::emit_provider_release_failure(&error);
+            }
+        }
+    }
 }
 
 impl RuntimeController for SourceController {
@@ -120,6 +139,7 @@ impl RuntimeController for SourceController {
             ));
         }
         let materialized = self.source.materialize(task)?;
+        *captured = Some(materialized.clone());
         if materialized.handle.handle == 0
             || materialized.handle.kind != HandleKind::Data
             || materialized.handle.owner_controller != self.id

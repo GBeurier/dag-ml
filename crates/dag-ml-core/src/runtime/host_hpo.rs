@@ -76,6 +76,23 @@ struct HostHpoParallelExecutionProfile {
 }
 
 impl HostHpoSearchRequest {
+    fn validated_phase_budgets(&self) -> Result<()> {
+        if !self.phase_trial_budgets.is_empty()
+            && (self.phase_trial_budgets.contains(&0)
+                || self
+                    .phase_trial_budgets
+                    .iter()
+                    .try_fold(0u32, |n, budget| n.checked_add(*budget))
+                    != Some(self.trial_budget))
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "phase trial budgets must be positive and sum to the trial budget without overflow"
+                    .into(),
+            ));
+        }
+        Ok(())
+    }
+
     fn validate_browser_execution(&self) -> Result<()> {
         if self.structural_catalogue.as_ref().is_some_and(|catalogue| {
             catalogue
@@ -260,9 +277,9 @@ impl HostHpoSearchRequest {
         if self.phase_trial_budgets.is_empty() {
             return None;
         }
-        let mut end = 0;
+        let mut end = 0u32;
         for (index, budget) in self.phase_trial_budgets.iter().enumerate() {
-            end += budget;
+            end = end.checked_add(*budget)?;
             if trial_index < end {
                 return Some(index as u32);
             }
@@ -271,6 +288,12 @@ impl HostHpoSearchRequest {
     }
 
     pub(super) fn validate_parameter_bindings(&self, plan: &ExecutionPlan) -> Result<()> {
+        if self.direction != self.metric.objective() {
+            return Err(DagMlError::RuntimeValidation(
+                "host HPO direction must match metric objective".into(),
+            ));
+        }
+        self.validated_phase_budgets()?;
         crate::methods_classification::validate_methods_classifier_search(plan, self)?;
         crate::python_torch_profile::validate_torch_search(plan, self)?;
         if let Some(catalogue) = &self.structural_catalogue {
@@ -785,6 +808,10 @@ fn host_hpo_candidate_plan(
         None => plan.clone(),
     };
     let base_fingerprint = candidate_plan.variants[0].fingerprint.clone();
+    let objective_fingerprint = match objective_fingerprint {
+        Some(fingerprint) => fingerprint.to_owned(),
+        None => stable_json_fingerprint(request)?,
+    };
     let mut variant = candidate_plan.variants[0].clone();
     variant.variant_id = VariantId::new(format!("host_hpo:trial:{trial_index:010}"))?;
     variant.choices.insert(
@@ -794,20 +821,18 @@ fn host_hpo_candidate_plan(
             value: if let Some(catalogue) = &request.structural_catalogue {
                 serde_json::json!({"trial_index": trial_index,
                     "recipe_id": catalogue.recipe(params)?.recipe_id,
-                    "catalogue_fingerprint": catalogue.catalogue_fingerprint})
+                    "catalogue_fingerprint": catalogue.catalogue_fingerprint,
+                    "objective_fingerprint": objective_fingerprint})
             } else {
-                serde_json::json!({"trial_index": trial_index})
+                serde_json::json!({"trial_index": trial_index,
+                    "objective_fingerprint": objective_fingerprint})
             },
             param_overrides,
             active_subsequence: None,
         },
     );
-    variant.fingerprint = match objective_fingerprint {
-        Some(fingerprint) => {
-            stable_json_fingerprint(&(&base_fingerprint, &variant.choices, fingerprint))?
-        }
-        None => stable_json_fingerprint(&(&base_fingerprint, &variant.choices, request))?,
-    };
+    variant.fingerprint =
+        stable_json_fingerprint(&(&base_fingerprint, &variant.choices, &objective_fingerprint))?;
     candidate_plan.variants = vec![variant];
     candidate_plan.validate()?;
     crate::methods_classification::validate_methods_classification_plan(&candidate_plan)?;
@@ -967,7 +992,11 @@ pub fn evaluate_host_hpo_worker_task(
         &mut context,
         Phase::FitCv,
     )?;
-    context.collect_cross_fold_validation_scores(plan_oof_partition_mode(&task.candidate_plan))?;
+    context.collect_cross_fold_validation_scores_for_target(
+        plan_oof_partition_mode(&task.candidate_plan),
+        request.metric,
+        Some(&request.target_node),
+    )?;
     let scores = context
         .build_score_set(task.candidate_plan.id.clone(), None)
         .ok_or_else(|| {
@@ -1837,7 +1866,11 @@ impl SequentialScheduler {
                         Phase::FitCv,
                     )?;
                 }
-                context.collect_cross_fold_validation_scores(plan_oof_partition_mode(plan))?;
+                context.collect_cross_fold_validation_scores_for_target(
+                    plan_oof_partition_mode(plan),
+                    request.metric,
+                    Some(&request.target_node),
+                )?;
                 let scores = context
                     .build_score_set(plan.id.clone(), None)
                     .ok_or_else(|| {
@@ -2253,7 +2286,7 @@ impl SequentialScheduler {
                     candidate_plan, mut context, provider, controllers)| {
                     let tx = events_tx.clone();
                     let handle = scope.spawn(move || {
-                        let evaluated: Result<HostHpoEvaluation> = (|| {
+                        let evaluated: Result<HostHpoEvaluation> = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                             if request.progressive_pruning {
                                 let mut intermediates = Vec::new();
                                 let pruned = self.execute_host_hpo_candidate_fit_cv(
@@ -2291,7 +2324,7 @@ impl SequentialScheduler {
                                 self.execute_campaign_phase_with_data_provider(&candidate_plan,
                                     &controllers, provider.as_ref(), &mut context, Phase::FitCv)?;
                             }
-                            context.collect_cross_fold_validation_scores(plan_oof_partition_mode(plan))?;
+                            context.collect_cross_fold_validation_scores_for_target(plan_oof_partition_mode(plan), request.metric, Some(&request.target_node))?;
                             let scores = context.build_score_set(plan.id.clone(), None)
                                 .ok_or_else(|| DagMlError::RuntimeValidation(
                                     "host HPO lost native score evidence".into()))?;
@@ -2302,7 +2335,8 @@ impl SequentialScheduler {
                                 scores, objective_fold_scores,
                                 generated_view_manifest: host_hpo_provider_manifest(provider.as_ref())?,
                             }, candidate))
-                        })();
+                        })).unwrap_or_else(|_| Err(DagMlError::RuntimeValidation(
+                            "host HPO candidate worker panicked".into())));
                         let _ = tx.send(ParallelHostHpoEvent::Completed {
                             trial_index,
                             evaluated: Box::new(evaluated),
@@ -2312,25 +2346,42 @@ impl SequentialScheduler {
                 }).collect::<Vec<_>>();
                 drop(events_tx);
                 let mut completed = BTreeMap::new();
+                // Pruners observe a stable trial/step order even when workers
+                // finish at different times. Each worker waits for its reply.
+                let mut active_trial = next - count as u32;
+                let mut buffered: BTreeMap<u32, std::collections::VecDeque<ParallelHostHpoEvent>> =
+                    BTreeMap::new();
                 while completed.len() < count {
                     let Ok(event) = events_rx.recv() else {
                         break;
                     };
-                    match event {
-                        ParallelHostHpoEvent::Intermediate {
-                            trial_index,
-                            step,
-                            score,
-                            reply,
-                        } => {
-                            let decision = proposals.report_intermediate(trial_index, step, score);
-                            let _ = reply.send(decision);
-                        }
-                        ParallelHostHpoEvent::Completed {
-                            trial_index,
-                            evaluated,
-                        } => {
-                            completed.insert(trial_index, *evaluated);
+                    let trial_index = match &event {
+                        ParallelHostHpoEvent::Intermediate { trial_index, .. }
+                        | ParallelHostHpoEvent::Completed { trial_index, .. } => *trial_index,
+                    };
+                    buffered.entry(trial_index).or_default().push_back(event);
+                    while let Some(event) = buffered
+                        .get_mut(&active_trial)
+                        .and_then(|queue| queue.pop_front())
+                    {
+                        match event {
+                            ParallelHostHpoEvent::Intermediate {
+                                trial_index,
+                                step,
+                                score,
+                                reply,
+                            } => {
+                                let decision =
+                                    proposals.report_intermediate(trial_index, step, score);
+                                let _ = reply.send(decision);
+                            }
+                            ParallelHostHpoEvent::Completed {
+                                trial_index,
+                                evaluated,
+                            } => {
+                                completed.insert(trial_index, *evaluated);
+                                active_trial += 1;
+                            }
                         }
                     }
                 }

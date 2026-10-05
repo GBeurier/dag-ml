@@ -186,7 +186,7 @@ pub fn validate_methods_role_pipeline_payload(
     let text = std::str::from_utf8(bytes).map_err(|error| {
         DagMlError::RuntimeValidation(format!("RolePipeline payload is not UTF-8: {error}"))
     })?;
-    parse_typed_json(text).map_err(|error| {
+    crate::canonical::parse_bounded_typed_json(text, 4_000_000).map_err(|error| {
         DagMlError::RuntimeValidation(format!(
             "RolePipeline payload is outside strict TCV1: {error}"
         ))
@@ -356,7 +356,7 @@ pub fn build_archive_v3_native_refit_payloads(
                 return refuse("Archive V3 N4ME requires a plugin-free native estimator with its exact minimum Methods ABI");
             }
             let path = artifact.uri.as_deref().expect("validated portable URI");
-            if !path.starts_with("methods/") || !path.ends_with(".n4me") {
+            if !safe_native_method_path(path, ".n4me") {
                 return refuse("Archive V3 N4ME URI must be a safe methods/*.n4me path");
             }
             let bytes = bundle
@@ -902,7 +902,9 @@ fn insert_json<T: serde::Serialize>(
     path: &str,
     value: &T,
 ) -> Result<()> {
-    members.insert(path.to_owned(), serde_json::to_vec(value)?);
+    // Cargo feature unification may enable preserve_order only on some hosts.
+    // Archive members must retain the same bytes and raw hashes across them.
+    members.insert(path.to_owned(), crate::stable_json::to_vec(value)?);
     Ok(())
 }
 
@@ -975,8 +977,12 @@ fn bind_raw_hashes(value: &mut Value, members: &BTreeMap<String, Vec<u8>>) {
 }
 
 fn safe_n4mm_path(path: &str) -> bool {
+    safe_native_method_path(path, ".n4mm")
+}
+
+fn safe_native_method_path(path: &str, extension: &str) -> bool {
     path.starts_with("methods/")
-        && path.ends_with(".n4mm")
+        && path.ends_with(extension)
         && path.len() <= 512
         && !path.contains('\\')
         && path
@@ -1199,6 +1205,65 @@ mod tests {
     }
 
     #[test]
+    fn archive_transport_is_independent_of_nested_json_key_order() {
+        fn reversed_json(value: &Value) -> String {
+            match value {
+                Value::Object(map) => format!(
+                    "{{{}}}",
+                    map.iter()
+                        .rev()
+                        .map(|(key, value)| format!(
+                            "{}:{}",
+                            serde_json::to_string(key).unwrap(),
+                            reversed_json(value)
+                        ))
+                        .collect::<Vec<_>>()
+                        .join(",")
+                ),
+                Value::Array(values) => format!(
+                    "[{}]",
+                    values
+                        .iter()
+                        .map(reversed_json)
+                        .collect::<Vec<_>>()
+                        .join(",")
+                ),
+                _ => serde_json::to_string(value).unwrap(),
+            }
+        }
+
+        let (outcome, package) = role_transport_fixture(false);
+        let reordered_outcome =
+            TrainingOutcome::from_json(&reversed_json(&serde_json::to_value(&outcome).unwrap()))
+                .unwrap();
+        let reordered_package = PortablePredictorPackage::from_json(&reversed_json(
+            &serde_json::to_value(&package).unwrap(),
+        ))
+        .unwrap();
+        assert_eq!(outcome, reordered_outcome);
+        assert_eq!(package, reordered_package);
+        let original =
+            build_archive_v2_native_portable_payloads("archive:key-order", &outcome, &package)
+                .unwrap();
+        let rebuilt = build_archive_v2_native_portable_payloads(
+            "archive:key-order",
+            &reordered_outcome,
+            &reordered_package,
+        )
+        .unwrap();
+        for (path, bytes) in &original.members {
+            assert!(bytes == &rebuilt.members[path], "member {path}");
+        }
+        assert_eq!(original.manifest, rebuilt.manifest);
+        validate_archive_v2_portable_payloads(
+            &original.manifest,
+            &reordered_package,
+            &original.members,
+        )
+        .unwrap();
+    }
+
+    #[test]
     fn role_and_mixed_transport_preserve_exact_package_and_raw_closure() {
         for mixed in [false, true] {
             let (outcome, package) = role_transport_fixture(mixed);
@@ -1214,11 +1279,11 @@ mod tests {
             assert_eq!(archive.members.len(), 6 + package.artifact_bindings.len());
             assert_eq!(
                 archive.members[ARCHIVE_V2_PACKAGE_MEMBER],
-                serde_json::to_vec(&package).unwrap()
+                crate::stable_json::to_vec(&package).unwrap()
             );
             assert_eq!(
                 archive.members[ARCHIVE_V2_OUTCOME_MEMBER],
-                serde_json::to_vec(&outcome).unwrap()
+                crate::stable_json::to_vec(&outcome).unwrap()
             );
             validate_archive_v2_portable_payloads(&archive.manifest, &package, &archive.members)
                 .unwrap();
@@ -1655,7 +1720,7 @@ mod tests {
         }
         assert_eq!(
             archive.members.get(ARCHIVE_V2_CACHE_MEMBER).unwrap(),
-            serde_json::to_vec(
+            crate::stable_json::to_vec(
                 outcome
                     .portable_prediction_caches
                     .as_ref()

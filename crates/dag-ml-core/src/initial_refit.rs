@@ -790,8 +790,15 @@ pub fn execute_initial_full_refit_prediction(
         &mut ctx,
     );
     let released = payload_store.release_hydrated();
-    let results = execution?;
-    released?;
+    let results = match (execution, released) {
+        (Ok(results), Ok(())) => results,
+        (Err(error), Ok(())) | (Ok(_), Err(error)) => return Err(error),
+        (Err(execution), Err(release)) => {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "{execution}; additionally failed to release hydrated artifacts: {release}"
+            )))
+        }
+    };
     let mut outputs = Vec::new();
     for output_id in input.output_ids {
         let binding = input

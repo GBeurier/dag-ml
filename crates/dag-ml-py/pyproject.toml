@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "dag-ml"
-version = "0.3.34"
+version = "0.3.35"
 description = "Python bindings for DAG-ML JSON contracts."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -20,6 +20,10 @@ classifiers = [
     "Programming Language :: Rust",
     "Typing :: Typed",
 ]
+
+[project.optional-dependencies]
+# The published Methods Python multimodal facade imports scikit-learn.
+multimodal = ["numpy>=1.24", "nirs4all-methods>=1.3.2", "scikit-learn>=1.3"]
 
 [tool.maturin]
 # The published Python wheel exposes the portable native Methods PLS lane.

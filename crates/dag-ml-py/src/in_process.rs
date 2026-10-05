@@ -146,7 +146,7 @@ pub fn execute_phase_in_process(
         )));
     }
     let manifests: Vec<dag_ml_core::ControllerManifest> =
-        serde_json::from_str(controller_manifests_json).map_err(py_serde_error)?;
+        crate::strict_json_input(controller_manifests_json).map_err(py_serde_error)?;
     let mut registry = ControllerRegistry::new();
     for manifest in manifests {
         registry.register(manifest).map_err(py_core_error)?;
@@ -290,8 +290,9 @@ pub fn replay_initial_full_refit_in_process(
     )
     .map_err(py_core_error)?;
     let handles: BTreeMap<dag_ml_core::ArtifactId, HandleRef> =
-        serde_json::from_str(artifact_handles_json).map_err(py_serde_error)?;
-    let output_ids: Vec<String> = serde_json::from_str(output_ids_json).map_err(py_serde_error)?;
+        crate::strict_json_input(artifact_handles_json).map_err(py_serde_error)?;
+    let output_ids: Vec<String> =
+        crate::strict_json_input(output_ids_json).map_err(py_serde_error)?;
     let expected = package
         .artifacts
         .iter()
@@ -367,6 +368,7 @@ fn from_py_object<T>(obj: &Bound<'_, PyAny>) -> Result<T, CoreDagMlError>
 where
     T: serde::de::DeserializeOwned + serde::Serialize,
 {
+    validate_python_finiteness(obj, 0)?;
     let raw: serde_json::Value = depythonize(obj).map_err(pythonize_error)?;
     dag_ml_core::deserialize_external_value(
         raw,
@@ -375,18 +377,94 @@ where
     )
 }
 
+pub(crate) fn validate_python_finiteness(
+    obj: &Bound<'_, PyAny>,
+    depth: usize,
+) -> Result<(), CoreDagMlError> {
+    if depth > 128 {
+        return Err(CoreDagMlError::RuntimeValidation(
+            "Python callback result exceeds nesting limit".into(),
+        ));
+    }
+    if obj.is_instance_of::<pyo3::types::PyFloat>() {
+        let value: f64 = obj.extract().map_err(core_error_from_py)?;
+        if !value.is_finite() {
+            return Err(CoreDagMlError::RuntimeValidation(
+                "Python callback returned a non-finite float".into(),
+            ));
+        }
+    } else if let Ok(dict) = obj.cast::<pyo3::types::PyDict>() {
+        for (key, value) in dict.iter() {
+            validate_python_finiteness(&key, depth + 1)?;
+            validate_python_finiteness(&value, depth + 1)?;
+        }
+    } else if let Ok(values) = obj.cast::<pyo3::types::PyList>() {
+        for value in values.iter() {
+            validate_python_finiteness(&value, depth + 1)?;
+        }
+    } else if let Ok(values) = obj.cast::<pyo3::types::PyTuple>() {
+        for value in values.iter() {
+            validate_python_finiteness(&value, depth + 1)?;
+        }
+    }
+    Ok(())
+}
+
 /// Map a `pythonize`/`depythonize` conversion failure to a structured core error.
 fn pythonize_error(err: pythonize::PythonizeError) -> CoreDagMlError {
     CoreDagMlError::RuntimeValidation(format!("in-process bridge conversion failed: {err}"))
 }
 
 /// Convert a Python exception into a structured core error carrying its message.
+static PY_INTERRUPTS: std::sync::OnceLock<Mutex<BTreeMap<u64, PyErr>>> = std::sync::OnceLock::new();
+static NEXT_PY_INTERRUPT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+const PY_INTERRUPT_PREFIX: &str = "python interrupt token=";
+
+pub(crate) fn take_python_interrupt(error: &CoreDagMlError) -> Option<PyErr> {
+    let CoreDagMlError::RuntimeValidation(detail) = error else {
+        return None;
+    };
+    let token = detail
+        .strip_prefix(PY_INTERRUPT_PREFIX)?
+        .split_whitespace()
+        .next()?
+        .parse::<u64>()
+        .ok()?;
+    PY_INTERRUPTS.get()?.lock().ok()?.remove(&token)
+}
+
 fn core_error_from_py(err: PyErr) -> CoreDagMlError {
     Python::attach(|py| {
-        CoreDagMlError::RuntimeValidation(format!(
-            "python callback raised an exception: {}",
-            err.value(py)
-        ))
+        let name = err
+            .get_type(py)
+            .name()
+            .map(|name| name.to_string())
+            .unwrap_or_else(|_| "PythonException".into());
+        let detail = py
+            .import("traceback")
+            .and_then(|module| {
+                module.call_method1(
+                    "format_exception",
+                    (err.get_type(py), err.value(py), err.traceback(py)),
+                )
+            })
+            .and_then(|lines| lines.extract::<Vec<String>>())
+            .map(|lines| lines.concat())
+            .unwrap_or_else(|_| format!("{name}: {}", err.value(py)));
+        if err.is_instance_of::<pyo3::exceptions::PyKeyboardInterrupt>(py)
+            || err.is_instance_of::<pyo3::exceptions::PySystemExit>(py)
+        {
+            let token = NEXT_PY_INTERRUPT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            PY_INTERRUPTS
+                .get_or_init(Mutex::default)
+                .lock()
+                .expect("Python interrupt registry")
+                .insert(token, err);
+            return CoreDagMlError::RuntimeValidation(format!(
+                "{PY_INTERRUPT_PREFIX}{token} {detail}"
+            ));
+        }
+        CoreDagMlError::RuntimeValidation(format!("python callback raised {name}: {detail}"))
     })
 }
 
@@ -414,14 +492,24 @@ where
     Req: serde::Serialize,
     Resp: serde::de::DeserializeOwned + serde::Serialize,
 {
+    call_python(bridge, |py| {
+        let payload = to_py_object(py, request)?;
+        let returned = callback
+            .bind(py)
+            .call1((payload,))
+            .map_err(core_error_from_py)?;
+        from_py_object::<Resp>(&returned)
+    })
+}
+
+fn call_python<T>(
+    bridge: &str,
+    action: impl FnOnce(Python<'_>) -> Result<T, CoreDagMlError>,
+) -> Result<T, CoreDagMlError> {
     let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-        Python::attach(|py| -> Result<Resp, CoreDagMlError> {
-            let payload = to_py_object(py, request)?;
-            let returned = callback
-                .bind(py)
-                .call1((payload,))
-                .map_err(core_error_from_py)?;
-            from_py_object::<Resp>(&returned)
+        Python::attach(|py| {
+            py.check_signals().map_err(core_error_from_py)?;
+            action(py)
         })
     }));
     match result {
@@ -737,7 +825,7 @@ fn lowercase_sha256(value: &str) -> bool {
 pub fn validate_generated_view_manifest_in_process(manifest_json: &str) -> PyResult<String> {
     let raw_typed = dag_ml_core::canonical::parse_typed_json(manifest_json)
         .map_err(|error| py_core_error(CoreDagMlError::RuntimeValidation(error.to_string())))?;
-    let manifest: GeneratedViewManifest = serde_json::from_str(manifest_json)
+    let manifest: GeneratedViewManifest = crate::strict_json_input(manifest_json)
         .map_err(|error| py_core_error(CoreDagMlError::RuntimeValidation(error.to_string())))?;
     let normalized_json = serde_json::to_string(&manifest)
         .map_err(|error| py_core_error(CoreDagMlError::RuntimeValidation(error.to_string())))?;
@@ -779,7 +867,7 @@ mod generated_view_manifest_tests {
 
     #[test]
     fn same_view_key_cannot_hide_changed_content_or_selector() {
-        let request: DataViewRequest = serde_json::from_str(include_str!(
+        let request: DataViewRequest = crate::strict_json_input(include_str!(
             "../../../examples/fixtures/data/data_view_request_v3.json"
         ))
         .unwrap();
@@ -870,25 +958,31 @@ impl<I: RuntimeDataProvider> RuntimeDataProvider for PyViewDataProvider<I> {
             ));
         }
         let handle = self.inner.make_view(request)?;
-        let receipt: DataViewReceipt = call_py_bridge(
-            &self.callback,
-            &PyViewCall {
-                request,
-                handle: &handle,
-            },
-            "data view",
-        )?;
-        receipt.validate_for(request, &handle).map_err(|_| {
+        let attested = (|| {
+            let receipt: DataViewReceipt = call_py_bridge(
+                &self.callback,
+                &PyViewCall {
+                    request,
+                    handle: &handle,
+                },
+                "data view",
+            )?;
+            receipt.validate_for(request, &handle).map_err(|_| {
             CoreDagMlError::RuntimeValidation(
                 "Python view provider receipt does not match the native handle, key, ordered IDs, or content digests".into(),
             )
         })?;
-        let record = GeneratedViewRecord::from_receipt(request, &receipt)?;
-        record_generated_view(&mut *lock_generated_receipts(&self.receipts)?, record)?;
-        Ok(AttestedDataView {
-            handle,
-            receipt: Some(receipt),
-        })
+            let record = GeneratedViewRecord::from_receipt(request, &receipt)?;
+            record_generated_view(&mut *lock_generated_receipts(&self.receipts)?, record)?;
+            Ok(AttestedDataView {
+                handle: handle.clone(),
+                receipt: Some(receipt),
+            })
+        })();
+        if attested.is_err() {
+            self.inner.discard_view(&handle)?;
+        }
+        attested
     }
 
     fn training_data_identity(
@@ -943,9 +1037,9 @@ pub fn probe_data_view_in_process(
         )));
     }
     let envelope: ExternalDataPlanEnvelope =
-        serde_json::from_str(envelope_json).map_err(py_serde_error)?;
+        crate::strict_json_input(envelope_json).map_err(py_serde_error)?;
     let mut request: DataViewRequest =
-        serde_json::from_str(request_json).map_err(py_serde_error)?;
+        crate::strict_json_input(request_json).map_err(py_serde_error)?;
     request.view.validate().map_err(py_core_error)?;
     let selected = request.view.sample_ids.as_ref().ok_or_else(|| {
         py_core_error(CoreDagMlError::RuntimeValidation(
@@ -1197,6 +1291,24 @@ impl dag_ml_core::HostHpoProposalSource for PyHostHpoProposals {
     }
 
     fn fail(&mut self, trial_index: u32, error: &str) -> dag_ml_core::Result<()> {
+        // The native host search reports controller failures through this hook.
+        // Preserve Python's cancellation exception instead of terminalizing it
+        // as an ordinary failed candidate and continuing the search.
+        if let Some(index) = error.find(PY_INTERRUPT_PREFIX) {
+            let detail = &error[index..];
+            let token = detail
+                .strip_prefix(PY_INTERRUPT_PREFIX)
+                .and_then(|rest| rest.split_whitespace().next())
+                .and_then(|text| text.parse::<u64>().ok());
+            if token.is_some_and(|token| {
+                PY_INTERRUPTS
+                    .get()
+                    .and_then(|registry| registry.lock().ok())
+                    .is_some_and(|registry| registry.contains_key(&token))
+            }) {
+                return Err(CoreDagMlError::RuntimeValidation(detail.to_owned()));
+            }
+        }
         call_py_bridge(
             &self.callback,
             &serde_json::json!({"operation": "fail", "trial_index": trial_index, "error": error}),
@@ -1252,11 +1364,11 @@ pub fn recover_host_hpo_checkpoint_json(
     interrupted_json: &str,
 ) -> PyResult<String> {
     let checkpoint: dag_ml_core::HostHpoCheckpoint =
-        serde_json::from_str(checkpoint_json).map_err(py_serde_error)?;
+        crate::strict_json_input(checkpoint_json).map_err(py_serde_error)?;
     let prepared: Option<dag_ml_core::HostHpoCheckpoint> =
-        serde_json::from_str(prepared_json).map_err(py_serde_error)?;
+        crate::strict_json_input(prepared_json).map_err(py_serde_error)?;
     let interrupted: Vec<dag_ml_core::HostHpoInterruptedTrial> =
-        serde_json::from_str(interrupted_json).map_err(py_serde_error)?;
+        crate::strict_json_input(interrupted_json).map_err(py_serde_error)?;
     let recovered = checkpoint
         .recover_interrupted_trials(prepared, interrupted)
         .map_err(py_core_error)?;
@@ -1362,11 +1474,14 @@ pub fn run_host_hpo_search_in_process(
             CoreDagMlError::CampaignValidation,
         )
         .map_err(py_core_error)?;
-    let n_jobs = request
-        .optimizer_descriptor
-        .get("n_jobs")
-        .and_then(serde_json::Value::as_i64)
-        .unwrap_or(1);
+    let n_jobs = match request.optimizer_descriptor.get("n_jobs") {
+        None => 1,
+        Some(value) => value.as_i64().ok_or_else(|| {
+            py_core_error(CoreDagMlError::RuntimeValidation(
+                "host HPO n_jobs must be an integer".into(),
+            ))
+        })?,
+    };
     let workers = if n_jobs == -1 {
         std::thread::available_parallelism()
             .map(|count| count.get())
@@ -1401,7 +1516,7 @@ pub fn run_host_hpo_search_in_process(
     let dsl = parse_pipeline_dsl_json(dsl_json.as_bytes()).map_err(py_core_error)?;
     let dsl = fan_out_data_aware_branches(&dsl, &envelope).map_err(py_core_error)?;
     let manifests: Vec<dag_ml_core::ControllerManifest> =
-        serde_json::from_str(controller_manifests_json).map_err(py_serde_error)?;
+        crate::strict_json_input(controller_manifests_json).map_err(py_serde_error)?;
     let mut registry = ControllerRegistry::new();
     for manifest in manifests {
         registry.register(manifest).map_err(py_core_error)?;
@@ -1615,6 +1730,7 @@ struct PyArtifactExportRequest<'a> {
 struct PyArtifactHydrationRequest<'a> {
     operation: &'static str,
     request: &'a ArtifactMaterializationRequest,
+    #[serde(skip)]
     payload: &'a [u8],
 }
 
@@ -1654,14 +1770,21 @@ impl RuntimeController for PyOperatorController {
                 self.controller_id
             ))
         })?;
-        let payload = call_py_bridge::<PyArtifactExportRequest<'_>, Vec<u8>>(
-            callback,
-            &PyArtifactExportRequest {
-                operation: "export",
-                artifact_id,
-            },
-            "artifact export",
-        )?;
+        let payload: Vec<u8> = call_python("artifact export", |py| {
+            let request = to_py_object(
+                py,
+                &PyArtifactExportRequest {
+                    operation: "export",
+                    artifact_id,
+                },
+            )?;
+            callback
+                .bind(py)
+                .call1((request,))
+                .map_err(core_error_from_py)?
+                .extract()
+                .map_err(core_error_from_py)
+        })?;
         if payload.is_empty() {
             return Err(CoreDagMlError::RuntimeValidation(
                 "Python artifact_callback returned an empty raw payload".into(),
@@ -1681,15 +1804,25 @@ impl RuntimeController for PyOperatorController {
                 self.controller_id
             ))
         })?;
-        let handle = call_py_bridge::<PyArtifactHydrationRequest<'_>, HandleRef>(
-            callback,
-            &PyArtifactHydrationRequest {
+        let handle: HandleRef = call_python("artifact hydration", |py| {
+            let hydration = PyArtifactHydrationRequest {
                 operation: "hydrate",
                 request,
                 payload,
-            },
-            "artifact hydration",
-        )?;
+            };
+            let object = to_py_object(py, &hydration)?;
+            object
+                .bind(py)
+                .cast::<pyo3::types::PyDict>()
+                .map_err(|error| CoreDagMlError::RuntimeValidation(error.to_string()))?
+                .set_item("payload", pyo3::types::PyBytes::new(py, hydration.payload))
+                .map_err(core_error_from_py)?;
+            let returned = callback
+                .bind(py)
+                .call1((object,))
+                .map_err(core_error_from_py)?;
+            from_py_object(&returned)
+        })?;
         if handle.owner_controller != self.controller_id
             || !matches!(handle.kind, HandleKind::Model | HandleKind::Artifact)
         {
@@ -2215,7 +2348,7 @@ pub fn run_cv_refit_predict_in_process(
     let dsl_spec = parse_pipeline_dsl_json(dsl_json.as_bytes()).map_err(py_core_error)?;
     let dsl_spec = fan_out_data_aware_branches(&dsl_spec, &envelope).map_err(py_core_error)?;
     let manifests =
-        serde_json::from_str::<Vec<dag_ml_core::ControllerManifest>>(controller_manifests_json)
+        crate::strict_json_input::<Vec<dag_ml_core::ControllerManifest>>(controller_manifests_json)
             .map_err(py_serde_error)?;
     let mut controller_registry = ControllerRegistry::new();
     for manifest in &manifests {
@@ -2261,7 +2394,7 @@ pub fn run_cv_refit_predict_in_process(
         build_runtime_controllers(py, &plan, &op_callback).map_err(py_core_error)?;
     let run_id =
         RunId::new(format!("run:{}:in-process-terminal", dsl_spec.id)).map_err(py_core_error)?;
-    let root_seed: u64 = 0;
+    let root_seed = plan.campaign.root_seed.unwrap_or(0);
 
     let resolved = resolve_refit_variant(
         &plan,
@@ -2358,7 +2491,7 @@ fn phase_resource_limits(
     resource_limits_json: Option<&str>,
 ) -> PyResult<Option<TrainingResourceLimits>> {
     let resources = resource_limits_json
-        .map(serde_json::from_str::<TrainingResourceLimits>)
+        .map(crate::strict_json_input::<TrainingResourceLimits>)
         .transpose()
         .map_err(py_serde_error)?;
     if let Some(resources) = &resources {
@@ -2388,7 +2521,7 @@ fn cv_refit_options(
     let metric = parse_selection_metric(selection_metric).map_err(py_core_error)?;
     // Keep the legacy Python exception for the previously exposed CPU guard.
     if resource_limits_json
-        .map(serde_json::from_str::<TrainingResourceLimits>)
+        .map(crate::strict_json_input::<TrainingResourceLimits>)
         .transpose()
         .map_err(py_serde_error)?
         .is_some_and(|resources| resources.cpu_threads == 0)
@@ -2595,12 +2728,13 @@ fn execute_cv_refit(
             for report in &mut extra_scores.reports {
                 report.variant_label = additional_variant_labels.get(variant_id).cloned();
             }
+            extra_scores
+                .reports
+                .retain(|report| report.partition != dag_ml_core::PredictionPartition::Validation);
             if let Some(primary_scores) = scores.as_mut() {
-                primary_scores
-                    .reports
-                    .extend(extra_scores.reports.into_iter().filter(|report| {
-                        report.partition != dag_ml_core::PredictionPartition::Validation
-                    }));
+                primary_scores.reports.extend(extra_scores.reports);
+            } else if !extra_scores.reports.is_empty() {
+                scores = Some(extra_scores);
             }
         }
     }
@@ -2682,7 +2816,7 @@ fn run_cv_refit_in_process_impl(
     let (metric, resource_limits) =
         cv_refit_options(selection_metric, resource_limits_json, refit, refit_top_k)?;
     let manifests =
-        serde_json::from_str::<Vec<dag_ml_core::ControllerManifest>>(controller_manifests_json)
+        crate::strict_json_input::<Vec<dag_ml_core::ControllerManifest>>(controller_manifests_json)
             .map_err(py_serde_error)?;
     let mut controller_registry = ControllerRegistry::new();
     for manifest in &manifests {
@@ -2691,12 +2825,12 @@ fn run_cv_refit_in_process_impl(
             .map_err(py_core_error)?;
     }
     let envelope: ExternalDataPlanEnvelope =
-        serde_json::from_str(envelope_json).map_err(py_serde_error)?;
+        crate::strict_json_input(envelope_json).map_err(py_serde_error)?;
     let mut campaign = compile_cv_refit_campaign(dsl_json, envelope, &controller_registry)
         .map_err(py_core_error)?;
     if let Some(training_loss_roles_json) = training_loss_roles_json {
         let roles: Vec<TrainingLossRoleReference> =
-            serde_json::from_str(training_loss_roles_json).map_err(py_serde_error)?;
+            crate::strict_json_input(training_loss_roles_json).map_err(py_serde_error)?;
         campaign.plan = campaign
             .plan
             .with_training_losses(roles)
@@ -2829,7 +2963,7 @@ pub fn run_cv_refit_methods_in_process<'py>(
         )
         .map_err(py_core_error)?;
         let envelope: ExternalDataPlanEnvelope =
-            serde_json::from_str(envelope_json).map_err(py_serde_error)?;
+            crate::strict_json_input(envelope_json).map_err(py_serde_error)?;
         let campaign = compile_cv_refit_campaign(dsl_json, envelope, &controller_registry)
             .map_err(py_core_error)?;
         crate::training::require_native_methods_controllers(
@@ -2879,7 +3013,7 @@ pub fn run_cv_refit_methods_in_process<'py>(
                     resource_limits,
                     refit,
                     refit_top_k,
-                    0,
+                    campaign.plan.campaign.root_seed.unwrap_or(0),
                 )?;
                 let payloads = run
                     .refit_artifacts
@@ -2960,7 +3094,18 @@ mod tests {
     #[pymethods]
     impl ArtifactCallback {
         fn __call__(&self, py: Python<'_>, payload: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-            let request: serde_json::Value = pythonize::depythonize(payload)
+            let request_object = payload.cast::<pyo3::types::PyDict>()?.copy()?;
+            let raw = request_object
+                .get_item("payload")?
+                .map(|value| {
+                    assert!(value.is_instance_of::<pyo3::types::PyBytes>());
+                    value.extract::<Vec<u8>>()
+                })
+                .transpose()?;
+            if raw.is_some() {
+                request_object.del_item("payload")?;
+            }
+            let request: serde_json::Value = pythonize::depythonize(&request_object)
                 .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?;
             let operation = request
                 .get("operation")
@@ -2973,12 +3118,12 @@ mod tests {
                         request["artifact_id"] == "artifact:python.native"
                             || request["artifact_id"] == "artifact:model:terminal:refit"
                     );
-                    pythonize(py, &vec![1u8, 2, 3])
-                        .map(|value| value.unbind())
-                        .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))
+                    Ok(pyo3::types::PyBytes::new(py, &[1, 2, 3])
+                        .into_any()
+                        .unbind())
                 }
                 "hydrate" => {
-                    assert_eq!(request["payload"], serde_json::json!([1, 2, 3]));
+                    assert_eq!(raw, Some(vec![1, 2, 3]));
                     let owner: ControllerId =
                         serde_json::from_value(request["request"]["controller_id"].clone())
                             .map_err(|error| {
@@ -3284,7 +3429,7 @@ mod tests {
     /// The operator-SELECT UNION plan: a STACKING graph `filter -> choice_i(transform -> model) ->
     /// merge:gen (oof) -> model:meta`, identical in shape to the CLI Phase-4 fixture.
     fn operator_select_union_plan() -> ExecutionPlan {
-        let graph: dag_ml_core::GraphSpec = serde_json::from_str(
+        let graph: dag_ml_core::GraphSpec = crate::strict_json_input(
             r#"{
   "id": "graph:in_process.operator.select",
   "interface": {"inputs": [], "outputs": []},
@@ -3340,7 +3485,7 @@ mod tests {
 }"#,
         )
         .unwrap();
-        let campaign: dag_ml_core::CampaignSpec = serde_json::from_str(
+        let campaign: dag_ml_core::CampaignSpec = crate::strict_json_input(
             r#"{
   "id": "campaign:in_process.operator.select",
   "root_seed": 7,
@@ -3391,7 +3536,7 @@ mod tests {
                "fit_scope": "fold_train", "rng_policy": "uses_core_seed", "artifact_policy": "serializable"}"#,
         ] {
             manifests
-                .register(serde_json::from_str::<ControllerManifest>(json).unwrap())
+                .register(crate::strict_json_input::<ControllerManifest>(json).unwrap())
                 .unwrap();
         }
         build_execution_plan(
@@ -3406,7 +3551,7 @@ mod tests {
     /// The operator-variant model with Phase-5 `variant_labels` populated (pinned valid 64-hex
     /// fingerprints), one per choice.
     fn operator_select_model() -> OperatorVariantModel {
-        let model: OperatorVariantModel = serde_json::from_str(&format!(
+        let model: OperatorVariantModel = crate::strict_json_input(&format!(
             r#"{{
               "generator_id": "generator:preproc_model",
               "dimension": {{
@@ -4023,8 +4168,8 @@ mod tests {
     }
 
     fn terminal_predict_observation_aggregation_dsl_json() -> String {
-        let mut dsl: serde_json::Value =
-            serde_json::from_str(&terminal_predict_dsl_json()).expect("fixture DSL is valid JSON");
+        let mut dsl: serde_json::Value = crate::strict_json_input(&terminal_predict_dsl_json())
+            .expect("fixture DSL is valid JSON");
         dsl["steps"][0]["shape"] = serde_json::json!({
             "aggregation_policy": {
                 "aggregation_level": "observation",
@@ -4058,7 +4203,7 @@ mod tests {
     }
 
     fn terminal_predict_envelope_json() -> String {
-        let mut envelope: ExternalDataPlanEnvelope = serde_json::from_str(include_str!(
+        let mut envelope: ExternalDataPlanEnvelope = crate::strict_json_input(include_str!(
             "../../dag-ml-core/tests/fixtures/package/data/coordinator_data_plan_envelope_sample12.json"
         ))
         .unwrap();
@@ -4089,7 +4234,7 @@ mod tests {
         Python::initialize();
         Python::attach(|py| {
             let mut dsl: serde_json::Value =
-                serde_json::from_str(&terminal_predict_dsl_json()).unwrap();
+                crate::strict_json_input(&terminal_predict_dsl_json()).unwrap();
             dsl.as_object_mut().unwrap().remove("split_invocation");
             for (phase, expected_ids) in [
                 ("REFIT", serde_json::json!(["sample:2", "sample:1"])),
@@ -4128,7 +4273,7 @@ mod tests {
                     .unwrap(),
                     serde_json::json!({"cpu_threads":1,"gpu_devices":[],"memory_bytes":4096,"wall_time_ms":1000})
                 );
-                let result: serde_json::Value = serde_json::from_str(&payload).unwrap();
+                let result: serde_json::Value = crate::strict_json_input(&payload).unwrap();
                 assert_eq!(result["phase"], phase);
                 assert_eq!(result["node_results"].as_array().unwrap().len(), 1);
                 assert_eq!(
@@ -4169,10 +4314,10 @@ mod tests {
         Python::initialize();
         Python::attach(|py| {
             let mut dsl: serde_json::Value =
-                serde_json::from_str(&terminal_predict_dsl_json()).unwrap();
+                crate::strict_json_input(&terminal_predict_dsl_json()).unwrap();
             dsl.as_object_mut().unwrap().remove("split_invocation");
             let mut envelope: ExternalDataPlanEnvelope =
-                serde_json::from_str(&terminal_predict_envelope_json()).unwrap();
+                crate::strict_json_input(&terminal_predict_envelope_json()).unwrap();
             envelope.data_content_fingerprint = Some("e".repeat(64));
             envelope.target_content_fingerprint = Some("f".repeat(64));
             let relations_fingerprint = envelope
@@ -4217,7 +4362,7 @@ mod tests {
                 .unwrap(),
                 serde_json::json!({"cpu_threads":1,"gpu_devices":[],"memory_bytes":4096,"wall_time_ms":1000})
             );
-            let outcome: serde_json::Value = serde_json::from_str(&payload).unwrap();
+            let outcome: serde_json::Value = crate::strict_json_input(&payload).unwrap();
             assert!(outcome["scores"]["reports"]
                 .as_array()
                 .unwrap()
@@ -4268,7 +4413,7 @@ mod tests {
                 None,
             )
             .expect("independent initial-refit package replays PREDICT");
-            let replay: serde_json::Value = serde_json::from_str(&replay).unwrap();
+            let replay: serde_json::Value = crate::strict_json_input(&replay).unwrap();
             assert_eq!(
                 replay["replay_outcome"]["outputs"][0]["prediction"]["sample_ids"],
                 serde_json::json!(["sample:holdout:1", "sample:holdout:2"])
@@ -4287,10 +4432,10 @@ mod tests {
         Python::initialize();
         Python::attach(|py| {
             let mut dsl: serde_json::Value =
-                serde_json::from_str(&terminal_predict_dsl_json()).unwrap();
+                crate::strict_json_input(&terminal_predict_dsl_json()).unwrap();
             dsl.as_object_mut().unwrap().remove("split_invocation");
             let mut envelope: ExternalDataPlanEnvelope =
-                serde_json::from_str(&terminal_predict_envelope_json()).unwrap();
+                crate::strict_json_input(&terminal_predict_envelope_json()).unwrap();
             envelope.data_content_fingerprint = Some("e".repeat(64));
             envelope.target_content_fingerprint = Some("f".repeat(64));
             let relation_fingerprint = envelope
@@ -4326,7 +4471,7 @@ mod tests {
                 None,
             )
             .unwrap();
-            let captured: serde_json::Value = serde_json::from_str(&captured).unwrap();
+            let captured: serde_json::Value = crate::strict_json_input(&captured).unwrap();
             let package = &captured["initial_full_refit_package"];
             assert_eq!(package["artifacts"][0]["load_mode"], "native_portable");
             assert_eq!(
@@ -4347,7 +4492,7 @@ mod tests {
                 Some(replay_artifacts.clone_ref(py).into_any()),
             )
             .unwrap();
-            let replay: serde_json::Value = serde_json::from_str(&replay).unwrap();
+            let replay: serde_json::Value = crate::strict_json_input(&replay).unwrap();
             assert_eq!(
                 replay["replay_outcome"]["outputs"]
                     .as_array()
@@ -4431,7 +4576,7 @@ mod tests {
         Python::attach(|py| {
             let callback = Py::new(py, TerminalPredictCallback::default()).unwrap();
             let mut dsl: serde_json::Value =
-                serde_json::from_str(&terminal_predict_dsl_json()).unwrap();
+                crate::strict_json_input(&terminal_predict_dsl_json()).unwrap();
             dsl.as_object_mut().unwrap().remove("split_invocation");
             for ids in [
                 None,
@@ -4520,7 +4665,7 @@ mod tests {
                 r#"{"node_id":"model:terminal","port":"oof"}"#,
             )
             .expect("V2 terminal in-process execution succeeds");
-            let outcome: serde_json::Value = serde_json::from_str(&payload).unwrap();
+            let outcome: serde_json::Value = crate::strict_json_input(&payload).unwrap();
             assert_eq!(
                 outcome["terminal_prediction"]["sample_ids"],
                 serde_json::json!(["sample:holdout:1", "sample:holdout:2"])

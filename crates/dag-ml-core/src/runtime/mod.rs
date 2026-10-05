@@ -49,8 +49,7 @@ pub(crate) use crate::ids::{
 #[cfg(test)]
 pub(crate) use crate::metrics::cross_fold_validation_reports;
 pub(crate) use crate::metrics::{
-    cross_fold_test_reports, cross_fold_train_reports,
-    cross_fold_validation_reports_with_probabilities, reassemble_merge_targets,
+    cross_fold_test_reports, cross_fold_train_reports, reassemble_merge_targets,
     score_prediction_with_class_probabilities, score_regression_aggregated_block,
     score_regression_prediction_block, OofAverageBlock, RegressionMetricKind,
     RegressionMetricReport, RegressionTargetBlock, RegressionTargetRecord, ScoreSet,
@@ -259,6 +258,8 @@ pub(crate) fn ensure_aggregation_controller_capability(
 
 #[derive(Clone, Debug)]
 pub struct RunContext {
+    executed_variants: BTreeSet<VariantId>,
+    run_resources: BTreeMap<ControllerId, std::sync::Arc<dyn std::fmt::Debug + Send + Sync>>,
     pub run_id: RunId,
     pub root_seed: Option<u64>,
     pub variant_id: Option<VariantId>,
@@ -374,8 +375,39 @@ impl RunContext {
         Ok(())
     }
 
+    fn retain_controller_resources(
+        &mut self,
+        controllers: &RuntimeControllerRegistry,
+    ) -> Result<()> {
+        for (id, controller) in &controllers.controllers {
+            if !self.run_resources.contains_key(id) {
+                if let Some(resource) = controller.retain_run_resources(&self.run_id)? {
+                    self.run_resources.insert(id.clone(), resource);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn record_variant_scope(&mut self, variant_id: Option<&VariantId>) {
+        if let Some(id) = variant_id {
+            self.executed_variants.insert(id.clone());
+        }
+    }
+
+    fn validate_ensemble_variant_scope(&self) -> Result<()> {
+        if self.executed_variants.len() > 1 {
+            return Err(DagMlError::RuntimeValidation(
+                "cross-fold ensembles require one variant per run context".into(),
+            ));
+        }
+        Ok(())
+    }
+
     pub fn new(run_id: RunId, root_seed: Option<u64>) -> Self {
         Self {
+            executed_variants: BTreeSet::new(),
+            run_resources: BTreeMap::new(),
             run_id,
             root_seed,
             variant_id: None,
@@ -425,6 +457,43 @@ impl RunContext {
         &mut self,
         partition_mode: FoldPartitionMode,
     ) -> Result<()> {
+        self.collect_cross_fold_validation_scores_scoped(partition_mode, &BTreeSet::new())
+    }
+
+    pub(crate) fn collect_cross_fold_validation_scores_for_target(
+        &mut self,
+        partition_mode: FoldPartitionMode,
+        metric: RegressionMetricKind,
+        producer: Option<&NodeId>,
+    ) -> Result<()> {
+        let classification = matches!(
+            metric,
+            RegressionMetricKind::Accuracy
+                | RegressionMetricKind::BalancedAccuracy
+                | RegressionMetricKind::F1
+        );
+        let nodes = if classification {
+            match producer {
+                Some(node) => BTreeSet::from([node.clone()]),
+                None => self
+                    .prediction_store
+                    .blocks()
+                    .iter()
+                    .map(|block| block.producer_node.clone())
+                    .collect(),
+            }
+        } else {
+            BTreeSet::new()
+        };
+        self.collect_cross_fold_validation_scores_scoped(partition_mode, &nodes)
+    }
+
+    fn collect_cross_fold_validation_scores_scoped(
+        &mut self,
+        partition_mode: FoldPartitionMode,
+        classification_producers: &BTreeSet<NodeId>,
+    ) -> Result<()> {
+        self.validate_ensemble_variant_scope()?;
         let scoring_blocks = self
             .prediction_store
             .blocks()
@@ -443,7 +512,7 @@ impl RunContext {
             })
             .cloned()
             .collect::<Vec<_>>();
-        let outcome = cross_fold_validation_reports_with_probabilities(
+        let outcome = crate::metrics::cross_fold_validation_reports_with_classification(
             &scoring_blocks,
             &self.classification_probability_blocks,
             &self
@@ -465,6 +534,7 @@ impl RunContext {
                 .collect::<Vec<_>>(),
             SCORE_METRICS,
             partition_mode,
+            classification_producers,
         )?;
         let outcome = apply_global_oof_aggregation(outcome, &self.global_oof_aggregation)?;
         // Every OOF sample is scored by its held-out estimator(s). The legacy
@@ -530,11 +600,36 @@ impl RunContext {
         &mut self,
         selection_metric: RegressionMetricKind,
     ) -> Result<()> {
+        let allowed = |fold: &Option<FoldId>| {
+            self.validation_scoring_fold_ids
+                .as_ref()
+                .is_none_or(|ids| fold.as_ref().is_some_and(|id| ids.contains(id)))
+        };
+        let blocks = self
+            .prediction_store
+            .blocks()
+            .iter()
+            .filter(|block| allowed(&block.fold_id))
+            .cloned()
+            .collect::<Vec<_>>();
+        let targets = self
+            .regression_target_records
+            .iter()
+            .filter(|record| allowed(&record.fold_id))
+            .cloned()
+            .collect::<Vec<_>>();
+        let reports = self
+            .score_collector
+            .iter()
+            .filter(|report| allowed(&report.fold_id))
+            .cloned()
+            .collect::<Vec<_>>();
+        self.validate_ensemble_variant_scope()?;
         let outcome = cross_fold_test_reports(
-            self.prediction_store.blocks(),
+            &blocks,
             &self.classification_probability_blocks,
-            &self.regression_target_records,
-            &self.score_collector,
+            &targets,
+            &reports,
             selection_metric,
             SCORE_METRICS,
         )?;
@@ -578,6 +673,7 @@ impl RunContext {
             })
             .cloned()
             .collect::<Vec<_>>();
+        self.validate_ensemble_variant_scope()?;
         let outcome = cross_fold_train_reports(
             &blocks,
             &self.classification_probability_blocks,
@@ -1135,7 +1231,11 @@ where
         let mut ctx = RunContext::new(run_id.clone(), root_seed);
         ctx.variant_id = Some(variant.variant_id.clone());
         run_single_variant_fit_cv(&variant_plan, &mut ctx)?;
-        ctx.collect_cross_fold_validation_scores(partition_mode)?;
+        ctx.collect_cross_fold_validation_scores_for_target(
+            partition_mode,
+            selection_metric,
+            score_target.map(|(node, _, _)| node),
+        )?;
         if !ctx.score_collector.is_empty() {
             any_scores_seen = true;
         }

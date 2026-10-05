@@ -123,6 +123,14 @@ impl TrainingDataProvider {
 }
 
 impl RuntimeDataProvider for TrainingDataProvider {
+    fn discard_view(&self, handle: &HandleRef) -> dag_ml_core::Result<()> {
+        match self {
+            Self::Host(provider) => provider.discard_view(handle),
+            #[cfg(feature = "methods-optimizer")]
+            Self::Methods(provider) => provider.discard_view(handle),
+        }
+    }
+
     fn materialize(&self, request: &DataMaterializationRequest) -> dag_ml_core::Result<HandleRef> {
         match self {
             Self::Host(provider) => provider.materialize(request),
@@ -385,6 +393,9 @@ impl<P: RuntimeDataProvider> MethodsInputProvider<P> {
 
 #[cfg(feature = "methods-optimizer")]
 impl<P: RuntimeDataProvider> RuntimeDataProvider for MethodsInputProvider<P> {
+    fn discard_view(&self, handle: &HandleRef) -> dag_ml_core::Result<()> {
+        self.inner.discard_view(handle)
+    }
     fn materialize(&self, request: &DataMaterializationRequest) -> dag_ml_core::Result<HandleRef> {
         self.inner.materialize(request)
     }
@@ -713,10 +724,10 @@ impl TrainingResult {
 
 impl TrainingResult {
     fn lock_resources(&self) -> PyResult<MutexGuard<'_, Option<TrainingResources>>> {
-        self.resources.lock().map_err(|_| {
-            py_core_error(dag_ml_core::DagMlError::RuntimeValidation(
-                "training result resource lock is poisoned".to_string(),
-            ))
+        self.resources.try_lock().map_err(|error| {
+            py_core_error(dag_ml_core::DagMlError::RuntimeValidation(format!(
+                "training result resources are busy or poisoned: {error}"
+            )))
         })
     }
 }

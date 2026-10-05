@@ -438,11 +438,28 @@ pub(crate) fn apply_result_scoring(
         {
             continue;
         }
-        if let Some(targets) = result
+        let matching_targets = result
             .regression_targets
             .iter()
-            .find(|targets| targets.level == block.level)
-        {
+            .filter(|targets| {
+                targets.level == block.level
+                    && (block.target_names.is_empty()
+                        || targets.target_names.is_empty()
+                        || block.target_names == targets.target_names)
+                    && targets.unit_ids.iter().collect::<BTreeSet<_>>()
+                        == block.unit_ids.iter().collect::<BTreeSet<_>>()
+            })
+            .collect::<Vec<_>>();
+        if let Some(targets) = matching_targets.first() {
+            let canonical = targets.canonicalized()?;
+            for candidate in matching_targets.iter().skip(1) {
+                if candidate.canonicalized()? != canonical {
+                    return Err(DagMlError::RuntimeValidation(format!(
+                        "node `{}` emitted ambiguous targets for aggregated predictions",
+                        block.producer_node
+                    )));
+                }
+            }
             let mut report = score_regression_aggregated_block(block, targets, SCORE_METRICS)?;
             report.variant_id = result.lineage.variant_id.clone();
             collector.push(report);

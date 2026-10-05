@@ -976,7 +976,7 @@ impl ConformalCalibration {
     pub fn apply(&self, predictions: &PredictionBlock) -> Result<ConformalIntervalBlock> {
         self.validate()?;
         predictions.validate_content()?;
-        if predictions.target_names != self.target_names {
+        if !predictions.target_names.is_empty() && predictions.target_names != self.target_names {
             return Err(DagMlError::RuntimeValidation(
                 "conformal application target order does not match calibration".to_string(),
             ));

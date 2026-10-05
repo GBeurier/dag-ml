@@ -129,9 +129,9 @@ fn write_native_results_v2_json(
     score_set_json: &str,
     predictions_json: &str,
 ) -> PyResult<()> {
-    let manifest = serde_json::from_str(manifest_json).map_err(py_serde_error)?;
-    let score_set = serde_json::from_str(score_set_json).map_err(py_serde_error)?;
-    let predictions = serde_json::from_str(predictions_json).map_err(py_serde_error)?;
+    let manifest = crate::strict_json_input(manifest_json).map_err(py_serde_error)?;
+    let score_set = crate::strict_json_input(score_set_json).map_err(py_serde_error)?;
+    let predictions = crate::strict_json_input(predictions_json).map_err(py_serde_error)?;
     dag_ml_results::write_native_results(run_dir, manifest, score_set, predictions)
         .map_err(py_native_results_error)
 }
@@ -163,14 +163,14 @@ fn validate_controller_manifest_list_json(json: &str) -> PyResult<()> {
 #[pyfunction]
 fn derive_controller_manifest_json(host_controller_spec_json: &str) -> PyResult<String> {
     let spec: HostControllerSpec =
-        serde_json::from_str(host_controller_spec_json).map_err(py_serde_error)?;
+        crate::strict_json_input(host_controller_spec_json).map_err(py_serde_error)?;
     let manifest = spec.derive().map_err(py_core_error)?;
     serde_json::to_string(&manifest).map_err(py_serde_error)
 }
 
 #[pyfunction]
 fn derive_controller_manifest_list_json(host_controller_specs_json: &str) -> PyResult<String> {
-    let specs = serde_json::from_str::<Vec<HostControllerSpec>>(host_controller_specs_json)
+    let specs = crate::strict_json_input::<Vec<HostControllerSpec>>(host_controller_specs_json)
         .map_err(py_serde_error)?;
     let manifests = derive_controller_manifests(specs)?;
     serde_json::to_string(&manifests).map_err(py_serde_error)
@@ -215,7 +215,7 @@ fn validate_training_request_json(json: &str) -> PyResult<()> {
 
 #[pyfunction]
 fn sample_relation_set_fingerprint_json(json: &str) -> PyResult<String> {
-    let relations = serde_json::from_str::<SampleRelationSet>(json).map_err(py_serde_error)?;
+    let relations = crate::strict_json_input::<SampleRelationSet>(json).map_err(py_serde_error)?;
     relations.fingerprint().map_err(py_core_error)
 }
 
@@ -252,7 +252,7 @@ fn attach_predict_cohort_to_envelope_json(
 
 #[pyfunction]
 fn sign_training_request_json(json: &str) -> PyResult<String> {
-    let mut request = serde_json::from_str::<TrainingRequest>(json).map_err(py_serde_error)?;
+    let mut request = crate::strict_json_input::<TrainingRequest>(json).map_err(py_serde_error)?;
     request.request_fingerprint = request.compute_fingerprint().map_err(py_core_error)?;
     request.validate().map_err(py_core_error)?;
     serde_json::to_string(&request).map_err(py_serde_error)
@@ -265,7 +265,7 @@ fn sign_training_request_json(json: &str) -> PyResult<String> {
 #[pyfunction]
 fn sign_training_replay_request_json(json: &str) -> PyResult<String> {
     let mut request =
-        serde_json::from_str::<TrainingReplayRequest>(json).map_err(py_serde_error)?;
+        crate::strict_json_input::<TrainingReplayRequest>(json).map_err(py_serde_error)?;
     request.request_fingerprint = request.compute_fingerprint().map_err(py_core_error)?;
     request.validate().map_err(py_core_error)?;
     serde_json::to_string(&request).map_err(py_serde_error)
@@ -387,7 +387,7 @@ fn select_portable_output_json(package_json: &str, binding_id: &str) -> PyResult
 #[pyfunction]
 fn select_stacking_producers_json(request_json: &str) -> PyResult<String> {
     let request: StackingProducerSelectionRequest =
-        serde_json::from_str(request_json).map_err(py_serde_error)?;
+        crate::strict_json_input(request_json).map_err(py_serde_error)?;
     let selected = request.selected_producer_nodes().map_err(py_core_error)?;
     serde_json::to_string(&selected).map_err(py_serde_error)
 }
@@ -395,7 +395,7 @@ fn select_stacking_producers_json(request_json: &str) -> PyResult<String> {
 #[pyfunction]
 fn select_stacking_fold_json(request_json: &str) -> PyResult<String> {
     let request: StackingFoldSelectionRequest =
-        serde_json::from_str(request_json).map_err(py_serde_error)?;
+        crate::strict_json_input(request_json).map_err(py_serde_error)?;
     let selected = request.selected_fold_id().map_err(py_core_error)?;
     serde_json::to_string(&selected).map_err(py_serde_error)
 }
@@ -403,7 +403,7 @@ fn select_stacking_fold_json(request_json: &str) -> PyResult<String> {
 #[pyfunction]
 fn stacking_fold_weights_json(request_json: &str) -> PyResult<String> {
     let request: StackingFoldSelectionRequest =
-        serde_json::from_str(request_json).map_err(py_serde_error)?;
+        crate::strict_json_input(request_json).map_err(py_serde_error)?;
     let weights = request.normalized_weights().map_err(py_core_error)?;
     serde_json::to_string(&weights).map_err(py_serde_error)
 }
@@ -412,7 +412,7 @@ fn stacking_fold_weights_json(request_json: &str) -> PyResult<String> {
 #[pyfunction]
 fn align_named_source_rows_json(request_json: &str) -> PyResult<String> {
     let request: NamedSourceAlignmentRequest =
-        serde_json::from_str(request_json).map_err(py_serde_error)?;
+        crate::strict_json_input(request_json).map_err(py_serde_error)?;
     let alignment = align_named_source_rows(&request).map_err(py_core_error)?;
     serde_json::to_string(&alignment).map_err(py_serde_error)
 }
@@ -510,7 +510,7 @@ fn compile_pipeline_dsl_artifact_with_controllers_json(
 fn fan_out_data_aware_branches_json(dsl_json: &str, envelope_json: &str) -> PyResult<String> {
     let spec = parse_pipeline_dsl_json(dsl_json.as_bytes()).map_err(py_core_error)?;
     let envelope: ExternalDataPlanEnvelope =
-        serde_json::from_str(envelope_json).map_err(py_serde_error)?;
+        crate::strict_json_input(envelope_json).map_err(py_serde_error)?;
     let expanded = fan_out_data_aware_branches(&spec, &envelope).map_err(py_core_error)?;
     serde_json::to_string(&expanded).map_err(py_serde_error)
 }
@@ -661,9 +661,9 @@ fn resolve_host_hpo_structural_winner_json(
 
 #[pyfunction]
 fn select_candidate_json(policy_json: &str, candidates_json: &str) -> PyResult<String> {
-    let policy: SelectionPolicy = serde_json::from_str(policy_json).map_err(py_serde_error)?;
+    let policy: SelectionPolicy = crate::strict_json_input(policy_json).map_err(py_serde_error)?;
     let candidates: Vec<CandidateScore> =
-        serde_json::from_str(candidates_json).map_err(py_serde_error)?;
+        crate::strict_json_input(candidates_json).map_err(py_serde_error)?;
     let decision = select_candidate(&policy, &candidates).map_err(py_core_error)?;
     serde_json::to_string(&decision).map_err(py_serde_error)
 }
@@ -707,7 +707,7 @@ fn canonical_operator_variant_label(steps_json: &str) -> PyResult<String> {
 #[pyfunction]
 fn canonical_operator_variant_value_json(steps_json: &str) -> PyResult<String> {
     let steps: Vec<dag_ml_core::PipelineDslStep> =
-        serde_json::from_str(steps_json).map_err(py_serde_error)?;
+        crate::strict_json_input(steps_json).map_err(py_serde_error)?;
     let canonical = operator_variant_canonical_value(&steps).map_err(py_core_error)?;
     serde_json::to_string(&canonical).map_err(py_serde_error)
 }
@@ -1104,9 +1104,20 @@ fn validate_json<T>(
     validate: impl FnOnce(&T) -> dag_ml_core::Result<()>,
 ) -> PyResult<()>
 where
-    T: DeserializeOwned,
+    T: DeserializeOwned + serde::Serialize,
 {
     parse_and_validate::<T>(json, validate).map(|_| ())
+}
+
+pub(crate) fn strict_json_input<T: DeserializeOwned + serde::Serialize>(
+    json: &str,
+) -> serde_json::Result<T> {
+    dag_ml_core::deserialize_external_contract(
+        json,
+        "Python binding contract",
+        dag_ml_core::DagMlError::RuntimeValidation,
+    )
+    .map_err(<serde_json::Error as serde::de::Error>::custom)
 }
 
 fn parse_and_validate<T>(
@@ -1114,16 +1125,16 @@ fn parse_and_validate<T>(
     validate: impl FnOnce(&T) -> dag_ml_core::Result<()>,
 ) -> PyResult<T>
 where
-    T: DeserializeOwned,
+    T: DeserializeOwned + serde::Serialize,
 {
-    let value = serde_json::from_str::<T>(json).map_err(py_serde_error)?;
+    let value = crate::strict_json_input::<T>(json).map_err(py_serde_error)?;
     validate(&value).map_err(py_core_error)?;
     Ok(value)
 }
 
 fn controller_registry_from_json(json: &str) -> PyResult<ControllerRegistry> {
     let manifests =
-        serde_json::from_str::<Vec<ControllerManifest>>(json).map_err(py_serde_error)?;
+        crate::strict_json_input::<Vec<ControllerManifest>>(json).map_err(py_serde_error)?;
     let mut registry = ControllerRegistry::new();
     for manifest in manifests {
         registry.register(manifest).map_err(py_core_error)?;
@@ -1158,6 +1169,9 @@ fn py_native_results_error(error: dag_ml_results::NativeResultsError) -> PyErr {
 }
 
 fn py_core_error(error: CoreDagMlError) -> PyErr {
+    if let Some(interrupt) = in_process::take_python_interrupt(&error) {
+        return interrupt;
+    }
     Python::attach(|py| {
         let descriptor = error.descriptor();
         let instance: PyResult<Bound<'_, PyAny>> = (|| {
@@ -1194,7 +1208,7 @@ mod tests {
     fn native_named_source_alignment_exposes_row_permutations() {
         let request = r#"{"sample_ids":["s1","s2"],"required_source_ids":["source_0","source_1"],"sources":[{"source_id":"source_1","sample_ids":["s1","s2"]},{"source_id":"source_0","sample_ids":["s2","s1"]}]}"#;
         let aligned: serde_json::Value =
-            serde_json::from_str(&align_named_source_rows_json(request).unwrap()).unwrap();
+            crate::strict_json_input(&align_named_source_rows_json(request).unwrap()).unwrap();
         assert_eq!(
             aligned["sources"][0]["row_indices"],
             serde_json::json!([1, 0])
@@ -1212,21 +1226,21 @@ mod tests {
             .expect_err("duplicate relation-set keys must be rejected");
         assert!(relation_error
             .to_string()
-            .contains("duplicate field `records`"));
+            .contains("duplicate JSON object key `records`"));
 
         let request_error =
             sign_training_request_json(r#"{"schema_version":1,"schema_version":1}"#)
                 .expect_err("duplicate training-request keys must be rejected");
         assert!(request_error
             .to_string()
-            .contains("duplicate field `schema_version`"));
+            .contains("duplicate JSON object key `schema_version`"));
 
         let replay_error =
             sign_training_replay_request_json(r#"{"schema_version":1,"schema_version":1}"#)
                 .expect_err("duplicate replay-request keys must be rejected");
         assert!(replay_error
             .to_string()
-            .contains("duplicate field `schema_version`"));
+            .contains("duplicate JSON object key `schema_version`"));
     }
 
     #[test]
@@ -1359,7 +1373,7 @@ mod tests {
 
         let signed = attach_predict_cohort_to_envelope_json(envelope, request)
             .expect("native producer derives a V2 cohort");
-        let parsed: ExternalDataPlanEnvelope = serde_json::from_str(&signed).unwrap();
+        let parsed: ExternalDataPlanEnvelope = crate::strict_json_input(&signed).unwrap();
         parsed.validate().unwrap();
         assert_eq!(
             parsed.schema_version,
@@ -1408,7 +1422,7 @@ mod tests {
         // cross-repo fixture's `steps_json`, over the SAME canonicalization + serde_json::to_vec
         // (ryu) path dag-ml uses to stamp reports. The host calls THIS (not Python json.dumps), so
         // its label is byte-identical to the report label by construction.
-        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        let fixture: serde_json::Value = crate::strict_json_input(include_str!(
             "../../../docs/contracts/operator_variant_label.v1.json"
         ))
         .unwrap();
@@ -1451,7 +1465,7 @@ mod tests {
             derive_controller_manifest_json(spec_json).expect("host spec derives manifest JSON");
         validate_controller_manifest_json(&manifest_json).expect("derived manifest validates");
         let manifest: ControllerManifest =
-            serde_json::from_str(&manifest_json).expect("manifest JSON decodes");
+            crate::strict_json_input(&manifest_json).expect("manifest JSON decodes");
         assert_eq!(manifest.controller_id.as_str(), "controller:nirs4all.model");
         assert_eq!(manifest.priority, 20);
         assert!(manifest
@@ -1487,7 +1501,7 @@ mod tests {
         validate_controller_manifest_list_json(&manifests_json)
             .expect("derived manifest list validates");
         let manifests: Vec<ControllerManifest> =
-            serde_json::from_str(&manifests_json).expect("manifest list decodes");
+            crate::strict_json_input(&manifests_json).expect("manifest list decodes");
         assert_eq!(manifests.len(), 2);
         assert_eq!(
             manifests[0].controller_id.as_str(),
@@ -1521,7 +1535,7 @@ mod tests {
         let projection = project_training_request_json(request).expect("training request projects");
         validate_training_contract_projection_json(&projection)
             .expect("native training projection validates");
-        let projection_value: serde_json::Value = serde_json::from_str(&projection).unwrap();
+        let projection_value: serde_json::Value = crate::strict_json_input(&projection).unwrap();
         assert_eq!(
             projection_value["request_id"],
             "training:fixture.active_influence"
@@ -1603,7 +1617,8 @@ mod tests {
     #[test]
     fn contract_manifest_declares_binding_surface() {
         let manifest =
-            serde_json::from_str::<serde_json::Value>(&contract_manifest_json().unwrap()).unwrap();
+            crate::strict_json_input::<serde_json::Value>(&contract_manifest_json().unwrap())
+                .unwrap();
         assert_eq!(manifest["crate"], "dag-ml");
         assert_eq!(manifest["version"], env!("CARGO_PKG_VERSION"));
         assert!(manifest["python_exports"]

@@ -306,6 +306,9 @@ enum Command {
         output: Option<PathBuf>,
         #[arg(long, default_value_t = 30_000)]
         adapter_timeout_ms: u64,
+        /// Per-operator timeout; 0 permits long fits.
+        #[arg(long, default_value_t = DEFAULT_PROCESS_TIMEOUT_MS)]
+        operator_timeout_ms: u64,
     },
     ValidateGraph {
         path: PathBuf,
@@ -1094,6 +1097,7 @@ fn main() -> Result<()> {
             checkpoint,
             output,
             adapter_timeout_ms,
+            operator_timeout_ms,
         } => run_host_hpo_cli(
             &plan,
             &envelope,
@@ -1105,6 +1109,7 @@ fn main() -> Result<()> {
             checkpoint.as_deref(),
             output.as_deref(),
             Duration::from_millis(adapter_timeout_ms),
+            Duration::from_millis(operator_timeout_ms),
         )?,
         Command::ValidateGraph { path } => {
             let graph = read_external_contract(&path, "graph", GraphSpec::from_json)?;
@@ -1683,11 +1688,9 @@ fn main() -> Result<()> {
             })
             .with_context(|| "mock refit bundle capture failed")?;
             emit_json(output.as_ref(), &captured.bundle, "execution bundle")?;
-            emit_json(
-                lineage_output.as_ref(),
-                &captured.lineage_records,
-                "lineage records",
-            )?;
+            if let Some(path) = lineage_output.as_ref() {
+                emit_json(Some(path), &captured.lineage_records, "lineage records")?;
+            }
         }
         Command::RunProcessRefitBundle {
             graph,
@@ -1742,11 +1745,9 @@ fn main() -> Result<()> {
             })
             .with_context(|| "process refit bundle capture failed")?;
             emit_json(output.as_ref(), &captured.bundle, "execution bundle")?;
-            emit_json(
-                lineage_output.as_ref(),
-                &captured.lineage_records,
-                "lineage records",
-            )?;
+            if let Some(path) = lineage_output.as_ref() {
+                emit_json(Some(path), &captured.lineage_records, "lineage records")?;
+            }
         }
         Command::RunProcessCvRefitBundle {
             graph,
@@ -1821,11 +1822,9 @@ fn main() -> Result<()> {
                 }
             );
             emit_json(output.as_ref(), &captured.bundle, "execution bundle")?;
-            emit_json(
-                lineage_output.as_ref(),
-                &captured.lineage_records,
-                "lineage records",
-            )?;
+            if let Some(path) = lineage_output.as_ref() {
+                emit_json(Some(path), &captured.lineage_records, "lineage records")?;
+            }
             if let Some(path) = prediction_cache_output.as_ref() {
                 let payload_set = BundlePredictionCachePayloadSet {
                     bundle_id: captured.bundle.bundle_id.clone(),
@@ -2024,19 +2023,19 @@ fn main() -> Result<()> {
                 }
             );
             emit_json(output.as_ref(), &captured.bundle, "execution bundle")?;
-            emit_json(
-                oof_average_output.as_ref(),
-                &captured.oof_average_results,
-                "OOF average results",
-            )?;
+            if let Some(path) = oof_average_output.as_ref() {
+                emit_json(
+                    Some(path),
+                    &captured.oof_average_results,
+                    "OOF average results",
+                )?;
+            }
             if let Some(path) = node_results_output.as_ref() {
                 emit_json(Some(path), &captured.node_results, "native node results")?;
             }
-            emit_json(
-                lineage_output.as_ref(),
-                &captured.lineage_records,
-                "lineage records",
-            )?;
+            if let Some(path) = lineage_output.as_ref() {
+                emit_json(Some(path), &captured.lineage_records, "lineage records")?;
+            }
             if let Some(path) = prediction_cache_output.as_ref() {
                 let payload_set = BundlePredictionCachePayloadSet {
                     bundle_id: captured.bundle.bundle_id.clone(),
@@ -2913,12 +2912,7 @@ fn main() -> Result<()> {
             // PREDICT replay) when the host requested it.
             let scores = ctx.build_score_set(plan.id.clone(), None);
             if let Some(score_path) = score_output {
-                if let Some(scores) = scores.as_ref() {
-                    std::fs::write(&score_path, serde_json::to_string_pretty(&scores)?)
-                        .with_context(|| {
-                            format!("failed to write score output to {}", score_path.display())
-                        })?;
-                }
+                emit_json(Some(&score_path), &scores, "replay scores")?;
             }
             if let Some(path) = output.as_ref() {
                 emit_json(
@@ -4458,6 +4452,7 @@ fn run_host_hpo_cli(
     checkpoint_path: Option<&Path>,
     output: Option<&Path>,
     timeout: Duration,
+    operator_timeout: Duration,
 ) -> Result<()> {
     if parallel_trials == 0 {
         bail!("--parallel-trials must be positive");
@@ -4477,7 +4472,7 @@ fn run_host_hpo_cli(
         plan: plan.clone(),
         adapter: operator_adapter.to_path_buf(),
         persistent: operator_persistent,
-        timeout,
+        timeout: operator_timeout,
     };
     let optimizer = Rc::new(RefCell::new(CliHpoOptimizer::spawn(
         optimizer_adapter,
@@ -5204,7 +5199,7 @@ impl RuntimeController for ProcessRuntimeController {
             ))
         })?;
 
-        {
+        let written = (|| -> dag_ml_core::Result<()> {
             let mut stdin = child.stdin.take().ok_or_else(|| {
                 DagMlError::RuntimeValidation(format!(
                     "controller `{}` adapter stdin was not available",
@@ -5223,6 +5218,18 @@ impl RuntimeController for ProcessRuntimeController {
                     self.id
                 ))
             })?;
+            Ok(())
+        })();
+        if let Err(error) = written {
+            let _ = child.kill();
+            let diagnostic = child
+                .wait_with_output()
+                .ok()
+                .map(|output| String::from_utf8_lossy(&output.stderr).trim().to_string())
+                .unwrap_or_default();
+            return Err(DagMlError::RuntimeValidation(format!(
+                "{error}; adapter stderr: {diagnostic}"
+            )));
         }
 
         let output = wait_with_output_timeout(child, self.config.timeout, &self.id, &self.adapter)?;
@@ -5310,6 +5317,29 @@ impl RuntimeController for PersistentProcessRuntimeController {
                     if failure.restartable {
                         session.terminate();
                         if attempt < self.config.retries {
+                            let lost_refit = self
+                                .refit_artifact_workers
+                                .lock()
+                                .map_err(|_| {
+                                    DagMlError::RuntimeValidation(
+                                        "artifact registry lock poisoned".into(),
+                                    )
+                                })?
+                                .values()
+                                .any(|owner| *owner == worker_index);
+                            let lost_hydrated = self
+                                .hydrated_artifact_workers
+                                .lock()
+                                .map_err(|_| {
+                                    DagMlError::RuntimeValidation(
+                                        "hydration registry lock poisoned".into(),
+                                    )
+                                })?
+                                .values()
+                                .any(|owner| *owner == worker_index);
+                            if lost_refit || lost_hydrated {
+                                return Err(DagMlError::RuntimeValidation(format!("{}; artifact lost on worker restart; cannot retry a worker holding fitted artifacts", failure.message)));
+                            }
                             let replacement = PersistentProcessSession::spawn(
                                 &self.id,
                                 &self.adapter,
@@ -8074,6 +8104,7 @@ mod tests {
                     Some(&checkpoint_path),
                     Some(&output_path),
                     Duration::from_secs(10),
+                    Duration::ZERO,
                 )
                 .unwrap();
                 let result: serde_json::Value =
@@ -8122,6 +8153,7 @@ mod tests {
                     Some(&checkpoint_path),
                     Some(&output_path),
                     Duration::from_secs(10),
+                    Duration::ZERO,
                 )
                 .unwrap();
                 let result: serde_json::Value =
@@ -8191,6 +8223,7 @@ mod tests {
                 Some(&checkpoint_path),
                 Some(&output_path),
                 Duration::from_secs(10),
+                Duration::ZERO,
             )
             .unwrap();
             let recovered = std::fs::read(&checkpoint_path).unwrap();
@@ -8214,6 +8247,7 @@ mod tests {
                 Some(&checkpoint_path),
                 Some(&output_path),
                 Duration::from_secs(10),
+                Duration::ZERO,
             )
             .unwrap();
             assert_eq!(std::fs::read(&checkpoint_path).unwrap(), recovered);
@@ -8246,6 +8280,7 @@ mod tests {
                 Some(&pruned_checkpoint_path),
                 Some(&output_path),
                 Duration::from_secs(10),
+                Duration::ZERO,
             )
             .unwrap();
             let checkpoint: HostHpoCheckpoint =

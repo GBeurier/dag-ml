@@ -19,6 +19,8 @@ const REQUIRED_DTS_EXPORTS = [
   "derive_controller_manifest_json",
   "derive_controller_manifest_list_json",
   "execute_execution_plan_phase_json",
+  "execute_execution_plan_phase_u64_json",
+  "execute_campaign_phase_u64_json",
   "execute_initial_full_refit_json",
   "replay_initial_full_refit_json",
   "validate_initial_full_refit_package_json",
@@ -475,6 +477,28 @@ if (runtimeLossCalls.length !== 2) {
 if (runtimeTaskSeeds.length !== 2 || runtimeTaskSeeds.some((seed) => seed === null)) {
   throw new Error("runtime controller did not receive exact seeds in both phases");
 }
+for (const execute of [dagMl.execute_execution_plan_phase_u64_json]) {
+  const result = execute(
+    runtimePlanJson, JSON.stringify([runtimeControllerManifest]), "run:u64-max",
+    "18446744073709551615", "REFIT", invokeRuntimeController,
+  );
+  if (!JSON.parse(result).length) throw new Error("u64 phase execution did not return its result");
+  try {
+    execute(runtimePlanJson, JSON.stringify([runtimeControllerManifest]), "run:u64-overflow",
+      "18446744073709551616", "REFIT", invokeRuntimeController);
+    throw new Error("u64 overflow seed was accepted");
+  } catch (error) {
+    if (!String(error).includes("decimal u64")) throw error;
+  }
+}
+const campaignInvoke = (controllerId, taskJson) =>
+  JSON.stringify(runtimeResult(controllerId, JSON.parse(taskJson), []));
+const campaignU64 = dagMl.execute_campaign_phase_u64_json(
+  "plan:campaign-u64", JSON.stringify(runtimeGraph), JSON.stringify(runtimeCampaign),
+  JSON.stringify([runtimeControllerManifest]), "run:campaign-u64", "18446744073709551615",
+  "REFIT", campaignInvoke,
+);
+if (!JSON.parse(campaignU64).length) throw new Error("u64 campaign execution returned no result");
 const staleRuntimeControllerManifest = {
   ...runtimeControllerManifest,
   controller_version: "9.9.9",

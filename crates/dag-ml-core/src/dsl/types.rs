@@ -339,7 +339,7 @@ pub enum PipelineDslParamGenerator {
     },
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(untagged)]
+#[serde(untagged, deny_unknown_fields)]
 pub enum PipelineDslGeneratorValue {
     Labeled {
         label: String,

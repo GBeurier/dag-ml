@@ -15,6 +15,10 @@ use nirs4all_archive_core::{
 };
 use sha2::{Digest, Sha256};
 
+#[cfg(feature = "methods-optimizer-local")]
+#[path = "../src/stable_json.rs"]
+mod canonical_archive_json;
+
 #[cfg(dag_ml_workspace_contract_fixtures)]
 const PACKAGE_FIXTURE: &str =
     include_str!("../../../examples/fixtures/training/portable_predictor_package.v1.json");
@@ -1635,6 +1639,10 @@ fn native_fold_hpo_complete_package_resume_matches_fresh_studies_and_refuses_sco
     let package: PortablePredictorPackage = serde_json::from_value(wire).unwrap();
     methods_hpo_fold_state_from_package_json(&serde_json::to_string(&package).unwrap()).unwrap();
     let resumed = execute(8, Some(&package));
+    assert_eq!(
+        resumed.execution_bundle.metadata["methods_hpo_resumed_from_package_fingerprint"],
+        serde_json::json!(package.package_fingerprint)
+    );
     let fresh = execute(8, None);
     assert_eq!(resumed.selected_variant_id, fresh.selected_variant_id);
     assert_eq!(resumed.oof_averages, fresh.oof_averages);
@@ -3724,8 +3732,10 @@ fn native_methods_hpo_replay_hydrates_n4mm_from_json_bundle_in_fresh_controller(
             .members
             .get(ARCHIVE_V2_CACHE_MEMBER)
             .unwrap(),
-        serde_json::to_vec(retained_caches).unwrap().as_slice(),
-        "an existing Some(cache payload set) must keep its historical bytes"
+        canonical_archive_json::to_vec(retained_caches)
+            .unwrap()
+            .as_slice(),
+        "a retained cache payload set must use canonical archive bytes"
     );
 
     // Model the strict terminal facade's legal absence of retained OOF cache
@@ -3764,7 +3774,9 @@ fn native_methods_hpo_replay_hydrates_n4mm_from_json_bundle_in_fresh_controller(
     .expect("a strict no-OOF-cache native Methods outcome closes the Archive V2 P0 member set");
     assert_eq!(
         archive.members.get(ARCHIVE_V2_PACKAGE_MEMBER).unwrap(),
-        serde_json::to_vec(&archive_package).unwrap().as_slice()
+        canonical_archive_json::to_vec(&archive_package)
+            .unwrap()
+            .as_slice()
     );
     let archive_caches: BundlePredictionCachePayloadSet =
         serde_json::from_slice(archive.members.get(ARCHIVE_V2_CACHE_MEMBER).unwrap()).unwrap();
@@ -7797,5 +7809,125 @@ mod xl03_native_refit_families {
     #[test]
     fn xl03_native_role_pls_true_parent_refit_v3_and_cold_replay() {
         cycle(true);
+    }
+}
+
+#[cfg(feature = "methods-optimizer-local")]
+#[test]
+fn native_methods_hpo_chained_resume_binds_immediate_parent_without_nested_packages() {
+    let key = "methods_hpo_resumed_from_package_fingerprint";
+    let mut parent: Option<PortablePredictorPackage> = None;
+    let mut baseline_size = 0;
+    for (generation, budget) in (2_u32..=5).enumerate() {
+        let mut fixture = fixture(true, false);
+        use_native_pls_phase_profile(&mut fixture, Some(budget));
+        give_methods_hpo_four_train_rows(&mut fixture);
+        methods_hpo_descriptor_mut(&mut fixture)["trials"] = serde_json::json!(budget);
+        if let Some(previous) = &parent {
+            methods_hpo_descriptor_mut(&mut fixture)["resume_package_json"] =
+                serde_json::json!(serde_json::to_string(previous).unwrap());
+        }
+        rebuild(&mut fixture);
+        fixture.request =
+            TrainingRequest::from_json(&serde_json::to_string(&fixture.request).unwrap()).unwrap();
+        let mut store = InMemoryArtifactStore::new();
+        let outcome = run(
+            &fixture,
+            Arc::new(CallState::default()),
+            &provider(&fixture),
+            &mut store,
+        )
+        .unwrap();
+        let state = outcome.methods_hpo_resume_state.as_ref().unwrap();
+        assert_eq!(state.trial_history_len, budget);
+        if let Some(previous) = &parent {
+            assert_eq!(
+                outcome.execution_bundle.metadata[key],
+                serde_json::json!(previous.package_fingerprint)
+            );
+            let old = previous
+                .execution_bundle
+                .methods_hpo_resume_state
+                .as_ref()
+                .unwrap();
+            assert_eq!(
+                state.completed_proposals[..old.completed_proposals.len()],
+                old.completed_proposals
+            );
+            assert_eq!(
+                state.terminal_trials[..old.terminal_trials.len()],
+                old.terminal_trials
+            );
+            assert_eq!(
+                state.completed_reports[..old.completed_reports.len()],
+                old.completed_reports
+            );
+        } else {
+            assert!(!outcome.execution_bundle.metadata.contains_key(key));
+        }
+        let package = outcome
+            .to_portable_predictor_package(
+                format!("predictor:chain.{budget}"),
+                FittedArtifactMode::PortableRequired,
+                ArtifactLoadMode::NativePortable,
+            )
+            .unwrap();
+        let encoded = serde_json::to_string(&package).unwrap();
+        assert!(
+            !encoded.contains("resume_package_json"),
+            "no parent package bytes in durable child"
+        );
+        if generation == 0 {
+            baseline_size = encoded.len();
+        }
+        assert!(encoded.len() <= baseline_size * (generation + 1),
+            "history must grow linearly: {} bytes at generation {generation}, baseline {baseline_size}", encoded.len());
+        let parsed = PortablePredictorPackage::from_json(&encoded).unwrap();
+        if parent.is_some() {
+            let mut tampered = parsed.clone();
+            tampered
+                .execution_bundle
+                .metadata
+                .insert(key.into(), serde_json::json!("b".repeat(64)));
+            assert!(
+                PortablePredictorPackage::from_json(&serde_json::to_string(&tampered).unwrap())
+                    .is_err(),
+                "the parent identity belongs to the sealed package preimage"
+            );
+        }
+        // Every segment is cold-loadable with fresh native controllers and without
+        // a host-sidecar fallback; PREDICT retains the live model's outputs.
+        let source = TrainingOutcome::from_json(&serde_json::to_string(&outcome).unwrap()).unwrap();
+        let request = replay_request(&source, Phase::Predict);
+        let registry = controllers(&fixture, Arc::new(CallState::default()), true);
+        let loaded = parsed
+            .clone()
+            .load_with(|record| panic!("unexpected host-sidecar artifact {}", record.artifact.id))
+            .unwrap();
+        let replay = execute_loaded_predictor_replay(LoadedPredictorReplayInput {
+            predictor: &loaded,
+            request: &request,
+            outcome_id: format!("replay:chain.{budget}"),
+            run_id: RunId::new(format!("run:chain.{budget}")).unwrap(),
+            controllers: &registry,
+            data_provider: &provider(&fixture),
+            data_envelopes: &replay_envelopes_with_relation(&source, &"a".repeat(64)),
+            warnings: Vec::new(),
+            diagnostics: BTreeMap::new(),
+        })
+        .unwrap();
+        assert_eq!(
+            source.outputs[0].predictions[0].sample_ids,
+            replay.outputs[0].predictions[0].sample_ids
+        );
+        for (a, b) in source.outputs[0].predictions[0]
+            .values
+            .iter()
+            .flatten()
+            .zip(replay.outputs[0].predictions[0].values.iter().flatten())
+        {
+            assert!((a - b).abs() < 1e-12, "cold native model prediction drift");
+        }
+        parent = Some(parsed);
     }
 }

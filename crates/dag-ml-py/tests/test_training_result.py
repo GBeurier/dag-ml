@@ -313,6 +313,64 @@ class _SuccessfulTrainingCallback:
 
 
 class TrainingResultTests(unittest.TestCase):
+    def _run_audit_training(self, callback: Any) -> dag_ml.TrainingResult:
+        fixture = json.loads((REPO / "examples/fixtures/training/python_training_smoke.v1.json").read_text())
+        return dag_ml.execute_training(
+            fixture["request"], fixture["data_envelopes"], fixture["relations"],
+            fixture["training_influence"], callback, outcome_id="outcome:audit",
+            run_id="run:audit", bundle_id="bundle:audit",
+        )
+
+    def test_callback_interrupts_keep_their_python_exception_type(self) -> None:
+        for exception in (KeyboardInterrupt, SystemExit):
+            with self.subTest(exception=exception):
+                def callback(_task: Any) -> Any:
+                    raise exception("audit interrupt")
+                with self.assertRaises(exception):
+                    self._run_audit_training(callback)
+
+    def test_callback_errors_include_type_and_traceback(self) -> None:
+        def callback(_task: Any) -> Any:
+            raise ValueError("audit callback error")
+        with self.assertRaises(dag_ml.DagMlError) as caught:
+            self._run_audit_training(callback)
+        self.assertIn("ValueError", str(caught.exception))
+        self.assertIn("Traceback", str(caught.exception))
+
+    def test_nonfinite_callback_values_are_rejected_before_becoming_null(self) -> None:
+        success = _SuccessfulTrainingCallback()
+        def callback(task: Any) -> Any:
+            result = success(task)
+            # This optional field would otherwise become JSON null via depythonize.
+            result["lineage"]["metrics"]["optional_probe"] = float("nan")
+            return result
+        with self.assertRaisesRegex(dag_ml.DagMlError, "non-finite"):
+            self._run_audit_training(callback)
+
+    def test_reentrant_training_result_access_fails_without_blocking_replay(self) -> None:
+        success = _SuccessfulTrainingCallback()
+        attached: list[dag_ml.TrainingResult] = []
+        errors: list[str] = []
+        def callback(task: Any) -> Any:
+            if attached:
+                try:
+                    attached[0].detach()
+                except dag_ml.DagMlError as error:
+                    errors.append(str(error))
+            return success(task)
+        result = self._run_audit_training(callback)
+        attached.append(result)
+        try:
+            fixture = json.loads((REPO / "examples/fixtures/training/python_training_smoke.v1.json").read_text())
+            result.replay(
+                self._predict_replay_request(result.outcome.to_dict(), fixture["data_envelopes"]),
+                fixture["data_envelopes"], outcome_id="replay:audit", run_id="run:audit.replay",
+            )
+            self.assertTrue(errors)
+            self.assertTrue(all("busy" in error for error in errors))
+        finally:
+            result.detach()
+
     def test_public_training_exports_generic_raw_artifacts_and_refuses_bad_payloads(
         self,
     ) -> None:
@@ -322,7 +380,7 @@ class TrainingResultTests(unittest.TestCase):
             ).read_text()
         )
         payload = b"generic-raw-state"
-        for supplied in (payload, b"tampered", None):
+        for supplied in (payload, bytearray(payload), b"tampered", None):
             callback = _SuccessfulTrainingCallback()
 
             def operator(
@@ -344,13 +402,13 @@ class TrainingResultTests(unittest.TestCase):
 
             def export(
                 message: dict[str, Any],
-                supplied: bytes | None = supplied,
+                supplied: bytes | bytearray | None = supplied,
                 exports: list[str] = exports,
-            ) -> list[int]:
+            ) -> bytes | bytearray:
                 self.assertEqual(message["operation"], "export")
                 exports.append(message["artifact_id"])
                 assert supplied is not None
-                return list(supplied)
+                return supplied
 
             def run(
                 artifact_callback: Any = export if supplied is not None else None,

@@ -67,6 +67,23 @@ class _Operators(_RealTerminalCallback):
 
 
 class HostHpoResumeTests(unittest.TestCase):
+    def test_operator_interrupt_aborts_search_with_original_python_type(self) -> None:
+        for exception in (KeyboardInterrupt, SystemExit):
+            for workers in (1, 2):
+                with self.subTest(exception=exception, workers=workers):
+                    proposals = _Proposals()
+                    def interrupt(_task: Any) -> Any:
+                        raise exception("audit HPO interrupt")
+                    request = _request(3)
+                    request["optimizer_descriptor"]["n_jobs"] = workers
+                    with self.assertRaises(exception):
+                        dag_ml.run_host_hpo_search_in_process(
+                            _terminal_dsl(), _terminal_envelope(), _terminal_manifest(),
+                            request, interrupt, proposals,
+                            candidate_callback_factory=lambda _index: interrupt,
+                        )
+                    self.assertFalse(any(call["operation"] == "fail" for call in proposals.calls))
+
     def _run(
         self,
         budget: int,

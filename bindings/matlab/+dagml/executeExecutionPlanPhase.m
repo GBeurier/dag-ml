@@ -96,10 +96,20 @@ if ~isstruct(result) || ~isscalar(result) || ~isfield(result, 'lineage')
 end
 if ~isfield(result.lineage, 'seed') || isempty(result.lineage.seed)
     if isfield(task, 'seed')
-        result.lineage.seed = task.seed;
+        % NodeTask serializes its top-level seed last. Keep the decimal token
+        % exact instead of round-tripping a u64 through jsondecode's double.
+        seedTokens = regexp(taskJson, '"seed"\s*:\s*([0-9]+|null)\s*}', 'tokens');
+        if isempty(seedTokens)
+            error('dagml:ExecutePhase:Seed', 'Missing exact NodeTask seed token.');
+        end
+        seedToken = seedTokens{end}{1};
+        result.lineage.seed = '__DAGML_U64_SEED__';
     else
         result.lineage.seed = [];
     end
 end
 resultJson = jsonencode(result);
+if exist('seedToken', 'var')
+    resultJson = strrep(resultJson, '"__DAGML_U64_SEED__"', seedToken);
+end
 end

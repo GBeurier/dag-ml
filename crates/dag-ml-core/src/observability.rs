@@ -91,6 +91,18 @@ pub fn emit_oof_refusal(node_id: &str, violator_count: usize) {
     );
 }
 
+/// Report rejected-provider cleanup failures using stable taxonomy only.
+/// Host error messages may contain sensitive values and are never emitted.
+pub(crate) fn emit_provider_release_failure(error: &crate::DagMlError) {
+    let category = error.category();
+    let code = error.code();
+    tracing::error!(
+        category,
+        code,
+        "failed to release rejected provider materialization"
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

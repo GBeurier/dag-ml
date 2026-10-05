@@ -1912,6 +1912,25 @@ impl ExecutionBundle {
         validate_fingerprint("graph", &self.graph_fingerprint)?;
         validate_fingerprint("campaign", &self.campaign_fingerprint)?;
         validate_fingerprint("controller", &self.controller_fingerprint)?;
+        if let Some(parent) = self
+            .metadata
+            .get("methods_hpo_resumed_from_package_fingerprint")
+        {
+            if self.schema_version != EXECUTION_BUNDLE_SCHEMA_VERSION
+                || (self.methods_hpo_resume_state.is_none()
+                    && self.methods_hpo_fold_state.is_none())
+            {
+                return Err(DagMlError::RuntimeValidation(
+                    "Methods HPO parent identity requires V2 bundle resume state".into(),
+                ));
+            }
+            let parent = parent.as_str().ok_or_else(|| {
+                DagMlError::RuntimeValidation(
+                    "Methods HPO parent package fingerprint must be a string".into(),
+                )
+            })?;
+            validate_resume_sha256("parent package", parent)?;
+        }
         if let Some(state) = &self.methods_hpo_resume_state {
             state.validate().map_err(|error| {
                 DagMlError::RuntimeValidation(format!(
@@ -2096,6 +2115,34 @@ impl ExecutionBundle {
                 return Err(DagMlError::RuntimeValidation(format!(
                     "bundle `{}` contains an empty unsafe flag",
                     self.bundle_id
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Forward replay of fitted predictors needs no training cache. REFIT does.
+    pub fn validate_refit_oof_requirements(&self, plan: &ExecutionPlan) -> Result<()> {
+        for edge in plan
+            .graph_plan
+            .graph
+            .edges
+            .iter()
+            .filter(|edge| edge.contract.requires_oof)
+        {
+            let key = bundle_prediction_requirement_key(
+                &edge.source.node_id,
+                &edge.source.port_name,
+                &edge.target.node_id,
+                &edge.target.port_name,
+            );
+            if !self
+                .prediction_requirements
+                .iter()
+                .any(|requirement| requirement.key() == key)
+            {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "REFIT bundle is missing OOF requirement `{key}`"
                 )));
             }
         }
@@ -5807,5 +5854,49 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("including null"), "{error}");
+    }
+    #[test]
+    fn methods_hpo_parent_identity_requires_v2_state_and_lowercase_sha256() {
+        let plan = plan();
+        let mut bundle = build_execution_bundle(
+            BundleId::new("bundle:hpo.parent").unwrap(),
+            &plan,
+            None,
+            BTreeMap::new(),
+            Vec::new(),
+        )
+        .unwrap();
+        // Older bundles without this optional metadata stay readable.
+        bundle.validate().unwrap();
+        let key = "methods_hpo_resumed_from_package_fingerprint";
+        bundle
+            .metadata
+            .insert(key.into(), serde_json::json!("a".repeat(64)));
+        assert!(bundle
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("requires V2 bundle resume state"));
+        bundle.methods_hpo_resume_state = Some(methods_hpo_resume_state());
+        bundle.validate().unwrap();
+        for invalid in [
+            serde_json::Value::Null,
+            serde_json::json!(7),
+            serde_json::json!("a".repeat(63)),
+            serde_json::json!("A".repeat(64)),
+            serde_json::json!("g".repeat(64)),
+        ] {
+            bundle.metadata.insert(key.into(), invalid);
+            assert!(bundle.validate().is_err());
+        }
+        bundle
+            .metadata
+            .insert(key.into(), serde_json::json!("a".repeat(64)));
+        bundle.schema_version = LEGACY_EXECUTION_BUNDLE_SCHEMA_VERSION;
+        assert!(bundle
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("requires V2 bundle resume state"));
     }
 }

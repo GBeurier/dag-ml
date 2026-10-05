@@ -211,6 +211,10 @@ fn cli_replays_portable_methods_pls_payload_in_fresh_process() {
                 .join("nirs4all-methods/bindings/python/src")
         });
     if !methods_python.join("pls4all").is_dir() {
+        assert!(
+            std::env::var_os("DAG_ML_REQUIRE_METHODS_CLI_TEST").is_none(),
+            "required Methods Python binding is unavailable"
+        );
         eprintln!("skipping concrete Methods PLS bridge: sibling Python binding unavailable");
         return;
     }

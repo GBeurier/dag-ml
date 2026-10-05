@@ -654,6 +654,11 @@ impl NestedCvSpec {
         outer: &FoldAssignment,
         outer_groups: &BTreeMap<SampleId, GroupId>,
     ) -> Result<NestedFoldSet> {
+        if !outer_groups.is_empty() && !matches!(self, Self::GroupKFold(_)) {
+            return Err(DagMlError::OofValidation(
+                "grouped samples require a group-aware inner CV policy".to_string(),
+            ));
+        }
         let inner_id = format!("{}.inner", outer.fold_id);
         let mut inner = match self {
             Self::KFold(spec) => spec.split(inner_id, &outer.train_sample_ids)?,

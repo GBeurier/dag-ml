@@ -1362,6 +1362,33 @@ impl PortableRefitExecutionBundleV3 {
             .iter()
             .map(|record| record.artifact.id.clone())
             .collect::<BTreeSet<_>>();
+        for controller in &recipe.controllers {
+            let node = effective_plan
+                .node_plans
+                .get(&controller.node_id)
+                .ok_or_else(|| {
+                    DagMlError::RuntimeValidation(
+                        "refit recipe controller is absent from effective plan".into(),
+                    )
+                })?;
+            let retains_state = node
+                .controller_capabilities
+                .contains(&ControllerCapability::Stateful)
+                || node
+                    .controller_capabilities
+                    .contains(&ControllerCapability::EmitsArtifacts);
+            if retains_state
+                && !self
+                    .refit_artifacts
+                    .iter()
+                    .any(|record| record.node_id == node.node_id)
+            {
+                return contract_error(format!(
+                    "portable refit bundle has no fitted artifact for state-retaining node `{}`",
+                    node.node_id
+                ));
+            }
+        }
         if expected_artifact_ids.len() != self.refit_artifacts.len()
             || expected_artifact_ids.len() != self.raw_artifact_payloads.len()
             || expected_artifact_ids != self.raw_artifact_payloads.keys().cloned().collect()
@@ -1513,6 +1540,30 @@ impl PortableRefitOutcomeV3 {
             return contract_error(
                 "portable refit outcome target training request does not exactly match target provenance"
                     .to_string(),
+            );
+        }
+        let projection = self.target_training_request.project()?;
+        if projection.plan.graph_plan.graph != self.effective_plan.graph_plan.graph
+            || projection.plan.controller_manifests != self.effective_plan.controller_manifests
+            || projection.plan.fold_set != self.effective_plan.fold_set
+            || projection.plan.campaign.data_bindings != self.effective_plan.campaign.data_bindings
+        {
+            return contract_error(
+                "portable refit outcome topology/cohort differs from target request",
+            );
+        }
+        validate_portable_refit_node_shape(&projection.plan, &self.effective_plan)?;
+        self.training_influence
+            .validate_projection_coordinates(&projection, &self.target_training_request)?;
+        let closure = predictor_closure(
+            &self.effective_plan,
+            self.output_bindings
+                .iter()
+                .map(|binding| binding.node_id.clone()),
+        )?;
+        if closure.iter().cloned().collect::<Vec<_>>() != self.predictor_node_ids {
+            return contract_error(
+                "portable refit outcome predictor nodes do not exactly cover output closure",
             );
         }
         self.effective_plan.validate()?;
@@ -1694,6 +1745,9 @@ impl PortableRefitPackageV3 {
         })?;
         validate_sha256("portable refit package", &self.package_fingerprint)?;
         self.outcome.validate()?;
+        self.outcome
+            .execution_bundle
+            .to_runtime_replay_bundle(&self.outcome.recipe, &self.outcome.effective_plan)?;
         if self.package_fingerprint != self.compute_fingerprint()? {
             return contract_error(
                 "portable refit package V3 fingerprint does not match TCV1 content".to_string(),
@@ -2239,6 +2293,31 @@ pub fn execute_portable_full_refit(
     })
 }
 
+/// Consume only the request's ephemeral package transport before any native
+/// execution or durable plan/outcome is sealed. The parsed descriptor retains
+/// the original package for all replay-owned resume/provenance validations.
+#[cfg(feature = "methods-optimizer")]
+fn consume_methods_hpo_resume_transport(plan: &mut ExecutionPlan) -> Result<()> {
+    let operation = plan
+        .campaign
+        .metadata
+        .get_mut("methods_hpo_operation")
+        .ok_or_else(|| {
+            DagMlError::RuntimeValidation(
+                "native Methods HPO lacks its preflighted descriptor".into(),
+            )
+        })?;
+    let raw = operation.as_object_mut().ok_or_else(|| {
+        DagMlError::RuntimeValidation("native Methods HPO descriptor must be an object".into())
+    })?;
+    raw.remove("resume_package_json");
+    // Preserve the dynamic JSON contract when serde uses preserve_order:
+    // removing a member may otherwise swap the remaining member order.
+    operation.sort_all_objects();
+    plan.campaign_fingerprint = stable_json_fingerprint(&plan.campaign)?;
+    plan.validate()
+}
+
 /// Execute COMPILE/PLAN -> FIT_CV -> SELECT -> optional REFIT and return the
 /// complete portable W0 outcome.
 ///
@@ -2308,6 +2387,31 @@ pub fn execute_training(input: TrainingExecutionInput<'_>) -> Result<TrainingOut
         selection: &input.request.options.selection,
     }
     .preflight()?;
+    #[cfg(feature = "methods-optimizer")]
+    let methods_hpo_parent_package_fingerprint = native_hpo_descriptor
+        .as_ref()
+        .and_then(|descriptor| descriptor.resume_package_json.as_deref())
+        .map(PortablePredictorPackage::from_json)
+        .transpose()?
+        .map(|package| package.package_fingerprint);
+    #[cfg(feature = "methods-optimizer")]
+    if native_hpo_descriptor.is_some() {
+        consume_methods_hpo_resume_transport(&mut projection.plan)?;
+        projection.validate()?;
+        // Removing transport must never change which scientific rows can
+        // influence fitting, selection or refitting. Keep the original signed
+        // request fingerprint and all data/relation identities unchanged.
+        let normalized_influence = TrainingInfluenceManifest::derive_for_projection(
+            &projection,
+            input.request,
+            input.relations,
+        )?;
+        if normalized_influence != runtime_training_influence {
+            return Err(DagMlError::RuntimeValidation(
+                "native Methods HPO transport normalization changes training influence".into(),
+            ));
+        }
+    }
     if input.request.options.selection.requested_rank.unwrap_or(1) > 1
         && native_hpo_descriptor.is_some()
     {
@@ -2574,7 +2678,11 @@ pub fn execute_training(input: TrainingExecutionInput<'_>) -> Result<TrainingOut
         };
         (ctx, results)
     };
-    selected_ctx.collect_cross_fold_validation_scores(plan_oof_partition_mode(&effective_plan))?;
+    selected_ctx.collect_cross_fold_validation_scores_for_target(
+        plan_oof_partition_mode(&effective_plan),
+        selection_metric,
+        Some(&selection_producer),
+    )?;
     validate_selected_rerun_reports(
         &selection.selection.validation_reports,
         &selected_ctx.score_collector,
@@ -2669,8 +2777,22 @@ pub fn execute_training(input: TrainingExecutionInput<'_>) -> Result<TrainingOut
     #[cfg(feature = "methods-optimizer")]
     {
         execution_bundle.methods_hpo_resume_state = methods_hpo_resume_state.clone();
+        // The final sealed bundle retains the exact validated parent's
+        // identity without nesting its bytes in the normalized campaign.
+        if let Some(parent) = methods_hpo_parent_package_fingerprint {
+            execution_bundle.metadata.insert(
+                "methods_hpo_resumed_from_package_fingerprint".into(),
+                serde_json::Value::String(parent),
+            );
+        }
     }
     execution_bundle.methods_hpo_fold_state = methods_hpo_fold_state.clone();
+    if !execution_bundle.prediction_caches.is_empty() {
+        execution_bundle.metadata.insert(
+            "oof_cache_namespace_seed".into(),
+            serde_json::json!(input.request.options.seed),
+        );
+    }
     // RAW is a generic portable-artifact contract, not a Methods feature.
     // Host controllers (including WASM) must transfer these payloads before
     // the bundle's mandatory exact-coverage/hash validation.
@@ -3296,12 +3418,17 @@ fn reports_match_rerun_tolerance(
         && left.target_width == right.target_width
         && left.grouping_key == right.grouping_key
         && left.target_names == right.target_names
-        && left.metrics.len() == right.metrics.len()
-        && left.metrics.iter().all(|(name, value)| {
-            right
-                .metrics
-                .get(name)
-                .is_some_and(|other| (value - other).abs() <= 1.0e-12)
+        && metric_maps_match(&left.metrics, &right.metrics)
+}
+
+fn metric_maps_match(left: &BTreeMap<String, f64>, right: &BTreeMap<String, f64>) -> bool {
+    left.len() == right.len()
+        && left.iter().all(|(name, value)| {
+            right.get(name).is_some_and(|other| {
+                value.is_finite()
+                    && other.is_finite()
+                    && (value - other).abs() <= 1.0e-12 + 1.0e-12 * value.abs().max(other.abs())
+            })
         })
 }
 
@@ -4188,6 +4315,50 @@ fn attach_oof_prediction_cache_namespaces(
     Ok(())
 }
 
+pub(crate) fn validate_oof_cache_namespaces(
+    plan: &ExecutionPlan,
+    identities: &[TrainingDataIdentity],
+    selected: &VariantId,
+    bundle: &ExecutionBundle,
+) -> Result<()> {
+    for cache in &bundle.prediction_caches {
+        if cache.cache_namespace_fingerprints.is_empty() {
+            continue;
+        } // legacy unnamespaced caches
+        let requirement = bundle
+            .prediction_requirements
+            .iter()
+            .find(|requirement| requirement.key() == cache.requirement_key)
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation("namespaced cache has no OOF requirement".into())
+            })?;
+        // Legacy packages kept the opaque namespace digest without its seed.
+        // New native outcomes retain the preimage's seed in signed metadata.
+        let Some(raw_seed) = bundle.metadata.get("oof_cache_namespace_seed") else {
+            continue;
+        };
+        let seed = raw_seed.as_u64().ok_or_else(|| {
+            DagMlError::RuntimeValidation("invalid OOF cache namespace seed".into())
+        })?;
+        if cache.cache_namespace_fingerprints
+            != oof_cache_namespace_fingerprints(
+                plan,
+                identities,
+                selected,
+                seed,
+                requirement,
+                cache,
+                bundle.methods_hpo_fold_state.as_ref(),
+            )?
+        {
+            return contract_error(
+                "prediction cache namespaces differ from effective training inputs",
+            );
+        }
+    }
+    Ok(())
+}
+
 fn oof_cache_namespace_fingerprints(
     plan: &ExecutionPlan,
     data_identities: &[TrainingDataIdentity],
@@ -4352,7 +4523,7 @@ impl TrainingOutcome {
                 );
             }
             let rescored = score_regression_aggregated_block(predictions, targets, SCORE_METRICS)?;
-            if rescored.metrics != report.metrics {
+            if !metric_maps_match(&rescored.metrics, &report.metrics) {
                 return contract_error(
                     "training outcome CV ensemble values disagree with score report",
                 );
@@ -4454,7 +4625,7 @@ impl TrainingOutcome {
                 );
             }
             let rescored = score_regression_aggregated_block(predictions, targets, SCORE_METRICS)?;
-            if rescored.metrics != report.metrics {
+            if !metric_maps_match(&rescored.metrics, &report.metrics) {
                 return contract_error(
                     "training outcome OOF average values disagree with selected score report",
                 );
@@ -4832,6 +5003,12 @@ impl TrainingOutcome {
 
         self.execution_bundle
             .validate_against_plan(&self.effective_plan)?;
+        validate_oof_cache_namespaces(
+            &self.effective_plan,
+            &self.data_identities,
+            &self.selected_variant_id,
+            &self.execution_bundle,
+        )?;
         if self.execution_bundle.selected_variant_id.as_ref() != Some(&self.selected_variant_id) {
             return contract_error(
                 "training outcome execution bundle selected variant does not match outcome",
@@ -4872,6 +5049,13 @@ impl TrainingOutcome {
             &self.execution_bundle.conformal_calibration,
         ) {
             (Some(calibration), Some(replay), Some(reference)) => {
+                if replay
+                    .input_data_identities
+                    .iter()
+                    .any(|identity| identity.target_content_fingerprint.is_none())
+                {
+                    return contract_error("conformal calibration replay must bind target content");
+                }
                 reference.validate_against(calibration)?;
                 let pre_conformal_source = self.pre_conformal_outcome()?;
                 let replay_request = replay_request_from_outcome(replay);
@@ -6793,6 +6977,26 @@ mod replay_phase_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rescoring_accepts_rounding_but_rejects_changed_metrics_and_nonfinite_values() {
+        let original = BTreeMap::from([("rmse".to_owned(), 0.5)]);
+        for (value, expected) in [
+            (0.5 + f64::EPSILON, true),
+            (0.5001, false),
+            (f64::NAN, false),
+            (f64::INFINITY, false),
+        ] {
+            assert_eq!(
+                metric_maps_match(&original, &BTreeMap::from([("rmse".into(), value)])),
+                expected
+            );
+        }
+        assert!(!metric_maps_match(
+            &original,
+            &BTreeMap::from([("mae".into(), 0.5)])
+        ));
+    }
 
     #[cfg(dag_ml_workspace_contract_fixtures)]
     const REFIT_FIXTURE: &str =

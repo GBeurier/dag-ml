@@ -2108,6 +2108,21 @@ impl InMemoryDataProvider {
         self.records.borrow().values().cloned().collect()
     }
 
+    pub fn discard_view_handle(&self, handle: &HandleRef) -> Result<()> {
+        if self
+            .view_records
+            .borrow()
+            .get(&handle.handle)
+            .is_some_and(|record| record.handle != *handle)
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "view rollback handle does not match provider record".into(),
+            ));
+        }
+        self.view_records.borrow_mut().remove(&handle.handle);
+        Ok(())
+    }
+
     pub fn view_record(&self, handle: u64) -> Option<DataViewHandleRecord> {
         self.view_records.borrow().get(&handle).cloned()
     }
@@ -2167,6 +2182,21 @@ impl ExplicitPhaseDataProvider {
 }
 
 impl RuntimeDataProvider for ExplicitPhaseDataProvider {
+    fn discard_view(&self, handle: &HandleRef) -> Result<()> {
+        self.inner.discard_view(handle)
+    }
+    fn generated_views_enabled(&self) -> bool {
+        self.inner.generated_views_enabled()
+    }
+
+    fn generated_view_manifest(&self) -> Result<Option<serde_json::Value>> {
+        self.inner.generated_view_manifest()
+    }
+
+    fn generated_view_manifest_on_failure(&self) -> Result<Option<serde_json::Value>> {
+        self.inner.generated_view_manifest_on_failure()
+    }
+
     fn materialize(&self, request: &DataMaterializationRequest) -> Result<HandleRef> {
         self.inner.materialize(request)
     }
@@ -2208,6 +2238,9 @@ impl RuntimeDataProvider for ExplicitPhaseDataProvider {
 }
 
 impl RuntimeDataProvider for InMemoryDataProvider {
+    fn discard_view(&self, handle: &HandleRef) -> Result<()> {
+        self.discard_view_handle(handle)
+    }
     fn materialize(&self, request: &DataMaterializationRequest) -> Result<HandleRef> {
         if request.node_id != request.binding.node_id {
             return Err(DagMlError::RuntimeValidation(format!(
@@ -2297,6 +2330,18 @@ impl RuntimeDataProvider for InMemoryDataProvider {
                 "data view request parent handle `{}` does not match provider record",
                 request.data_handle.handle
             )));
+        }
+        if parent.run_id != request.run_id
+            || parent.node_id != request.node_id
+            || parent.input_name != request.input_name
+            || parent.phase != request.phase
+            || parent.schema_fingerprint != request.binding.schema_fingerprint
+            || parent.plan_fingerprint != request.binding.plan_fingerprint
+            || parent.relation_fingerprint != request.binding.relation_fingerprint
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "data view does not match its parent materialization scope/binding".into(),
+            ));
         }
         request.binding.validate()?;
         let handle = HandleRef {
@@ -2400,7 +2445,11 @@ impl RuntimeDataProvider for InMemoryDataProvider {
 }
 
 fn validate_fingerprint(label: &str, value: &str) -> Result<()> {
-    if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+    if value.len() != 64
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
         return Err(DagMlError::CampaignValidation(format!(
             "{label} fingerprint must be a 64-character hex digest"
         )));

@@ -196,6 +196,11 @@ impl Default for GenerationSpec {
 
 impl GenerationSpec {
     pub fn validate(&self) -> Result<()> {
+        if self.dimensions.len() > 256 {
+            return Err(DagMlError::CampaignValidation(
+                "generation exceeds 256 dimensions".into(),
+            ));
+        }
         if self.max_variants == Some(0) {
             return Err(DagMlError::CampaignValidation(
                 "generation max_variants cannot be zero".to_string(),
@@ -523,6 +528,26 @@ pub fn enumerate_variants(
     root_seed: Option<u64>,
 ) -> Result<Vec<VariantPlan>> {
     spec.validate()?;
+    // Bound the pre-pruning product: constraints must never permit an
+    // unbounded allocation before the caller's survivor limit is checked.
+    let cardinality = match spec.strategy {
+        GenerationStrategy::None => Some(1),
+        GenerationStrategy::Zip => Some(spec.dimensions[0].choices.len()),
+        GenerationStrategy::Cartesian => spec
+            .dimensions
+            .iter()
+            .try_fold(1usize, |n, d| n.checked_mul(d.choices.len())),
+    };
+    let limit = if spec.constraints.is_empty() {
+        spec.max_variants.unwrap_or(10_000).min(10_000)
+    } else {
+        10_000
+    };
+    if cardinality.is_none_or(|n| n > limit) {
+        return Err(DagMlError::CampaignValidation(format!(
+            "generation product exceeds allocation limit {limit}"
+        )));
+    }
     let mut variants = match spec.strategy {
         GenerationStrategy::None => vec![BTreeMap::new()],
         GenerationStrategy::Cartesian => cartesian_choices(&spec.dimensions),
@@ -649,7 +674,7 @@ fn zip_choices(dimensions: &[GenerationDimension]) -> Vec<BTreeMap<String, Gener
         .collect()
 }
 
-fn variant_from_choices(
+pub(crate) fn variant_from_choices(
     choices: BTreeMap<String, GenerationChoice>,
     root_seed: Option<u64>,
 ) -> Result<VariantPlan> {
@@ -673,6 +698,31 @@ fn variant_from_choices(
     };
     variant.validate()?;
     Ok(variant)
+}
+
+/// Select a seeded random subset of native, already constraint-pruned variants.
+/// SHA-derived priorities avoid depending on a host language's RNG or sampler.
+/// Returned variants preserve their native fingerprints, shapes and seed paths.
+pub fn sample_generation_variants(
+    spec: &GenerationSpec,
+    root_seed: u64,
+    count: usize,
+) -> Result<Vec<VariantPlan>> {
+    let mut variants = enumerate_variants(spec, Some(root_seed))?;
+    if count == 0 || count > variants.len() {
+        return Err(DagMlError::CampaignValidation(
+            "random generation count must be between one and the native survivor count".into(),
+        ));
+    }
+    let seeds = SeedContext::root(root_seed).child("generation:random-subset");
+    variants.sort_by_key(|variant| {
+        (
+            seeds.derive_u64(variant.variant_id.as_str()),
+            variant.variant_id.clone(),
+        )
+    });
+    variants.truncate(count);
+    Ok(variants)
 }
 
 #[cfg(test)]
@@ -1300,5 +1350,25 @@ mod tests {
             generation_spec_fingerprint(&reparsed).unwrap()
         );
         assert!(reparsed.constraints.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod random_generation_subset_tests {
+    use super::*;
+    #[test]
+    fn seeded_subset_preserves_native_constraints_and_shapes() {
+        let spec: GenerationSpec = serde_json::from_value(serde_json::json!({
+            "strategy":"cartesian", "max_variants":4,
+            "dimensions":[{"name":"shape","choices":[{"label":"small","value":[2,3]},{"label":"large","value":[4,5]}]},
+                          {"name":"kind","choices":[{"label":"a","value":"a"},{"label":"b","value":"b"}]}],
+            "constraints":{"exclude":[[{"dimension":"shape","label":"large"},{"dimension":"kind","label":"b"}]]}
+        })).unwrap();
+        let first = sample_generation_variants(&spec, 17, 2).unwrap();
+        assert_eq!(first, sample_generation_variants(&spec, 17, 2).unwrap());
+        assert_eq!(first.len(), 2);
+        let native = enumerate_variants(&spec, Some(17)).unwrap();
+        assert!(first.iter().all(|row| native.contains(row)));
+        assert!(sample_generation_variants(&spec, 17, 4).is_err());
     }
 }

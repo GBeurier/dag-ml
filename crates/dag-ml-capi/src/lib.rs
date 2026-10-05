@@ -533,12 +533,38 @@ pub struct DagMlControllerBinding {
     pub vtable: DagMlControllerVTable,
 }
 
+/// Recover Rust panics at every status-returning foreign boundary. Host
+/// callbacks must still obey their language's own no-unwind ABI contract.
+fn ffi_status_boundary(
+    error_out: *mut DagMlString,
+    action: impl FnOnce() -> DagMlStatusCode,
+) -> DagMlStatusCode {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(action)) {
+        Ok(status) => status,
+        Err(_) => {
+            unsafe {
+                write_error_string(
+                    error_out,
+                    "Rust panic at the DAG-ML ABI boundary".to_string(),
+                );
+            }
+            DagMlStatusCode::PANIC
+        }
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn dagml_version() -> DagMlVersion {
     DagMlVersion {
-        major: 0,
-        minor: 1,
-        patch: 0,
+        major: env!("CARGO_PKG_VERSION_MAJOR")
+            .parse()
+            .expect("Cargo version major"),
+        minor: env!("CARGO_PKG_VERSION_MINOR")
+            .parse()
+            .expect("Cargo version minor"),
+        patch: env!("CARGO_PKG_VERSION_PATCH")
+            .parse()
+            .expect("Cargo version patch"),
     }
 }
 
@@ -567,16 +593,18 @@ fn store_last_error(payload: &str, code: u32) {
 /// `DagMlString`. Any returned string must be released with `dagml_string_free`.
 #[no_mangle]
 pub unsafe extern "C" fn dagml_last_error_json(out: *mut DagMlString) -> DagMlStatusCode {
-    // Clone the payload out of the borrow before writing: the writer must not be
-    // a path that re-borrows LAST_ERROR. `write_error_string` is the pure writer
-    // (it does not touch the thread-local), so reading it here is not "the most
-    // recent failing call" and must not overwrite the buffer.
-    let payload = LAST_ERROR.with(|cell| cell.borrow().as_ref().map(|(p, _)| p.clone()));
-    clear_error(out);
-    if let Some(payload) = payload {
-        write_error_string(out, payload);
-    }
-    DagMlStatusCode::OK
+    crate::ffi_status_boundary(std::ptr::null_mut(), || {
+        // Clone the payload out of the borrow before writing: the writer must not be
+        // a path that re-borrows LAST_ERROR. `write_error_string` is the pure writer
+        // (it does not touch the thread-local), so reading it here is not "the most
+        // recent failing call" and must not overwrite the buffer.
+        let payload = LAST_ERROR.with(|cell| cell.borrow().as_ref().map(|(p, _)| p.clone()));
+        clear_error(out);
+        if let Some(payload) = payload {
+            write_error_string(out, payload);
+        }
+        DagMlStatusCode::OK
+    })
 }
 
 /// Returns the stable ADR-11 numeric error code (`(category << 16) | code`) of the
@@ -600,29 +628,31 @@ pub extern "C" fn dagml_last_error_code() -> u32 {
 /// it once near host startup, before driving a run.
 #[no_mangle]
 pub extern "C" fn dagml_init_tracing(json_output: u8) -> DagMlStatusCode {
-    use tracing_subscriber::fmt::format::FmtSpan;
-    use tracing_subscriber::{fmt, EnvFilter};
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    let builder = fmt()
-        .with_env_filter(filter)
-        .with_span_events(FmtSpan::CLOSE)
-        .with_writer(std::io::stderr);
-    let installed = if json_output != 0 {
-        builder.json().try_init().is_ok()
-    } else {
-        builder.try_init().is_ok()
-    };
-    if installed {
-        DagMlStatusCode::OK
-    } else {
-        // Refusal is still a failing call: keep the thread-local last-error
-        // consistent with the returned status (errno-like contract).
-        store_last_error(
-            &c_abi_argument_descriptor("a tracing subscriber is already installed"),
-            C_ABI_ARGUMENT_ERROR_CODE,
-        );
-        DagMlStatusCode::VALIDATION_ERROR
-    }
+    crate::ffi_status_boundary(std::ptr::null_mut(), || {
+        use tracing_subscriber::fmt::format::FmtSpan;
+        use tracing_subscriber::{fmt, EnvFilter};
+        let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+        let builder = fmt()
+            .with_env_filter(filter)
+            .with_span_events(FmtSpan::CLOSE)
+            .with_writer(std::io::stderr);
+        let installed = if json_output != 0 {
+            builder.json().try_init().is_ok()
+        } else {
+            builder.try_init().is_ok()
+        };
+        if installed {
+            DagMlStatusCode::OK
+        } else {
+            // Refusal is still a failing call: keep the thread-local last-error
+            // consistent with the returned status (errno-like contract).
+            store_last_error(
+                &c_abi_argument_descriptor("a tracing subscriber is already installed"),
+                C_ABI_ARGUMENT_ERROR_CODE,
+            );
+            DagMlStatusCode::VALIDATION_ERROR
+        }
+    })
 }
 
 /// Releases a string allocated by DAG-ML.
@@ -722,13 +752,15 @@ pub unsafe extern "C" fn dagml_graph_spec_contract_json(
     out_json: *mut DagMlOwnedBytes,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    clear_error(error_out);
-    clear_owned_bytes(out_json);
-    let contract = GraphSpecContractInfo {
-        schema_version: DAG_ML_GRAPH_SPEC_SCHEMA_VERSION,
-        schema_id: GRAPH_SPEC_SCHEMA_ID,
-    };
-    write_owned_json(out_json, error_out, &contract)
+    crate::ffi_status_boundary(error_out, || {
+        clear_error(error_out);
+        clear_owned_bytes(out_json);
+        let contract = GraphSpecContractInfo {
+            schema_version: DAG_ML_GRAPH_SPEC_SCHEMA_VERSION,
+            schema_id: GRAPH_SPEC_SCHEMA_ID,
+        };
+        write_owned_json(out_json, error_out, &contract)
+    })
 }
 
 /// Validates a canonical JSON `GraphSpec`.
@@ -745,12 +777,19 @@ pub unsafe extern "C" fn dagml_graph_validate_json(
     json_len: usize,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    clear_error(error_out);
-    match parse_external_contract_ptr(json_ptr, json_len, error_out, "graph", GraphSpec::from_json)
-    {
-        Ok(_) => DagMlStatusCode::OK,
-        Err(status) => status,
-    }
+    crate::ffi_status_boundary(error_out, || {
+        clear_error(error_out);
+        match parse_external_contract_ptr(
+            json_ptr,
+            json_len,
+            error_out,
+            "graph",
+            GraphSpec::from_json,
+        ) {
+            Ok(_) => DagMlStatusCode::OK,
+            Err(status) => status,
+        }
+    })
 }
 
 /// Returns the public C ABI contract for canonical `CampaignSpec` JSON.
@@ -763,13 +802,15 @@ pub unsafe extern "C" fn dagml_campaign_spec_contract_json(
     out_json: *mut DagMlOwnedBytes,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    clear_error(error_out);
-    clear_owned_bytes(out_json);
-    let contract = CampaignSpecContractInfo {
-        schema_version: DAG_ML_CAMPAIGN_SPEC_SCHEMA_VERSION,
-        schema_id: CAMPAIGN_SPEC_SCHEMA_ID,
-    };
-    write_owned_json(out_json, error_out, &contract)
+    crate::ffi_status_boundary(error_out, || {
+        clear_error(error_out);
+        clear_owned_bytes(out_json);
+        let contract = CampaignSpecContractInfo {
+            schema_version: DAG_ML_CAMPAIGN_SPEC_SCHEMA_VERSION,
+            schema_id: CAMPAIGN_SPEC_SCHEMA_ID,
+        };
+        write_owned_json(out_json, error_out, &contract)
+    })
 }
 
 /// Validates a canonical JSON `CampaignSpec`.
@@ -783,17 +824,19 @@ pub unsafe extern "C" fn dagml_campaign_validate_json(
     json_len: usize,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    clear_error(error_out);
-    match parse_external_contract_ptr(
-        json_ptr,
-        json_len,
-        error_out,
-        "campaign",
-        CampaignSpec::from_json,
-    ) {
-        Ok(_) => DagMlStatusCode::OK,
-        Err(status) => status,
-    }
+    crate::ffi_status_boundary(error_out, || {
+        clear_error(error_out);
+        match parse_external_contract_ptr(
+            json_ptr,
+            json_len,
+            error_out,
+            "campaign",
+            CampaignSpec::from_json,
+        ) {
+            Ok(_) => DagMlStatusCode::OK,
+            Err(status) => status,
+        }
+    })
 }
 
 /// Returns the public C ABI contract for canonical `ExecutionPlan` JSON.
@@ -806,13 +849,15 @@ pub unsafe extern "C" fn dagml_execution_plan_contract_json(
     out_json: *mut DagMlOwnedBytes,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    clear_error(error_out);
-    clear_owned_bytes(out_json);
-    let contract = ExecutionPlanContractInfo {
-        schema_version: DAG_ML_EXECUTION_PLAN_SCHEMA_VERSION,
-        schema_id: EXECUTION_PLAN_SCHEMA_ID,
-    };
-    write_owned_json(out_json, error_out, &contract)
+    crate::ffi_status_boundary(error_out, || {
+        clear_error(error_out);
+        clear_owned_bytes(out_json);
+        let contract = ExecutionPlanContractInfo {
+            schema_version: DAG_ML_EXECUTION_PLAN_SCHEMA_VERSION,
+            schema_id: EXECUTION_PLAN_SCHEMA_ID,
+        };
+        write_owned_json(out_json, error_out, &contract)
+    })
 }
 
 /// Returns the public C ABI contract for canonical `ModelInputSpec` JSON.
@@ -825,13 +870,15 @@ pub unsafe extern "C" fn dagml_model_input_spec_contract_json(
     out_json: *mut DagMlOwnedBytes,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    clear_error(error_out);
-    clear_owned_bytes(out_json);
-    let contract = ModelInputSpecContractInfo {
-        schema_version: DAG_ML_MODEL_INPUT_SPEC_SCHEMA_VERSION,
-        schema_id: MODEL_INPUT_SPEC_SCHEMA_ID,
-    };
-    write_owned_json(out_json, error_out, &contract)
+    crate::ffi_status_boundary(error_out, || {
+        clear_error(error_out);
+        clear_owned_bytes(out_json);
+        let contract = ModelInputSpecContractInfo {
+            schema_version: DAG_ML_MODEL_INPUT_SPEC_SCHEMA_VERSION,
+            schema_id: MODEL_INPUT_SPEC_SCHEMA_ID,
+        };
+        write_owned_json(out_json, error_out, &contract)
+    })
 }
 
 /// Validates a canonical JSON `ModelInputSpec`.
@@ -845,13 +892,15 @@ pub unsafe extern "C" fn dagml_model_input_spec_validate_json(
     json_len: usize,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    validate_json::<ModelInputSpec>(
-        json_ptr,
-        json_len,
-        error_out,
-        "model input spec",
-        ModelInputSpec::validate,
-    )
+    crate::ffi_status_boundary(error_out, || {
+        validate_json::<ModelInputSpec>(
+            json_ptr,
+            json_len,
+            error_out,
+            "model input spec",
+            ModelInputSpec::validate,
+        )
+    })
 }
 
 /// Returns the public C ABI contract for canonical `DataPlan` JSON.
@@ -864,13 +913,15 @@ pub unsafe extern "C" fn dagml_data_plan_contract_json(
     out_json: *mut DagMlOwnedBytes,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    clear_error(error_out);
-    clear_owned_bytes(out_json);
-    let contract = DataPlanContractInfo {
-        schema_version: DAG_ML_DATA_PLAN_SCHEMA_VERSION,
-        schema_id: DATA_PLAN_SCHEMA_ID,
-    };
-    write_owned_json(out_json, error_out, &contract)
+    crate::ffi_status_boundary(error_out, || {
+        clear_error(error_out);
+        clear_owned_bytes(out_json);
+        let contract = DataPlanContractInfo {
+            schema_version: DAG_ML_DATA_PLAN_SCHEMA_VERSION,
+            schema_id: DATA_PLAN_SCHEMA_ID,
+        };
+        write_owned_json(out_json, error_out, &contract)
+    })
 }
 
 /// Validates a canonical JSON `DataPlan`.
@@ -884,13 +935,15 @@ pub unsafe extern "C" fn dagml_data_plan_validate_json(
     json_len: usize,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    validate_json::<DataPlan>(
-        json_ptr,
-        json_len,
-        error_out,
-        "data plan",
-        DataPlan::validate,
-    )
+    crate::ffi_status_boundary(error_out, || {
+        validate_json::<DataPlan>(
+            json_ptr,
+            json_len,
+            error_out,
+            "data plan",
+            DataPlan::validate,
+        )
+    })
 }
 
 /// Returns the public C ABI contract for canonical `ControllerManifest` JSON.
@@ -903,13 +956,15 @@ pub unsafe extern "C" fn dagml_controller_manifest_contract_json(
     out_json: *mut DagMlOwnedBytes,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    clear_error(error_out);
-    clear_owned_bytes(out_json);
-    let contract = ControllerManifestContractInfo {
-        schema_version: DAG_ML_CONTROLLER_MANIFEST_SCHEMA_VERSION,
-        schema_id: CONTROLLER_MANIFEST_SCHEMA_ID,
-    };
-    write_owned_json(out_json, error_out, &contract)
+    crate::ffi_status_boundary(error_out, || {
+        clear_error(error_out);
+        clear_owned_bytes(out_json);
+        let contract = ControllerManifestContractInfo {
+            schema_version: DAG_ML_CONTROLLER_MANIFEST_SCHEMA_VERSION,
+            schema_id: CONTROLLER_MANIFEST_SCHEMA_ID,
+        };
+        write_owned_json(out_json, error_out, &contract)
+    })
 }
 
 /// Validates a single canonical JSON `ControllerManifest`.
@@ -923,13 +978,15 @@ pub unsafe extern "C" fn dagml_controller_manifest_validate_json(
     json_len: usize,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    validate_json::<ControllerManifest>(
-        json_ptr,
-        json_len,
-        error_out,
-        "controller manifest",
-        ControllerManifest::validate,
-    )
+    crate::ffi_status_boundary(error_out, || {
+        validate_json::<ControllerManifest>(
+            json_ptr,
+            json_len,
+            error_out,
+            "controller manifest",
+            ControllerManifest::validate,
+        )
+    })
 }
 
 /// Validates a canonical JSON array of `ControllerManifest` values as a registry.
@@ -946,20 +1003,22 @@ pub unsafe extern "C" fn dagml_controller_manifest_list_validate_json(
     json_len: usize,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    clear_error(error_out);
-    let manifests = match parse_json_ptr::<Vec<ControllerManifest>>(
-        json_ptr,
-        json_len,
-        error_out,
-        "controller manifests",
-    ) {
-        Ok(manifests) => manifests,
-        Err(status) => return status,
-    };
-    match controller_registry_from_manifests(manifests) {
-        Ok(_) => DagMlStatusCode::OK,
-        Err(error) => validation_error(error_out, error),
-    }
+    crate::ffi_status_boundary(error_out, || {
+        clear_error(error_out);
+        let manifests = match parse_json_ptr::<Vec<ControllerManifest>>(
+            json_ptr,
+            json_len,
+            error_out,
+            "controller manifests",
+        ) {
+            Ok(manifests) => manifests,
+            Err(status) => return status,
+        };
+        match controller_registry_from_manifests(manifests) {
+            Ok(_) => DagMlStatusCode::OK,
+            Err(error) => validation_error(error_out, error),
+        }
+    })
 }
 
 /// Returns the public C ABI contract for propagated data-output provenance.
@@ -977,14 +1036,16 @@ pub unsafe extern "C" fn dagml_data_output_provenance_contract_json(
     out_json: *mut DagMlOwnedBytes,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    clear_error(error_out);
-    clear_owned_bytes(out_json);
-    let contract = DataOutputProvenanceContractInfo {
-        schema_version: DAG_ML_DATA_OUTPUT_PROVENANCE_SCHEMA_VERSION,
-        extra_key: DATA_OUTPUT_PROVENANCE_KEY,
-        schema_id: DATA_OUTPUT_PROVENANCE_SCHEMA_ID,
-    };
-    write_owned_json(out_json, error_out, &contract)
+    crate::ffi_status_boundary(error_out, || {
+        clear_error(error_out);
+        clear_owned_bytes(out_json);
+        let contract = DataOutputProvenanceContractInfo {
+            schema_version: DAG_ML_DATA_OUTPUT_PROVENANCE_SCHEMA_VERSION,
+            extra_key: DATA_OUTPUT_PROVENANCE_KEY,
+            schema_id: DATA_OUTPUT_PROVENANCE_SCHEMA_ID,
+        };
+        write_owned_json(out_json, error_out, &contract)
+    })
 }
 
 /// Validates a `DataOutputProvenance` JSON object.
@@ -1002,13 +1063,15 @@ pub unsafe extern "C" fn dagml_data_output_provenance_validate_json(
     json_len: usize,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    validate_json::<DataOutputProvenance>(
-        json_ptr,
-        json_len,
-        error_out,
-        "data output provenance",
-        DataOutputProvenance::validate,
-    )
+    crate::ffi_status_boundary(error_out, || {
+        validate_json::<DataOutputProvenance>(
+            json_ptr,
+            json_len,
+            error_out,
+            "data output provenance",
+            DataOutputProvenance::validate,
+        )
+    })
 }
 
 /// Returns the public C ABI contract for controller `NodeTask` JSON.
@@ -1021,13 +1084,15 @@ pub unsafe extern "C" fn dagml_node_task_contract_json(
     out_json: *mut DagMlOwnedBytes,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    clear_error(error_out);
-    clear_owned_bytes(out_json);
-    let contract = NodeTaskContractInfo {
-        schema_version: DAG_ML_NODE_TASK_SCHEMA_VERSION,
-        schema_id: NODE_TASK_SCHEMA_ID,
-    };
-    write_owned_json(out_json, error_out, &contract)
+    crate::ffi_status_boundary(error_out, || {
+        clear_error(error_out);
+        clear_owned_bytes(out_json);
+        let contract = NodeTaskContractInfo {
+            schema_version: DAG_ML_NODE_TASK_SCHEMA_VERSION,
+            schema_id: NODE_TASK_SCHEMA_ID,
+        };
+        write_owned_json(out_json, error_out, &contract)
+    })
 }
 
 /// Returns the public C ABI contract for controller `NodeResult` JSON.
@@ -1040,13 +1105,15 @@ pub unsafe extern "C" fn dagml_node_result_contract_json(
     out_json: *mut DagMlOwnedBytes,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    clear_error(error_out);
-    clear_owned_bytes(out_json);
-    let contract = NodeResultContractInfo {
-        schema_version: DAG_ML_NODE_RESULT_SCHEMA_VERSION,
-        schema_id: NODE_RESULT_SCHEMA_ID,
-    };
-    write_owned_json(out_json, error_out, &contract)
+    crate::ffi_status_boundary(error_out, || {
+        clear_error(error_out);
+        clear_owned_bytes(out_json);
+        let contract = NodeResultContractInfo {
+            schema_version: DAG_ML_NODE_RESULT_SCHEMA_VERSION,
+            schema_id: NODE_RESULT_SCHEMA_ID,
+        };
+        write_owned_json(out_json, error_out, &contract)
+    })
 }
 
 /// Returns the public process-adapter description JSON contract.
@@ -1063,13 +1130,15 @@ pub unsafe extern "C" fn dagml_process_adapter_description_contract_json(
     out_json: *mut DagMlOwnedBytes,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    clear_error(error_out);
-    clear_owned_bytes(out_json);
-    let contract = ProcessAdapterDescriptionContractInfo {
-        schema_version: DAG_ML_PROCESS_ADAPTER_DESCRIPTION_SCHEMA_VERSION,
-        schema_id: PROCESS_ADAPTER_DESCRIPTION_SCHEMA_ID,
-    };
-    write_owned_json(out_json, error_out, &contract)
+    crate::ffi_status_boundary(error_out, || {
+        clear_error(error_out);
+        clear_owned_bytes(out_json);
+        let contract = ProcessAdapterDescriptionContractInfo {
+            schema_version: DAG_ML_PROCESS_ADAPTER_DESCRIPTION_SCHEMA_VERSION,
+            schema_id: PROCESS_ADAPTER_DESCRIPTION_SCHEMA_ID,
+        };
+        write_owned_json(out_json, error_out, &contract)
+    })
 }
 
 /// Returns the public persistent process-adapter frame JSON contract.
@@ -1086,13 +1155,15 @@ pub unsafe extern "C" fn dagml_process_adapter_frame_contract_json(
     out_json: *mut DagMlOwnedBytes,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    clear_error(error_out);
-    clear_owned_bytes(out_json);
-    let contract = ProcessAdapterFrameContractInfo {
-        schema_version: DAG_ML_PROCESS_ADAPTER_FRAME_SCHEMA_VERSION,
-        schema_id: PROCESS_ADAPTER_FRAME_SCHEMA_ID,
-    };
-    write_owned_json(out_json, error_out, &contract)
+    crate::ffi_status_boundary(error_out, || {
+        clear_error(error_out);
+        clear_owned_bytes(out_json);
+        let contract = ProcessAdapterFrameContractInfo {
+            schema_version: DAG_ML_PROCESS_ADAPTER_FRAME_SCHEMA_VERSION,
+            schema_id: PROCESS_ADAPTER_FRAME_SCHEMA_ID,
+        };
+        write_owned_json(out_json, error_out, &contract)
+    })
 }
 
 /// Returns the public custom aggregation-controller task JSON contract.
@@ -1105,13 +1176,15 @@ pub unsafe extern "C" fn dagml_aggregation_controller_task_contract_json(
     out_json: *mut DagMlOwnedBytes,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    clear_error(error_out);
-    clear_owned_bytes(out_json);
-    let contract = AggregationControllerTaskContractInfo {
-        schema_version: DAG_ML_AGGREGATION_CONTROLLER_TASK_SCHEMA_VERSION,
-        schema_id: AGGREGATION_CONTROLLER_TASK_SCHEMA_ID,
-    };
-    write_owned_json(out_json, error_out, &contract)
+    crate::ffi_status_boundary(error_out, || {
+        clear_error(error_out);
+        clear_owned_bytes(out_json);
+        let contract = AggregationControllerTaskContractInfo {
+            schema_version: DAG_ML_AGGREGATION_CONTROLLER_TASK_SCHEMA_VERSION,
+            schema_id: AGGREGATION_CONTROLLER_TASK_SCHEMA_ID,
+        };
+        write_owned_json(out_json, error_out, &contract)
+    })
 }
 
 /// Returns the public custom aggregation-controller result JSON contract.
@@ -1124,13 +1197,15 @@ pub unsafe extern "C" fn dagml_aggregation_controller_result_contract_json(
     out_json: *mut DagMlOwnedBytes,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    clear_error(error_out);
-    clear_owned_bytes(out_json);
-    let contract = AggregationControllerResultContractInfo {
-        schema_version: DAG_ML_AGGREGATION_CONTROLLER_RESULT_SCHEMA_VERSION,
-        schema_id: AGGREGATION_CONTROLLER_RESULT_SCHEMA_ID,
-    };
-    write_owned_json(out_json, error_out, &contract)
+    crate::ffi_status_boundary(error_out, || {
+        clear_error(error_out);
+        clear_owned_bytes(out_json);
+        let contract = AggregationControllerResultContractInfo {
+            schema_version: DAG_ML_AGGREGATION_CONTROLLER_RESULT_SCHEMA_VERSION,
+            schema_id: AGGREGATION_CONTROLLER_RESULT_SCHEMA_ID,
+        };
+        write_owned_json(out_json, error_out, &contract)
+    })
 }
 
 /// Returns the public C ABI contract for pipeline DSL input JSON.
@@ -1146,14 +1221,16 @@ pub unsafe extern "C" fn dagml_pipeline_dsl_contract_json(
     out_json: *mut DagMlOwnedBytes,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    clear_error(error_out);
-    clear_owned_bytes(out_json);
-    let contract = PipelineDslContractInfo {
-        schema_version: DAG_ML_PIPELINE_DSL_SCHEMA_VERSION,
-        schema_id: PIPELINE_DSL_SCHEMA_ID,
-        accepted_profiles: &["canonical_pipeline_dsl", "nirs4all_compat_json"],
-    };
-    write_owned_json(out_json, error_out, &contract)
+    crate::ffi_status_boundary(error_out, || {
+        clear_error(error_out);
+        clear_owned_bytes(out_json);
+        let contract = PipelineDslContractInfo {
+            schema_version: DAG_ML_PIPELINE_DSL_SCHEMA_VERSION,
+            schema_id: PIPELINE_DSL_SCHEMA_ID,
+            accepted_profiles: &["canonical_pipeline_dsl", "nirs4all_compat_json"],
+        };
+        write_owned_json(out_json, error_out, &contract)
+    })
 }
 
 /// Validates a custom aggregation-controller task JSON payload.
@@ -1167,13 +1244,15 @@ pub unsafe extern "C" fn dagml_aggregation_controller_task_validate_json(
     task_len: usize,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    validate_json::<AggregationControllerTask>(
-        task_ptr,
-        task_len,
-        error_out,
-        "aggregation controller task",
-        |task| task.validate(),
-    )
+    crate::ffi_status_boundary(error_out, || {
+        validate_json::<AggregationControllerTask>(
+            task_ptr,
+            task_len,
+            error_out,
+            "aggregation controller task",
+            |task| task.validate(),
+        )
+    })
 }
 
 /// Validates a custom aggregation-controller result against the exact task sent
@@ -1190,29 +1269,31 @@ pub unsafe extern "C" fn dagml_aggregation_controller_result_validate_for_task_j
     result_len: usize,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    clear_error(error_out);
-    let task = match parse_json_ptr::<AggregationControllerTask>(
-        task_ptr,
-        task_len,
-        error_out,
-        "aggregation controller task",
-    ) {
-        Ok(task) => task,
-        Err(status) => return status,
-    };
-    let result = match parse_json_ptr::<AggregationControllerResult>(
-        result_ptr,
-        result_len,
-        error_out,
-        "aggregation controller result",
-    ) {
-        Ok(result) => result,
-        Err(status) => return status,
-    };
-    match result.validate_for_task(&task) {
-        Ok(()) => DagMlStatusCode::OK,
-        Err(error) => validation_error(error_out, error),
-    }
+    crate::ffi_status_boundary(error_out, || {
+        clear_error(error_out);
+        let task = match parse_json_ptr::<AggregationControllerTask>(
+            task_ptr,
+            task_len,
+            error_out,
+            "aggregation controller task",
+        ) {
+            Ok(task) => task,
+            Err(status) => return status,
+        };
+        let result = match parse_json_ptr::<AggregationControllerResult>(
+            result_ptr,
+            result_len,
+            error_out,
+            "aggregation controller result",
+        ) {
+            Ok(result) => result,
+            Err(status) => return status,
+        };
+        match result.validate_for_task(&task) {
+            Ok(()) => DagMlStatusCode::OK,
+            Err(error) => validation_error(error_out, error),
+        }
+    })
 }
 
 /// Validates a controller-produced `NodeResult` against the exact `NodeTask`
@@ -1235,20 +1316,22 @@ pub unsafe extern "C" fn dagml_node_result_validate_for_task_json(
     result_len: usize,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    clear_error(error_out);
-    let task = match parse_json_ptr::<NodeTask>(task_ptr, task_len, error_out, "node task") {
-        Ok(task) => task,
-        Err(status) => return status,
-    };
-    let result =
-        match parse_json_ptr::<NodeResult>(result_ptr, result_len, error_out, "node result") {
-            Ok(result) => result,
+    crate::ffi_status_boundary(error_out, || {
+        clear_error(error_out);
+        let task = match parse_json_ptr::<NodeTask>(task_ptr, task_len, error_out, "node task") {
+            Ok(task) => task,
             Err(status) => return status,
         };
-    match result.validate_for_task(&task) {
-        Ok(()) => DagMlStatusCode::OK,
-        Err(error) => validation_error(error_out, error),
-    }
+        let result =
+            match parse_json_ptr::<NodeResult>(result_ptr, result_len, error_out, "node result") {
+                Ok(result) => result,
+                Err(status) => return status,
+            };
+        match result.validate_for_task(&task) {
+            Ok(()) => DagMlStatusCode::OK,
+            Err(error) => validation_error(error_out, error),
+        }
+    })
 }
 
 /// Validates canonical or nirs4all-compatible pipeline DSL input JSON.
@@ -1265,15 +1348,17 @@ pub unsafe extern "C" fn dagml_pipeline_dsl_validate_json(
     dsl_len: usize,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    clear_error(error_out);
-    let dsl = match parse_pipeline_dsl_ptr(dsl_ptr, dsl_len, error_out) {
-        Ok(dsl) => dsl,
-        Err(status) => return status,
-    };
-    match compile_pipeline_dsl_with_generation(&dsl) {
-        Ok(_) => DagMlStatusCode::OK,
-        Err(error) => validation_error(error_out, error),
-    }
+    crate::ffi_status_boundary(error_out, || {
+        clear_error(error_out);
+        let dsl = match parse_pipeline_dsl_ptr(dsl_ptr, dsl_len, error_out) {
+            Ok(dsl) => dsl,
+            Err(status) => return status,
+        };
+        match compile_pipeline_dsl_with_generation(&dsl) {
+            Ok(_) => DagMlStatusCode::OK,
+            Err(error) => validation_error(error_out, error),
+        }
+    })
 }
 
 /// Compiles canonical or nirs4all-compatible JSON DSL into a canonical
@@ -1294,16 +1379,18 @@ pub unsafe extern "C" fn dagml_pipeline_dsl_compile_json(
     out_json: *mut DagMlOwnedBytes,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    clear_error(error_out);
-    clear_owned_bytes(out_json);
-    let dsl = match parse_pipeline_dsl_ptr(dsl_ptr, dsl_len, error_out) {
-        Ok(dsl) => dsl,
-        Err(status) => return status,
-    };
-    match compile_pipeline_dsl(&dsl) {
-        Ok(graph) => write_owned_json(out_json, error_out, &graph),
-        Err(error) => validation_error(error_out, error),
-    }
+    crate::ffi_status_boundary(error_out, || {
+        clear_error(error_out);
+        clear_owned_bytes(out_json);
+        let dsl = match parse_pipeline_dsl_ptr(dsl_ptr, dsl_len, error_out) {
+            Ok(dsl) => dsl,
+            Err(status) => return status,
+        };
+        match compile_pipeline_dsl(&dsl) {
+            Ok(graph) => write_owned_json(out_json, error_out, &graph),
+            Err(error) => validation_error(error_out, error),
+        }
+    })
 }
 
 /// Compiles canonical or nirs4all-compatible JSON DSL into
@@ -1324,16 +1411,18 @@ pub unsafe extern "C" fn dagml_pipeline_dsl_compile_artifact_json(
     out_json: *mut DagMlOwnedBytes,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    clear_error(error_out);
-    clear_owned_bytes(out_json);
-    let dsl = match parse_pipeline_dsl_ptr(dsl_ptr, dsl_len, error_out) {
-        Ok(dsl) => dsl,
-        Err(status) => return status,
-    };
-    match compile_pipeline_dsl_with_generation(&dsl) {
-        Ok(compiled) => write_owned_json(out_json, error_out, &compiled),
-        Err(error) => validation_error(error_out, error),
-    }
+    crate::ffi_status_boundary(error_out, || {
+        clear_error(error_out);
+        clear_owned_bytes(out_json);
+        let dsl = match parse_pipeline_dsl_ptr(dsl_ptr, dsl_len, error_out) {
+            Ok(dsl) => dsl,
+            Err(status) => return status,
+        };
+        match compile_pipeline_dsl_with_generation(&dsl) {
+            Ok(compiled) => write_owned_json(out_json, error_out, &compiled),
+            Err(error) => validation_error(error_out, error),
+        }
+    })
 }
 
 /// Compiles canonical or nirs4all-compatible JSON DSL and controller manifests into
@@ -1357,43 +1446,45 @@ pub unsafe extern "C" fn dagml_pipeline_dsl_execution_plan_build_json(
     out_json: *mut DagMlOwnedBytes,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    clear_error(error_out);
-    clear_owned_bytes(out_json);
-    let dsl = match parse_pipeline_dsl_ptr(dsl_ptr, dsl_len, error_out) {
-        Ok(dsl) => dsl,
-        Err(status) => return status,
-    };
-    let manifests = match parse_json_ptr::<Vec<ControllerManifest>>(
-        controllers_ptr,
-        controllers_len,
-        error_out,
-        "controller manifests",
-    ) {
-        Ok(manifests) => manifests,
-        Err(status) => return status,
-    };
-    let plan_id = match parse_utf8_view(plan_id, error_out, "execution plan id") {
-        Ok(plan_id) => plan_id,
-        Err(status) => return status,
-    };
-    let registry = match controller_registry_from_manifests(manifests) {
-        Ok(registry) => registry,
-        Err(error) => return validation_error(error_out, error),
-    };
-    let compiled =
-        match compile_pipeline_dsl_with_generation_and_controller_registry(&dsl, &registry) {
-            Ok(compiled) => compiled,
+    crate::ffi_status_boundary(error_out, || {
+        clear_error(error_out);
+        clear_owned_bytes(out_json);
+        let dsl = match parse_pipeline_dsl_ptr(dsl_ptr, dsl_len, error_out) {
+            Ok(dsl) => dsl,
+            Err(status) => return status,
+        };
+        let manifests = match parse_json_ptr::<Vec<ControllerManifest>>(
+            controllers_ptr,
+            controllers_len,
+            error_out,
+            "controller manifests",
+        ) {
+            Ok(manifests) => manifests,
+            Err(status) => return status,
+        };
+        let plan_id = match parse_utf8_view(plan_id, error_out, "execution plan id") {
+            Ok(plan_id) => plan_id,
+            Err(status) => return status,
+        };
+        let registry = match controller_registry_from_manifests(manifests) {
+            Ok(registry) => registry,
             Err(error) => return validation_error(error_out, error),
         };
-    match build_execution_plan(
-        plan_id,
-        compiled.graph,
-        compiled.campaign_template,
-        &registry,
-    ) {
-        Ok(plan) => write_owned_json(out_json, error_out, &plan),
-        Err(error) => validation_error(error_out, error),
-    }
+        let compiled =
+            match compile_pipeline_dsl_with_generation_and_controller_registry(&dsl, &registry) {
+                Ok(compiled) => compiled,
+                Err(error) => return validation_error(error_out, error),
+            };
+        match build_execution_plan(
+            plan_id,
+            compiled.graph,
+            compiled.campaign_template,
+            &registry,
+        ) {
+            Ok(plan) => write_owned_json(out_json, error_out, &plan),
+            Err(error) => validation_error(error_out, error),
+        }
+    })
 }
 
 /// Returns deterministic topological levels for parallel node scheduling.
@@ -1409,22 +1500,24 @@ pub unsafe extern "C" fn dagml_graph_parallel_levels_json(
     out_json: *mut DagMlOwnedBytes,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    clear_error(error_out);
-    clear_owned_bytes(out_json);
-    let graph = match parse_external_contract_ptr(
-        json_ptr,
-        json_len,
-        error_out,
-        "graph",
-        GraphSpec::from_json,
-    ) {
-        Ok(graph) => graph,
-        Err(status) => return status,
-    };
-    match graph.parallel_levels() {
-        Ok(levels) => write_owned_json(out_json, error_out, &levels),
-        Err(error) => validation_error(error_out, error),
-    }
+    crate::ffi_status_boundary(error_out, || {
+        clear_error(error_out);
+        clear_owned_bytes(out_json);
+        let graph = match parse_external_contract_ptr(
+            json_ptr,
+            json_len,
+            error_out,
+            "graph",
+            GraphSpec::from_json,
+        ) {
+            Ok(graph) => graph,
+            Err(status) => return status,
+        };
+        match graph.parallel_levels() {
+            Ok(levels) => write_owned_json(out_json, error_out, &levels),
+            Err(error) => validation_error(error_out, error),
+        }
+    })
 }
 
 /// Builds an `ExecutionPlan` from graph, campaign and controller manifests.
@@ -1487,26 +1580,28 @@ pub unsafe extern "C" fn dagml_execution_plan_schedule_json(
     out_json: *mut DagMlOwnedBytes,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    clear_error(error_out);
-    clear_owned_bytes(out_json);
-    let plan = match parse_external_contract_ptr(
-        plan_ptr,
-        plan_len,
-        error_out,
-        "execution plan",
-        ExecutionPlan::from_json,
-    ) {
-        Ok(plan) => plan,
-        Err(status) => return status,
-    };
-    let phase = match parse_phase_view(phase, error_out, "phase") {
-        Ok(phase) => phase,
-        Err(status) => return status,
-    };
-    match plan.campaign_phase_schedule(phase) {
-        Ok(schedule) => write_owned_json(out_json, error_out, &schedule),
-        Err(error) => validation_error(error_out, error),
-    }
+    crate::ffi_status_boundary(error_out, || {
+        clear_error(error_out);
+        clear_owned_bytes(out_json);
+        let plan = match parse_external_contract_ptr(
+            plan_ptr,
+            plan_len,
+            error_out,
+            "execution plan",
+            ExecutionPlan::from_json,
+        ) {
+            Ok(plan) => plan,
+            Err(status) => return status,
+        };
+        let phase = match parse_phase_view(phase, error_out, "phase") {
+            Ok(phase) => phase,
+            Err(status) => return status,
+        };
+        match plan.campaign_phase_schedule(phase) {
+            Ok(schedule) => write_owned_json(out_json, error_out, &schedule),
+            Err(error) => validation_error(error_out, error),
+        }
+    })
 }
 
 /// Executes one phase from a previously built and validated `ExecutionPlan`.
@@ -1580,17 +1675,19 @@ pub unsafe extern "C" fn dagml_execution_plan_validate_json(
     plan_len: usize,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    clear_error(error_out);
-    match parse_external_contract_ptr(
-        plan_ptr,
-        plan_len,
-        error_out,
-        "execution plan",
-        ExecutionPlan::from_json,
-    ) {
-        Ok(_) => DagMlStatusCode::OK,
-        Err(status) => status,
-    }
+    crate::ffi_status_boundary(error_out, || {
+        clear_error(error_out);
+        match parse_external_contract_ptr(
+            plan_ptr,
+            plan_len,
+            error_out,
+            "execution plan",
+            ExecutionPlan::from_json,
+        ) {
+            Ok(_) => DagMlStatusCode::OK,
+            Err(status) => status,
+        }
+    })
 }
 
 struct ExecutionPlanBuildJsonArgs {
@@ -1823,13 +1920,15 @@ pub unsafe extern "C" fn dagml_selection_policy_contract_json(
     out_json: *mut DagMlOwnedBytes,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    clear_error(error_out);
-    clear_owned_bytes(out_json);
-    let contract = SelectionPolicyContractInfo {
-        schema_version: DAG_ML_SELECTION_POLICY_SCHEMA_VERSION,
-        schema_id: SELECTION_POLICY_SCHEMA_ID,
-    };
-    write_owned_json(out_json, error_out, &contract)
+    crate::ffi_status_boundary(error_out, || {
+        clear_error(error_out);
+        clear_owned_bytes(out_json);
+        let contract = SelectionPolicyContractInfo {
+            schema_version: DAG_ML_SELECTION_POLICY_SCHEMA_VERSION,
+            schema_id: SELECTION_POLICY_SCHEMA_ID,
+        };
+        write_owned_json(out_json, error_out, &contract)
+    })
 }
 
 /// Validates a canonical JSON `SelectionPolicy`.
@@ -1843,13 +1942,15 @@ pub unsafe extern "C" fn dagml_selection_policy_validate_json(
     json_len: usize,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    validate_json::<SelectionPolicy>(
-        json_ptr,
-        json_len,
-        error_out,
-        "selection policy",
-        SelectionPolicy::validate,
-    )
+    crate::ffi_status_boundary(error_out, || {
+        validate_json::<SelectionPolicy>(
+            json_ptr,
+            json_len,
+            error_out,
+            "selection policy",
+            SelectionPolicy::validate,
+        )
+    })
 }
 
 /// Returns the public C ABI contract for canonical `SelectionDecision` JSON.
@@ -1862,13 +1963,15 @@ pub unsafe extern "C" fn dagml_selection_decision_contract_json(
     out_json: *mut DagMlOwnedBytes,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    clear_error(error_out);
-    clear_owned_bytes(out_json);
-    let contract = SelectionDecisionContractInfo {
-        schema_version: DAG_ML_SELECTION_DECISION_SCHEMA_VERSION,
-        schema_id: SELECTION_DECISION_SCHEMA_ID,
-    };
-    write_owned_json(out_json, error_out, &contract)
+    crate::ffi_status_boundary(error_out, || {
+        clear_error(error_out);
+        clear_owned_bytes(out_json);
+        let contract = SelectionDecisionContractInfo {
+            schema_version: DAG_ML_SELECTION_DECISION_SCHEMA_VERSION,
+            schema_id: SELECTION_DECISION_SCHEMA_ID,
+        };
+        write_owned_json(out_json, error_out, &contract)
+    })
 }
 
 /// Validates a canonical JSON `SelectionDecision`.
@@ -1882,13 +1985,15 @@ pub unsafe extern "C" fn dagml_selection_decision_validate_json(
     json_len: usize,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    validate_json::<SelectionDecision>(
-        json_ptr,
-        json_len,
-        error_out,
-        "selection decision",
-        SelectionDecision::validate,
-    )
+    crate::ffi_status_boundary(error_out, || {
+        validate_json::<SelectionDecision>(
+            json_ptr,
+            json_len,
+            error_out,
+            "selection decision",
+            SelectionDecision::validate,
+        )
+    })
 }
 
 /// Selects one candidate from JSON `SelectionPolicy` and `CandidateScore[]`.
@@ -1907,30 +2012,32 @@ pub unsafe extern "C" fn dagml_select_candidate_json(
     out_json: *mut DagMlOwnedBytes,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    clear_error(error_out);
-    clear_owned_bytes(out_json);
-    let policy = match parse_json_ptr::<SelectionPolicy>(
-        policy_ptr,
-        policy_len,
-        error_out,
-        "selection policy",
-    ) {
-        Ok(policy) => policy,
-        Err(status) => return status,
-    };
-    let candidates = match parse_json_ptr::<Vec<CandidateScore>>(
-        candidates_ptr,
-        candidates_len,
-        error_out,
-        "candidate scores",
-    ) {
-        Ok(candidates) => candidates,
-        Err(status) => return status,
-    };
-    match select_candidate(&policy, &candidates) {
-        Ok(decision) => write_owned_json(out_json, error_out, &decision),
-        Err(error) => validation_error(error_out, error),
-    }
+    crate::ffi_status_boundary(error_out, || {
+        clear_error(error_out);
+        clear_owned_bytes(out_json);
+        let policy = match parse_json_ptr::<SelectionPolicy>(
+            policy_ptr,
+            policy_len,
+            error_out,
+            "selection policy",
+        ) {
+            Ok(policy) => policy,
+            Err(status) => return status,
+        };
+        let candidates = match parse_json_ptr::<Vec<CandidateScore>>(
+            candidates_ptr,
+            candidates_len,
+            error_out,
+            "candidate scores",
+        ) {
+            Ok(candidates) => candidates,
+            Err(status) => return status,
+        };
+        match select_candidate(&policy, &candidates) {
+            Ok(decision) => write_owned_json(out_json, error_out, &decision),
+            Err(error) => validation_error(error_out, error),
+        }
+    })
 }
 
 /// Resolve one explicitly named output of a signed portable package.
@@ -1947,26 +2054,28 @@ pub unsafe extern "C" fn dagml_select_portable_output_json(
     out_json: *mut DagMlOwnedBytes,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    clear_error(error_out);
-    clear_owned_bytes(out_json);
-    let package = match parse_external_contract_ptr(
-        package_ptr,
-        package_len,
-        error_out,
-        "portable predictor package",
-        PortablePredictorPackage::from_json,
-    ) {
-        Ok(package) => package,
-        Err(status) => return status,
-    };
-    let binding_id = match parse_utf8_view(binding_id, error_out, "output binding id") {
-        Ok(binding_id) => binding_id,
-        Err(status) => return status,
-    };
-    match package.select_output(&binding_id) {
-        Ok(selected) => write_owned_json(out_json, error_out, &selected),
-        Err(error) => validation_error(error_out, error),
-    }
+    crate::ffi_status_boundary(error_out, || {
+        clear_error(error_out);
+        clear_owned_bytes(out_json);
+        let package = match parse_external_contract_ptr(
+            package_ptr,
+            package_len,
+            error_out,
+            "portable predictor package",
+            PortablePredictorPackage::from_json,
+        ) {
+            Ok(package) => package,
+            Err(status) => return status,
+        };
+        let binding_id = match parse_utf8_view(binding_id, error_out, "output binding id") {
+            Ok(binding_id) => binding_id,
+            Err(status) => return status,
+        };
+        match package.select_output(&binding_id) {
+            Ok(selected) => write_owned_json(out_json, error_out, &selected),
+            Err(error) => validation_error(error_out, error),
+        }
+    })
 }
 
 /// Assemble the exact DAG-ML Archive V2 manifest and members for a Core writer.
@@ -1986,43 +2095,45 @@ pub unsafe extern "C" fn dagml_archive_v2_native_portable_payloads_json(
     out_json: *mut DagMlOwnedBytes,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    clear_error(error_out);
-    clear_owned_bytes(out_json);
-    let archive_id = match parse_utf8_view(archive_id, error_out, "archive id") {
-        Ok(value) => value,
-        Err(status) => return status,
-    };
-    let outcome = match parse_external_contract_ptr(
-        outcome_ptr,
-        outcome_len,
-        error_out,
-        "training outcome",
-        TrainingOutcome::from_json,
-    ) {
-        Ok(value) => value,
-        Err(status) => return status,
-    };
-    let package = match parse_external_contract_ptr(
-        package_ptr,
-        package_len,
-        error_out,
-        "portable predictor package",
-        PortablePredictorPackage::from_json,
-    ) {
-        Ok(value) => value,
-        Err(status) => return status,
-    };
-    match build_archive_v2_native_portable_payloads(archive_id, &outcome, &package) {
-        Ok(payloads) => write_owned_json(
-            out_json,
+    crate::ffi_status_boundary(error_out, || {
+        clear_error(error_out);
+        clear_owned_bytes(out_json);
+        let archive_id = match parse_utf8_view(archive_id, error_out, "archive id") {
+            Ok(value) => value,
+            Err(status) => return status,
+        };
+        let outcome = match parse_external_contract_ptr(
+            outcome_ptr,
+            outcome_len,
             error_out,
-            &serde_json::json!({
-                "manifest": payloads.manifest,
-                "members": payloads.members,
-            }),
-        ),
-        Err(error) => validation_error(error_out, error),
-    }
+            "training outcome",
+            TrainingOutcome::from_json,
+        ) {
+            Ok(value) => value,
+            Err(status) => return status,
+        };
+        let package = match parse_external_contract_ptr(
+            package_ptr,
+            package_len,
+            error_out,
+            "portable predictor package",
+            PortablePredictorPackage::from_json,
+        ) {
+            Ok(value) => value,
+            Err(status) => return status,
+        };
+        match build_archive_v2_native_portable_payloads(archive_id, &outcome, &package) {
+            Ok(payloads) => write_owned_json(
+                out_json,
+                error_out,
+                &serde_json::json!({
+                    "manifest": payloads.manifest,
+                    "members": payloads.members,
+                }),
+            ),
+            Err(error) => validation_error(error_out, error),
+        }
+    })
 }
 
 /// Assemble the exact DAG-ML Archive V3 full-refit manifest and members.
@@ -2038,33 +2149,35 @@ pub unsafe extern "C" fn dagml_archive_v3_native_refit_payloads_json(
     out_json: *mut DagMlOwnedBytes,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    clear_error(error_out);
-    clear_owned_bytes(out_json);
-    let archive_id = match parse_utf8_view(archive_id, error_out, "archive id") {
-        Ok(value) => value,
-        Err(status) => return status,
-    };
-    let package = match parse_external_contract_ptr(
-        package_ptr,
-        package_len,
-        error_out,
-        "portable refit package V3",
-        PortableRefitPackageV3::from_json,
-    ) {
-        Ok(value) => value,
-        Err(status) => return status,
-    };
-    match build_archive_v3_native_refit_payloads(archive_id, &package) {
-        Ok(payloads) => write_owned_json(
-            out_json,
+    crate::ffi_status_boundary(error_out, || {
+        clear_error(error_out);
+        clear_owned_bytes(out_json);
+        let archive_id = match parse_utf8_view(archive_id, error_out, "archive id") {
+            Ok(value) => value,
+            Err(status) => return status,
+        };
+        let package = match parse_external_contract_ptr(
+            package_ptr,
+            package_len,
             error_out,
-            &serde_json::json!({
-                "manifest": payloads.manifest,
-                "members": payloads.members,
-            }),
-        ),
-        Err(error) => validation_error(error_out, error),
-    }
+            "portable refit package V3",
+            PortableRefitPackageV3::from_json,
+        ) {
+            Ok(value) => value,
+            Err(status) => return status,
+        };
+        match build_archive_v3_native_refit_payloads(archive_id, &package) {
+            Ok(payloads) => write_owned_json(
+                out_json,
+                error_out,
+                &serde_json::json!({
+                    "manifest": payloads.manifest,
+                    "members": payloads.members,
+                }),
+            ),
+            Err(error) => validation_error(error_out, error),
+        }
+    })
 }
 
 /// Select stacking producers from validation score evidence in the native core.
@@ -2079,21 +2192,23 @@ pub unsafe extern "C" fn dagml_select_stacking_producers_json(
     out_json: *mut DagMlOwnedBytes,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    clear_error(error_out);
-    clear_owned_bytes(out_json);
-    let request: StackingProducerSelectionRequest = match parse_json_ptr(
-        request_ptr,
-        request_len,
-        error_out,
-        "stacking producer selection",
-    ) {
-        Ok(request) => request,
-        Err(status) => return status,
-    };
-    match request.selected_producer_nodes() {
-        Ok(selected) => write_owned_json(out_json, error_out, &selected),
-        Err(error) => validation_error(error_out, error),
-    }
+    crate::ffi_status_boundary(error_out, || {
+        clear_error(error_out);
+        clear_owned_bytes(out_json);
+        let request: StackingProducerSelectionRequest = match parse_json_ptr(
+            request_ptr,
+            request_len,
+            error_out,
+            "stacking producer selection",
+        ) {
+            Ok(request) => request,
+            Err(status) => return status,
+        };
+        match request.selected_producer_nodes() {
+            Ok(selected) => write_owned_json(out_json, error_out, &selected),
+            Err(error) => validation_error(error_out, error),
+        }
+    })
 }
 
 /// Select one CV fold from validation evidence for a stacking test feature.
@@ -2108,21 +2223,23 @@ pub unsafe extern "C" fn dagml_select_stacking_fold_json(
     out_json: *mut DagMlOwnedBytes,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    clear_error(error_out);
-    clear_owned_bytes(out_json);
-    let request: StackingFoldSelectionRequest = match parse_json_ptr(
-        request_ptr,
-        request_len,
-        error_out,
-        "stacking fold selection",
-    ) {
-        Ok(request) => request,
-        Err(status) => return status,
-    };
-    match request.selected_fold_id() {
-        Ok(selected) => write_owned_json(out_json, error_out, &selected),
-        Err(error) => validation_error(error_out, error),
-    }
+    crate::ffi_status_boundary(error_out, || {
+        clear_error(error_out);
+        clear_owned_bytes(out_json);
+        let request: StackingFoldSelectionRequest = match parse_json_ptr(
+            request_ptr,
+            request_len,
+            error_out,
+            "stacking fold selection",
+        ) {
+            Ok(request) => request,
+            Err(status) => return status,
+        };
+        match request.selected_fold_id() {
+            Ok(selected) => write_owned_json(out_json, error_out, &selected),
+            Err(error) => validation_error(error_out, error),
+        }
+    })
 }
 
 /// Objective-aware normalized CV-fold weights for stacking test predictions.
@@ -2137,17 +2254,19 @@ pub unsafe extern "C" fn dagml_stacking_fold_weights_json(
     out_json: *mut DagMlOwnedBytes,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    clear_error(error_out);
-    clear_owned_bytes(out_json);
-    let request: StackingFoldSelectionRequest =
-        match parse_json_ptr(request_ptr, request_len, error_out, "stacking fold weights") {
-            Ok(request) => request,
-            Err(status) => return status,
-        };
-    match request.normalized_weights() {
-        Ok(weights) => write_owned_json(out_json, error_out, &weights),
-        Err(error) => validation_error(error_out, error),
-    }
+    crate::ffi_status_boundary(error_out, || {
+        clear_error(error_out);
+        clear_owned_bytes(out_json);
+        let request: StackingFoldSelectionRequest =
+            match parse_json_ptr(request_ptr, request_len, error_out, "stacking fold weights") {
+                Ok(request) => request,
+                Err(status) => return status,
+            };
+        match request.normalized_weights() {
+            Ok(weights) => write_owned_json(out_json, error_out, &weights),
+            Err(error) => validation_error(error_out, error),
+        }
+    })
 }
 
 /// Validate the closed no-splitter REFIT package, including its TCV1 signature.
@@ -2160,17 +2279,19 @@ pub unsafe extern "C" fn dagml_initial_full_refit_package_validate_json(
     package_len: usize,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    clear_error(error_out);
-    match parse_external_contract_ptr(
-        package_ptr,
-        package_len,
-        error_out,
-        "initial full-refit package",
-        InitialFullRefitPackage::from_json,
-    ) {
-        Ok(_) => DagMlStatusCode::OK,
-        Err(status) => status,
-    }
+    crate::ffi_status_boundary(error_out, || {
+        clear_error(error_out);
+        match parse_external_contract_ptr(
+            package_ptr,
+            package_len,
+            error_out,
+            "initial full-refit package",
+            InitialFullRefitPackage::from_json,
+        ) {
+            Ok(_) => DagMlStatusCode::OK,
+            Err(status) => status,
+        }
+    })
 }
 
 /// Attach a separately attested PREDICT cohort to the package's signed training envelope.
@@ -2187,30 +2308,32 @@ pub unsafe extern "C" fn dagml_initial_full_refit_predict_envelope_json(
     out_json: *mut DagMlOwnedBytes,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    clear_error(error_out);
-    clear_owned_bytes(out_json);
-    let package = match parse_external_contract_ptr(
-        package_ptr,
-        package_len,
-        error_out,
-        "initial full-refit package",
-        InitialFullRefitPackage::from_json,
-    ) {
-        Ok(package) => package,
-        Err(status) => return status,
-    };
-    let request: PredictCohortConstructionRequest =
-        match parse_json_ptr(cohort_ptr, cohort_len, error_out, "predict cohort") {
-            Ok(request) => request,
+    crate::ffi_status_boundary(error_out, || {
+        clear_error(error_out);
+        clear_owned_bytes(out_json);
+        let package = match parse_external_contract_ptr(
+            package_ptr,
+            package_len,
+            error_out,
+            "initial full-refit package",
+            InitialFullRefitPackage::from_json,
+        ) {
+            Ok(package) => package,
             Err(status) => return status,
         };
-    match request
-        .derive()
-        .and_then(|cohort| package.predict_envelope(cohort))
-    {
-        Ok(envelope) => write_owned_json(out_json, error_out, &envelope),
-        Err(error) => validation_error(error_out, error),
-    }
+        let request: PredictCohortConstructionRequest =
+            match parse_json_ptr(cohort_ptr, cohort_len, error_out, "predict cohort") {
+                Ok(request) => request,
+                Err(status) => return status,
+            };
+        match request
+            .derive()
+            .and_then(|cohort| package.predict_envelope(cohort))
+        {
+            Ok(envelope) => write_owned_json(out_json, error_out, &envelope),
+            Err(error) => validation_error(error_out, error),
+        }
+    })
 }
 
 /// Validate named source/sample coverage and return identity-only row indices.
@@ -2226,21 +2349,23 @@ pub unsafe extern "C" fn dagml_align_named_source_rows_json(
     out_json: *mut DagMlOwnedBytes,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    clear_error(error_out);
-    clear_owned_bytes(out_json);
-    let request: dag_ml_core::NamedSourceAlignmentRequest = match parse_json_ptr(
-        request_ptr,
-        request_len,
-        error_out,
-        "named source alignment",
-    ) {
-        Ok(request) => request,
-        Err(status) => return status,
-    };
-    match dag_ml_core::align_named_source_rows(&request) {
-        Ok(alignment) => write_owned_json(out_json, error_out, &alignment),
-        Err(error) => validation_error(error_out, error),
-    }
+    crate::ffi_status_boundary(error_out, || {
+        clear_error(error_out);
+        clear_owned_bytes(out_json);
+        let request: dag_ml_core::NamedSourceAlignmentRequest = match parse_json_ptr(
+            request_ptr,
+            request_len,
+            error_out,
+            "named source alignment",
+        ) {
+            Ok(request) => request,
+            Err(status) => return status,
+        };
+        match dag_ml_core::align_named_source_rows(&request) {
+            Ok(alignment) => write_owned_json(out_json, error_out, &alignment),
+            Err(error) => validation_error(error_out, error),
+        }
+    })
 }
 
 /// Selects candidates per group from JSON policy, candidates and group map.
@@ -2261,39 +2386,41 @@ pub unsafe extern "C" fn dagml_select_candidate_groups_json(
     out_json: *mut DagMlOwnedBytes,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    clear_error(error_out);
-    clear_owned_bytes(out_json);
-    let policy = match parse_json_ptr::<SelectionPolicy>(
-        policy_ptr,
-        policy_len,
-        error_out,
-        "selection policy",
-    ) {
-        Ok(policy) => policy,
-        Err(status) => return status,
-    };
-    let candidates = match parse_json_ptr::<Vec<CandidateScore>>(
-        candidates_ptr,
-        candidates_len,
-        error_out,
-        "candidate scores",
-    ) {
-        Ok(candidates) => candidates,
-        Err(status) => return status,
-    };
-    let groups = match parse_json_ptr::<BTreeMap<String, Vec<String>>>(
-        groups_ptr,
-        groups_len,
-        error_out,
-        "candidate groups",
-    ) {
-        Ok(groups) => groups,
-        Err(status) => return status,
-    };
-    match select_candidate_groups(&policy, &candidates, &groups) {
-        Ok(decisions) => write_owned_json(out_json, error_out, &decisions),
-        Err(error) => validation_error(error_out, error),
-    }
+    crate::ffi_status_boundary(error_out, || {
+        clear_error(error_out);
+        clear_owned_bytes(out_json);
+        let policy = match parse_json_ptr::<SelectionPolicy>(
+            policy_ptr,
+            policy_len,
+            error_out,
+            "selection policy",
+        ) {
+            Ok(policy) => policy,
+            Err(status) => return status,
+        };
+        let candidates = match parse_json_ptr::<Vec<CandidateScore>>(
+            candidates_ptr,
+            candidates_len,
+            error_out,
+            "candidate scores",
+        ) {
+            Ok(candidates) => candidates,
+            Err(status) => return status,
+        };
+        let groups = match parse_json_ptr::<BTreeMap<String, Vec<String>>>(
+            groups_ptr,
+            groups_len,
+            error_out,
+            "candidate groups",
+        ) {
+            Ok(groups) => groups,
+            Err(status) => return status,
+        };
+        match select_candidate_groups(&policy, &candidates, &groups) {
+            Ok(decisions) => write_owned_json(out_json, error_out, &decisions),
+            Err(error) => validation_error(error_out, error),
+        }
+    })
 }
 
 /// Scores a sample-level `PredictionBlock` against a `RegressionTargetBlock`.
@@ -2317,39 +2444,41 @@ pub unsafe extern "C" fn dagml_score_regression_prediction_block_json(
     out_json: *mut DagMlOwnedBytes,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    clear_error(error_out);
-    clear_owned_bytes(out_json);
-    let predictions = match parse_json_ptr::<PredictionBlock>(
-        predictions_ptr,
-        predictions_len,
-        error_out,
-        "sample prediction block",
-    ) {
-        Ok(predictions) => predictions,
-        Err(status) => return status,
-    };
-    let targets = match parse_json_ptr::<RegressionTargetBlock>(
-        targets_ptr,
-        targets_len,
-        error_out,
-        "regression target block",
-    ) {
-        Ok(targets) => targets,
-        Err(status) => return status,
-    };
-    let metrics = match parse_json_ptr::<Vec<RegressionMetricKind>>(
-        metrics_ptr,
-        metrics_len,
-        error_out,
-        "regression metric list",
-    ) {
-        Ok(metrics) => metrics,
-        Err(status) => return status,
-    };
-    match score_regression_prediction_block(&predictions, &targets, &metrics) {
-        Ok(report) => write_owned_json(out_json, error_out, &report),
-        Err(error) => validation_error(error_out, error),
-    }
+    crate::ffi_status_boundary(error_out, || {
+        clear_error(error_out);
+        clear_owned_bytes(out_json);
+        let predictions = match parse_json_ptr::<PredictionBlock>(
+            predictions_ptr,
+            predictions_len,
+            error_out,
+            "sample prediction block",
+        ) {
+            Ok(predictions) => predictions,
+            Err(status) => return status,
+        };
+        let targets = match parse_json_ptr::<RegressionTargetBlock>(
+            targets_ptr,
+            targets_len,
+            error_out,
+            "regression target block",
+        ) {
+            Ok(targets) => targets,
+            Err(status) => return status,
+        };
+        let metrics = match parse_json_ptr::<Vec<RegressionMetricKind>>(
+            metrics_ptr,
+            metrics_len,
+            error_out,
+            "regression metric list",
+        ) {
+            Ok(metrics) => metrics,
+            Err(status) => return status,
+        };
+        match score_regression_prediction_block(&predictions, &targets, &metrics) {
+            Ok(report) => write_owned_json(out_json, error_out, &report),
+            Err(error) => validation_error(error_out, error),
+        }
+    })
 }
 
 /// Scores an `AggregatedPredictionBlock` against a `RegressionTargetBlock`.
@@ -2373,39 +2502,41 @@ pub unsafe extern "C" fn dagml_score_regression_aggregated_block_json(
     out_json: *mut DagMlOwnedBytes,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    clear_error(error_out);
-    clear_owned_bytes(out_json);
-    let predictions = match parse_json_ptr::<AggregatedPredictionBlock>(
-        predictions_ptr,
-        predictions_len,
-        error_out,
-        "aggregated prediction block",
-    ) {
-        Ok(predictions) => predictions,
-        Err(status) => return status,
-    };
-    let targets = match parse_json_ptr::<RegressionTargetBlock>(
-        targets_ptr,
-        targets_len,
-        error_out,
-        "regression target block",
-    ) {
-        Ok(targets) => targets,
-        Err(status) => return status,
-    };
-    let metrics = match parse_json_ptr::<Vec<RegressionMetricKind>>(
-        metrics_ptr,
-        metrics_len,
-        error_out,
-        "regression metric list",
-    ) {
-        Ok(metrics) => metrics,
-        Err(status) => return status,
-    };
-    match score_regression_aggregated_block(&predictions, &targets, &metrics) {
-        Ok(report) => write_owned_json(out_json, error_out, &report),
-        Err(error) => validation_error(error_out, error),
-    }
+    crate::ffi_status_boundary(error_out, || {
+        clear_error(error_out);
+        clear_owned_bytes(out_json);
+        let predictions = match parse_json_ptr::<AggregatedPredictionBlock>(
+            predictions_ptr,
+            predictions_len,
+            error_out,
+            "aggregated prediction block",
+        ) {
+            Ok(predictions) => predictions,
+            Err(status) => return status,
+        };
+        let targets = match parse_json_ptr::<RegressionTargetBlock>(
+            targets_ptr,
+            targets_len,
+            error_out,
+            "regression target block",
+        ) {
+            Ok(targets) => targets,
+            Err(status) => return status,
+        };
+        let metrics = match parse_json_ptr::<Vec<RegressionMetricKind>>(
+            metrics_ptr,
+            metrics_len,
+            error_out,
+            "regression metric list",
+        ) {
+            Ok(metrics) => metrics,
+            Err(status) => return status,
+        };
+        match score_regression_aggregated_block(&predictions, &targets, &metrics) {
+            Ok(report) => write_owned_json(out_json, error_out, &report),
+            Err(error) => validation_error(error_out, error),
+        }
+    })
 }
 
 /// Converts a sample-level prediction block JSON into an owned row-major F64 tensor.
@@ -2425,37 +2556,39 @@ pub unsafe extern "C" fn dagml_prediction_block_f64_tensor_json(
     out_tensor: *mut DagMlF64Tensor,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    clear_error(error_out);
-    clear_f64_tensor(out_tensor);
-    let predictions = match parse_json_ptr::<PredictionBlock>(
-        predictions_ptr,
-        predictions_len,
-        error_out,
-        "sample prediction block",
-    ) {
-        Ok(predictions) => predictions,
-        Err(status) => return status,
-    };
-    let width = match predictions.validate_shape() {
-        Ok(width) => width,
-        Err(error) => return validation_error(error_out, error),
-    };
-    let values = match flatten_f64_rows(
-        "sample prediction block",
-        predictions.producer_node.as_str(),
-        &predictions.values,
-        width,
-    ) {
-        Ok(values) => values,
-        Err(error) => return validation_error(error_out, error),
-    };
-    write_f64_tensor(
-        out_tensor,
-        error_out,
-        values,
-        predictions.sample_ids.len(),
-        width,
-    )
+    crate::ffi_status_boundary(error_out, || {
+        clear_error(error_out);
+        clear_f64_tensor(out_tensor);
+        let predictions = match parse_json_ptr::<PredictionBlock>(
+            predictions_ptr,
+            predictions_len,
+            error_out,
+            "sample prediction block",
+        ) {
+            Ok(predictions) => predictions,
+            Err(status) => return status,
+        };
+        let width = match predictions.validate_shape() {
+            Ok(width) => width,
+            Err(error) => return validation_error(error_out, error),
+        };
+        let values = match flatten_f64_rows(
+            "sample prediction block",
+            predictions.producer_node.as_str(),
+            &predictions.values,
+            width,
+        ) {
+            Ok(values) => values,
+            Err(error) => return validation_error(error_out, error),
+        };
+        write_f64_tensor(
+            out_tensor,
+            error_out,
+            values,
+            predictions.sample_ids.len(),
+            width,
+        )
+    })
 }
 
 /// Converts an aggregated target/group prediction block JSON into an owned
@@ -2476,37 +2609,39 @@ pub unsafe extern "C" fn dagml_aggregated_prediction_block_f64_tensor_json(
     out_tensor: *mut DagMlF64Tensor,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    clear_error(error_out);
-    clear_f64_tensor(out_tensor);
-    let predictions = match parse_json_ptr::<AggregatedPredictionBlock>(
-        predictions_ptr,
-        predictions_len,
-        error_out,
-        "aggregated prediction block",
-    ) {
-        Ok(predictions) => predictions,
-        Err(status) => return status,
-    };
-    let width = match predictions.validate_shape() {
-        Ok(width) => width,
-        Err(error) => return validation_error(error_out, error),
-    };
-    let values = match flatten_f64_rows(
-        "aggregated prediction block",
-        predictions.producer_node.as_str(),
-        &predictions.values,
-        width,
-    ) {
-        Ok(values) => values,
-        Err(error) => return validation_error(error_out, error),
-    };
-    write_f64_tensor(
-        out_tensor,
-        error_out,
-        values,
-        predictions.unit_ids.len(),
-        width,
-    )
+    crate::ffi_status_boundary(error_out, || {
+        clear_error(error_out);
+        clear_f64_tensor(out_tensor);
+        let predictions = match parse_json_ptr::<AggregatedPredictionBlock>(
+            predictions_ptr,
+            predictions_len,
+            error_out,
+            "aggregated prediction block",
+        ) {
+            Ok(predictions) => predictions,
+            Err(status) => return status,
+        };
+        let width = match predictions.validate_shape() {
+            Ok(width) => width,
+            Err(error) => return validation_error(error_out, error),
+        };
+        let values = match flatten_f64_rows(
+            "aggregated prediction block",
+            predictions.producer_node.as_str(),
+            &predictions.values,
+            width,
+        ) {
+            Ok(values) => values,
+            Err(error) => return validation_error(error_out, error),
+        };
+        write_f64_tensor(
+            out_tensor,
+            error_out,
+            values,
+            predictions.unit_ids.len(),
+            width,
+        )
+    })
 }
 
 /// Converts a sample-level prediction block JSON into an owned row-major F32
@@ -2529,44 +2664,46 @@ pub unsafe extern "C" fn dagml_prediction_block_f32_tensor_json(
     out_tensor: *mut DagMlF32Tensor,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    clear_error(error_out);
-    clear_f32_tensor(out_tensor);
-    let predictions = match parse_json_ptr::<PredictionBlock>(
-        predictions_ptr,
-        predictions_len,
-        error_out,
-        "sample prediction block",
-    ) {
-        Ok(predictions) => predictions,
-        Err(status) => return status,
-    };
-    let width = match predictions.validate_shape() {
-        Ok(width) => width,
-        Err(error) => return validation_error(error_out, error),
-    };
-    let values = match flatten_f64_rows(
-        "sample prediction block",
-        predictions.producer_node.as_str(),
-        &predictions.values,
-        width,
-    )
-    .and_then(|values| {
-        cast_f64_to_f32(
+    crate::ffi_status_boundary(error_out, || {
+        clear_error(error_out);
+        clear_f32_tensor(out_tensor);
+        let predictions = match parse_json_ptr::<PredictionBlock>(
+            predictions_ptr,
+            predictions_len,
+            error_out,
+            "sample prediction block",
+        ) {
+            Ok(predictions) => predictions,
+            Err(status) => return status,
+        };
+        let width = match predictions.validate_shape() {
+            Ok(width) => width,
+            Err(error) => return validation_error(error_out, error),
+        };
+        let values = match flatten_f64_rows(
             "sample prediction block",
             predictions.producer_node.as_str(),
-            values,
+            &predictions.values,
+            width,
         )
-    }) {
-        Ok(values) => values,
-        Err(error) => return validation_error(error_out, error),
-    };
-    write_f32_tensor(
-        out_tensor,
-        error_out,
-        values,
-        predictions.sample_ids.len(),
-        width,
-    )
+        .and_then(|values| {
+            cast_f64_to_f32(
+                "sample prediction block",
+                predictions.producer_node.as_str(),
+                values,
+            )
+        }) {
+            Ok(values) => values,
+            Err(error) => return validation_error(error_out, error),
+        };
+        write_f32_tensor(
+            out_tensor,
+            error_out,
+            values,
+            predictions.sample_ids.len(),
+            width,
+        )
+    })
 }
 
 /// Converts an aggregated target/group prediction block JSON into an owned
@@ -2584,44 +2721,46 @@ pub unsafe extern "C" fn dagml_aggregated_prediction_block_f32_tensor_json(
     out_tensor: *mut DagMlF32Tensor,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    clear_error(error_out);
-    clear_f32_tensor(out_tensor);
-    let predictions = match parse_json_ptr::<AggregatedPredictionBlock>(
-        predictions_ptr,
-        predictions_len,
-        error_out,
-        "aggregated prediction block",
-    ) {
-        Ok(predictions) => predictions,
-        Err(status) => return status,
-    };
-    let width = match predictions.validate_shape() {
-        Ok(width) => width,
-        Err(error) => return validation_error(error_out, error),
-    };
-    let values = match flatten_f64_rows(
-        "aggregated prediction block",
-        predictions.producer_node.as_str(),
-        &predictions.values,
-        width,
-    )
-    .and_then(|values| {
-        cast_f64_to_f32(
+    crate::ffi_status_boundary(error_out, || {
+        clear_error(error_out);
+        clear_f32_tensor(out_tensor);
+        let predictions = match parse_json_ptr::<AggregatedPredictionBlock>(
+            predictions_ptr,
+            predictions_len,
+            error_out,
+            "aggregated prediction block",
+        ) {
+            Ok(predictions) => predictions,
+            Err(status) => return status,
+        };
+        let width = match predictions.validate_shape() {
+            Ok(width) => width,
+            Err(error) => return validation_error(error_out, error),
+        };
+        let values = match flatten_f64_rows(
             "aggregated prediction block",
             predictions.producer_node.as_str(),
-            values,
+            &predictions.values,
+            width,
         )
-    }) {
-        Ok(values) => values,
-        Err(error) => return validation_error(error_out, error),
-    };
-    write_f32_tensor(
-        out_tensor,
-        error_out,
-        values,
-        predictions.unit_ids.len(),
-        width,
-    )
+        .and_then(|values| {
+            cast_f64_to_f32(
+                "aggregated prediction block",
+                predictions.producer_node.as_str(),
+                values,
+            )
+        }) {
+            Ok(values) => values,
+            Err(error) => return validation_error(error_out, error),
+        };
+        write_f32_tensor(
+            out_tensor,
+            error_out,
+            values,
+            predictions.unit_ids.len(),
+            width,
+        )
+    })
 }
 
 /// Converts a `RegressionMetricReport` to a selection `CandidateScore`.
@@ -2638,25 +2777,27 @@ pub unsafe extern "C" fn dagml_regression_report_candidate_score_json(
     out_json: *mut DagMlOwnedBytes,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    clear_error(error_out);
-    clear_owned_bytes(out_json);
-    let report = match parse_json_ptr::<RegressionMetricReport>(
-        report_ptr,
-        report_len,
-        error_out,
-        "regression metric report",
-    ) {
-        Ok(report) => report,
-        Err(status) => return status,
-    };
-    let candidate_id = match parse_utf8_view(candidate_id, error_out, "candidate id") {
-        Ok(candidate_id) => candidate_id,
-        Err(status) => return status,
-    };
-    match regression_report_to_candidate_score(candidate_id, report) {
-        Ok(score) => write_owned_json(out_json, error_out, &score),
-        Err(error) => validation_error(error_out, error),
-    }
+    crate::ffi_status_boundary(error_out, || {
+        clear_error(error_out);
+        clear_owned_bytes(out_json);
+        let report = match parse_json_ptr::<RegressionMetricReport>(
+            report_ptr,
+            report_len,
+            error_out,
+            "regression metric report",
+        ) {
+            Ok(report) => report,
+            Err(status) => return status,
+        };
+        let candidate_id = match parse_utf8_view(candidate_id, error_out, "candidate id") {
+            Ok(candidate_id) => candidate_id,
+            Err(status) => return status,
+        };
+        match regression_report_to_candidate_score(candidate_id, report) {
+            Ok(score) => write_owned_json(out_json, error_out, &score),
+            Err(error) => validation_error(error_out, error),
+        }
+    })
 }
 
 /// Validates a canonical JSON `ExecutionBundle`.
@@ -2670,17 +2811,19 @@ pub unsafe extern "C" fn dagml_execution_bundle_validate_json(
     json_len: usize,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    clear_error(error_out);
-    match parse_external_contract_ptr(
-        json_ptr,
-        json_len,
-        error_out,
-        "execution bundle",
-        ExecutionBundle::from_json,
-    ) {
-        Ok(_) => DagMlStatusCode::OK,
-        Err(status) => status,
-    }
+    crate::ffi_status_boundary(error_out, || {
+        clear_error(error_out);
+        match parse_external_contract_ptr(
+            json_ptr,
+            json_len,
+            error_out,
+            "execution bundle",
+            ExecutionBundle::from_json,
+        ) {
+            Ok(_) => DagMlStatusCode::OK,
+            Err(status) => status,
+        }
+    })
 }
 
 /// Validates replay data envelopes against an `ExecutionBundle`.
@@ -2699,30 +2842,32 @@ pub unsafe extern "C" fn dagml_execution_bundle_validate_replay_envelopes_json(
     envelopes_len: usize,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    clear_error(error_out);
-    let bundle = match parse_external_contract_ptr(
-        bundle_ptr,
-        bundle_len,
-        error_out,
-        "bundle",
-        ExecutionBundle::from_json,
-    ) {
-        Ok(bundle) => bundle,
-        Err(status) => return status,
-    };
-    let envelopes = match parse_json_ptr::<BTreeMap<String, ExternalDataPlanEnvelope>>(
-        envelopes_ptr,
-        envelopes_len,
-        error_out,
-        "replay envelopes",
-    ) {
-        Ok(envelopes) => envelopes,
-        Err(status) => return status,
-    };
-    match bundle.validate_replay_envelopes(&envelopes) {
-        Ok(()) => DagMlStatusCode::OK,
-        Err(error) => validation_error(error_out, error),
-    }
+    crate::ffi_status_boundary(error_out, || {
+        clear_error(error_out);
+        let bundle = match parse_external_contract_ptr(
+            bundle_ptr,
+            bundle_len,
+            error_out,
+            "bundle",
+            ExecutionBundle::from_json,
+        ) {
+            Ok(bundle) => bundle,
+            Err(status) => return status,
+        };
+        let envelopes = match parse_json_ptr::<BTreeMap<String, ExternalDataPlanEnvelope>>(
+            envelopes_ptr,
+            envelopes_len,
+            error_out,
+            "replay envelopes",
+        ) {
+            Ok(envelopes) => envelopes,
+            Err(status) => return status,
+        };
+        match bundle.validate_replay_envelopes(&envelopes) {
+            Ok(()) => DagMlStatusCode::OK,
+            Err(error) => validation_error(error_out, error),
+        }
+    })
 }
 
 /// Validates a replay request against an `ExecutionBundle`.
@@ -2738,30 +2883,32 @@ pub unsafe extern "C" fn dagml_replay_request_validate_for_bundle_json(
     request_len: usize,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    clear_error(error_out);
-    let bundle = match parse_external_contract_ptr(
-        bundle_ptr,
-        bundle_len,
-        error_out,
-        "bundle",
-        ExecutionBundle::from_json,
-    ) {
-        Ok(bundle) => bundle,
-        Err(status) => return status,
-    };
-    let request = match parse_json_ptr::<ReplayPhaseRequest>(
-        request_ptr,
-        request_len,
-        error_out,
-        "replay request",
-    ) {
-        Ok(request) => request,
-        Err(status) => return status,
-    };
-    match request.validate_for_bundle(&bundle) {
-        Ok(()) => DagMlStatusCode::OK,
-        Err(error) => validation_error(error_out, error),
-    }
+    crate::ffi_status_boundary(error_out, || {
+        clear_error(error_out);
+        let bundle = match parse_external_contract_ptr(
+            bundle_ptr,
+            bundle_len,
+            error_out,
+            "bundle",
+            ExecutionBundle::from_json,
+        ) {
+            Ok(bundle) => bundle,
+            Err(status) => return status,
+        };
+        let request = match parse_json_ptr::<ReplayPhaseRequest>(
+            request_ptr,
+            request_len,
+            error_out,
+            "replay request",
+        ) {
+            Ok(request) => request,
+            Err(status) => return status,
+        };
+        match request.validate_for_bundle(&bundle) {
+            Ok(()) => DagMlStatusCode::OK,
+            Err(error) => validation_error(error_out, error),
+        }
+    })
 }
 
 /// Validates a prediction-cache payload set against an `ExecutionBundle`.
@@ -2777,30 +2924,32 @@ pub unsafe extern "C" fn dagml_prediction_cache_payload_validate_for_bundle_json
     payload_len: usize,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    clear_error(error_out);
-    let bundle = match parse_external_contract_ptr(
-        bundle_ptr,
-        bundle_len,
-        error_out,
-        "bundle",
-        ExecutionBundle::from_json,
-    ) {
-        Ok(bundle) => bundle,
-        Err(status) => return status,
-    };
-    let payload = match parse_json_ptr::<BundlePredictionCachePayloadSet>(
-        payload_ptr,
-        payload_len,
-        error_out,
-        "prediction cache payload set",
-    ) {
-        Ok(payload) => payload,
-        Err(status) => return status,
-    };
-    match payload.validate_against_bundle(&bundle) {
-        Ok(()) => DagMlStatusCode::OK,
-        Err(error) => validation_error(error_out, error),
-    }
+    crate::ffi_status_boundary(error_out, || {
+        clear_error(error_out);
+        let bundle = match parse_external_contract_ptr(
+            bundle_ptr,
+            bundle_len,
+            error_out,
+            "bundle",
+            ExecutionBundle::from_json,
+        ) {
+            Ok(bundle) => bundle,
+            Err(status) => return status,
+        };
+        let payload = match parse_json_ptr::<BundlePredictionCachePayloadSet>(
+            payload_ptr,
+            payload_len,
+            error_out,
+            "prediction cache payload set",
+        ) {
+            Ok(payload) => payload,
+            Err(status) => return status,
+        };
+        match payload.validate_against_bundle(&bundle) {
+            Ok(()) => DagMlStatusCode::OK,
+            Err(error) => validation_error(error_out, error),
+        }
+    })
 }
 
 /// Exports one validated prediction-cache payload requirement as an owned
@@ -2829,49 +2978,51 @@ pub unsafe extern "C" fn dagml_prediction_cache_payload_f64_tensor_json(
     out_metadata_json: *mut DagMlOwnedBytes,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    clear_error(error_out);
-    clear_f64_tensor(out_tensor);
-    clear_owned_bytes(out_metadata_json);
-    if out_tensor.is_null() {
-        set_error(error_out, "output F64 tensor pointer is null");
-        return DagMlStatusCode::INVALID_ARGUMENT;
-    }
-    if out_metadata_json.is_null() {
-        set_error(error_out, "output metadata JSON pointer is null");
-        return DagMlStatusCode::INVALID_ARGUMENT;
-    }
-    let (payload_set, payload_index) = match select_validated_prediction_cache_payload(
-        bundle_ptr,
-        bundle_len,
-        payload_ptr,
-        payload_len,
-        requirement_key,
-        error_out,
-    ) {
-        Ok(selection) => selection,
-        Err(status) => return status,
-    };
-    let payload = &payload_set.caches[payload_index];
-    let (values, metadata) = match prediction_cache_payload_to_f64_tensor(payload) {
-        Ok(output) => output,
-        Err(error) => return validation_error(error_out, error),
-    };
-    let metadata_json = match serde_json::to_vec(&metadata) {
-        Ok(metadata_json) => metadata_json,
-        Err(error) => {
-            set_error(
-                error_out,
-                format!("failed to serialize output metadata JSON: {error}"),
-            );
-            return DagMlStatusCode::VALIDATION_ERROR;
+    crate::ffi_status_boundary(error_out, || {
+        clear_error(error_out);
+        clear_f64_tensor(out_tensor);
+        clear_owned_bytes(out_metadata_json);
+        if out_tensor.is_null() {
+            set_error(error_out, "output F64 tensor pointer is null");
+            return DagMlStatusCode::INVALID_ARGUMENT;
         }
-    };
-    let status = write_f64_tensor(out_tensor, error_out, values, metadata.rows, metadata.cols);
-    if status != DagMlStatusCode::OK {
-        return status;
-    }
-    write_owned_vec(out_metadata_json, metadata_json);
-    DagMlStatusCode::OK
+        if out_metadata_json.is_null() {
+            set_error(error_out, "output metadata JSON pointer is null");
+            return DagMlStatusCode::INVALID_ARGUMENT;
+        }
+        let (payload_set, payload_index) = match select_validated_prediction_cache_payload(
+            bundle_ptr,
+            bundle_len,
+            payload_ptr,
+            payload_len,
+            requirement_key,
+            error_out,
+        ) {
+            Ok(selection) => selection,
+            Err(status) => return status,
+        };
+        let payload = &payload_set.caches[payload_index];
+        let (values, metadata) = match prediction_cache_payload_to_f64_tensor(payload) {
+            Ok(output) => output,
+            Err(error) => return validation_error(error_out, error),
+        };
+        let metadata_json = match serde_json::to_vec(&metadata) {
+            Ok(metadata_json) => metadata_json,
+            Err(error) => {
+                set_error(
+                    error_out,
+                    format!("failed to serialize output metadata JSON: {error}"),
+                );
+                return DagMlStatusCode::VALIDATION_ERROR;
+            }
+        };
+        let status = write_f64_tensor(out_tensor, error_out, values, metadata.rows, metadata.cols);
+        if status != DagMlStatusCode::OK {
+            return status;
+        }
+        write_owned_vec(out_metadata_json, metadata_json);
+        DagMlStatusCode::OK
+    })
 }
 
 /// Exports one validated prediction-cache payload requirement as an owned
@@ -2900,50 +3051,52 @@ pub unsafe extern "C" fn dagml_prediction_cache_payload_f64_columnar_tensor_json
     out_metadata_json: *mut DagMlOwnedBytes,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    clear_error(error_out);
-    clear_f64_columnar_tensor(out_tensor);
-    clear_owned_bytes(out_metadata_json);
-    if out_tensor.is_null() {
-        set_error(error_out, "output columnar F64 tensor pointer is null");
-        return DagMlStatusCode::INVALID_ARGUMENT;
-    }
-    if out_metadata_json.is_null() {
-        set_error(error_out, "output metadata JSON pointer is null");
-        return DagMlStatusCode::INVALID_ARGUMENT;
-    }
-    let (payload_set, payload_index) = match select_validated_prediction_cache_payload(
-        bundle_ptr,
-        bundle_len,
-        payload_ptr,
-        payload_len,
-        requirement_key,
-        error_out,
-    ) {
-        Ok(selection) => selection,
-        Err(status) => return status,
-    };
-    let payload = &payload_set.caches[payload_index];
-    let (values, metadata) = match prediction_cache_payload_to_f64_columnar_tensor(payload) {
-        Ok(output) => output,
-        Err(error) => return validation_error(error_out, error),
-    };
-    let metadata_json = match serde_json::to_vec(&metadata) {
-        Ok(metadata_json) => metadata_json,
-        Err(error) => {
-            set_error(
-                error_out,
-                format!("failed to serialize output metadata JSON: {error}"),
-            );
-            return DagMlStatusCode::VALIDATION_ERROR;
+    crate::ffi_status_boundary(error_out, || {
+        clear_error(error_out);
+        clear_f64_columnar_tensor(out_tensor);
+        clear_owned_bytes(out_metadata_json);
+        if out_tensor.is_null() {
+            set_error(error_out, "output columnar F64 tensor pointer is null");
+            return DagMlStatusCode::INVALID_ARGUMENT;
         }
-    };
-    let status =
-        write_f64_columnar_tensor(out_tensor, error_out, values, metadata.rows, metadata.cols);
-    if status != DagMlStatusCode::OK {
-        return status;
-    }
-    write_owned_vec(out_metadata_json, metadata_json);
-    DagMlStatusCode::OK
+        if out_metadata_json.is_null() {
+            set_error(error_out, "output metadata JSON pointer is null");
+            return DagMlStatusCode::INVALID_ARGUMENT;
+        }
+        let (payload_set, payload_index) = match select_validated_prediction_cache_payload(
+            bundle_ptr,
+            bundle_len,
+            payload_ptr,
+            payload_len,
+            requirement_key,
+            error_out,
+        ) {
+            Ok(selection) => selection,
+            Err(status) => return status,
+        };
+        let payload = &payload_set.caches[payload_index];
+        let (values, metadata) = match prediction_cache_payload_to_f64_columnar_tensor(payload) {
+            Ok(output) => output,
+            Err(error) => return validation_error(error_out, error),
+        };
+        let metadata_json = match serde_json::to_vec(&metadata) {
+            Ok(metadata_json) => metadata_json,
+            Err(error) => {
+                set_error(
+                    error_out,
+                    format!("failed to serialize output metadata JSON: {error}"),
+                );
+                return DagMlStatusCode::VALIDATION_ERROR;
+            }
+        };
+        let status =
+            write_f64_columnar_tensor(out_tensor, error_out, values, metadata.rows, metadata.cols);
+        if status != DagMlStatusCode::OK {
+            return status;
+        }
+        write_owned_vec(out_metadata_json, metadata_json);
+        DagMlStatusCode::OK
+    })
 }
 
 /// Exports one validated prediction-cache payload requirement as an owned
@@ -2968,54 +3121,56 @@ pub unsafe extern "C" fn dagml_prediction_cache_payload_f32_tensor_json(
     out_metadata_json: *mut DagMlOwnedBytes,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    clear_error(error_out);
-    clear_f32_tensor(out_tensor);
-    clear_owned_bytes(out_metadata_json);
-    if out_tensor.is_null() {
-        set_error(error_out, "output F32 tensor pointer is null");
-        return DagMlStatusCode::INVALID_ARGUMENT;
-    }
-    if out_metadata_json.is_null() {
-        set_error(error_out, "output metadata JSON pointer is null");
-        return DagMlStatusCode::INVALID_ARGUMENT;
-    }
-    let (payload_set, payload_index) = match select_validated_prediction_cache_payload(
-        bundle_ptr,
-        bundle_len,
-        payload_ptr,
-        payload_len,
-        requirement_key,
-        error_out,
-    ) {
-        Ok(selection) => selection,
-        Err(status) => return status,
-    };
-    let payload = &payload_set.caches[payload_index];
-    let (values, metadata) =
-        match prediction_cache_payload_to_f64_tensor(payload).and_then(|(values, metadata)| {
-            let cache_id = metadata.cache_id.clone();
-            cast_f64_to_f32("prediction cache payload", cache_id.as_str(), values)
-                .map(|values| (values, metadata))
-        }) {
-            Ok(output) => output,
-            Err(error) => return validation_error(error_out, error),
-        };
-    let metadata_json = match serde_json::to_vec(&metadata) {
-        Ok(metadata_json) => metadata_json,
-        Err(error) => {
-            set_error(
-                error_out,
-                format!("failed to serialize output metadata JSON: {error}"),
-            );
-            return DagMlStatusCode::VALIDATION_ERROR;
+    crate::ffi_status_boundary(error_out, || {
+        clear_error(error_out);
+        clear_f32_tensor(out_tensor);
+        clear_owned_bytes(out_metadata_json);
+        if out_tensor.is_null() {
+            set_error(error_out, "output F32 tensor pointer is null");
+            return DagMlStatusCode::INVALID_ARGUMENT;
         }
-    };
-    let status = write_f32_tensor(out_tensor, error_out, values, metadata.rows, metadata.cols);
-    if status != DagMlStatusCode::OK {
-        return status;
-    }
-    write_owned_vec(out_metadata_json, metadata_json);
-    DagMlStatusCode::OK
+        if out_metadata_json.is_null() {
+            set_error(error_out, "output metadata JSON pointer is null");
+            return DagMlStatusCode::INVALID_ARGUMENT;
+        }
+        let (payload_set, payload_index) = match select_validated_prediction_cache_payload(
+            bundle_ptr,
+            bundle_len,
+            payload_ptr,
+            payload_len,
+            requirement_key,
+            error_out,
+        ) {
+            Ok(selection) => selection,
+            Err(status) => return status,
+        };
+        let payload = &payload_set.caches[payload_index];
+        let (values, metadata) =
+            match prediction_cache_payload_to_f64_tensor(payload).and_then(|(values, metadata)| {
+                let cache_id = metadata.cache_id.clone();
+                cast_f64_to_f32("prediction cache payload", cache_id.as_str(), values)
+                    .map(|values| (values, metadata))
+            }) {
+                Ok(output) => output,
+                Err(error) => return validation_error(error_out, error),
+            };
+        let metadata_json = match serde_json::to_vec(&metadata) {
+            Ok(metadata_json) => metadata_json,
+            Err(error) => {
+                set_error(
+                    error_out,
+                    format!("failed to serialize output metadata JSON: {error}"),
+                );
+                return DagMlStatusCode::VALIDATION_ERROR;
+            }
+        };
+        let status = write_f32_tensor(out_tensor, error_out, values, metadata.rows, metadata.cols);
+        if status != DagMlStatusCode::OK {
+            return status;
+        }
+        write_owned_vec(out_metadata_json, metadata_json);
+        DagMlStatusCode::OK
+    })
 }
 
 /// Exports one validated prediction-cache payload requirement as an owned
@@ -3040,55 +3195,57 @@ pub unsafe extern "C" fn dagml_prediction_cache_payload_f32_columnar_tensor_json
     out_metadata_json: *mut DagMlOwnedBytes,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    clear_error(error_out);
-    clear_f32_columnar_tensor(out_tensor);
-    clear_owned_bytes(out_metadata_json);
-    if out_tensor.is_null() {
-        set_error(error_out, "output columnar F32 tensor pointer is null");
-        return DagMlStatusCode::INVALID_ARGUMENT;
-    }
-    if out_metadata_json.is_null() {
-        set_error(error_out, "output metadata JSON pointer is null");
-        return DagMlStatusCode::INVALID_ARGUMENT;
-    }
-    let (payload_set, payload_index) = match select_validated_prediction_cache_payload(
-        bundle_ptr,
-        bundle_len,
-        payload_ptr,
-        payload_len,
-        requirement_key,
-        error_out,
-    ) {
-        Ok(selection) => selection,
-        Err(status) => return status,
-    };
-    let payload = &payload_set.caches[payload_index];
-    let (values, metadata) = match prediction_cache_payload_to_f64_columnar_tensor(payload)
-        .and_then(|(values, metadata)| {
-            let cache_id = metadata.cache_id.clone();
-            cast_f64_to_f32("prediction cache payload", cache_id.as_str(), values)
-                .map(|values| (values, metadata))
-        }) {
-        Ok(output) => output,
-        Err(error) => return validation_error(error_out, error),
-    };
-    let metadata_json = match serde_json::to_vec(&metadata) {
-        Ok(metadata_json) => metadata_json,
-        Err(error) => {
-            set_error(
-                error_out,
-                format!("failed to serialize output metadata JSON: {error}"),
-            );
-            return DagMlStatusCode::VALIDATION_ERROR;
+    crate::ffi_status_boundary(error_out, || {
+        clear_error(error_out);
+        clear_f32_columnar_tensor(out_tensor);
+        clear_owned_bytes(out_metadata_json);
+        if out_tensor.is_null() {
+            set_error(error_out, "output columnar F32 tensor pointer is null");
+            return DagMlStatusCode::INVALID_ARGUMENT;
         }
-    };
-    let status =
-        write_f32_columnar_tensor(out_tensor, error_out, values, metadata.rows, metadata.cols);
-    if status != DagMlStatusCode::OK {
-        return status;
-    }
-    write_owned_vec(out_metadata_json, metadata_json);
-    DagMlStatusCode::OK
+        if out_metadata_json.is_null() {
+            set_error(error_out, "output metadata JSON pointer is null");
+            return DagMlStatusCode::INVALID_ARGUMENT;
+        }
+        let (payload_set, payload_index) = match select_validated_prediction_cache_payload(
+            bundle_ptr,
+            bundle_len,
+            payload_ptr,
+            payload_len,
+            requirement_key,
+            error_out,
+        ) {
+            Ok(selection) => selection,
+            Err(status) => return status,
+        };
+        let payload = &payload_set.caches[payload_index];
+        let (values, metadata) = match prediction_cache_payload_to_f64_columnar_tensor(payload)
+            .and_then(|(values, metadata)| {
+                let cache_id = metadata.cache_id.clone();
+                cast_f64_to_f32("prediction cache payload", cache_id.as_str(), values)
+                    .map(|values| (values, metadata))
+            }) {
+            Ok(output) => output,
+            Err(error) => return validation_error(error_out, error),
+        };
+        let metadata_json = match serde_json::to_vec(&metadata) {
+            Ok(metadata_json) => metadata_json,
+            Err(error) => {
+                set_error(
+                    error_out,
+                    format!("failed to serialize output metadata JSON: {error}"),
+                );
+                return DagMlStatusCode::VALIDATION_ERROR;
+            }
+        };
+        let status =
+            write_f32_columnar_tensor(out_tensor, error_out, values, metadata.rows, metadata.cols);
+        if status != DagMlStatusCode::OK {
+            return status;
+        }
+        write_owned_vec(out_metadata_json, metadata_json);
+        DagMlStatusCode::OK
+    })
 }
 
 /// Validates a replay request against an `ExecutionBundle` plus OOF cache payloads.
@@ -3109,39 +3266,41 @@ pub unsafe extern "C" fn dagml_replay_request_validate_for_bundle_with_predictio
     payload_len: usize,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    clear_error(error_out);
-    let bundle = match parse_external_contract_ptr(
-        bundle_ptr,
-        bundle_len,
-        error_out,
-        "bundle",
-        ExecutionBundle::from_json,
-    ) {
-        Ok(bundle) => bundle,
-        Err(status) => return status,
-    };
-    let request = match parse_json_ptr::<ReplayPhaseRequest>(
-        request_ptr,
-        request_len,
-        error_out,
-        "replay request",
-    ) {
-        Ok(request) => request,
-        Err(status) => return status,
-    };
-    let payload = match parse_json_ptr::<BundlePredictionCachePayloadSet>(
-        payload_ptr,
-        payload_len,
-        error_out,
-        "prediction cache payload set",
-    ) {
-        Ok(payload) => payload,
-        Err(status) => return status,
-    };
-    match request.validate_for_bundle_with_prediction_cache_payloads(&bundle, Some(&payload)) {
-        Ok(()) => DagMlStatusCode::OK,
-        Err(error) => validation_error(error_out, error),
-    }
+    crate::ffi_status_boundary(error_out, || {
+        clear_error(error_out);
+        let bundle = match parse_external_contract_ptr(
+            bundle_ptr,
+            bundle_len,
+            error_out,
+            "bundle",
+            ExecutionBundle::from_json,
+        ) {
+            Ok(bundle) => bundle,
+            Err(status) => return status,
+        };
+        let request = match parse_json_ptr::<ReplayPhaseRequest>(
+            request_ptr,
+            request_len,
+            error_out,
+            "replay request",
+        ) {
+            Ok(request) => request,
+            Err(status) => return status,
+        };
+        let payload = match parse_json_ptr::<BundlePredictionCachePayloadSet>(
+            payload_ptr,
+            payload_len,
+            error_out,
+            "prediction cache payload set",
+        ) {
+            Ok(payload) => payload,
+            Err(status) => return status,
+        };
+        match request.validate_for_bundle_with_prediction_cache_payloads(&bundle, Some(&payload)) {
+            Ok(()) => DagMlStatusCode::OK,
+            Err(error) => validation_error(error_out, error),
+        }
+    })
 }
 
 /// Builds a standards-facing research provenance export from validated DAG-ML
@@ -3177,78 +3336,80 @@ pub unsafe extern "C" fn dagml_research_provenance_export_json(
     out_json: *mut DagMlOwnedBytes,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    clear_error(error_out);
-    clear_owned_bytes(out_json);
-    let plan = match parse_external_contract_ptr(
-        plan_ptr,
-        plan_len,
-        error_out,
-        "execution plan",
-        ExecutionPlan::from_json,
-    ) {
-        Ok(plan) => plan,
-        Err(status) => return status,
-    };
-    let bundle = match parse_external_contract_ptr(
-        bundle_ptr,
-        bundle_len,
-        error_out,
-        "bundle",
-        ExecutionBundle::from_json,
-    ) {
-        Ok(bundle) => bundle,
-        Err(status) => return status,
-    };
-    let lineage = match parse_optional_json_ptr::<Vec<LineageRecord>>(
-        lineage_ptr,
-        lineage_len,
-        error_out,
-        "lineage records",
-    ) {
-        Ok(Some(lineage)) => lineage,
-        Ok(None) => Vec::new(),
-        Err(status) => return status,
-    };
-    let envelopes = match parse_optional_json_ptr::<BTreeMap<String, ExternalDataPlanEnvelope>>(
-        envelopes_ptr,
-        envelopes_len,
-        error_out,
-        "replay envelopes",
-    ) {
-        Ok(Some(envelopes)) => envelopes,
-        Ok(None) => BTreeMap::new(),
-        Err(status) => return status,
-    };
-    let prediction_cache_manifest = match parse_optional_json_ptr::<FilePredictionCacheManifest>(
-        prediction_cache_manifest_ptr,
-        prediction_cache_manifest_len,
-        error_out,
-        "prediction cache manifest",
-    ) {
-        Ok(manifest) => manifest,
-        Err(status) => return status,
-    };
-    let artifact_manifest = match parse_optional_json_ptr::<FileArtifactManifest>(
-        artifact_manifest_ptr,
-        artifact_manifest_len,
-        error_out,
-        "artifact manifest",
-    ) {
-        Ok(manifest) => manifest,
-        Err(status) => return status,
-    };
+    crate::ffi_status_boundary(error_out, || {
+        clear_error(error_out);
+        clear_owned_bytes(out_json);
+        let plan = match parse_external_contract_ptr(
+            plan_ptr,
+            plan_len,
+            error_out,
+            "execution plan",
+            ExecutionPlan::from_json,
+        ) {
+            Ok(plan) => plan,
+            Err(status) => return status,
+        };
+        let bundle = match parse_external_contract_ptr(
+            bundle_ptr,
+            bundle_len,
+            error_out,
+            "bundle",
+            ExecutionBundle::from_json,
+        ) {
+            Ok(bundle) => bundle,
+            Err(status) => return status,
+        };
+        let lineage = match parse_optional_json_ptr::<Vec<LineageRecord>>(
+            lineage_ptr,
+            lineage_len,
+            error_out,
+            "lineage records",
+        ) {
+            Ok(Some(lineage)) => lineage,
+            Ok(None) => Vec::new(),
+            Err(status) => return status,
+        };
+        let envelopes = match parse_optional_json_ptr::<BTreeMap<String, ExternalDataPlanEnvelope>>(
+            envelopes_ptr,
+            envelopes_len,
+            error_out,
+            "replay envelopes",
+        ) {
+            Ok(Some(envelopes)) => envelopes,
+            Ok(None) => BTreeMap::new(),
+            Err(status) => return status,
+        };
+        let prediction_cache_manifest = match parse_optional_json_ptr::<FilePredictionCacheManifest>(
+            prediction_cache_manifest_ptr,
+            prediction_cache_manifest_len,
+            error_out,
+            "prediction cache manifest",
+        ) {
+            Ok(manifest) => manifest,
+            Err(status) => return status,
+        };
+        let artifact_manifest = match parse_optional_json_ptr::<FileArtifactManifest>(
+            artifact_manifest_ptr,
+            artifact_manifest_len,
+            error_out,
+            "artifact manifest",
+        ) {
+            Ok(manifest) => manifest,
+            Err(status) => return status,
+        };
 
-    match build_research_provenance_export(
-        &plan,
-        &bundle,
-        &lineage,
-        &envelopes,
-        prediction_cache_manifest.as_ref(),
-        artifact_manifest.as_ref(),
-    ) {
-        Ok(export) => write_owned_json(out_json, error_out, &export),
-        Err(error) => validation_error(error_out, error),
-    }
+        match build_research_provenance_export(
+            &plan,
+            &bundle,
+            &lineage,
+            &envelopes,
+            prediction_cache_manifest.as_ref(),
+            artifact_manifest.as_ref(),
+        ) {
+            Ok(export) => write_owned_json(out_json, error_out, &export),
+            Err(error) => validation_error(error_out, error),
+        }
+    })
 }
 
 /// Builds an OpenLineage RunEvent from validated DAG-ML provenance contracts.
@@ -3283,91 +3444,93 @@ pub unsafe extern "C" fn dagml_openlineage_run_event_json(
     out_json: *mut DagMlOwnedBytes,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    clear_error(error_out);
-    clear_owned_bytes(out_json);
-    let plan = match parse_external_contract_ptr(
-        plan_ptr,
-        plan_len,
-        error_out,
-        "execution plan",
-        ExecutionPlan::from_json,
-    ) {
-        Ok(plan) => plan,
-        Err(status) => return status,
-    };
-    let bundle = match parse_external_contract_ptr(
-        bundle_ptr,
-        bundle_len,
-        error_out,
-        "bundle",
-        ExecutionBundle::from_json,
-    ) {
-        Ok(bundle) => bundle,
-        Err(status) => return status,
-    };
-    let lineage = match parse_optional_json_ptr::<Vec<LineageRecord>>(
-        lineage_ptr,
-        lineage_len,
-        error_out,
-        "lineage records",
-    ) {
-        Ok(Some(lineage)) => lineage,
-        Ok(None) => Vec::new(),
-        Err(status) => return status,
-    };
-    let envelopes = match parse_optional_json_ptr::<BTreeMap<String, ExternalDataPlanEnvelope>>(
-        envelopes_ptr,
-        envelopes_len,
-        error_out,
-        "replay envelopes",
-    ) {
-        Ok(Some(envelopes)) => envelopes,
-        Ok(None) => BTreeMap::new(),
-        Err(status) => return status,
-    };
-    let prediction_cache_manifest = match parse_optional_json_ptr::<FilePredictionCacheManifest>(
-        prediction_cache_manifest_ptr,
-        prediction_cache_manifest_len,
-        error_out,
-        "prediction cache manifest",
-    ) {
-        Ok(manifest) => manifest,
-        Err(status) => return status,
-    };
-    let artifact_manifest = match parse_optional_json_ptr::<FileArtifactManifest>(
-        artifact_manifest_ptr,
-        artifact_manifest_len,
-        error_out,
-        "artifact manifest",
-    ) {
-        Ok(manifest) => manifest,
-        Err(status) => return status,
-    };
-    let namespace = match parse_utf8_view(namespace, error_out, "OpenLineage namespace") {
-        Ok(namespace) => namespace,
-        Err(status) => return status,
-    };
-    let event_time = match parse_utf8_view(event_time, error_out, "OpenLineage event_time") {
-        Ok(event_time) => event_time,
-        Err(status) => return status,
-    };
-    let options = OpenLineageRunEventOptions {
-        namespace,
-        event_time,
-    };
+    crate::ffi_status_boundary(error_out, || {
+        clear_error(error_out);
+        clear_owned_bytes(out_json);
+        let plan = match parse_external_contract_ptr(
+            plan_ptr,
+            plan_len,
+            error_out,
+            "execution plan",
+            ExecutionPlan::from_json,
+        ) {
+            Ok(plan) => plan,
+            Err(status) => return status,
+        };
+        let bundle = match parse_external_contract_ptr(
+            bundle_ptr,
+            bundle_len,
+            error_out,
+            "bundle",
+            ExecutionBundle::from_json,
+        ) {
+            Ok(bundle) => bundle,
+            Err(status) => return status,
+        };
+        let lineage = match parse_optional_json_ptr::<Vec<LineageRecord>>(
+            lineage_ptr,
+            lineage_len,
+            error_out,
+            "lineage records",
+        ) {
+            Ok(Some(lineage)) => lineage,
+            Ok(None) => Vec::new(),
+            Err(status) => return status,
+        };
+        let envelopes = match parse_optional_json_ptr::<BTreeMap<String, ExternalDataPlanEnvelope>>(
+            envelopes_ptr,
+            envelopes_len,
+            error_out,
+            "replay envelopes",
+        ) {
+            Ok(Some(envelopes)) => envelopes,
+            Ok(None) => BTreeMap::new(),
+            Err(status) => return status,
+        };
+        let prediction_cache_manifest = match parse_optional_json_ptr::<FilePredictionCacheManifest>(
+            prediction_cache_manifest_ptr,
+            prediction_cache_manifest_len,
+            error_out,
+            "prediction cache manifest",
+        ) {
+            Ok(manifest) => manifest,
+            Err(status) => return status,
+        };
+        let artifact_manifest = match parse_optional_json_ptr::<FileArtifactManifest>(
+            artifact_manifest_ptr,
+            artifact_manifest_len,
+            error_out,
+            "artifact manifest",
+        ) {
+            Ok(manifest) => manifest,
+            Err(status) => return status,
+        };
+        let namespace = match parse_utf8_view(namespace, error_out, "OpenLineage namespace") {
+            Ok(namespace) => namespace,
+            Err(status) => return status,
+        };
+        let event_time = match parse_utf8_view(event_time, error_out, "OpenLineage event_time") {
+            Ok(event_time) => event_time,
+            Err(status) => return status,
+        };
+        let options = OpenLineageRunEventOptions {
+            namespace,
+            event_time,
+        };
 
-    match build_openlineage_run_event(
-        &plan,
-        &bundle,
-        &lineage,
-        &envelopes,
-        prediction_cache_manifest.as_ref(),
-        artifact_manifest.as_ref(),
-        &options,
-    ) {
-        Ok(event) => write_owned_json(out_json, error_out, &event),
-        Err(error) => validation_error(error_out, error),
-    }
+        match build_openlineage_run_event(
+            &plan,
+            &bundle,
+            &lineage,
+            &envelopes,
+            prediction_cache_manifest.as_ref(),
+            artifact_manifest.as_ref(),
+            &options,
+        ) {
+            Ok(event) => write_owned_json(out_json, error_out, &event),
+            Err(error) => validation_error(error_out, error),
+        }
+    })
 }
 
 /// Executes a deterministic Rust-side mock replay from JSON contracts.
@@ -3395,51 +3558,53 @@ pub unsafe extern "C" fn dagml_mock_replay_execute_json(
     out_json: *mut DagMlOwnedBytes,
     error_out: *mut DagMlString,
 ) -> DagMlStatusCode {
-    clear_error(error_out);
-    clear_owned_bytes(out_json);
-    let plan = match parse_external_contract_ptr(
-        plan_ptr,
-        plan_len,
-        error_out,
-        "execution plan",
-        ExecutionPlan::from_json,
-    ) {
-        Ok(plan) => plan,
-        Err(status) => return status,
-    };
-    let bundle = match parse_external_contract_ptr(
-        bundle_ptr,
-        bundle_len,
-        error_out,
-        "bundle",
-        ExecutionBundle::from_json,
-    ) {
-        Ok(bundle) => bundle,
-        Err(status) => return status,
-    };
-    let request = match parse_json_ptr::<ReplayPhaseRequest>(
-        request_ptr,
-        request_len,
-        error_out,
-        "replay request",
-    ) {
-        Ok(request) => request,
-        Err(status) => return status,
-    };
-    let envelopes = match parse_json_ptr::<BTreeMap<String, ExternalDataPlanEnvelope>>(
-        envelopes_ptr,
-        envelopes_len,
-        error_out,
-        "replay envelopes",
-    ) {
-        Ok(envelopes) => envelopes,
-        Err(status) => return status,
-    };
+    crate::ffi_status_boundary(error_out, || {
+        clear_error(error_out);
+        clear_owned_bytes(out_json);
+        let plan = match parse_external_contract_ptr(
+            plan_ptr,
+            plan_len,
+            error_out,
+            "execution plan",
+            ExecutionPlan::from_json,
+        ) {
+            Ok(plan) => plan,
+            Err(status) => return status,
+        };
+        let bundle = match parse_external_contract_ptr(
+            bundle_ptr,
+            bundle_len,
+            error_out,
+            "bundle",
+            ExecutionBundle::from_json,
+        ) {
+            Ok(bundle) => bundle,
+            Err(status) => return status,
+        };
+        let request = match parse_json_ptr::<ReplayPhaseRequest>(
+            request_ptr,
+            request_len,
+            error_out,
+            "replay request",
+        ) {
+            Ok(request) => request,
+            Err(status) => return status,
+        };
+        let envelopes = match parse_json_ptr::<BTreeMap<String, ExternalDataPlanEnvelope>>(
+            envelopes_ptr,
+            envelopes_len,
+            error_out,
+            "replay envelopes",
+        ) {
+            Ok(envelopes) => envelopes,
+            Err(status) => return status,
+        };
 
-    match execute_mock_replay(&plan, &bundle, &request, &envelopes) {
-        Ok(summary) => write_owned_json(out_json, error_out, &summary),
-        Err(error) => validation_error(error_out, error),
-    }
+        match execute_mock_replay(&plan, &bundle, &request, &envelopes) {
+            Ok(summary) => write_owned_json(out_json, error_out, &summary),
+            Err(error) => validation_error(error_out, error),
+        }
+    })
 }
 
 /// Executes replay from JSON contracts through host-provided runtime vtables.
@@ -3549,6 +3714,16 @@ unsafe fn dagml_replay_execute_json_impl(args: CAbiReplayExecuteArgs) -> DagMlSt
     } = args;
     clear_error(error_out);
     clear_owned_bytes(out_json);
+    if (artifact_store.abi_version >= DAG_ML_ARTIFACT_STORE_VTABLE_OWNED_ABI_VERSION
+        && artifact_store.destroy.is_some())
+        || (!prediction_cache_store.is_null()
+            && (*prediction_cache_store).abi_version
+                >= DAG_ML_PREDICTION_CACHE_VTABLE_OWNED_ABI_VERSION
+            && (*prediction_cache_store).destroy.is_some())
+    {
+        set_error(error_out, "replay requires borrowed artifact and prediction-cache vtables; caller retains ownership");
+        return DagMlStatusCode::INVALID_ARGUMENT;
+    }
     let plan = match parse_external_contract_ptr(
         plan_ptr,
         plan_len,
@@ -4203,7 +4378,7 @@ unsafe fn parse_optional_strict_json_view<T: DeserializeOwned + Serialize + Defa
     error_out: *mut DagMlString,
     label: &str,
 ) -> Result<T, DagMlStatusCode> {
-    if view.ptr.is_null() || view.len == 0 {
+    if view.len == 0 {
         return Ok(T::default());
     }
     parse_strict_json_view::<T>(view, error_out, label)
@@ -4247,6 +4422,7 @@ struct EscrowedOwner {
 /// below the owned version, or a null `destroy`) are never recorded or destroyed.
 struct OwningControllerEscrow {
     pending: BTreeMap<usize, EscrowedOwner>,
+    null_pending: std::collections::VecDeque<EscrowedOwner>,
 }
 
 impl OwningControllerEscrow {
@@ -4256,6 +4432,7 @@ impl OwningControllerEscrow {
     /// wrapper use the address after another wrapper destroyed it.
     fn from_bindings(bindings: &[DagMlControllerBinding]) -> (Self, bool) {
         let mut pending = BTreeMap::new();
+        let mut null_pending = std::collections::VecDeque::new();
         let mut ownership_by_address = BTreeMap::<usize, bool>::new();
         let mut aliased_owner = false;
         for binding in bindings {
@@ -4263,6 +4440,12 @@ impl OwningControllerEscrow {
             let address = user_data as usize;
             let owning = binding.vtable.abi_version >= DAG_ML_CONTROLLER_VTABLE_OWNED_ABI_VERSION
                 && binding.vtable.destroy.is_some();
+            if user_data.is_null() {
+                if let Some(destroy) = binding.vtable.destroy.filter(|_| owning) {
+                    null_pending.push_back(EscrowedOwner { user_data, destroy });
+                }
+                continue;
+            }
             match ownership_by_address.entry(address) {
                 std::collections::btree_map::Entry::Vacant(entry) => {
                     entry.insert(owning);
@@ -4284,19 +4467,32 @@ impl OwningControllerEscrow {
                     .or_insert(EscrowedOwner { user_data, destroy });
             }
         }
-        (Self { pending }, aliased_owner)
+        (
+            Self {
+                pending,
+                null_pending,
+            },
+            aliased_owner,
+        )
     }
 
     /// Hand a `user_data` over to the wrapper that now owns it, so this escrow no
     /// longer destroys it. A no-op for pointers it never held (borrowed vtables).
     fn disarm(&mut self, user_data: *mut c_void) {
-        self.pending.remove(&(user_data as usize));
+        if user_data.is_null() {
+            self.null_pending.pop_front();
+        } else {
+            self.pending.remove(&(user_data as usize));
+        }
     }
 }
 
 impl Drop for OwningControllerEscrow {
     fn drop(&mut self) {
-        for (_, owner) in std::mem::take(&mut self.pending) {
+        for owner in std::mem::take(&mut self.pending)
+            .into_values()
+            .chain(self.null_pending.drain(..))
+        {
             unsafe { (owner.destroy)(owner.user_data) };
         }
     }
@@ -4546,7 +4742,7 @@ unsafe fn parse_optional_json_ptr<T>(
 where
     T: DeserializeOwned + Serialize,
 {
-    if json_ptr.is_null() && json_len == 0 {
+    if json_len == 0 {
         return Ok(None);
     }
     parse_json_ptr::<T>(json_ptr, json_len, error_out, label).map(Some)
@@ -5178,6 +5374,13 @@ unsafe fn build_controller_registry(
     } else {
         slice::from_raw_parts(controller_bindings, controller_binding_count)
     };
+    if bindings.iter().any(|binding| {
+        binding.vtable.abi_version >= DAG_ML_CONTROLLER_VTABLE_OWNED_ABI_VERSION
+            && binding.vtable.destroy.is_some()
+    }) {
+        set_error(error_out, "replay and initial-refit require borrowed controller vtables; caller retains ownership");
+        return Err(DagMlStatusCode::INVALID_ARGUMENT);
+    }
     for binding in bindings {
         let controller_id =
             parse_controller_id_view(binding.controller_id, error_out, "controller id")?;
@@ -5414,6 +5617,11 @@ impl CAbiRuntimeController {
             {
                 if handle.owner_controller == self.id
                     && handle.handle != 0
+                    && !self
+                        .live_handles
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .contains(&handle.handle)
                     && released.insert(handle.handle)
                 {
                     unsafe { release(self.vtable.user_data, handle.handle) };
@@ -5441,10 +5649,12 @@ impl CAbiRuntimeController {
         let status =
             unsafe { invoke(self.vtable.user_data, bytes_view(&task_json), &mut out_json) };
         if status != DagMlStatusCode::OK {
+            let detail = unsafe { host_callback_error_detail(out_json) };
             if !out_json.ptr.is_null() {
                 unsafe { release_bytes(self.vtable.user_data, out_json) };
             }
-            controller_status(status, "invoke")?;
+            controller_status(status, "invoke")
+                .map_err(|error| DagMlError::RuntimeValidation(format!("{error}{detail}")))?;
         }
         if out_json.ptr.is_null() {
             return Err(DagMlError::RuntimeValidation(format!(
@@ -5597,6 +5807,19 @@ impl RuntimeController for CAbiRuntimeController {
         )?;
         result.validate_for_task(task)?;
         Ok(result)
+    }
+}
+
+unsafe fn host_callback_error_detail(bytes: DagMlOwnedBytes) -> String {
+    if bytes.ptr.is_null() || bytes.len == 0 {
+        return String::new();
+    }
+    let raw = String::from_utf8_lossy(slice::from_raw_parts(bytes.ptr, bytes.len.min(16384)));
+    let text = raw.trim();
+    if text.is_empty() {
+        String::new()
+    } else {
+        format!(": {text}")
     }
 }
 
@@ -5813,10 +6036,12 @@ impl CAbiRuntimePredictionCacheStore {
             )
         };
         if status != DagMlStatusCode::OK {
+            let detail = unsafe { host_callback_error_detail(out_json) };
             if !out_json.ptr.is_null() {
                 unsafe { release_bytes(self.vtable.user_data, out_json) };
             }
-            prediction_cache_status(status, "load_blocks")?;
+            prediction_cache_status(status, "load_blocks")
+                .map_err(|error| DagMlError::RuntimeValidation(format!("{error}{detail}")))?;
         }
         if out_json.ptr.is_null() {
             return Err(DagMlError::RuntimeValidation(
@@ -5832,11 +6057,14 @@ impl CAbiRuntimePredictionCacheStore {
 impl RuntimePredictionCacheStore for CAbiRuntimePredictionCacheStore {
     fn load_blocks(&self, requirement_key: &str) -> dag_ml_core::Result<Vec<PredictionBlock>> {
         let data = self.load_prediction_json(requirement_key)?;
-        serde_json::from_slice::<Vec<PredictionBlock>>(&data).map_err(|error| {
-            DagMlError::RuntimeValidation(format!(
-                "prediction cache load_blocks returned invalid prediction block JSON: {error}"
-            ))
-        })
+        let json = std::str::from_utf8(&data).map_err(|error| {
+            DagMlError::RuntimeValidation(format!("prediction cache JSON is not UTF-8: {error}"))
+        })?;
+        dag_ml_core::deserialize_external_contract(
+            json,
+            "prediction cache blocks",
+            DagMlError::RuntimeValidation,
+        )
     }
 
     fn load_aggregated_blocks(
@@ -5844,11 +6072,14 @@ impl RuntimePredictionCacheStore for CAbiRuntimePredictionCacheStore {
         requirement_key: &str,
     ) -> dag_ml_core::Result<Vec<AggregatedPredictionBlock>> {
         let data = self.load_prediction_json(requirement_key)?;
-        serde_json::from_slice::<Vec<AggregatedPredictionBlock>>(&data).map_err(|error| {
-            DagMlError::RuntimeValidation(format!(
-                "prediction cache load_blocks returned invalid aggregated prediction block JSON: {error}"
-            ))
-        })
+        let json = std::str::from_utf8(&data).map_err(|error| {
+            DagMlError::RuntimeValidation(format!("prediction cache JSON is not UTF-8: {error}"))
+        })?;
+        dag_ml_core::deserialize_external_contract(
+            json,
+            "aggregated prediction cache blocks",
+            DagMlError::RuntimeValidation,
+        )
     }
 
     fn materialize(
@@ -5953,6 +6184,8 @@ struct CAbiDataMaterializationJson {
     output_representation: String,
     source_ids: Vec<String>,
     require_relations: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    predict_cohort: Option<dag_ml_core::PredictCohort>,
 }
 
 impl From<&DataMaterializationRequest> for CAbiDataMaterializationJson {
@@ -5971,6 +6204,7 @@ impl From<&DataMaterializationRequest> for CAbiDataMaterializationJson {
             output_representation: request.binding.output_representation.clone(),
             source_ids: request.binding.source_ids.clone(),
             require_relations: request.binding.require_relations,
+            predict_cohort: request.predict_cohort.clone(),
         }
     }
 }
@@ -6373,6 +6607,15 @@ fn stable_handle(value: &str) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn status_boundary_converts_a_rust_panic_to_a_foreign_error() {
+        let mut error = DagMlString::default();
+        let status = ffi_status_boundary(&mut error, || panic!("audit boundary probe"));
+        assert_eq!(status, DagMlStatusCode::PANIC);
+        assert!(!error.ptr.is_null());
+        unsafe { dagml_string_free(error) };
+    }
     use dag_ml_core::{
         build_aggregated_prediction_cache_record, build_prediction_cache_payload,
         build_prediction_cache_record, ArtifactId, ArtifactPolicy, ArtifactRef, BundleId,
@@ -7321,6 +7564,67 @@ mod tests {
             assert_eq!(selector["columns"][0], "abs_1000");
         }
         assert_eq!(state.release_handles, vec![42, 41]);
+    }
+
+    #[test]
+    fn c_abi_materialization_preserves_optional_cohort_authority() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../examples/fixtures/data/data_view_request_v3.json"
+        ))
+        .unwrap();
+        let binding: DataBinding = serde_json::from_value(fixture["binding"].clone()).unwrap();
+        let relations: SampleRelationSet = serde_json::from_value(serde_json::json!({
+            "records":[{"observation_id":"obs.H001","sample_id":"H001","source_id":"nir"}]
+        }))
+        .unwrap();
+        let cohort = dag_ml_core::PredictCohort::from_relations(
+            dag_ml_core::PredictCohortRole::ExternalTest,
+            relations,
+            vec!["y".into()],
+            "a".repeat(64),
+            Some("b".repeat(64)),
+        )
+        .unwrap();
+        let mut state = DataProviderStub::default();
+        let table = DagMlDataVTable {
+            abi_version: DAG_ML_DATA_PROVIDER_VTABLE_ABI_VERSION,
+            user_data: (&mut state as *mut DataProviderStub).cast::<c_void>(),
+            materialize: Some(materialize_stub),
+            make_view: Some(make_view_stub),
+            view_identity: None,
+            target_arrow: None,
+            feature_arrow: None,
+            release: Some(data_release_stub),
+            destroy: None,
+        };
+        let provider = CAbiRuntimeDataProvider::new(
+            ControllerId::new("controller:data.provider").unwrap(),
+            0,
+            table,
+        )
+        .unwrap();
+        let mut request = DataMaterializationRequest {
+            run_id: RunId::new("run:cohort-transport").unwrap(),
+            node_id: binding.node_id.clone(),
+            input_name: binding.input_name.clone(),
+            phase: Phase::FitCv,
+            variant_id: None,
+            fold_id: None,
+            binding,
+            predict_cohort: None,
+        };
+        provider.materialize(&request).unwrap();
+        let training: serde_json::Value = serde_json::from_slice(&state.materialize_json).unwrap();
+        assert!(training.get("predict_cohort").is_none());
+        request.predict_cohort = Some(cohort.clone());
+        provider.materialize(&request).unwrap();
+        let external_test: serde_json::Value =
+            serde_json::from_slice(&state.materialize_json).unwrap();
+        assert_eq!(external_test["phase"], training["phase"]);
+        assert_eq!(
+            external_test["predict_cohort"],
+            serde_json::to_value(cohort).unwrap()
+        );
     }
 
     #[test]

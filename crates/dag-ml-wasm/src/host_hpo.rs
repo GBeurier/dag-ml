@@ -367,11 +367,21 @@ async fn dispatch_prunable_window(
             task.candidate_plan
                 .fold_set
                 .as_ref()
-                .expect("validated FoldSet")
-                .folds
-                .len()
+                .map(|set| set.folds.len())
+                .ok_or_else(|| JsValue::from_str("prunable worker task requires a FoldSet"))
         })
+        .transpose()?
         .unwrap_or(0);
+    if tasks.iter().any(|task| {
+        task.candidate_plan
+            .fold_set
+            .as_ref()
+            .is_none_or(|set| set.folds.len() != fold_count)
+    }) {
+        return Err(JsValue::from_str(
+            "prunable worker tasks must share the fold count",
+        ));
+    }
     let mut active = (0..tasks.len()).collect::<Vec<_>>();
     let mut transcripts = vec![Vec::<HostHpoWorkerFoldResult>::new(); tasks.len()];
     let mut terminal = vec![None; tasks.len()];
@@ -398,19 +408,27 @@ async fn dispatch_prunable_window(
         for (index, promise) in pending {
             match worker_json(promise).await {
                 Ok(json) => {
-                    let result: HostHpoWorkerFoldResult =
-                        serde_json::from_str(&json).map_err(js_serde_error)?;
-                    if result.fold_index as usize != fold_index {
-                        return Err(JsValue::from_str("worker returned the wrong fold index"));
-                    }
-                    validate_host_hpo_worker_fold_result(
-                        &tasks[index],
-                        request,
-                        data_fingerprint,
-                        &result,
-                    )
-                    .map_err(js_core_error)?;
-                    observed.push((index, Ok(result)));
+                    let parsed = (|| -> Result<HostHpoWorkerFoldResult, String> {
+                        let result: HostHpoWorkerFoldResult =
+                            dag_ml_core::deserialize_external_contract(
+                                &json,
+                                "worker fold",
+                                CoreDagMlError::RuntimeValidation,
+                            )
+                            .map_err(|error| error.to_string())?;
+                        if result.fold_index as usize != fold_index {
+                            return Err("worker returned the wrong fold index".into());
+                        }
+                        validate_host_hpo_worker_fold_result(
+                            &tasks[index],
+                            request,
+                            data_fingerprint,
+                            &result,
+                        )
+                        .map_err(|error| error.to_string())?;
+                        Ok(result)
+                    })();
+                    observed.push((index, parsed));
                 }
                 Err(error) => observed.push((index, Err(error))),
             }
@@ -472,21 +490,25 @@ async fn dispatch_prunable_window(
     for (index, promise) in pending {
         let task = &tasks[index];
         let result = match worker_json(promise).await {
-            Ok(json) => {
-                let mut result: HostHpoWorkerResult =
-                    serde_json::from_str(&json).map_err(js_serde_error)?;
-                match &mut result {
-                    HostHpoWorkerResult::Complete { fold_evidence, .. } => {
-                        *fold_evidence = std::mem::take(&mut transcripts[index]);
-                    }
-                    _ => {
-                        return Err(JsValue::from_str(
-                            "full worker evaluation did not return complete evidence",
-                        ));
-                    }
-                }
-                result
-            }
+            Ok(json) => match serde_json::from_str::<HostHpoWorkerResult>(&json) {
+                Ok(HostHpoWorkerResult::Complete {
+                    evidence,
+                    data_fingerprint,
+                    ..
+                }) => HostHpoWorkerResult::Complete {
+                    evidence,
+                    data_fingerprint,
+                    fold_evidence: std::mem::take(&mut transcripts[index]),
+                },
+                Ok(_) => HostHpoWorkerResult::Failed {
+                    trial_index: task.trial_index,
+                    error: "full worker evaluation did not return complete evidence".into(),
+                },
+                Err(error) => HostHpoWorkerResult::Failed {
+                    trial_index: task.trial_index,
+                    error: error.to_string(),
+                },
+            },
             Err(error) => HostHpoWorkerResult::Failed {
                 trial_index: task.trial_index,
                 error,

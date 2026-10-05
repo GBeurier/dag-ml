@@ -185,6 +185,40 @@ current replay API because that ABI is shared with `dag-ml-data`. Rust releases
 controller-result, data/view, replay-artifact and prediction-cache handles that
 it receives or materializes through the vtables.
 
+Replay and initial-full-refit execution accept borrowed controller, artifact-store
+and prediction-cache vtables. They reject an owning vtable before creating a
+wrapper; the caller retains all owners on every return. The phase-execution API
+has the same borrowed-only contract. `dagml_training_execute` consumes readable
+owned controller bindings through its all-or-nothing escrow, including on failure.
+A null `user_data` is not an alias; an owning table's `destroy(NULL)` remains a
+valid cleanup callback and is called once per table.
+
+Result and data/view handles remain valid for the containing execution owner.
+Training owners retain them until `dagml_training_result_free`; hosts should free
+that result after completing attached replay/export. Reused handles are released
+once. Callback handles are transferred only with `OK`; on a failure the host must
+clean up handles it created. Returned JSON byte buffers must be valid and are
+released through `release_bytes` on both success and error. Malformed successful
+JSON cannot transfer handles that DAG-ML cannot decode, so its host callback owns
+cleanup of those undiscoverable handles.
+
+Zero-length optional JSON views mean omitted input, irrespective of the pointer.
+A null pointer with positive length is invalid. Rust panics at status-returning
+exports become `DAG_ML_STATUS_PANIC`; host callbacks must never unwind across C.
+
+`DagMlF32Tensor` and `DagMlF32ColumnarTensor` use the same ownership and validated
+shape rules as their F64 counterparts. Initial full refit accepts the explicit
+training universe without selection/CV; its package and PREDICT helpers validate
+the cohort before invoking controllers. `dagml_select_stacking_*` validates fold
+selection evidence; `dagml_align_named_source_rows_json` joins sources by identity.
+
+`dagml_last_error_json` and `dagml_last_error_code` read the calling thread's last
+recorded error. Success does not clear it. `dagml_init_tracing` installs tracing
+once and does not change callback ownership. Data-provider Arrow exports and the
+controller `describe`, `clone_with`, `fit` and `predict` slots are reserved for
+specialized adapters: this crate schedules through `invoke`, `materialize` and
+`make_view` and does not currently call those reserved slots.
+
 ## Ownership Rules
 
 | Object | Owner | Release path |
@@ -198,6 +232,10 @@ it receives or materializes through the vtables.
 | Rust JSON byte output | Rust allocation returned through ABI | `dagml_owned_bytes_free` |
 | Rust row-major F64 tensor output | Rust allocation returned through ABI | `dagml_f64_tensor_free` |
 | Rust column-major F64 tensor output | Rust allocation returned through ABI | `dagml_f64_columnar_tensor_free` |
+| Rust row-major F32 tensor output | Rust allocation returned through ABI | `dagml_f32_tensor_free` |
+| Rust column-major F32 tensor output | Rust allocation returned through ABI | `dagml_f32_columnar_tensor_free` |
+| Native training result and retained resources | Rust | `dagml_training_result_free` |
+| Process-local implementation registry | Rust | `dagml_local_implementation_registry_free` |
 | Host JSON byte output | Host allocation returned through prediction-cache vtable | `PredictionCacheVTable.release_bytes` |
 | Host local loss/metric result JSON | Host allocation returned through local implementation vtable | `DagMlLocalImplementationVTable.release_bytes` after DAG-ML copies it |
 | Local loss/metric `user_data` | Host or binding runtime | Optional paired `retain`/`release`; one retained reference per successful registry entry |

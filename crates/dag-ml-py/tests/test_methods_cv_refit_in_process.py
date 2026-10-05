@@ -170,7 +170,7 @@ class MethodsCvRefitInProcessTests(unittest.TestCase):
         probabilities = [
             block for frame in payload["node_results"] for block in frame.get("classification_probabilities", [])
         ]
-        self.assertEqual({block["partition"] for block in probabilities}, {"train", "train_pool"})
+        self.assertEqual({block["partition"] for block in probabilities}, {"validation", "train", "train_pool"})
 
     def test_host_operators_and_unattested_targets_are_refused(self) -> None:
         envelope = _envelope()

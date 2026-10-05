@@ -109,8 +109,8 @@ pub(crate) fn lower_operator_variant_model(
 /// `class` is the step's operator FQN as a string: a bare-string operator (`"SNV"`) renders to
 /// itself; an object operator (`{"class": "sklearn...", ...}`) renders to its compact canonical JSON
 /// text (sorted keys, no whitespace), so any operator shape yields a deterministic string both sides
-/// reproduce identically. Structural steps that carry no operator (`merge`, `sequential`, `branch`,
-/// `generator`, `concat_transform`) render `class` as the empty string and `params` as `{}`; a
+/// reproduce identically. Structural steps additionally bind nested content, modes and selectors in a
+/// `structure` member with generated identities removed; a
 /// `merge_model` step carries its operator like a model step.
 pub fn operator_variant_label(steps: &[PipelineDslStep]) -> Result<String> {
     crate::campaign::stable_json_fingerprint(&operator_variant_canonical_value(steps)?)
@@ -246,7 +246,70 @@ fn canonical_operator_step(step: &PipelineDslStep) -> Result<serde_json::Value> 
             );
         }
     }
+    if matches!(
+        step,
+        PipelineDslStep::Branch(_)
+            | PipelineDslStep::Generator(_)
+            | PipelineDslStep::Sequential(_)
+            | PipelineDslStep::Merge(_)
+            | PipelineDslStep::ConcatTransform(_)
+    ) {
+        let mut structure = serde_json::to_value(step)?;
+        strip_structural_node_ids(step, &mut structure);
+        object.insert("structure".into(), structure);
+    }
     Ok(serde_json::Value::Object(object))
+}
+
+fn strip_structural_node_ids(step: &PipelineDslStep, value: &mut serde_json::Value) {
+    // Walk only typed DSL children. Operator, parameter, selector and metadata
+    // objects are opaque content, even when they contain `kind` and `id`.
+    value
+        .as_object_mut()
+        .expect("serialized DSL step")
+        .remove("id");
+    match step {
+        PipelineDslStep::Branch(step) => {
+            strip_branch_node_ids(&step.branches, &mut value["branches"]);
+        }
+        PipelineDslStep::Generator(step) => {
+            if !step.branches.is_empty() {
+                strip_branch_node_ids(&step.branches, &mut value["branches"]);
+            }
+            for (index, stage) in step.stages.iter().enumerate() {
+                strip_branch_node_ids(&stage.branches, &mut value["stages"][index]["branches"]);
+            }
+            if !step.tail.is_empty() {
+                strip_step_node_ids(&step.tail, &mut value["tail"]);
+            }
+        }
+        PipelineDslStep::Sequential(step) => {
+            strip_step_node_ids(&step.steps, &mut value["steps"]);
+        }
+        PipelineDslStep::ConcatTransform(step) => {
+            for (branch_index, branch) in step.branches.iter().enumerate() {
+                for index in 0..branch.steps.len() {
+                    value["branches"][branch_index]["steps"][index]
+                        .as_object_mut()
+                        .expect("serialized concat operator")
+                        .remove("id");
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn strip_step_node_ids(steps: &[PipelineDslStep], values: &mut serde_json::Value) {
+    for (index, step) in steps.iter().enumerate() {
+        strip_structural_node_ids(step, &mut values[index]);
+    }
+}
+
+fn strip_branch_node_ids(branches: &[PipelineDslBranch], values: &mut serde_json::Value) {
+    for (index, branch) in branches.iter().enumerate() {
+        strip_step_node_ids(&branch.steps, &mut values[index]["steps"]);
+    }
 }
 
 /// A shared empty params map for structural steps, so `canonical_operator_step` can return a
@@ -708,7 +771,18 @@ pub(crate) fn compile_range_generator(spec: RangeGeneratorSpec<'_>) -> Result<Ge
     let mut current = spec.start;
     let mut guard = 0usize;
     while range_contains(current, spec.stop, spec.step, spec.inclusive) {
-        values.push(json_number(current, spec.node_id, spec.param)?);
+        values.push(
+            if spec.start.fract() == 0.0
+                && spec.step.fract() == 0.0
+                && current.fract() == 0.0
+                && current >= i64::MIN as f64
+                && current < i64::MAX as f64
+            {
+                serde_json::Value::from(current as i64)
+            } else {
+                json_number(current, spec.node_id, spec.param)?
+            },
+        );
         current += spec.step;
         guard += 1;
         if guard > 10_000 {
@@ -754,7 +828,7 @@ pub(crate) fn compile_log_range_generator(
             "pipeline DSL log_range generator for `{node_id}.{param}` requires positive start and stop"
         )));
     }
-    if count == 0 {
+    if count == 0 || count > 10_000 {
         return Err(DagMlError::GraphValidation(format!(
             "pipeline DSL log_range generator for `{node_id}.{param}` has count=0"
         )));
@@ -773,7 +847,13 @@ pub(crate) fn compile_log_range_generator(
             .map(|index| {
                 let ratio = index as f64 / (count - 1) as f64;
                 json_number(
-                    base.powf(start_log + (stop_log - start_log) * ratio),
+                    if index == 0 {
+                        start
+                    } else if index == count - 1 {
+                        stop
+                    } else {
+                        base.powf(start_log + (stop_log - start_log) * ratio)
+                    },
                     node_id,
                     param,
                 )
@@ -809,12 +889,22 @@ pub(crate) fn compile_grid_generator(
             )));
         }
     }
+    if params.len() > 256 {
+        return Err(DagMlError::GraphValidation(
+            "grid exceeds 256 dimensions".into(),
+        ));
+    }
     let entries = params
         .iter()
         .map(|(param, values)| (param.as_str(), values.as_slice()))
         .collect::<Vec<_>>();
     let mut rows = Vec::<BTreeMap<String, PipelineDslGeneratorValue>>::new();
     build_grid_rows(&entries, 0, &mut BTreeMap::new(), &mut rows, count);
+    if rows.len() > 10_000 {
+        return Err(DagMlError::GraphValidation(
+            "grid exceeds 10000 rows".into(),
+        ));
+    }
     let choices = rows
         .into_iter()
         .enumerate()
@@ -854,8 +944,13 @@ pub(crate) fn compile_pick_arrange_generator(
         )));
     }
     let mut selections = Vec::<Vec<usize>>::new();
+    if sizes.iter().collect::<BTreeSet<_>>().len() != sizes.len() {
+        return Err(DagMlError::GraphValidation(
+            "generator sizes must be distinct".into(),
+        ));
+    }
     for size in sizes {
-        if *size == 0 || *size > values.len() {
+        if *size == 0 || *size > values.len() || *size > 256 {
             return Err(DagMlError::GraphValidation(format!(
                 "pipeline DSL {:?} generator for `{node_id}.{param}` has invalid size `{size}`",
                 mode
@@ -882,6 +977,11 @@ pub(crate) fn compile_pick_arrange_generator(
         if count.is_some_and(|limit| selections.len() >= limit) {
             break;
         }
+    }
+    if selections.len() > 10_000 {
+        return Err(DagMlError::GraphValidation(
+            "selection exceeds 10000 rows".into(),
+        ));
     }
     let mut choices = selections
         .into_iter()
@@ -996,6 +1096,7 @@ pub(crate) fn build_grid_rows(
     rows: &mut Vec<BTreeMap<String, PipelineDslGeneratorValue>>,
     count: Option<usize>,
 ) {
+    let count = Some(count.unwrap_or(10_001).min(10_001));
     if count.is_some_and(|limit| rows.len() >= limit) {
         return;
     }
@@ -1021,6 +1122,7 @@ pub(crate) fn build_combinations(
     selections: &mut Vec<Vec<usize>>,
     count: Option<usize>,
 ) {
+    let count = Some(count.unwrap_or(10_001).min(10_001));
     if count.is_some_and(|limit| selections.len() >= limit) {
         return;
     }
@@ -1049,6 +1151,7 @@ pub(crate) fn build_permutations(
     selections: &mut Vec<Vec<usize>>,
     count: Option<usize>,
 ) {
+    let count = Some(count.unwrap_or(10_001).min(10_001));
     if count.is_some_and(|limit| selections.len() >= limit) {
         return;
     }
@@ -1080,7 +1183,7 @@ pub(crate) fn validate_count(
     name: Option<&str>,
     count: Option<usize>,
 ) -> Result<()> {
-    if count == Some(0) {
+    if count.is_some_and(|n| n == 0 || n > 10_000) {
         return Err(DagMlError::GraphValidation(format!(
             "pipeline DSL generator `{}` for node `{node_id}` has count=0",
             generator_dimension_name(node_id, name, None, "params")
@@ -1273,7 +1376,7 @@ pub(crate) fn expand_or_generator_sequences(
             Ok(GeneratedSequence {
                 id: generator_choice_id(&step.id, index),
                 labels: vec![branch.id.clone()],
-                members: vec![sanitize_generation_label(&branch.id)],
+                members: vec![branch.id.clone()],
                 steps: branch.steps.clone(),
                 metadata: branch.metadata.clone(),
             })
@@ -1288,17 +1391,17 @@ pub(crate) fn expand_or_generator_sequences(
     let has_constraints = step.constraints.as_ref().is_some_and(|c| !c.is_empty());
     let gen_count = if has_constraints { None } else { step.count };
 
-    let choices = if let Some(sizes) = selection_sizes(step.pick)? {
+    let choices = if let Some(sizes) = selection_sizes(step.pick, options.len())? {
         generated_pick_sequences(&options, &step.id, "pick", &sizes, gen_count)?
-    } else if let Some(sizes) = selection_sizes(step.arrange)? {
+    } else if let Some(sizes) = selection_sizes(step.arrange, options.len())? {
         generated_arrange_sequences(&options, &step.id, "arrange", &sizes, gen_count)?
     } else {
         truncate_generated_sequences(options, gen_count)
     };
 
-    let choices = if let Some(sizes) = selection_sizes(step.then_pick)? {
+    let choices = if let Some(sizes) = selection_sizes(step.then_pick, choices.len())? {
         generated_pick_sequences(&choices, &step.id, "then_pick", &sizes, gen_count)?
-    } else if let Some(sizes) = selection_sizes(step.then_arrange)? {
+    } else if let Some(sizes) = selection_sizes(step.then_arrange, choices.len())? {
         generated_arrange_sequences(&choices, &step.id, "then_arrange", &sizes, gen_count)?
     } else {
         choices
@@ -1369,7 +1472,7 @@ pub(crate) fn expand_cartesian_generator_sequences(
             options.push(GeneratedSequence {
                 id: format!("{stage_index}:{}", branch.id),
                 labels: vec![format!("{}:{}", stage.id, branch.id)],
-                members: vec![sanitize_generation_label(&branch.id)],
+                members: vec![branch.id.clone()],
                 steps: branch.steps.clone(),
                 metadata,
             });
@@ -1384,7 +1487,17 @@ pub(crate) fn expand_cartesian_generator_sequences(
     let build_count = if has_constraints { None } else { step.count };
 
     let mut rows = Vec::<Vec<usize>>::new();
+    if stage_options.len() > 256 {
+        return Err(DagMlError::GraphValidation(
+            "cartesian exceeds 256 stages".into(),
+        ));
+    }
     build_cartesian_indices(&stage_options, 0, &mut Vec::new(), &mut rows, build_count);
+    if rows.len() > 10_000 {
+        return Err(DagMlError::GraphValidation(
+            "cartesian generator exceeds 10000 rows".into(),
+        ));
+    }
     let mut choices = Vec::with_capacity(rows.len());
     for (choice_index, row) in rows.into_iter().enumerate() {
         let selected = row
@@ -1414,7 +1527,7 @@ pub(crate) fn expand_cartesian_generator_sequences(
 ///
 /// Each sequence's operator-content MEMBER SET is the set of selected branch ids it carries (the
 /// branch-id segment of each `labels` entry: bare for `_or_`, the `branch` part of `stage:branch` for
-/// `_cartesian_`). A constraint ref (an operator-content label) is "present" when its sanitized form
+/// `_cartesian_`). A constraint ref (an operator-content label) is "present" when its original form
 /// is in that member set, so the SHARED [`constraints_satisfied`](crate::generation::constraints_satisfied)
 /// rule core (the SAME one B's `satisfies_constraints` uses) decides each sequence with an
 /// operator-class-in-set predicate. Constraint refs are validated against the union of all member
@@ -1453,7 +1566,7 @@ pub(crate) fn prune_sequences_by_constraints(
     Ok(survivors)
 }
 /// The operator-content member set of a merged sequence: its STRUCTURED `members` (each option's
-/// sanitized source branch id), keyed identically to constraint-ref resolution. Taken from the
+/// original source branch id), keyed identically to constraint-ref resolution. Taken from the
 /// structured field, never re-parsed from the display `labels`, so colon-bearing branch ids resolve
 /// correctly (canonical branch ids allow `:`).
 fn sequence_member_set(sequence: &GeneratedSequence) -> BTreeSet<String> {
@@ -1474,7 +1587,7 @@ fn compile_operator_content_constraints(
         .flat_map(sequence_member_set)
         .collect::<BTreeSet<_>>();
     let lower = |label: &str| -> Result<ChoiceRef> {
-        let sanitized = sanitize_generation_label(label);
+        let sanitized = label.to_string();
         if !valid.contains(&sanitized) {
             return Err(DagMlError::GraphValidation(format!(
                 "pipeline DSL generator `{}` constraint references unknown operator `{label}`",
@@ -1543,8 +1656,13 @@ pub(crate) fn generated_pick_sequences(
     count: Option<usize>,
 ) -> Result<Vec<GeneratedSequence>> {
     let mut selections = Vec::<Vec<usize>>::new();
+    if sizes.iter().collect::<BTreeSet<_>>().len() != sizes.len() {
+        return Err(DagMlError::GraphValidation(
+            "generator sizes must be distinct".into(),
+        ));
+    }
     for size in sizes {
-        if *size == 0 || *size > options.len() {
+        if *size == 0 || *size > options.len() || *size > 256 {
             return Err(DagMlError::GraphValidation(format!(
                 "pipeline DSL generator `{generator_id}` {mode} size {size} is outside 1..={}",
                 options.len()
@@ -1558,6 +1676,11 @@ pub(crate) fn generated_pick_sequences(
             &mut selections,
             count,
         );
+    }
+    if selections.len() > 10_000 {
+        return Err(DagMlError::GraphValidation(
+            "selection exceeds 10000 rows".into(),
+        ));
     }
     selections
         .into_iter()
@@ -1579,8 +1702,13 @@ pub(crate) fn generated_arrange_sequences(
     count: Option<usize>,
 ) -> Result<Vec<GeneratedSequence>> {
     let mut selections = Vec::<Vec<usize>>::new();
+    if sizes.iter().collect::<BTreeSet<_>>().len() != sizes.len() {
+        return Err(DagMlError::GraphValidation(
+            "generator sizes must be distinct".into(),
+        ));
+    }
     for size in sizes {
-        if *size == 0 || *size > options.len() {
+        if *size == 0 || *size > options.len() || *size > 256 {
             return Err(DagMlError::GraphValidation(format!(
                 "pipeline DSL generator `{generator_id}` {mode} size {size} is outside 1..={}",
                 options.len()
@@ -1594,6 +1722,11 @@ pub(crate) fn generated_arrange_sequences(
             &mut selections,
             count,
         );
+    }
+    if selections.len() > 10_000 {
+        return Err(DagMlError::GraphValidation(
+            "selection exceeds 10000 rows".into(),
+        ));
     }
     selections
         .into_iter()
@@ -1681,6 +1814,7 @@ pub(crate) fn build_cartesian_indices<T>(
     rows: &mut Vec<Vec<usize>>,
     count: Option<usize>,
 ) {
+    let count = Some(count.unwrap_or(10_001).min(10_001));
     if count.is_some_and(|limit| rows.len() >= limit) {
         return;
     }
@@ -1699,11 +1833,12 @@ pub(crate) fn build_cartesian_indices<T>(
 }
 pub(crate) fn selection_sizes(
     selection: Option<PipelineDslSelectionSpec>,
+    option_count: usize,
 ) -> Result<Option<Vec<usize>>> {
     selection
         .map(|selection| match selection {
             PipelineDslSelectionSpec::Single(size) => {
-                if size == 0 {
+                if size == 0 || size > option_count {
                     return Err(DagMlError::GraphValidation(
                         "pipeline DSL generator selection size cannot be zero".to_string(),
                     ));
@@ -1711,7 +1846,7 @@ pub(crate) fn selection_sizes(
                 Ok(vec![size])
             }
             PipelineDslSelectionSpec::Range([start, stop]) => {
-                if start == 0 || stop == 0 || start > stop {
+                if start == 0 || stop == 0 || start > stop || stop > option_count {
                     return Err(DagMlError::GraphValidation(format!(
                         "pipeline DSL generator selection range [{start}, {stop}] is invalid"
                     )));
@@ -2025,6 +2160,17 @@ pub(crate) fn namespaced_generated_node_id(
 pub(crate) fn sanitized_id_fragment(input: &str, max_len: usize) -> String {
     let sanitized = sanitize_generation_label(input);
     let mut fragment = sanitized.chars().take(max_len).collect::<String>();
+    // Reserve the digest suffix as well: a literal `g_a_<digest>` must not
+    // alias the encoded form of `g:a` (or a truncated longer identifier).
+    let reserved_suffix = sanitized.rsplit_once('_').is_some_and(|(_, suffix)| {
+        suffix.len() == 8 && suffix.bytes().all(|byte| byte.is_ascii_hexdigit())
+    });
+    if sanitized != input || sanitized.len() > max_len || reserved_suffix {
+        let digest = crate::stable_json_fingerprint(&input).expect("string fingerprint");
+        fragment.truncate(max_len.saturating_sub(9));
+        fragment.push('_');
+        fragment.push_str(&digest[..8]);
+    }
     if fragment.is_empty() {
         fragment = "x".to_string();
     }

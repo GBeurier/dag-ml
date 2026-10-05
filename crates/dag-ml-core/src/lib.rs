@@ -108,3 +108,9 @@ pub use methods_multimodal::*;
 pub use methods_phase_controls::*;
 #[cfg(feature = "methods-optimizer")]
 pub use methods_role_pipeline::*;
+
+mod stable_json;
+
+pub mod public_robustness;
+
+pub mod multimodal_replay_inputs;

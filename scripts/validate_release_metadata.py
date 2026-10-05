@@ -599,6 +599,10 @@ def main() -> None:
     repo_name, version, _members = validate_workspace(repo)
     validate_abi_snapshot()
     validate_python(repo, repo_name, version, release=release)
+    r_description = (repo / "bindings/r/DESCRIPTION").read_text(encoding="utf-8")
+    r_version = re.search(r"(?m)^Version:\s*(\S+)", r_description)
+    require(r_version is not None and r_version.group(1) == version,
+            "R DESCRIPTION version must match the Cargo workspace")
     validate_ci(repo)
     validate_governance(repo, repo_name)
     validate_docs_site(repo, repo_name)

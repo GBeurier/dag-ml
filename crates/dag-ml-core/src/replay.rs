@@ -276,6 +276,20 @@ impl PortableRefitReplayOutcomeV3 {
                     .to_string(),
             );
         }
+        if request
+            .output_binding_ids
+            .iter()
+            .any(|id| !bindings.contains_key(id.as_str()))
+        {
+            return contract_error("portable refit replay request references absent binding");
+        }
+        if self.phase == Phase::Explain
+            && emitted_binding_ids
+                .iter()
+                .any(|id| !request.output_binding_ids.contains(id))
+        {
+            return contract_error("portable refit EXPLAIN emits an unrequested binding");
+        }
         for output in &self.outputs {
             let source = bindings
                 .get(output.binding.binding_id.as_str())
@@ -1123,7 +1137,7 @@ pub fn execute_attached_training_replay(
         fallback: input.artifact_store,
         hydrated_handles: Mutex::new(Vec::new()),
     };
-    let mut ctx = RunContext::new(input.run_id.clone(), None);
+    let mut ctx = RunContext::new(input.run_id.clone(), replay_plan.campaign.root_seed);
     let execution = SequentialScheduler.execute_bundle_replay(
         BundleReplayExecution {
             plan: &replay_plan,
@@ -1319,7 +1333,7 @@ pub fn execute_loaded_predictor_replay(
         fallback: &loaded_artifact_store,
         hydrated_handles: Mutex::new(Vec::new()),
     };
-    let mut ctx = RunContext::new(input.run_id.clone(), None);
+    let mut ctx = RunContext::new(input.run_id.clone(), replay_plan.campaign.root_seed);
     ctx.resource_limits = crate::python_torch_profile::torch_resources(&replay_plan);
     let execution = SequentialScheduler.execute_bundle_replay(
         BundleReplayExecution {
@@ -1451,7 +1465,7 @@ pub fn execute_loaded_portable_refit_replay_v3(
         fallback: &fallback,
         hydrated_handles: Mutex::new(Vec::new()),
     };
-    let mut ctx = RunContext::new(input.run_id.clone(), None);
+    let mut ctx = RunContext::new(input.run_id.clone(), replay_plan.campaign.root_seed);
     let execution = SequentialScheduler.execute_bundle_replay(
         BundleReplayExecution {
             plan: &replay_plan,
@@ -1810,6 +1824,33 @@ fn calibration_origin_closure(
         .collect())
 }
 
+// Structural fingerprints stay bound to the archived development envelope.
+// Content provenance must name the cohort actually read by this replay.
+fn replay_cohort_content_identity(
+    envelope: &ExternalDataPlanEnvelope,
+    key: &str,
+) -> Result<(String, String, Option<String>)> {
+    envelope.validate()?;
+    if let Some(cohort) = &envelope.predict_cohort {
+        return Ok((
+            cohort.relation_fingerprint.clone(),
+            cohort.data_content_fingerprint.clone(),
+            cohort.target_content_fingerprint.clone(),
+        ));
+    }
+    let relation = envelope.relation_fingerprint.clone().ok_or_else(|| {
+        DagMlError::RuntimeValidation(format!(
+            "training replay envelope for `{key}` requires a relation fingerprint"
+        ))
+    })?;
+    let data = envelope.data_content_fingerprint.clone().ok_or_else(|| {
+        DagMlError::RuntimeValidation(format!(
+            "training replay envelope for `{key}` requires a data content fingerprint"
+        ))
+    })?;
+    Ok((relation, data, envelope.target_content_fingerprint.clone()))
+}
+
 fn replay_input_data_identities(
     bundle: &ExecutionBundle,
     request: &TrainingReplayRequest,
@@ -1841,24 +1882,15 @@ fn replay_input_data_identities(
                     "training replay envelope for `{key}` changes schema or representation plan"
                 )));
             }
-            let relation_fingerprint = envelope.relation_fingerprint.clone().ok_or_else(|| {
-                DagMlError::RuntimeValidation(format!(
-                    "training replay envelope for `{key}` requires a relation fingerprint"
-                ))
-            })?;
-            let data_content_fingerprint =
-                envelope.data_content_fingerprint.clone().ok_or_else(|| {
-                    DagMlError::RuntimeValidation(format!(
-                        "training replay envelope for `{key}` requires a data content fingerprint"
-                    ))
-                })?;
+            let (relation_fingerprint, data_content_fingerprint, target_content_fingerprint) =
+                replay_cohort_content_identity(envelope, key)?;
             let mut identity = ReplayDataIdentity {
                 requirement_key: key.clone(),
                 schema_fingerprint: envelope.schema_fingerprint.clone(),
                 plan_fingerprint: envelope.plan_fingerprint.clone(),
                 relation_fingerprint,
                 data_content_fingerprint,
-                target_content_fingerprint: envelope.target_content_fingerprint.clone(),
+                target_content_fingerprint,
                 identity_fingerprint: zero_fingerprint(),
             };
             identity.identity_fingerprint = identity.compute_fingerprint()?;
@@ -1886,6 +1918,11 @@ fn replay_plan_and_bundle_for_current_cohort(
     // by the training descriptor; it must never be carried into this derived
     // replay bundle or validated against a different cohort.
     replay_bundle.methods_hpo_resume_state = None;
+    // This inference-only projection drops optimizer state and its parent
+    // link together; the original validated package remains immutable.
+    replay_bundle
+        .metadata
+        .remove("methods_hpo_resumed_from_package_fingerprint");
     replay_bundle.methods_hpo_fold_state = None;
     if replay_plan
         .campaign
@@ -2521,6 +2558,79 @@ mod replay_identity_tests {
         };
         identity.identity_fingerprint = identity.compute_fingerprint().unwrap();
         identity
+    }
+
+    fn content_envelope() -> ExternalDataPlanEnvelope {
+        let relations: SampleRelationSet = serde_json::from_value(serde_json::json!({
+            "records": [{"observation_id":"obs:train", "sample_id":"train",
+                "target_id":"target:train", "source_id":"spectra", "group_id":null,
+                "origin_sample_id":null, "is_augmented":false}]
+        }))
+        .unwrap();
+        ExternalDataPlanEnvelope {
+            schema_version: 1,
+            schema_fingerprint: "1".repeat(64),
+            plan_fingerprint: "2".repeat(64),
+            relation_fingerprint: Some(relations.fingerprint().unwrap()),
+            coordinator_relations: Some(relations),
+            data_content_fingerprint: Some("4".repeat(64)),
+            target_content_fingerprint: Some("5".repeat(64)),
+            predict_cohort: None,
+        }
+    }
+
+    #[test]
+    fn replay_content_identity_keeps_legacy_v1_content() {
+        let envelope = content_envelope();
+        assert_eq!(
+            replay_cohort_content_identity(&envelope, "model.X").unwrap(),
+            (
+                envelope.relation_fingerprint.unwrap(),
+                envelope.data_content_fingerprint.unwrap(),
+                envelope.target_content_fingerprint,
+            )
+        );
+    }
+
+    #[test]
+    fn replay_content_identity_uses_actual_v2_calibration_and_unlabeled_inference() {
+        use crate::data::{PredictCohort, PredictCohortRole};
+        let relations: SampleRelationSet = serde_json::from_value(serde_json::json!({
+            "records": [{"observation_id":"obs:cal", "sample_id":"cal",
+                "target_id":"target:cal", "source_id":"spectra", "group_id":null,
+                "origin_sample_id":null, "is_augmented":false}]
+        }))
+        .unwrap();
+        for target in [Some("7".repeat(64)), None] {
+            let mut envelope = content_envelope();
+            envelope.schema_version = 2;
+            let role = if target.is_some() {
+                PredictCohortRole::ExternalTest
+            } else {
+                PredictCohortRole::Inference
+            };
+            let cohort = PredictCohort::from_relations(
+                role,
+                relations.clone(),
+                vec!["y".to_string()],
+                "6".repeat(64),
+                target.clone(),
+            )
+            .unwrap();
+            envelope.predict_cohort = Some(cohort.clone());
+            let actual = replay_cohort_content_identity(&envelope, "model.X").unwrap();
+            assert_eq!(
+                actual,
+                (
+                    cohort.relation_fingerprint,
+                    cohort.data_content_fingerprint,
+                    target
+                )
+            );
+            assert_ne!(actual.0, envelope.relation_fingerprint.unwrap());
+            assert_ne!(actual.1, envelope.data_content_fingerprint.unwrap());
+            assert_ne!(actual.2, envelope.target_content_fingerprint);
+        }
     }
 
     #[test]

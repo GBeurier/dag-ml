@@ -27,7 +27,7 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
 use n4m::roles::{self, Estimator, FitInputs, ParamType, ParamValue, Params};
 use n4m::{Context, MatrixRef};
@@ -50,7 +50,7 @@ use crate::runtime::{
 };
 use crate::{
     ArtifactId, ControllerId, DagMlError, LineageId, Phase, PredictionLevel, PredictionUnitId,
-    Result,
+    Result, RunId,
 };
 
 /// Reserved node parameter naming the native method.
@@ -206,6 +206,7 @@ pub fn register_methods_estimator_controllers(
         catalog: NativeCatalog::live()?,
         next_handle: AtomicU64::default(),
         features: Mutex::default(),
+        run_leases: Mutex::default(),
         exported: Mutex::default(),
         hydrated: Mutex::default(),
     });
@@ -271,9 +272,33 @@ struct FeatureSet {
 struct SharedState {
     catalog: NativeCatalog,
     next_handle: AtomicU64,
-    features: Mutex<BTreeMap<u64, Arc<FeatureSet>>>,
+    features: Mutex<BTreeMap<u64, (RunId, Arc<FeatureSet>)>>,
+    run_leases: Mutex<BTreeMap<RunId, Weak<MethodsRunLease>>>,
     exported: Mutex<BTreeMap<ArtifactId, Vec<u8>>>,
     hydrated: Mutex<BTreeMap<u64, Vec<u8>>>,
+}
+
+struct MethodsRunLease {
+    shared: Arc<SharedState>,
+    run_id: RunId,
+}
+
+impl std::fmt::Debug for MethodsRunLease {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("MethodsRunLease")
+            .field(&self.run_id)
+            .finish()
+    }
+}
+
+impl Drop for MethodsRunLease {
+    fn drop(&mut self) {
+        self.shared
+            .features
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .retain(|_, (run, _)| run != &self.run_id);
+    }
 }
 
 /// Resolved method of one node task.
@@ -629,7 +654,7 @@ impl MethodsEstimatorController {
             .lock()
             .map_err(|_| lock_poisoned("feature store"))?
             .get(&handle.handle)
-            .cloned()
+            .map(|(_, features)| Arc::clone(features))
             .ok_or_else(|| {
                 DagMlError::RuntimeValidation(format!(
                     "native Methods estimator node `{node_id}` input handle {} is not in this registration's feature store",
@@ -662,13 +687,13 @@ impl MethodsEstimatorController {
         Ok(features)
     }
 
-    fn emit_features(&self, features: Arc<FeatureSet>) -> Result<HandleRef> {
+    fn emit_features(&self, run_id: &RunId, features: Arc<FeatureSet>) -> Result<HandleRef> {
         let handle = self.handle(HandleKind::Data);
         self.shared
             .features
             .lock()
             .map_err(|_| lock_poisoned("feature store"))?
-            .insert(handle.handle, features);
+            .insert(handle.handle, (run_id.clone(), features));
         Ok(handle)
     }
 
@@ -858,7 +883,10 @@ impl MethodsEstimatorController {
             fit: apply(&features.fit)?,
             prediction: features.prediction.as_ref().map(apply).transpose()?,
         });
-        let outputs = BTreeMap::from([("x_out".to_string(), self.emit_features(output)?)]);
+        let outputs = BTreeMap::from([(
+            "x_out".to_string(),
+            self.emit_features(&task.run_id, output)?,
+        )]);
         self.result(task, method, outputs, Scores::default(), artifact)
     }
 
@@ -896,7 +924,10 @@ impl MethodsEstimatorController {
             Phase::Predict => Arc::clone(features),
             phase => return Err(unsupported_phase(task, phase)),
         };
-        let outputs = BTreeMap::from([("x_out".to_string(), self.emit_features(output)?)]);
+        let outputs = BTreeMap::from([(
+            "x_out".to_string(),
+            self.emit_features(&task.run_id, output)?,
+        )]);
         self.result(task, method, outputs, Scores::default(), None)
     }
 
@@ -1021,7 +1052,9 @@ impl MethodsEstimatorController {
             && task.phase == Phase::FitCv
             && matches!(
                 partition,
-                PredictionPartition::Train | PredictionPartition::TrainPool
+                PredictionPartition::Train
+                    | PredictionPartition::TrainPool
+                    | PredictionPartition::Validation
             )
             && method.info.capabilities.contains("predict_proba")
         {
@@ -1112,6 +1145,30 @@ fn unsupported_phase(task: &NodeTask, phase: Phase) -> DagMlError {
 }
 
 impl RuntimeController for MethodsEstimatorController {
+    fn retain_run_resources(
+        &self,
+        run_id: &RunId,
+    ) -> Result<Option<Arc<dyn std::fmt::Debug + Send + Sync>>> {
+        let mut leases = self
+            .shared
+            .run_leases
+            .lock()
+            .map_err(|_| lock_poisoned("run resources"))?;
+        leases.retain(|_, lease| lease.strong_count() > 0);
+        let lease = leases
+            .get(run_id)
+            .and_then(Weak::upgrade)
+            .unwrap_or_else(|| {
+                let lease = Arc::new(MethodsRunLease {
+                    shared: Arc::clone(&self.shared),
+                    run_id: run_id.clone(),
+                });
+                leases.insert(run_id.clone(), Arc::downgrade(&lease));
+                lease
+            });
+        Ok(Some(lease))
+    }
+
     fn controller_id(&self) -> &ControllerId {
         &self.id
     }
@@ -1265,6 +1322,61 @@ mod tests {
     const ENVELOPE: &str =
         include_str!("../tests/fixtures/package/data/coordinator_data_plan_envelope_sample12.json");
     const SOURCE: &str = "exclude:outlier";
+
+    #[test]
+    fn feature_leases_release_only_the_last_owner_of_their_run() {
+        let shared = Arc::new(SharedState {
+            catalog: NativeCatalog(BTreeMap::new()),
+            next_handle: AtomicU64::default(),
+            features: Mutex::default(),
+            run_leases: Mutex::default(),
+            exported: Mutex::default(),
+            hydrated: Mutex::default(),
+        });
+        let first_run = RunId::new("run:first").unwrap();
+        let second_run = RunId::new("run:second").unwrap();
+        let features = Arc::new(FeatureSet {
+            fit: MethodsPlsDataset {
+                sample_ids: vec![SampleId::new("a").unwrap()],
+                x: MethodsPlsMatrix {
+                    values: vec![1.0],
+                    rows: 1,
+                    cols: 1,
+                },
+                y: None,
+                target_names: vec![],
+            },
+            prediction: None,
+        });
+        shared.features.lock().unwrap().extend([
+            (1, (first_run.clone(), features.clone())),
+            (2, (second_run.clone(), features)),
+        ]);
+        let owner = Arc::new(MethodsRunLease {
+            shared: shared.clone(),
+            run_id: first_run,
+        });
+        let clone = owner.clone();
+        drop(owner);
+        assert_eq!(shared.features.lock().unwrap().len(), 2);
+        drop(clone);
+        assert_eq!(
+            shared
+                .features
+                .lock()
+                .unwrap()
+                .keys()
+                .copied()
+                .collect::<Vec<_>>(),
+            [2]
+        );
+        let second = MethodsRunLease {
+            shared: shared.clone(),
+            run_id: second_run,
+        };
+        drop(second);
+        assert!(shared.features.lock().unwrap().is_empty());
+    }
 
     fn runtime() -> MethodsRuntime {
         let library = std::env::var_os("N4M_LIBRARY_PATH")
@@ -2191,7 +2303,7 @@ mod tests {
                 );
                 assert_eq!(actual.values.concat(), direct.labels(&select(expected)));
             }
-            // Probabilities attest the report-only CV surfaces only.
+            // Validation probabilities also attest class-aware repeated-CV reduction.
             let result = fit_cv
                 .iter()
                 .find(|result| {
@@ -2205,12 +2317,17 @@ mod tests {
                     .iter()
                     .map(|block| block.partition.clone())
                     .collect::<Vec<_>>(),
-                vec![PredictionPartition::Train, PredictionPartition::TrainPool]
+                vec![
+                    PredictionPartition::Validation,
+                    PredictionPartition::Train,
+                    PredictionPartition::TrainPool
+                ]
             );
-            for (block, expected) in result
-                .classification_probabilities
-                .iter()
-                .zip([&train, &pool])
+            for (block, expected) in
+                result
+                    .classification_probabilities
+                    .iter()
+                    .zip([&validation, &train, &pool])
             {
                 assert_eq!(block.class_labels, vec![10.0, 20.0, 30.0]);
                 close(

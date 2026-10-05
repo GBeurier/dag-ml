@@ -934,6 +934,19 @@ impl TrainingInfluenceManifest {
             );
         }
 
+        self.validate_projection_coordinates(projection, request)?;
+        for entry in &self.entries {
+            validate_influence_identity_closure(entry, relations)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validate_projection_coordinates(
+        &self,
+        projection: &TrainingContractProjection,
+        request: &TrainingRequest,
+    ) -> Result<()> {
+        self.validate()?;
         let expected = expected_influence_coordinates(
             request,
             &projection.plan,
@@ -967,7 +980,6 @@ impl TrainingInfluenceManifest {
                     entry.kind, entry.scope_id, entry.node_id
                 ));
             }
-            validate_influence_identity_closure(entry, relations)?;
             actual.insert(coordinate);
         }
         let expected_keys = expected.into_keys().collect::<BTreeSet<_>>();
@@ -2270,6 +2282,20 @@ impl PortablePredictorPackage {
         }
         self.execution_bundle
             .validate_against_plan(&self.effective_plan)?;
+        crate::training_runtime::validate_oof_cache_namespaces(
+            &self.effective_plan,
+            &self.data_identities,
+            &self
+                .execution_bundle
+                .selected_variant_id
+                .clone()
+                .ok_or_else(|| {
+                    DagMlError::RuntimeValidation(
+                        "predictor package has no selected variant".into(),
+                    )
+                })?,
+            &self.execution_bundle,
+        )?;
         for record in &self.execution_bundle.refit_artifacts {
             if matches!(
                 record.artifact.kind.as_str(),
@@ -2316,6 +2342,15 @@ impl PortablePredictorPackage {
             &self.execution_bundle.conformal_calibration,
         ) {
             (Some(calibration), Some(replay), Some(reference)) => {
+                if replay
+                    .input_data_identities
+                    .iter()
+                    .any(|identity| identity.target_content_fingerprint.is_none())
+                {
+                    return contract_error(
+                        "conformal calibration replay must bind target content".to_string(),
+                    );
+                }
                 reference.validate_against(calibration)?;
                 calibration.validate()?;
                 replay.validate()?;
