@@ -3,6 +3,7 @@
   "$id": "https://github.com/GBeurier/dag-ml/schemas/coordinator_data_plan_envelope.v1.schema.json",
   "title": "DAG-ML Coordinator Data Plan Envelope",
   "type": "object",
+  "not": { "required": ["predict_cohort"] },
   "required": ["schema_version", "schema_fingerprint", "plan_fingerprint", "plan"],
   "properties": {
     "schema_version": {
