@@ -311,7 +311,7 @@
     },
     {
       "path": "docs/contracts/coordinator_data_plan_envelope.schema.json",
-      "sha256": "e7e6cbac57a4eb583377351a809f55aad50b6fa3856adfb9bd8960c43f898001",
+      "sha256": "81a592d2cc2827bb3238009e966833a19e678868363972d82873ade27158de2f",
       "kind": "schema_dependency"
     },
     {
@@ -669,5 +669,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "ffcc0a37246bf45ffb868361386ab4e6e16a352e298a3fa0ccb7cadaf9fff900"
+  "pack_checksum": "f575e34bb4912719fab1099c2225d3faf76ad9fee743078640aea0221b38b8e9"
 }
