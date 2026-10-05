@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.37
+
+- Preserve exact native u64 seed tokens in the Chrome Web Worker HPO smoke transport as in the Node workers.
+- Keep pruning, OOF scoring and resume checks strict; retain the reviewed native implementations and external package versions.
+
 ## 0.3.36
 
 - Repair the required Methods CLI Python dependency and R/Octave HPO wrapper smoke arguments.
