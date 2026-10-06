@@ -334,7 +334,7 @@ def validate_ci(repo: Path) -> None:
         "CI must run cargo audit with warnings denied",
     )
     require(
-        "cargo package --workspace --no-verify" in workflow,
+        "scripts/release/check_publish_plan.py --package" in workflow,
         "CI must package Cargo crates",
     )
     require(

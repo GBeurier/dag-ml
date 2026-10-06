@@ -4,11 +4,14 @@
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
-import tomllib
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+import tomllib
 
 
 @dataclass(frozen=True)
@@ -98,6 +101,36 @@ def dry_run_roots(repo: Path, crates: list[Crate]) -> None:
         )
 
 
+def package_workspace(repo: Path, version: str) -> None:
+    """Package every member without replacing an immutable registry checksum.
+
+    Core's test-only Archive dependency can bring the published dag-ml-core at
+    the workspace version into Cargo.lock. Cargo's workspace packaging overlay
+    then substitutes a newly packed local archive for that immutable registry
+    entry. Package the local core separately in that case; its extracted-package
+    test remains mandatory in CI, and dependents resolve the published checksum.
+    Before that version is published, retain the normal workspace overlay.
+    """
+    lock = load_toml(repo / "Cargo.lock")
+    collision = any(
+        package["name"] == "dag-ml-core"
+        and package["version"] == version
+        and package.get("source", "").startswith("registry+")
+        for package in lock["package"]
+    )
+    command = ["cargo", "package", "--workspace", "--no-verify"]
+    if collision:
+        with tempfile.TemporaryDirectory(prefix="dag-ml-core-package-") as target:
+            subprocess.run(
+                ["cargo", "package", "-p", "dag-ml-core", "--no-verify"],
+                cwd=repo,
+                env={**os.environ, "CARGO_TARGET_DIR": target},
+                check=True,
+            )
+        command.extend(["--exclude", "dag-ml-core"])
+    subprocess.run(command, cwd=repo, check=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -105,6 +138,7 @@ def main() -> None:
         action="store_true",
         help="run cargo publish --dry-run for crates without internal dependencies",
     )
+    parser.add_argument("--package", action="store_true", help="package every workspace crate")
     args = parser.parse_args()
 
     repo = Path(__file__).resolve().parents[2]
@@ -112,6 +146,8 @@ def main() -> None:
     roots = [crate.name for crate in crates if not crate.internal_deps]
     dependents = [crate for crate in crates if crate.internal_deps]
     require(roots, "publish plan must include at least one root crate")
+    if args.package:
+        package_workspace(repo, version)
     if args.dry_run:
         dry_run_roots(repo, crates)
     print(

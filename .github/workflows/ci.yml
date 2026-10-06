@@ -307,7 +307,7 @@ jobs:
       - name: Docs
         run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
       - name: Package dry run
-        run: cargo package --workspace --no-verify
+        run: python scripts/release/check_publish_plan.py --package
       - name: Publish plan dry run
         run: python scripts/release/check_publish_plan.py --dry-run
       - name: Example graph
