@@ -3,7 +3,7 @@
 ## Prerequisites
 
 - Rust stable plus the runtime MSRV toolchain `1.85.0`. Checking all targets
-  also requires `1.88.0` because the retained Core 0.4.0 V2 test oracle uses
+  also requires `1.88.0` because the retained Core 0.4.3 V2 test oracle uses
   formats dependencies with that minimum; it is not a runtime DAG dependency.
 - Python 3.11 or newer for validation scripts, Sphinx and Python binding
   smokes.

@@ -89,7 +89,7 @@ The tracked root workspace and standalone `dag-ml-py` maturin workspace both
 lock that binding from the registry with its published checksum. A local path
 patch is evidence only, never a release source.
 
-The `nirs4all_archive_core = "=0.4.0"` development dependency is a registry
+The `nirs4all_archive_core = "=0.4.3"` development dependency is a registry
 baseline used only by the Archive V2 integration tests. It is not the Core
 selected by the release train and must not be presented as cross-source Core
 qualification; that qualification is owned by a separate integration harness.

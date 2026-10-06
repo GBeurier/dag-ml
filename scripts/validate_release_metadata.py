@@ -454,8 +454,8 @@ def validate_methods_hpo_docs(repo: Path) -> None:
     )
     archive_core = core.get("dev-dependencies", {}).get("nirs4all_archive_core")
     require(
-        archive_core == {"package": "nirs4all", "version": "=0.4.0"},
-        "Archive V2 dev bridge must pin the documented registry baseline =0.4.0",
+        archive_core == {"package": "nirs4all", "version": "=0.4.3"},
+        "Archive V2 dev bridge must pin the documented registry baseline =0.4.3",
     )
     active_core_refs = []
     for manifest in sorted(repo.rglob("Cargo.toml")):
@@ -469,7 +469,7 @@ def validate_methods_hpo_docs(repo: Path) -> None:
         == [
             (
                 "crates/dag-ml-core/Cargo.toml",
-                'nirs4all_archive_core = { package = "nirs4all", version = "=0.4.0" }',
+                'nirs4all_archive_core = { package = "nirs4all", version = "=0.4.3" }',
             )
         ],
         "only the exact Archive V2 registry baseline may reference nirs4all in active manifests",
@@ -525,7 +525,7 @@ def validate_methods_hpo_docs(repo: Path) -> None:
         "HPO docs must describe the standalone Python lock contract",
     )
     require(
-        '`nirs4all_archive_core = "=0.4.0"` development dependency is a registry baseline'
+        '`nirs4all_archive_core = "=0.4.3"` development dependency is a registry baseline'
         in normalized_docs
         and "must not be presented as cross-source Core qualification"
         in normalized_docs,
