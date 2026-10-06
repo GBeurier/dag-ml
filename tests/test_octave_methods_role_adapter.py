@@ -1,18 +1,25 @@
-"""Real Octave protocol/state tests; no surrogate numerical controller."""
+"""JSONL transport and real Octave state tests; no surrogate numerical controller."""
 from __future__ import annotations
 
 import copy
 import hashlib
+import io
 import json
 import os
+import queue
 import shutil
 from collections import Counter
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from scripts.qualify_multimodal_methods_hpo_octave import (
-    CONTROLLER, OctaveWorker, audit, prepare_octave, require_role_abi,
+    CONTROLLER,
+    OctaveWorker,
+    audit,
+    prepare_octave,
+    require_role_abi,
 )
 
 
@@ -26,6 +33,42 @@ def test_role_abi_accepts_additive_minor_compatibility(version):
 def test_role_abi_refuses_incompatible_or_malformed_runtime(version):
     with pytest.raises(AssertionError, match="ABI major 2, minor >= 14"):
         require_role_abi(version)
+
+
+@pytest.mark.parametrize("payload_type", [bytes, bytearray, memoryview, list])
+def test_hydration_frames_binary_payload_as_lossless_json_octets(tmp_path, payload_type):
+    raw = bytes(range(256)) + "é猫".encode()
+    payload = payload_type(raw)
+    handle = {"handle": 73, "kind": "artifact", "owner_controller": CONTROLLER}
+    worker = OctaveWorker.__new__(OctaveWorker)
+    worker.calls = []
+    worker.hydrated = set()
+    worker.timeout = 1
+    worker.stderr = tmp_path / "worker.stderr.log"
+    worker.stderr.write_text("")
+    worker.process = SimpleNamespace(poll=lambda: None, stdin=io.StringIO())
+    worker.lines = queue.Queue()
+    worker.lines.put(json.dumps({"type": "portable_artifact", "schema_version": 1,
+                                "result": {"operation": "hydrated_artifact_payload",
+                                           "schema_version": 1, "handle": handle}}))
+    artifact = {"content_fingerprint": hashlib.sha256(raw).hexdigest(), "size_bytes": len(raw)}
+    message = hydration(artifact, payload)
+    original_request = copy.deepcopy(message["request"])
+
+    assert worker.artifact(message) == handle
+
+    # Exercise the real frame encoder, replacing only the external worker's acknowledgement.
+    frame = json.loads(worker.process.stdin.getvalue())
+    assert frame["type"] == "portable_artifact" and frame["schema_version"] == 1
+    assert frame["task"]["operation"] == "hydrate_artifact_payload"
+    assert frame["task"]["schema_version"] == 1
+    assert frame["task"]["request"] == original_request
+    assert frame["task"]["payload"] == list(raw)
+    assert hashlib.sha256(bytes(frame["task"]["payload"])).hexdigest() == artifact["content_fingerprint"]
+    assert message["operation"] == "hydrate" and message["payload"] is payload
+    assert bytes(message["payload"]) == raw
+    assert message["request"] == original_request
+    assert worker.hydrated == {73} and worker.calls == [{"operation": "hydrate"}]
 
 
 @pytest.fixture
@@ -107,7 +150,7 @@ def test_real_raw_singletons_exact_keys_seed_and_fresh_no_fit(octave_inputs):
     heldout = {"sensor:nir.v1": {**source, "sample_ids": [first_id], "rows": [source["rows"][index]]}}
     prepared = prepare_octave(octave, work, "fresh", heldout, operators, None)
     with OctaveWorker(prepared) as worker:
-        handle = worker.artifact(hydration(ref, raw))
+        handle = worker.artifact(hydration(ref, bytes(raw)))
         predict_task = task([first_id], "PREDICT")
         key = "artifact:state.v1"
         predict_task["input_handles"][key] = handle
