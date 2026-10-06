@@ -7,6 +7,7 @@
 //! preimage. Existing callers of `stable_json_fingerprint` are intentionally
 //! unaffected.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
@@ -91,9 +92,9 @@ impl TypedCanonicalValue {
             }
         }
         match removed {
-            0 => Err(Tcv1Error::MissingObjectKey(normalized_key)),
+            0 => Err(Tcv1Error::MissingObjectKey(normalized_key.into_owned())),
             1 => tcv1_sha256(&Self::Object(filtered)),
-            _ => Err(Tcv1Error::AmbiguousObjectKey(normalized_key)),
+            _ => Err(Tcv1Error::AmbiguousObjectKey(normalized_key.into_owned())),
         }
     }
 }
@@ -254,8 +255,14 @@ pub fn tcv1_sha256(value: &TypedCanonicalValue) -> Result<String, Tcv1Error> {
     Ok(output)
 }
 
-fn normalize(value: &str) -> String {
-    value.nfc().collect()
+fn normalize(value: &str) -> Cow<'_, str> {
+    // ASCII is already NFC, including control characters. Preserve its bytes
+    // without running every identity through the Unicode decomposition tables.
+    if value.is_ascii() {
+        Cow::Borrowed(value)
+    } else {
+        Cow::Owned(value.nfc().collect())
+    }
 }
 
 fn encode_value(
@@ -314,11 +321,11 @@ fn encode_value(
                         offset: 0,
                     });
                 }
-                sorted.push((normalized.into_bytes(), value));
+                sorted.push((normalized, value));
             }
-            sorted.sort_by(|left, right| left.0.cmp(&right.0));
+            sorted.sort_by(|left, right| left.0.as_bytes().cmp(right.0.as_bytes()));
             for (normalized_key, value) in sorted {
-                encode_normalized_string(&normalized_key, output)?;
+                encode_normalized_string(normalized_key.as_bytes(), output)?;
                 encode_value(value, output, depth + 1)?;
             }
         }
@@ -437,7 +444,7 @@ impl<'a> Parser<'a> {
                 });
             }
             let normalized = normalize(&key);
-            if let Some(first) = normalized_keys.insert(normalized, key.clone()) {
+            if let Some(first) = normalized_keys.insert(normalized.into_owned(), key.clone()) {
                 return Err(Tcv1Error::NfcKeyCollision {
                     first,
                     second: key,
@@ -851,6 +858,57 @@ mod tests {
 
         let error = parse_typed_json(r#"{"é":1,"e\u0301":2}"#).unwrap_err();
         assert!(matches!(error, Tcv1Error::NfcKeyCollision { .. }));
+    }
+
+    #[test]
+    fn ascii_strings_preserve_every_byte_and_tcv1_length() {
+        let ascii: String = (0_u8..=127).map(char::from).collect();
+        for text in [String::new(), ascii.clone(), ascii.repeat(512)] {
+            let value = TypedCanonicalValue::String(text.clone());
+            let mut expected = Vec::from(TCV1_PREFIX);
+            expected.push(b'S');
+            expected.extend_from_slice(&(text.len() as u64).to_be_bytes());
+            expected.extend_from_slice(text.as_bytes());
+            assert_eq!(tcv1_preimage(&value).unwrap(), expected);
+            assert_eq!(
+                tcv1_sha256(&value).unwrap(),
+                format!("{:x}", Sha256::digest(&expected))
+            );
+            let json = serde_json::to_string(&text).unwrap();
+            assert_eq!(tcv1_preimage(&parse(&json)).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn ascii_and_unicode_normalization_share_collision_checks() {
+        // The Kelvin sign normalizes to ASCII K. The fast path must still
+        // collide with non-ASCII keys in either parser/encoder insertion order.
+        for input in [r#"{"K":0,"\u212a":1}"#, r#"{"\u212a":0,"K":1}"#] {
+            assert!(matches!(
+                parse_typed_json(input),
+                Err(Tcv1Error::NfcKeyCollision { .. })
+            ));
+        }
+        for keys in [["K", "\u{212a}"], ["\u{212a}", "K"]] {
+            let value = TypedCanonicalValue::Object(
+                keys.into_iter()
+                    .map(|key| (key.to_owned(), TypedCanonicalValue::Null))
+                    .collect(),
+            );
+            assert!(matches!(
+                tcv1_preimage(&value),
+                Err(Tcv1Error::NfcKeyCollision { .. })
+            ));
+        }
+        for (input, canonical) in [
+            (r#""prefix-\u212a-suffix""#, r#""prefix-K-suffix""#),
+            (r#""prefix-e\u0301-suffix""#, r#""prefix-é-suffix""#),
+        ] {
+            assert_eq!(
+                tcv1_preimage(&parse(input)).unwrap(),
+                tcv1_preimage(&parse(canonical)).unwrap()
+            );
+        }
     }
 
     #[test]
