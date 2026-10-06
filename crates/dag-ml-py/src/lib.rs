@@ -895,6 +895,10 @@ fn _dag_ml(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
         module
     )?)?;
     module.add_function(wrap_pyfunction!(
+        in_process::validate_host_hpo_snapshot_json,
+        module
+    )?)?;
+    module.add_function(wrap_pyfunction!(
         in_process::recover_host_hpo_checkpoint_json,
         module
     )?)?;

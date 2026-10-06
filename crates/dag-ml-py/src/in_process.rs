@@ -4753,3 +4753,71 @@ mod tests {
         });
     }
 }
+
+/// Validate a complete prepared-plan host checkpoint and replay native SELECT.
+/// There is no operator registry or optimizer implementation in this path.
+#[pyfunction]
+pub fn validate_host_hpo_snapshot_json(
+    plan_json: &str,
+    envelope_json: &str,
+    request_json: &str,
+    checkpoint_json: &str,
+) -> PyResult<String> {
+    struct FrozenOptimizer;
+    impl dag_ml_core::HostHpoProposalSource for FrozenOptimizer {
+        fn ask(
+            &mut self,
+            _: u32,
+        ) -> dag_ml_core::Result<Option<BTreeMap<String, serde_json::Value>>> {
+            Err(CoreDagMlError::RuntimeValidation(
+                "cold checkpoint validation cannot ask".into(),
+            ))
+        }
+        fn tell(&mut self, _: u32, _: f64) -> dag_ml_core::Result<()> {
+            Err(CoreDagMlError::RuntimeValidation(
+                "cold checkpoint validation cannot tell".into(),
+            ))
+        }
+    }
+    struct FrozenProgress;
+    impl dag_ml_core::HostHpoProgress for FrozenProgress {
+        fn checkpoint(
+            &mut self,
+            _: &dag_ml_core::HostHpoCheckpoint,
+            _: dag_ml_core::HostHpoSearchStatus,
+        ) -> dag_ml_core::Result<bool> {
+            Ok(true)
+        }
+    }
+    let plan = ExecutionPlan::from_json(plan_json).map_err(py_core_error)?;
+    let envelope: ExternalDataPlanEnvelope =
+        crate::strict_json_input(envelope_json).map_err(py_serde_error)?;
+    let request: dag_ml_core::HostHpoSearchRequest =
+        crate::strict_json_input(request_json).map_err(py_serde_error)?;
+    let checkpoint: dag_ml_core::HostHpoCheckpoint =
+        crate::strict_json_input(checkpoint_json).map_err(py_serde_error)?;
+    if checkpoint.trials.len() != request.trial_budget as usize {
+        return Err(py_core_error(CoreDagMlError::RuntimeValidation(
+            "cold checkpoint validation requires a complete terminal budget".into(),
+        )));
+    }
+    let options = dag_ml_core::HostHpoResumeOptions::from_envelope(&envelope, Some(checkpoint))
+        .map_err(py_core_error)?;
+    let provider = InMemoryDataProvider::with_envelope(
+        ControllerId::new("controller:checkpoint.validation").map_err(py_core_error)?,
+        envelope,
+    )
+    .map_err(py_core_error)?;
+    let outcome = SequentialScheduler
+        .execute_resumable_host_hpo_search(
+            &plan,
+            &RuntimeControllerRegistry::new(),
+            &provider,
+            &request,
+            &mut FrozenOptimizer,
+            &options,
+            &mut FrozenProgress,
+        )
+        .map_err(py_core_error)?;
+    serde_json::to_string(&outcome).map_err(py_serde_error)
+}
