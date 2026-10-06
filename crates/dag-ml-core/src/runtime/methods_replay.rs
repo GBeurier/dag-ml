@@ -244,6 +244,7 @@ impl MethodsPortableReplayProvider {
             cols: matrix.cols,
         };
         Ok(MethodsPlsDataset {
+            y_validity_masks: None,
             sample_ids: sample_ids.to_vec(),
             x: select(&dataset.x),
             y: None,
@@ -356,6 +357,7 @@ mod cohort_identity_tests {
         };
         let key = data_binding_requirement_key(&node, "x");
         let dataset = MethodsPlsDataset {
+            y_validity_masks: None,
             sample_ids: ["sample:unused", "sample:one", "sample:two"]
                 .map(|id| SampleId::new(id).unwrap())
                 .to_vec(),

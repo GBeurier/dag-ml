@@ -78,8 +78,8 @@ pub fn calibrate_residual_gate(
             "residual gate received malformed residual targets".to_string(),
         ));
     }
-    let mut residual = Vec::with_capacity(targets.values.len() * width);
-    let mut learner = Vec::with_capacity(targets.values.len() * width);
+    let mut residual: Vec<f64> = Vec::with_capacity(targets.values.len() * width);
+    let mut learner: Vec<f64> = Vec::with_capacity(targets.values.len() * width);
     for (sample, row) in targets.sample_ids.iter().zip(&targets.values) {
         let prediction = &learner_oof[sample];
         if row.len() != width

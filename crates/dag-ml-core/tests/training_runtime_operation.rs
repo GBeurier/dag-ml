@@ -242,6 +242,7 @@ impl RuntimeDataProvider for AttestedProvider {
             }
             let row_count = sample_ids.len();
             Ok(MethodsPlsDataset {
+                y_validity_masks: None,
                 sample_ids,
                 x: MethodsPlsMatrix {
                     values: x,
@@ -1912,6 +1913,7 @@ fn target_free_methods_provider(
             .clone();
     }
     let dataset = MethodsPlsDataset {
+        y_validity_masks: None,
         x: MethodsPlsMatrix {
             rows: sample_ids.len(),
             cols: source_provider.methods_pls_feature_count,
@@ -4343,6 +4345,8 @@ fn native_methods_full_refit_executes_on_a_fresh_attested_cohort() {
     let replay_inputs = BTreeMap::from([(
         methods_key,
         MethodsPlsDataset {
+            y_validity_masks: None,
+            y_validity_masks: None,
             sample_ids: replay_sample_ids.clone(),
             x: MethodsPlsMatrix {
                 values: replay_values,
@@ -7631,6 +7635,8 @@ mod xl03_native_refit_families {
         let inputs = BTreeMap::from([(
             key,
             MethodsPlsDataset {
+                y_validity_masks: None,
+                y_validity_masks: None,
                 sample_ids: samples.clone(),
                 x,
                 y: None,
