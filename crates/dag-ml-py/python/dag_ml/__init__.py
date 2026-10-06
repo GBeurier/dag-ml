@@ -232,6 +232,7 @@ _FACADE_EXPORTS = [
     "replay_initial_full_refit_in_process",
     "run_host_hpo_search_in_process",
     "recover_host_hpo_checkpoint",
+    "validate_host_hpo_snapshot",
     "prepare_host_hpo_structural_catalogue",
     "prepare_host_hpo_topology_catalogue",
     "resolve_host_hpo_structural_winner",
@@ -662,6 +663,14 @@ def run_host_hpo_search_in_process(
         candidate_callback_factory=candidate_callback_factory,
         view_callback_factory=view_callback_factory,
         resume_view_validator=resume_view_validator,
+    ))
+
+
+def validate_host_hpo_snapshot(plan: Any, envelope: Any, request: Any, checkpoint: Any) -> dict[str, Any]:
+    """Validate complete terminal provenance and replay native selection without FIT."""
+    from ._dag_ml import validate_host_hpo_snapshot_json
+    return json.loads(validate_host_hpo_snapshot_json(
+        _coerce_json(plan), _coerce_json(envelope), _coerce_json(request), _coerce_json(checkpoint),
     ))
 
 
@@ -2081,6 +2090,7 @@ __all__ = [
     "run_cv_refit_predict_in_process",
     "run_host_hpo_search_in_process",
     "recover_host_hpo_checkpoint",
+    "validate_host_hpo_snapshot",
     "prepare_host_hpo_structural_catalogue",
     "prepare_host_hpo_topology_catalogue",
     "resolve_host_hpo_structural_winner",
