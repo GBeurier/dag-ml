@@ -1332,12 +1332,7 @@ pub(crate) fn sha256_bytes_hex(bytes: &[u8]) -> String {
 }
 
 pub(crate) fn bytes_to_hex(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        use std::fmt::Write as _;
-        write!(&mut out, "{byte:02x}").expect("writing to String cannot fail");
-    }
-    out
+    crate::canonical::bytes_to_hex(bytes)
 }
 
 /// Deterministic path safety for relative artifact URIs. Rejects empty values,

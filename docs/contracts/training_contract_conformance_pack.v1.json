@@ -56,12 +56,12 @@
     },
     {
       "path": "crates/dag-ml-core/src/campaign.rs",
-      "sha256": "55bc1959e0476b1ff8c77e7fd815ac8f22e67a0168246c26ad4bc64db3805060",
+      "sha256": "3fa5bb61d5c78c4d55eb4ef79f3e88dda6aa3c5787922fdae71640625852ac94",
       "kind": "historical_fingerprint_source"
     },
     {
       "path": "crates/dag-ml-core/src/canonical.rs",
-      "sha256": "a56a85034f809b8abefd173e3cad8e3ec1038316f91dc819a1aa889e7bd987d2",
+      "sha256": "c379021770873a0dc6cd4f6e9da9dfbd062334c719d3013ece228417976a41e1",
       "kind": "native_canonical_fingerprint"
     },
     {
@@ -211,7 +211,7 @@
     },
     {
       "path": "crates/dag-ml-py/Cargo.lock",
-      "sha256": "96d09f4384a974259b8bc51e6a6b2e5a4080a022b0dcaf520d360d4c78bad024",
+      "sha256": "fcea7111efa4f1a8a67037adb8a313bc256c74571be6055550ee4f2dac1401a8",
       "kind": "python_binding_lockfile"
     },
     {
@@ -286,7 +286,7 @@
     },
     {
       "path": "docs/contracts/abi_snapshot.v1.json",
-      "sha256": "0c525dbbcf2a190d91443562e70c98ebdd5603f14663775863f7239eb052494d",
+      "sha256": "0710f3649b9cff80306d37b9b2f811562d390a5e7cdca9aa87bca24cbee40e27",
       "kind": "c_abi_snapshot"
     },
     {
@@ -669,5 +669,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "b857eca3ae9b1663ba86d088c2269b9e0db6ae962b72dbee5632244669a2d59c"
+  "pack_checksum": "a2c261c637ca55eecd600838e4c656439ee658889b0149fe664e33f783d4fba5"
 }
