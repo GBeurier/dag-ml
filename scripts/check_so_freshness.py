@@ -10,9 +10,10 @@ that compile into it.
 mtime is unreliable across clones, so the authoritative signal is the git-commit-touch
 time (``git log -1 --format=%ct -- <path>``): the binary's last-touch commit time vs the
 max last-touch commit time over the Rust tree (core + py crate sources and their Cargo
-manifests / lockfile). A lockfile change confined to the CLI package record does not
-alter the Python extension's resolved inputs. The mtime is reported only as
-informational context.
+manifests / lockfile). The standalone PyO3 lockfile owns release dependency resolution; workspace
+lockfile changes and dev-only manifest tables cannot change the extension.
+When the standalone lockfile is absent, the workspace lock remains guarded.
+The mtime is reported only as informational context.
 
 Exit codes:
   0  fresh, paired dirty Rust + dirty .so, OR skipped gracefully
@@ -171,6 +172,17 @@ def commits_after_ts(repo: Path, relative: str, ts: int) -> list[str]:
     return commits
 
 
+def runtime_manifest(source: str) -> str:
+    """Drop dev-dependency tables, which cannot compile into the extension."""
+    sections = re.split(r"(?m)^(\[[^\[\]\n]+\][ \t]*(?:#.*)?\n)", source)
+    result = [sections[0]]
+    for index in range(1, len(sections), 2):
+        header = sections[index].split("]", 1)[0][1:]
+        if not re.search(r"(?:^|\.)dev-dependencies(?:\.|$)", header):
+            result.extend(sections[index:index + 2])
+    return "".join(result)
+
+
 def rust_commit_requires_rebuild(repo: Path, commit: str, relative: str) -> bool:
     """Return True when a committed Rust diff is not comment/doc-only."""
     if relative == "Cargo.lock":
@@ -206,7 +218,7 @@ def rust_commit_requires_rebuild(repo: Path, commit: str, relative: str) -> bool
                 }
                 if changed and all(name == "dag-ml-cli" for name, _version in changed):
                     return False
-    if not relative.endswith(RUST_SUFFIX):
+    if not relative.endswith((RUST_SUFFIX, "Cargo.toml")):
         return True
     before = subprocess.run(
         ["git", "show", f"{commit}^:{relative}"], cwd=repo,
@@ -218,6 +230,8 @@ def rust_commit_requires_rebuild(repo: Path, commit: str, relative: str) -> bool
     )
     if before.returncode != 0 or after.returncode != 0:
         return True
+    if relative.endswith("Cargo.toml"):
+        return runtime_manifest(before.stdout) != runtime_manifest(after.stdout)
     return rust_code_tokens(before.stdout) != rust_code_tokens(after.stdout)
 
 
@@ -245,6 +259,10 @@ def rust_paths(repo: Path) -> list[str]:
                 continue
             paths.append(path.relative_to(repo).as_posix())
     for relative in RUST_FILES:
+        # The excluded PyO3 workspace resolves its own lockfile. The root
+        # lockfile belongs to cargo test/CLI, not the maturin release build.
+        if relative == "Cargo.lock" and (repo / "crates/dag-ml-py/Cargo.lock").exists():
+            continue
         if (repo / relative).exists():
             paths.append(relative)
     return paths
@@ -278,6 +296,18 @@ def dirty_paths(repo: Path, paths: list[str]) -> list[str]:
         relative = line[3:]
         if " -> " in relative:
             relative = relative.rsplit(" -> ", maxsplit=1)[1]
+        if relative.endswith("Cargo.toml"):
+            previous = subprocess.run(
+                ["git", "show", f"HEAD:{relative}"], cwd=repo,
+                capture_output=True, text=True, check=False,
+            )
+            current = repo / relative
+            if (
+                previous.returncode == 0
+                and current.is_file()
+                and runtime_manifest(previous.stdout) == runtime_manifest(current.read_text())
+            ):
+                continue
         dirty.append(relative)
     return dirty
 
@@ -495,6 +525,36 @@ def self_test() -> int:
         git(repo, "commit", "-q", "-m", "standalone dependency change", ts=2_000_000)
         if check(repo) != 1:
             failures.append("standalone Cargo.lock change expected exit 1")
+
+    # Dev-only changes leave the release binary identical; runtime changes
+    # must still fail, both dirty and committed. The standalone lock stays
+    # authoritative even when the root workspace lock changes independently.
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp)
+        scaffold(repo)
+        manifest = repo / "crates/dag-ml-core/Cargo.toml"
+        manifest.write_text('[dependencies]\nserde = "1"\n[dev-dependencies]\narchive = "0.4.0"\n')
+        standalone = repo / "crates/dag-ml-py/Cargo.lock"
+        standalone.write_text('version = 4\n')
+        workspace = repo / "Cargo.lock"
+        workspace.write_text('version = 4\n')
+        git(repo, "add", "-A")
+        git(repo, "commit", "-q", "-m", "initial standalone build", ts=1_000_000)
+        manifest.write_text(manifest.read_text().replace('0.4.0', '0.4.3'))
+        workspace.write_text('version = 4\n# workspace test dependency changed\n')
+        if check(repo) != 0:
+            failures.append("dirty dev-only manifest and workspace lock expected exit 0")
+        git(repo, "add", "-A")
+        git(repo, "commit", "-q", "-m", "test dependency", ts=2_000_000)
+        if check(repo) != 0:
+            failures.append("committed dev-only manifest expected exit 0")
+        manifest.write_text(manifest.read_text().replace('serde = "1"', 'serde = "2"'))
+        if check(repo) != 1:
+            failures.append("dirty runtime manifest expected exit 1")
+        git(repo, "add", "-A")
+        git(repo, "commit", "-q", "-m", "runtime dependency", ts=3_000_000)
+        if check(repo) != 1:
+            failures.append("committed runtime manifest expected exit 1")
 
     if failures:
         for line in failures:

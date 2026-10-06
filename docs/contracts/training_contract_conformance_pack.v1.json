@@ -41,7 +41,7 @@
     },
     {
       "path": "crates/dag-ml-core/Cargo.toml",
-      "sha256": "0c5f8140eea161319592278d1025bca6f6d31671d5e47dd63a5b21ca31dc2317",
+      "sha256": "0d50bc75835a069ea3e08802d5ac31055d4235045d130fcc6f6973f884b2a905",
       "kind": "published_native_manifest"
     },
     {
@@ -571,7 +571,7 @@
     },
     {
       "path": "scripts/check_so_freshness.py",
-      "sha256": "926e4e3407acc16de64a501f80536abc1bb04151fe772f88ca52914e18a4d505",
+      "sha256": "50a829ed01ffc508f327dc093945d949e719f9e23d4e50dafaccab71cd0a5600",
       "kind": "python_extension_freshness_gate"
     },
     {
@@ -669,5 +669,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "f575e34bb4912719fab1099c2225d3faf76ad9fee743078640aea0221b38b8e9"
+  "pack_checksum": "3208065a74e77d1ea503ce61617f60242f3a34a7e32eddadbe2fb4d3afd10b9c"
 }

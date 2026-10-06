@@ -45,6 +45,17 @@ deprecations follow [ADR-14](docs/adr/ADR-14-deprecation-policy.md).
 
 ## [Unreleased]
 
+### Fixed
+
+- Use the published Core 0.4.3 archive test dependency in the extracted
+  `dag-ml-core` package. Core 0.4.0 fails to compile against the currently
+  resolved Data materialization request because it omits `predict_cohort`.
+  Runtime dependencies and existing release tags remain unchanged.
+- Keep extension freshness checks on the standalone PyO3 lockfile and runtime
+  manifest tables. A dev-only dependency change rebuilds an identical binary;
+  the guard no longer requires artificially changing that binary. Runtime
+  dependency/source changes remain guarded, with dirty and committed tests.
+
 ## [0.3.32] - 2026-09-30
 
 Release 0.3.31 was blocked before publication by a stale ABI snapshot package
