@@ -8,7 +8,7 @@
 //! unaffected.
 
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fmt::Write as _;
 
 use serde::de::DeserializeOwned;
@@ -88,12 +88,16 @@ impl TypedCanonicalValue {
             if normalize(member_key) == normalized_key {
                 removed += 1;
             } else {
-                filtered.push((member_key.clone(), member_value.clone()));
+                filtered.push((member_key.as_str(), member_value));
             }
         }
         match removed {
             0 => Err(Tcv1Error::MissingObjectKey(normalized_key.into_owned())),
-            1 => tcv1_sha256(&Self::Object(filtered)),
+            1 => {
+                let mut preimage = Vec::from(TCV1_PREFIX);
+                encode_object(filtered.into_iter(), &mut preimage, 0)?;
+                Ok(sha256_hex(&preimage))
+            }
             _ => Err(Tcv1Error::AmbiguousObjectKey(normalized_key.into_owned())),
         }
     }
@@ -247,12 +251,16 @@ pub fn tcv1_preimage(value: &TypedCanonicalValue) -> Result<Vec<u8>, Tcv1Error> 
 
 /// Return lowercase SHA-256 of [`tcv1_preimage`].
 pub fn tcv1_sha256(value: &TypedCanonicalValue) -> Result<String, Tcv1Error> {
-    let digest = Sha256::digest(tcv1_preimage(value)?);
+    Ok(sha256_hex(&tcv1_preimage(value)?))
+}
+
+fn sha256_hex(preimage: &[u8]) -> String {
+    let digest = Sha256::digest(preimage);
     let mut output = String::with_capacity(digest.len() * 2);
     for byte in digest {
         write!(&mut output, "{byte:02x}").expect("writing to String cannot fail");
     }
-    Ok(output)
+    output
 }
 
 fn normalize(value: &str) -> Cow<'_, str> {
@@ -300,35 +308,47 @@ fn encode_value(
             }
         }
         TypedCanonicalValue::Object(entries) => {
-            output.push(b'O');
-            encode_length(entries.len(), output)?;
-
-            let mut raw_keys = HashSet::with_capacity(entries.len());
-            let mut normalized_keys = HashMap::with_capacity(entries.len());
-            let mut sorted = Vec::with_capacity(entries.len());
-            for (key, value) in entries {
-                if !raw_keys.insert(key.as_str()) {
-                    return Err(Tcv1Error::DuplicateObjectKey {
-                        key: key.clone(),
-                        offset: 0,
-                    });
-                }
-                let normalized = normalize(key);
-                if let Some(first) = normalized_keys.insert(normalized.clone(), key.as_str()) {
-                    return Err(Tcv1Error::NfcKeyCollision {
-                        first: first.to_string(),
-                        second: key.clone(),
-                        offset: 0,
-                    });
-                }
-                sorted.push((normalized, value));
-            }
-            sorted.sort_by(|left, right| left.0.as_bytes().cmp(right.0.as_bytes()));
-            for (normalized_key, value) in sorted {
-                encode_normalized_string(normalized_key.as_bytes(), output)?;
-                encode_value(value, output, depth + 1)?;
-            }
+            encode_object(
+                entries.iter().map(|(key, value)| (key.as_str(), value)),
+                output,
+                depth,
+            )?;
         }
+    }
+    Ok(())
+}
+
+fn encode_object<'a>(
+    entries: impl ExactSizeIterator<Item = (&'a str, &'a TypedCanonicalValue)>,
+    output: &mut Vec<u8>,
+    depth: usize,
+) -> Result<(), Tcv1Error> {
+    output.push(b'O');
+    encode_length(entries.len(), output)?;
+
+    let mut normalized_keys = HashMap::with_capacity(entries.len());
+    let mut sorted = Vec::with_capacity(entries.len());
+    for (key, value) in entries {
+        let normalized = normalize(key);
+        if let Some(first) = normalized_keys.insert(normalized.clone(), key) {
+            if first == key {
+                return Err(Tcv1Error::DuplicateObjectKey {
+                    key: key.to_owned(),
+                    offset: 0,
+                });
+            }
+            return Err(Tcv1Error::NfcKeyCollision {
+                first: first.to_owned(),
+                second: key.to_owned(),
+                offset: 0,
+            });
+        }
+        sorted.push((normalized, value));
+    }
+    sorted.sort_by(|left, right| left.0.as_bytes().cmp(right.0.as_bytes()));
+    for (normalized_key, value) in sorted {
+        encode_normalized_string(normalized_key.as_bytes(), output)?;
+        encode_value(value, output, depth + 1)?;
     }
     Ok(())
 }
@@ -424,9 +444,8 @@ impl<'a> Parser<'a> {
     fn parse_object(&mut self, depth: usize) -> Result<TypedCanonicalValue, Tcv1Error> {
         self.offset += 1;
         self.skip_whitespace();
-        let mut entries = Vec::new();
-        let mut raw_keys = HashSet::new();
-        let mut normalized_keys: HashMap<String, String> = HashMap::new();
+        let mut entries: Vec<(String, TypedCanonicalValue)> = Vec::new();
+        let mut normalized_keys: HashMap<String, usize> = HashMap::new();
         if self.consume_if(b'}') {
             return Ok(TypedCanonicalValue::Object(entries));
         }
@@ -437,16 +456,19 @@ impl<'a> Parser<'a> {
             }
             let key_offset = self.offset;
             let key = self.parse_string()?;
-            if !raw_keys.insert(key.clone()) {
-                return Err(Tcv1Error::DuplicateObjectKey {
-                    key,
-                    offset: key_offset,
-                });
-            }
             let normalized = normalize(&key);
-            if let Some(first) = normalized_keys.insert(normalized.into_owned(), key.clone()) {
+            if let Some(first_index) =
+                normalized_keys.insert(normalized.into_owned(), entries.len())
+            {
+                let first = &entries[first_index].0;
+                if first == &key {
+                    return Err(Tcv1Error::DuplicateObjectKey {
+                        key,
+                        offset: key_offset,
+                    });
+                }
                 return Err(Tcv1Error::NfcKeyCollision {
-                    first,
+                    first: first.clone(),
                     second: key,
                     offset: key_offset,
                 });
@@ -1124,6 +1146,54 @@ mod tests {
         assert!(matches!(
             ambiguous.fingerprint_without("é"),
             Err(Tcv1Error::AmbiguousObjectKey(_))
+        ));
+    }
+
+    #[test]
+    fn borrowed_self_fingerprint_matches_independent_nested_oracle() {
+        let value = parse(
+            r#"{"fingerprint":"pending","λ":{"a":[null,true,2,-0.0,"e\u0301"],"K":"control-\u0000"},"z":[]}"#,
+        );
+        let snapshot = value.clone();
+        // Computed with parity.conformal.oracle.fingerprint_without, independently
+        // of the production encoder; includes nested values and mixed UTF-8 keys.
+        assert_eq!(
+            value.fingerprint_without("fingerprint").unwrap(),
+            "5f3b6ee83760137dec03d3e0e7a2c401dcce4e9cdf6cca9fd04e27e07749e3d6"
+        );
+        assert_eq!(value, snapshot);
+    }
+
+    #[test]
+    fn borrowed_self_fingerprint_retains_depth_and_domain_checks() {
+        let wrap = |payload| {
+            TypedCanonicalValue::Object(vec![
+                ("fingerprint".to_owned(), TypedCanonicalValue::Null),
+                ("payload".to_owned(), payload),
+            ])
+        };
+        let mut payload = TypedCanonicalValue::Null;
+        for _ in 0..MAX_NESTING_DEPTH - 1 {
+            payload = TypedCanonicalValue::Array(vec![payload]);
+        }
+        wrap(payload.clone())
+            .fingerprint_without("fingerprint")
+            .expect("root object counts toward the accepted nesting depth");
+        assert_eq!(
+            wrap(TypedCanonicalValue::Array(vec![payload])).fingerprint_without("fingerprint"),
+            Err(Tcv1Error::NestingTooDeep)
+        );
+        assert_eq!(
+            wrap(TypedCanonicalValue::Binary64(f64::NAN)).fingerprint_without("fingerprint"),
+            Err(Tcv1Error::NonFiniteBinary64)
+        );
+        let collision = TypedCanonicalValue::Object(vec![
+            ("K".to_owned(), TypedCanonicalValue::Null),
+            ("\u{212a}".to_owned(), TypedCanonicalValue::Null),
+        ]);
+        assert!(matches!(
+            wrap(collision).fingerprint_without("fingerprint"),
+            Err(Tcv1Error::NfcKeyCollision { .. })
         ));
     }
 
