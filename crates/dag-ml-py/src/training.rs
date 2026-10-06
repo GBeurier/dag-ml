@@ -330,6 +330,7 @@ impl<P: RuntimeDataProvider> MethodsInputProvider<P> {
             None => None,
         };
         Ok(MethodsPlsDataset {
+        y_validity_masks: None,
             sample_ids: sample_ids.to_vec(),
             x: select(&dataset.x),
             y,
@@ -2545,6 +2546,7 @@ pub(crate) fn methods_dataset_from_json(
         .map(SampleId::new)
         .collect::<dag_ml_core::Result<Vec<_>>>()?;
     let dataset = MethodsPlsDataset {
+        y_validity_masks: None,
         sample_ids,
         x: rows_to_matrix(input.x, "x")?,
         y: input.y.map(|rows| rows_to_matrix(rows, "y")).transpose()?,
@@ -3080,6 +3082,7 @@ mod tests {
     #[test]
     fn methods_training_views_follow_scheduler_identities_not_host_positions() {
         let dataset = MethodsPlsDataset {
+        y_validity_masks: None,
             sample_ids: vec![
                 SampleId::new("sample:a").unwrap(),
                 SampleId::new("sample:b").unwrap(),
@@ -4787,6 +4790,7 @@ mod tests {
             }
         });
         let predict_dataset = MethodsPlsDataset {
+        y_validity_masks: None,
             sample_ids: vec![
                 SampleId::new("sample:predict:1").unwrap(),
                 SampleId::new("sample:predict:2").unwrap(),

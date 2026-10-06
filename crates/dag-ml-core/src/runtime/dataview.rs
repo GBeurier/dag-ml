@@ -518,6 +518,8 @@ impl MethodsPlsMatrix {
 /// One identity-keyed dataset returned by the portable PLS provider capability.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MethodsPlsDataset {
+    /// Sample-major observed-target validity, absent means all cells observed.
+    pub y_validity_masks: Option<Vec<Vec<bool>>>,
     pub sample_ids: Vec<SampleId>,
     pub x: MethodsPlsMatrix,
     /// Targets are required for fitting/CV scoring, but deliberately absent
@@ -557,6 +559,16 @@ impl MethodsPlsDataset {
                 )))
             }
             None => {}
+        }
+        if let Some(masks) = &self.y_validity_masks {
+            if self.y.is_none()
+                || masks.len() != self.sample_ids.len()
+                || masks.iter().any(|row| row.len() != self.target_names.len())
+            {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "{label} target validity masks disagree with targets"
+                )));
+            }
         }
         let unique = self.sample_ids.iter().collect::<BTreeSet<_>>();
         if unique.len() != self.sample_ids.len() {
@@ -2551,6 +2563,7 @@ mod envelope_attested_provider_tests {
             )
             .unwrap(),
             dataset: MethodsPlsDataset {
+                y_validity_masks: None,
                 sample_ids: vec![SampleId::new("sample:1").unwrap()],
                 x: MethodsPlsMatrix {
                     values: vec![1.0, 2.0],
