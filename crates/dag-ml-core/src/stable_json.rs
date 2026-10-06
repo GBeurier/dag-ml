@@ -181,13 +181,25 @@ impl SerializeSeq for Array<'_> {
     type Ok = ();
     type Error = serde_json::Error;
     fn serialize_element<T: Serialize + ?Sized>(&mut self, value: &T) -> serde_json::Result<()> {
+        let start = self.output.len();
         if !self.first {
             self.output.push(b',');
         }
-        self.first = false;
-        value.serialize(Serializer {
+        let result = value.serialize(Serializer {
             output: &mut *self.output,
-        })
+        });
+        match result {
+            Ok(()) => {
+                self.first = false;
+                Ok(())
+            }
+            Err(error) => {
+                // A custom Serialize implementation may recover from this
+                // error and continue the enclosing sequence.
+                self.output.truncate(start);
+                Err(error)
+            }
+        }
     }
     fn end(self) -> serde_json::Result<()> {
         self.output.push(b']');
@@ -271,15 +283,28 @@ impl SerializeStruct for Struct<'_> {
         key: &'static str,
         value: &T,
     ) -> serde_json::Result<()> {
+        let start = self.output.len();
         if !self.first {
             self.output.push(b',');
         }
-        self.first = false;
-        write_string(self.output, key)?;
-        self.output.push(b':');
-        value.serialize(Serializer {
-            output: &mut *self.output,
-        })
+        let result = (|| {
+            write_string(self.output, key)?;
+            self.output.push(b':');
+            value.serialize(Serializer {
+                output: &mut *self.output,
+            })
+        })();
+        match result {
+            Ok(()) => {
+                self.first = false;
+                Ok(())
+            }
+            Err(error) => {
+                // Discard the complete field prefix and any partial child.
+                self.output.truncate(start);
+                Err(error)
+            }
+        }
     }
     fn end(self) -> serde_json::Result<()> {
         self.finish()
@@ -303,6 +328,108 @@ impl ser::SerializeStructVariant for Struct<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recovered_child_errors_preserve_complete_json() {
+        use serde::ser::{
+            SerializeStructVariant, SerializeTuple, SerializeTupleStruct, SerializeTupleVariant,
+        };
+
+        struct Fails {
+            partial: bool,
+        }
+        impl Serialize for Fails {
+            fn serialize<S: ser::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                if self.partial {
+                    let mut sequence = serializer.serialize_seq(None)?;
+                    sequence.serialize_element(&91)?;
+                }
+                Err(ser::Error::custom("intentional child failure"))
+            }
+        }
+        struct Recovers {
+            kind: u8,
+            partial: bool,
+            preceding: bool,
+        }
+        impl Serialize for Recovers {
+            fn serialize<S: ser::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                let failing = Fails {
+                    partial: self.partial,
+                };
+                let length = if self.preceding { 2 } else { 1 };
+                macro_rules! elements {
+                    ($container:expr, $method:ident) => {{
+                        let mut container = $container;
+                        if self.preceding {
+                            container.$method(&1)?;
+                        }
+                        for _ in 0..2 {
+                            assert!(container.$method(&failing).is_err());
+                        }
+                        container.$method(&2)?;
+                        container.end()
+                    }};
+                }
+                macro_rules! fields {
+                    ($container:expr) => {{
+                        let mut container = $container;
+                        if self.preceding {
+                            container.serialize_field("good", &1)?;
+                        }
+                        for _ in 0..2 {
+                            assert!(container.serialize_field("bad", &failing).is_err());
+                        }
+                        container.serialize_field("tail", &2)?;
+                        container.end()
+                    }};
+                }
+                match self.kind {
+                    0 => elements!(serializer.serialize_seq(Some(length))?, serialize_element),
+                    1 => elements!(serializer.serialize_tuple(length)?, serialize_element),
+                    2 => elements!(
+                        serializer.serialize_tuple_struct("Example", length)?,
+                        serialize_field
+                    ),
+                    3 => elements!(
+                        serializer.serialize_tuple_variant("Example", 0, "Tagged", length)?,
+                        serialize_field
+                    ),
+                    4 => fields!(serializer.serialize_struct("Example", length)?),
+                    _ => {
+                        fields!(serializer.serialize_struct_variant("Example", 0, "Tagged", length)?)
+                    }
+                }
+            }
+        }
+        for kind in 0..6 {
+            for partial in [false, true] {
+                for preceding in [false, true] {
+                    let value = Recovers {
+                        kind,
+                        partial,
+                        preceding,
+                    };
+                    let items = if preceding { "1,2" } else { "2" };
+                    let fields = if preceding {
+                        r#""good":1,"tail":2"#
+                    } else {
+                        r#""tail":2"#
+                    };
+                    let expected = match kind {
+                        0..=2 => format!("[{items}]"),
+                        3 => format!(r#"{{"Tagged":[{items}]}}"#),
+                        4 => format!("{{{fields}}}"),
+                        _ => format!(r#"{{"Tagged":{{{fields}}}}}"#),
+                    };
+                    let actual = to_vec(&value).unwrap();
+                    assert_eq!(actual, expected.as_bytes());
+                    assert!(serde_json::from_slice::<serde_json::Value>(&actual).is_ok());
+                }
+            }
+        }
+    }
+
     #[test]
     fn preserves_tagged_and_escaped_serialization_bytes() {
         #[derive(serde::Serialize)]
