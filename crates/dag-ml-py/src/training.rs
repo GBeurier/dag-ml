@@ -330,7 +330,7 @@ impl<P: RuntimeDataProvider> MethodsInputProvider<P> {
             None => None,
         };
         Ok(MethodsPlsDataset {
-        y_validity_masks: None,
+            y_validity_masks: None,
             sample_ids: sample_ids.to_vec(),
             x: select(&dataset.x),
             y,
@@ -3082,7 +3082,7 @@ mod tests {
     #[test]
     fn methods_training_views_follow_scheduler_identities_not_host_positions() {
         let dataset = MethodsPlsDataset {
-        y_validity_masks: None,
+            y_validity_masks: None,
             sample_ids: vec![
                 SampleId::new("sample:a").unwrap(),
                 SampleId::new("sample:b").unwrap(),
@@ -4790,7 +4790,7 @@ mod tests {
             }
         });
         let predict_dataset = MethodsPlsDataset {
-        y_validity_masks: None,
+            y_validity_masks: None,
             sample_ids: vec![
                 SampleId::new("sample:predict:1").unwrap(),
                 SampleId::new("sample:predict:2").unwrap(),
