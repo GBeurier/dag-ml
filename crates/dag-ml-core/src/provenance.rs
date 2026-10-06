@@ -1523,13 +1523,7 @@ fn annotate_ro_crate_package_files(
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
-    let digest = Sha256::digest(bytes);
-    let mut out = String::with_capacity(digest.len() * 2);
-    for byte in digest {
-        use std::fmt::Write;
-        write!(&mut out, "{byte:02x}").expect("writing to string cannot fail");
-    }
-    out
+    crate::canonical::bytes_to_hex(&Sha256::digest(bytes))
 }
 
 fn prov_edge_id(kind: &str, components: &[&str]) -> String {

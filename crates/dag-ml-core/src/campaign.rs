@@ -24,12 +24,7 @@ pub(crate) fn stable_json_fingerprint<T: Serialize + ?Sized>(value: &T) -> Resul
 }
 
 fn to_hex(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        use std::fmt::Write;
-        write!(&mut out, "{byte:02x}").expect("writing to string cannot fail");
-    }
-    out
+    crate::canonical::bytes_to_hex(bytes)
 }
 
 #[cfg(test)]

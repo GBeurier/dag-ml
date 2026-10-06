@@ -1,46 +1,62 @@
 //! JSON serialization with sorted map keys and unchanged struct field order.
 //! Preserves existing digests while making embedded Values independent of
-//! serde_json's optional `preserve_order` feature.
+//! serde_json's optional `preserve_order` feature. Arrays and structs write
+//! directly into the final buffer; only maps buffer fields for key sorting.
 use serde::ser::{self, Serialize, SerializeMap, SerializeSeq, SerializeStruct};
 
 pub(crate) fn to_vec<T: Serialize + ?Sized>(value: &T) -> serde_json::Result<Vec<u8>> {
-    value.serialize(Serializer).map(String::into_bytes)
+    let mut output = Vec::with_capacity(128);
+    value.serialize(Serializer {
+        output: &mut output,
+    })?;
+    Ok(output)
 }
 
-struct Serializer;
-struct Array {
-    values: Vec<String>,
-    variant: Option<&'static str>,
+struct Serializer<'a> {
+    output: &'a mut Vec<u8>,
 }
-struct Object {
-    values: Vec<(String, String)>,
+struct Array<'a> {
+    output: &'a mut Vec<u8>,
+    first: bool,
+    tagged: bool,
+}
+struct Object<'a> {
+    output: &'a mut Vec<u8>,
+    values: Vec<(String, Vec<u8>)>,
     key: Option<String>,
-    sorted: bool,
-    variant: Option<&'static str>,
+}
+struct Struct<'a> {
+    output: &'a mut Vec<u8>,
+    first: bool,
+    tagged: bool,
 }
 
-fn tagged(name: &str, value: String) -> serde_json::Result<String> {
-    Ok(format!("{{{}:{value}}}", serde_json::to_string(name)?))
+fn write_string(output: &mut Vec<u8>, value: &str) -> serde_json::Result<()> {
+    serde_json::to_writer(output, value)
 }
-
+fn open_tag(output: &mut Vec<u8>, name: &str) -> serde_json::Result<()> {
+    output.push(b'{');
+    write_string(output, name)?;
+    output.push(b':');
+    Ok(())
+}
 macro_rules! scalar {
     ($($method:ident($ty:ty)),*) => {$(
-        fn $method(self, value: $ty) -> serde_json::Result<String> {
-            serde_json::to_string(&value)
+        fn $method(self, value: $ty) -> serde_json::Result<()> {
+            ser::Serializer::$method(&mut serde_json::Serializer::new(self.output), value)
         }
     )*};
 }
-
-impl ser::Serializer for Serializer {
-    type Ok = String;
+impl<'a> ser::Serializer for Serializer<'a> {
+    type Ok = ();
     type Error = serde_json::Error;
-    type SerializeSeq = Array;
-    type SerializeTuple = Array;
-    type SerializeTupleStruct = Array;
-    type SerializeTupleVariant = Array;
-    type SerializeMap = Object;
-    type SerializeStruct = Object;
-    type SerializeStructVariant = Object;
+    type SerializeSeq = Array<'a>;
+    type SerializeTuple = Array<'a>;
+    type SerializeTupleStruct = Array<'a>;
+    type SerializeTupleVariant = Array<'a>;
+    type SerializeMap = Object<'a>;
+    type SerializeStruct = Struct<'a>;
+    type SerializeStructVariant = Struct<'a>;
     scalar!(
         serialize_bool(bool),
         serialize_i8(i8),
@@ -59,23 +75,24 @@ impl ser::Serializer for Serializer {
         serialize_str(&str),
         serialize_bytes(&[u8])
     );
-    fn serialize_none(self) -> serde_json::Result<String> {
+    fn serialize_none(self) -> serde_json::Result<()> {
         self.serialize_unit()
     }
-    fn serialize_unit(self) -> serde_json::Result<String> {
-        Ok("null".into())
+    fn serialize_unit(self) -> serde_json::Result<()> {
+        self.output.extend_from_slice(b"null");
+        Ok(())
     }
-    fn serialize_unit_struct(self, _: &'static str) -> serde_json::Result<String> {
+    fn serialize_unit_struct(self, _: &'static str) -> serde_json::Result<()> {
         self.serialize_unit()
     }
-    fn serialize_some<T: Serialize + ?Sized>(self, value: &T) -> serde_json::Result<String> {
+    fn serialize_some<T: Serialize + ?Sized>(self, value: &T) -> serde_json::Result<()> {
         value.serialize(self)
     }
     fn serialize_newtype_struct<T: Serialize + ?Sized>(
         self,
         _: &'static str,
         value: &T,
-    ) -> serde_json::Result<String> {
+    ) -> serde_json::Result<()> {
         value.serialize(self)
     }
     fn serialize_unit_variant(
@@ -83,8 +100,8 @@ impl ser::Serializer for Serializer {
         _: &'static str,
         _: u32,
         name: &'static str,
-    ) -> serde_json::Result<String> {
-        serde_json::to_string(name)
+    ) -> serde_json::Result<()> {
+        write_string(self.output, name)
     }
     fn serialize_newtype_variant<T: Serialize + ?Sized>(
         self,
@@ -92,19 +109,26 @@ impl ser::Serializer for Serializer {
         _: u32,
         name: &'static str,
         value: &T,
-    ) -> serde_json::Result<String> {
-        tagged(name, value.serialize(self)?)
+    ) -> serde_json::Result<()> {
+        open_tag(self.output, name)?;
+        value.serialize(Serializer {
+            output: &mut *self.output,
+        })?;
+        self.output.push(b'}');
+        Ok(())
     }
-    fn serialize_seq(self, _: Option<usize>) -> serde_json::Result<Array> {
+    fn serialize_seq(self, _: Option<usize>) -> serde_json::Result<Array<'a>> {
+        self.output.push(b'[');
         Ok(Array {
-            values: Vec::new(),
-            variant: None,
+            output: self.output,
+            first: true,
+            tagged: false,
         })
     }
-    fn serialize_tuple(self, len: usize) -> serde_json::Result<Array> {
+    fn serialize_tuple(self, len: usize) -> serde_json::Result<Array<'a>> {
         self.serialize_seq(Some(len))
     }
-    fn serialize_tuple_struct(self, _: &'static str, len: usize) -> serde_json::Result<Array> {
+    fn serialize_tuple_struct(self, _: &'static str, len: usize) -> serde_json::Result<Array<'a>> {
         self.serialize_tuple(len)
     }
     fn serialize_tuple_variant(
@@ -113,26 +137,28 @@ impl ser::Serializer for Serializer {
         _: u32,
         name: &'static str,
         _: usize,
-    ) -> serde_json::Result<Array> {
+    ) -> serde_json::Result<Array<'a>> {
+        open_tag(self.output, name)?;
+        self.output.push(b'[');
         Ok(Array {
-            values: Vec::new(),
-            variant: Some(name),
+            output: self.output,
+            first: true,
+            tagged: true,
         })
     }
-    fn serialize_map(self, _: Option<usize>) -> serde_json::Result<Object> {
+    fn serialize_map(self, _: Option<usize>) -> serde_json::Result<Object<'a>> {
         Ok(Object {
+            output: self.output,
             values: Vec::new(),
             key: None,
-            sorted: true,
-            variant: None,
         })
     }
-    fn serialize_struct(self, _: &'static str, _: usize) -> serde_json::Result<Object> {
-        Ok(Object {
-            values: Vec::new(),
-            key: None,
-            sorted: false,
-            variant: None,
+    fn serialize_struct(self, _: &'static str, _: usize) -> serde_json::Result<Struct<'a>> {
+        self.output.push(b'{');
+        Ok(Struct {
+            output: self.output,
+            first: true,
+            tagged: false,
         })
     }
     fn serialize_struct_variant(
@@ -140,36 +166,46 @@ impl ser::Serializer for Serializer {
         _: &'static str,
         _: u32,
         name: &'static str,
-        len: usize,
-    ) -> serde_json::Result<Object> {
-        let mut object = self.serialize_struct(name, len)?;
-        object.variant = Some(name);
-        Ok(object)
+        _: usize,
+    ) -> serde_json::Result<Struct<'a>> {
+        open_tag(self.output, name)?;
+        self.output.push(b'{');
+        Ok(Struct {
+            output: self.output,
+            first: true,
+            tagged: true,
+        })
     }
 }
-
-impl SerializeSeq for Array {
-    type Ok = String;
+impl SerializeSeq for Array<'_> {
+    type Ok = ();
     type Error = serde_json::Error;
     fn serialize_element<T: Serialize + ?Sized>(&mut self, value: &T) -> serde_json::Result<()> {
-        self.values.push(value.serialize(Serializer)?);
-        Ok(())
+        if !self.first {
+            self.output.push(b',');
+        }
+        self.first = false;
+        value.serialize(Serializer {
+            output: &mut *self.output,
+        })
     }
-    fn end(self) -> serde_json::Result<String> {
-        let value = format!("[{}]", self.values.join(","));
-        self.variant
-            .map_or(Ok(value.clone()), |name| tagged(name, value))
+    fn end(self) -> serde_json::Result<()> {
+        self.output.push(b']');
+        if self.tagged {
+            self.output.push(b'}');
+        }
+        Ok(())
     }
 }
 macro_rules! array_impl {
     ($trait:ident, $method:ident) => {
-        impl ser::$trait for Array {
-            type Ok = String;
+        impl ser::$trait for Array<'_> {
+            type Ok = ();
             type Error = serde_json::Error;
             fn $method<T: Serialize + ?Sized>(&mut self, value: &T) -> serde_json::Result<()> {
                 SerializeSeq::serialize_element(self, value)
             }
-            fn end(self) -> serde_json::Result<String> {
+            fn end(self) -> serde_json::Result<()> {
                 SerializeSeq::end(self)
             }
         }
@@ -178,27 +214,27 @@ macro_rules! array_impl {
 array_impl!(SerializeTuple, serialize_element);
 array_impl!(SerializeTupleStruct, serialize_field);
 array_impl!(SerializeTupleVariant, serialize_field);
-
-impl Object {
-    fn finish(mut self) -> serde_json::Result<String> {
-        if self.sorted {
-            self.values.sort_by(|a, b| a.0.cmp(&b.0));
+impl Object<'_> {
+    fn finish(mut self) -> serde_json::Result<()> {
+        self.values.sort_by(|a, b| a.0.cmp(&b.0));
+        self.output.push(b'{');
+        for (index, (key, value)) in self.values.into_iter().enumerate() {
+            if index != 0 {
+                self.output.push(b',');
+            }
+            write_string(self.output, &key)?;
+            self.output.push(b':');
+            self.output.extend_from_slice(&value);
         }
-        let fields = self
-            .values
-            .into_iter()
-            .map(|(key, value)| Ok(format!("{}:{value}", serde_json::to_string(&key)?)))
-            .collect::<serde_json::Result<Vec<_>>>()?;
-        let value = format!("{{{}}}", fields.join(","));
-        self.variant
-            .map_or(Ok(value.clone()), |name| tagged(name, value))
+        self.output.push(b'}');
+        Ok(())
     }
 }
-impl SerializeMap for Object {
-    type Ok = String;
+impl SerializeMap for Object<'_> {
+    type Ok = ();
     type Error = serde_json::Error;
     fn serialize_key<T: Serialize + ?Sized>(&mut self, key: &T) -> serde_json::Result<()> {
-        let raw = key.serialize(Serializer)?;
+        let raw = String::from_utf8(to_vec(key)?).expect("JSON serialization emits valid UTF-8");
         self.key = Some(if raw.starts_with('"') {
             serde_json::from_str(&raw)?
         } else {
@@ -211,30 +247,46 @@ impl SerializeMap for Object {
             .key
             .take()
             .ok_or_else(|| <serde_json::Error as ser::Error>::custom("map value without key"))?;
-        self.values.push((key, value.serialize(Serializer)?));
+        self.values.push((key, to_vec(value)?));
         Ok(())
     }
-    fn end(self) -> serde_json::Result<String> {
+    fn end(self) -> serde_json::Result<()> {
         self.finish()
     }
 }
-impl SerializeStruct for Object {
-    type Ok = String;
+impl Struct<'_> {
+    fn finish(self) -> serde_json::Result<()> {
+        self.output.push(b'}');
+        if self.tagged {
+            self.output.push(b'}');
+        }
+        Ok(())
+    }
+}
+impl SerializeStruct for Struct<'_> {
+    type Ok = ();
     type Error = serde_json::Error;
     fn serialize_field<T: Serialize + ?Sized>(
         &mut self,
         key: &'static str,
         value: &T,
     ) -> serde_json::Result<()> {
-        self.values.push((key.into(), value.serialize(Serializer)?));
-        Ok(())
+        if !self.first {
+            self.output.push(b',');
+        }
+        self.first = false;
+        write_string(self.output, key)?;
+        self.output.push(b':');
+        value.serialize(Serializer {
+            output: &mut *self.output,
+        })
     }
-    fn end(self) -> serde_json::Result<String> {
+    fn end(self) -> serde_json::Result<()> {
         self.finish()
     }
 }
-impl ser::SerializeStructVariant for Object {
-    type Ok = String;
+impl ser::SerializeStructVariant for Struct<'_> {
+    type Ok = ();
     type Error = serde_json::Error;
     fn serialize_field<T: Serialize + ?Sized>(
         &mut self,
@@ -243,7 +295,7 @@ impl ser::SerializeStructVariant for Object {
     ) -> serde_json::Result<()> {
         SerializeStruct::serialize_field(self, key, value)
     }
-    fn end(self) -> serde_json::Result<String> {
+    fn end(self) -> serde_json::Result<()> {
         self.finish()
     }
 }
@@ -251,6 +303,43 @@ impl ser::SerializeStructVariant for Object {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn preserves_tagged_and_escaped_serialization_bytes() {
+        #[derive(serde::Serialize)]
+        enum Example {
+            Empty,
+            Newtype(String),
+            Tuple(u64, Vec<bool>),
+            Struct { z: String, a: Option<f64> },
+        }
+        let cases = [
+            (Example::Empty, r#""Empty""#),
+            (
+                Example::Newtype("line\n\"é".into()),
+                r#"{"Newtype":"line\n\"é"}"#,
+            ),
+            (
+                Example::Tuple(7, vec![true, false]),
+                r#"{"Tuple":[7,[true,false]]}"#,
+            ),
+            (
+                Example::Struct {
+                    z: "\u{0000}".into(),
+                    a: Some(-0.0),
+                },
+                r#"{"Struct":{"z":"\u0000","a":-0.0}}"#,
+            ),
+        ];
+        for (value, expected) in cases {
+            assert_eq!(to_vec(&value).unwrap(), expected.as_bytes());
+        }
+        assert_eq!(to_vec(&Vec::<u64>::new()).unwrap(), b"[]");
+        assert_eq!(
+            to_vec(&std::collections::BTreeMap::<String, u64>::new()).unwrap(),
+            b"{}"
+        );
+    }
+
     #[test]
     fn sorts_values_without_changing_struct_order() {
         #[derive(serde::Serialize)]

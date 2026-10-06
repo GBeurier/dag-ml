@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.40
+
+- Reduce TCV1 canonicalization allocations for ASCII strings, borrowed values and object keys while preserving canonical bytes and validation.
+- Stream stable JSON arrays and structures into one output buffer; preserve sorted map keys and serde JSON scalar encoding.
+- Share direct hexadecimal encoding across campaign, prediction and provenance hashes; preserve all hash bytes.
+- Refresh the Python extension and current source-bound training/replay packs for this implementation.
+
 ## 0.3.37
 
 - Preserve exact native u64 seed tokens in the Chrome Web Worker HPO smoke transport as in the Node workers.

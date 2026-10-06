@@ -9,7 +9,6 @@
 
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::fmt::Write as _;
 
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -255,10 +254,15 @@ pub fn tcv1_sha256(value: &TypedCanonicalValue) -> Result<String, Tcv1Error> {
 }
 
 fn sha256_hex(preimage: &[u8]) -> String {
-    let digest = Sha256::digest(preimage);
-    let mut output = String::with_capacity(digest.len() * 2);
-    for byte in digest {
-        write!(&mut output, "{byte:02x}").expect("writing to String cannot fail");
+    bytes_to_hex(&Sha256::digest(preimage))
+}
+
+pub(crate) fn bytes_to_hex(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for &byte in bytes {
+        output.push(DIGITS[usize::from(byte >> 4)] as char);
+        output.push(DIGITS[usize::from(byte & 15)] as char);
     }
     output
 }
@@ -803,6 +807,7 @@ where
 #[cfg(test)]
 mod tests {
     use serde_json::json;
+    use std::fmt::Write as _;
 
     use super::*;
 
@@ -829,6 +834,14 @@ mod tests {
         let second: f64 = serde_json::from_str(&encoded).unwrap();
         assert_eq!(first.to_bits(), second.to_bits());
         assert_eq!(parse(raw), parse(&encoded));
+    }
+
+    #[test]
+    fn lowercase_hex_matches_formatter_for_every_byte() {
+        let bytes = (0..=255).collect::<Vec<u8>>();
+        assert_eq!(bytes_to_hex(&bytes), hex(&bytes));
+        assert_eq!(bytes_to_hex(&[]), "");
+        assert_eq!(bytes_to_hex(&[0, 15, 16, 255]), "000f10ff");
     }
 
     fn hex(bytes: &[u8]) -> String {
