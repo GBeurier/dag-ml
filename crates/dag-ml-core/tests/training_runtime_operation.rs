@@ -4346,7 +4346,6 @@ fn native_methods_full_refit_executes_on_a_fresh_attested_cohort() {
         methods_key,
         MethodsPlsDataset {
             y_validity_masks: None,
-            y_validity_masks: None,
             sample_ids: replay_sample_ids.clone(),
             x: MethodsPlsMatrix {
                 values: replay_values,
@@ -7635,7 +7634,6 @@ mod xl03_native_refit_families {
         let inputs = BTreeMap::from([(
             key,
             MethodsPlsDataset {
-                y_validity_masks: None,
                 y_validity_masks: None,
                 sample_ids: samples.clone(),
                 x,
