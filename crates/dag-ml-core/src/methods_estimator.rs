@@ -307,6 +307,7 @@ struct NodeMethod {
     info: Arc<NativeMethod>,
     params: Vec<(String, ParamValue)>,
     allow_training_rows: bool,
+    target_index: Option<usize>,
 }
 
 impl NodeMethod {
@@ -356,10 +357,27 @@ impl NodeMethod {
                 "method `{method_id}` retains training rows in its fitted state; set `{METHODS_ESTIMATOR_UNSAFE_FLAGS_PARAM}: [\"{METHODS_ESTIMATOR_ALLOW_TRAINING_ROWS}\"]` to allow it"
             )));
         }
+        let target_index = params
+            .get("native_target_index")
+            .map(|value| {
+                value
+                    .as_u64()
+                    .and_then(|value| usize::try_from(value).ok())
+                    .ok_or_else(|| {
+                        invalid("native_target_index must be a nonnegative integer".into())
+                    })
+            })
+            .transpose()?;
+        if target_index.is_some() && !matches!(role, N4mRole::Regressor | N4mRole::Classifier) {
+            return Err(invalid(
+                "native_target_index is supported only by target model nodes".into(),
+            ));
+        }
         let mut typed = Vec::new();
         for (name, value) in params {
             if name == METHODS_ESTIMATOR_METHOD_PARAM
                 || name == METHODS_ESTIMATOR_UNSAFE_FLAGS_PARAM
+                || name == "native_target_index"
             {
                 continue;
             }
@@ -382,6 +400,7 @@ impl NodeMethod {
             info,
             params: typed,
             allow_training_rows,
+            target_index,
         })
     }
 
@@ -398,15 +417,62 @@ impl NodeMethod {
     }
 
     fn fit(&self, context: &Context, data: &MethodsPlsDataset) -> Result<Estimator> {
+        let filtered;
+        let data = if let Some(masks) = data
+            .y_validity_masks
+            .as_ref()
+            .filter(|masks| masks.iter().any(|row| row.contains(&false)))
+        {
+            if self.info.inputs.get("y").is_some_and(|v| v == "required")
+                || self
+                    .info
+                    .inputs
+                    .get("labels")
+                    .is_some_and(|v| v == "required")
+            {
+                if data.target_names.len() != 1 {
+                    return Err(DagMlError::RuntimeValidation(
+                        "partial targets require one native model node per target".into(),
+                    ));
+                }
+                let keep = masks.iter().map(|row| row[0]).collect::<Vec<_>>();
+                if !keep.iter().any(|value| *value) {
+                    return Err(DagMlError::RuntimeValidation(
+                        "native model has no observed training target in this fold".into(),
+                    ));
+                }
+                filtered = keep_rows(data, &keep);
+                &filtered
+            } else {
+                data
+            }
+        } else {
+            data
+        };
         let mut estimator = self.estimator(context)?;
         let x = matrix(&data.x)?;
-        let labels = if self.info.uses("labels") {
+        let partial = data
+            .y_validity_masks
+            .as_ref()
+            .is_some_and(|rows| rows.iter().any(|row| row.contains(&false)));
+        let labels = if self.info.uses("labels")
+            && !(partial
+                && self
+                    .info
+                    .inputs
+                    .get("labels")
+                    .is_some_and(|v| v == "optional"))
+        {
             Some(class_labels(data, &self.method_id)?)
         } else {
             None
         };
         let mut inputs = FitInputs::new(x);
-        if self.info.uses("y") {
+        // Optional targets are omitted when partial: placeholder storage must
+        // never become an observed label for an optional supervised path.
+        if self.info.uses("y")
+            && !(partial && self.info.inputs.get("y").is_some_and(|v| v == "optional"))
+        {
             if let Some(y) = &data.y {
                 inputs = inputs.y(matrix(y)?);
             }
@@ -535,6 +601,20 @@ pub(crate) fn union_rows(
         cols: left.cols,
     };
     MethodsPlsDataset {
+        y_validity_masks: if first.y_validity_masks.is_some() || second.y_validity_masks.is_some() {
+            Some(
+                [first, &second]
+                    .iter()
+                    .flat_map(|data| {
+                        data.y_validity_masks.clone().unwrap_or_else(|| {
+                            vec![vec![true; data.target_names.len()]; data.sample_ids.len()]
+                        })
+                    })
+                    .collect(),
+            )
+        } else {
+            None
+        },
         sample_ids: [first.sample_ids.as_slice(), second.sample_ids.as_slice()].concat(),
         x: join(&first.x, &second.x),
         y: first
@@ -561,6 +641,7 @@ fn owned(matrix: n4m::Matrix) -> MethodsPlsMatrix {
 
 fn with_features(dataset: &MethodsPlsDataset, x: MethodsPlsMatrix) -> MethodsPlsDataset {
     MethodsPlsDataset {
+        y_validity_masks: dataset.y_validity_masks.clone(),
         sample_ids: dataset.sample_ids.clone(),
         x,
         y: dataset.y.clone(),
@@ -581,6 +662,14 @@ fn keep_rows(dataset: &MethodsPlsDataset, keep: &[bool]) -> MethodsPlsDataset {
         cols: matrix.cols,
     };
     MethodsPlsDataset {
+        y_validity_masks: dataset.y_validity_masks.as_ref().map(|masks| {
+            masks
+                .iter()
+                .zip(keep)
+                .filter(|(_, keep)| **keep)
+                .map(|(row, _)| row.clone())
+                .collect()
+        }),
         sample_ids: dataset
             .sample_ids
             .iter()
@@ -592,6 +681,28 @@ fn keep_rows(dataset: &MethodsPlsDataset, keep: &[bool]) -> MethodsPlsDataset {
         y: dataset.y.as_ref().map(select),
         target_names: dataset.target_names.clone(),
     }
+}
+
+fn target_column(rows: &MethodsPlsDataset, index: usize) -> Result<MethodsPlsDataset> {
+    if index >= rows.target_names.len() {
+        return Err(DagMlError::RuntimeValidation(
+            "native_target_index exceeds target schema".into(),
+        ));
+    }
+    Ok(MethodsPlsDataset {
+        sample_ids: rows.sample_ids.clone(),
+        x: rows.x.clone(),
+        y: rows.y.as_ref().map(|y| MethodsPlsMatrix {
+            rows: y.rows,
+            cols: 1,
+            values: y.values.chunks(y.cols).map(|row| row[index]).collect(),
+        }),
+        target_names: vec![rows.target_names[index].clone()],
+        y_validity_masks: rows
+            .y_validity_masks
+            .as_ref()
+            .map(|masks| masks.iter().map(|row| vec![row[index]]).collect()),
+    })
 }
 
 /// Native controller for one n4m role; see the module documentation.
@@ -846,7 +957,13 @@ impl MethodsEstimatorController {
                 aggregation_policy_fingerprint: None,
                 seed: task.seed,
                 unsafe_flags,
-                metrics: BTreeMap::new(),
+                metrics: match (scores.fit_total_rows, scores.fit_observed_rows) {
+                    (Some(total), Some(observed)) => BTreeMap::from([
+                        ("native_fit_rows".into(), total as f64),
+                        ("native_observed_target_rows".into(), observed as f64),
+                    ]),
+                    _ => BTreeMap::new(),
+                },
                 loss_attestations: Vec::new(),
                 early_stopping_records: Vec::new(),
             },
@@ -940,6 +1057,20 @@ impl MethodsEstimatorController {
         features: &FeatureSet,
         prediction_port: &str,
     ) -> Result<NodeResult> {
+        let selected;
+        let features = if let Some(index) = method.target_index {
+            selected = FeatureSet {
+                fit: target_column(&features.fit, index)?,
+                prediction: features
+                    .prediction
+                    .as_ref()
+                    .map(|rows| target_column(rows, index))
+                    .transpose()?,
+            };
+            &selected
+        } else {
+            features
+        };
         let context = Context::new().map_err(|error| native_error("context_create", error))?;
         let (estimator, artifact, surfaces) = match task.phase {
             Phase::FitCv => {
@@ -979,6 +1110,18 @@ impl MethodsEstimatorController {
             phase => return Err(unsupported_phase(task, phase)),
         };
         let mut scores = Scores::default();
+        if matches!(task.phase, Phase::FitCv | Phase::Refit) {
+            scores.fit_total_rows = Some(features.fit.sample_ids.len());
+            scores.fit_observed_rows = Some(features.fit.y_validity_masks.as_ref().map_or(
+                features.fit.sample_ids.len(),
+                |masks| {
+                    masks
+                        .iter()
+                        .filter(|row| row.iter().all(|cell| *cell))
+                        .count()
+                },
+            ));
+        }
         for (rows, partition) in surfaces {
             self.score(
                 task,
@@ -1082,7 +1225,7 @@ impl MethodsEstimatorController {
         }
         if let Some(targets) = &rows.y {
             scores.regression_targets.push(RegressionTargetBlock {
-                validity_masks: None,
+                validity_masks: rows.y_validity_masks.clone(),
                 level: PredictionLevel::Sample,
                 unit_ids: rows
                     .sample_ids
@@ -1131,6 +1274,8 @@ impl MethodsEstimatorController {
 /// Scored prediction surfaces of one model invocation.
 #[derive(Default)]
 struct Scores {
+    fit_total_rows: Option<usize>,
+    fit_observed_rows: Option<usize>,
     predictions: Vec<PredictionBlock>,
     regression_targets: Vec<RegressionTargetBlock>,
     classification_probabilities: Vec<ClassificationProbabilityBlock>,
@@ -1337,6 +1482,7 @@ mod tests {
         let second_run = RunId::new("run:second").unwrap();
         let features = Arc::new(FeatureSet {
             fit: MethodsPlsDataset {
+                y_validity_masks: None,
                 sample_ids: vec![SampleId::new("a").unwrap()],
                 x: MethodsPlsMatrix {
                     values: vec![1.0],
@@ -1480,6 +1626,7 @@ mod tests {
         fn dataset(&self, ids: &[SampleId]) -> MethodsPlsDataset {
             let rows = ids.iter().map(|id| &self.train[id]).collect::<Vec<_>>();
             MethodsPlsDataset {
+                y_validity_masks: None,
                 sample_ids: ids.to_vec(),
                 x: MethodsPlsMatrix {
                     values: rows.iter().flat_map(|(x, _)| x.iter().copied()).collect(),
@@ -1533,6 +1680,7 @@ mod tests {
             if request.phase == Phase::Predict {
                 return Ok(MethodsPlsData {
                     fit: MethodsPlsDataset {
+                        y_validity_masks: None,
                         sample_ids: self.predict.iter().map(|(id, _)| id.clone()).collect(),
                         x: MethodsPlsMatrix {
                             values: self.predict.iter().flat_map(|(_, x)| x.clone()).collect(),
@@ -2720,5 +2868,55 @@ mod tests {
             .cloned()
             .unwrap_or_default();
         assert!(message.contains("does not match node method"), "{message}");
+    }
+}
+
+#[cfg(all(test, feature = "methods-optimizer"))]
+mod mask_contract_tests {
+    use super::*;
+    use crate::SampleId;
+
+    #[test]
+    fn target_projection_and_observed_row_selection_preserve_identity_and_masks() {
+        let rows = MethodsPlsDataset {
+            sample_ids: (0..3)
+                .map(|i| SampleId::new(format!("s{i}")).unwrap())
+                .collect(),
+            x: MethodsPlsMatrix {
+                rows: 3,
+                cols: 1,
+                values: vec![10., 20., 30.],
+            },
+            y: Some(MethodsPlsMatrix {
+                rows: 3,
+                cols: 2,
+                values: vec![1., 11., 2., 0., 0., 13.],
+            }),
+            target_names: vec!["protein".into(), "moisture".into()],
+            y_validity_masks: Some(vec![vec![true, true], vec![true, false], vec![false, true]]),
+        };
+        rows.validate("fixture", true).unwrap();
+        let projected = target_column(&rows, 1).unwrap();
+        assert_eq!(projected.target_names, vec!["moisture"]);
+        assert_eq!(projected.y.as_ref().unwrap().values, vec![11., 0., 13.]);
+        assert_eq!(
+            projected.y_validity_masks,
+            Some(vec![vec![true], vec![false], vec![true]])
+        );
+        let observed = keep_rows(&projected, &[true, false, true]);
+        assert_eq!(
+            observed.sample_ids,
+            vec![rows.sample_ids[0].clone(), rows.sample_ids[2].clone()]
+        );
+        assert_eq!(observed.x.values, vec![10., 30.]);
+        assert_eq!(observed.y.unwrap().values, vec![11., 13.]);
+        assert!(target_column(&rows, 2).is_err());
+        let mut malformed = rows.clone();
+        malformed.y_validity_masks = Some(vec![vec![true]; 3]);
+        assert!(malformed.validate("fixture", true).is_err());
+        malformed.y_validity_masks = Some(vec![vec![true, true]; 2]);
+        assert!(malformed.validate("fixture", true).is_err());
+        malformed.y = None;
+        assert!(malformed.validate("fixture", false).is_err());
     }
 }
