@@ -192,6 +192,9 @@ class OctaveWorker:
                       "release": "release_hydrated_artifact_payload"}
         self.calls.append({"operation": operation})
         task = {**message, "operation": operations[operation], "schema_version": 1}
+        if operation == "hydrate" and isinstance(task["payload"], (bytes, bytearray, memoryview)):
+            # Native Python callbacks supply bytes; the Octave JSONL wire uses u8 arrays.
+            task["payload"] = list(bytes(task["payload"]))
         response = self.frame("portable_artifact", task=task)
         require(response.get("type") == "portable_artifact", "Invalid Octave artifact frame")
         result = response["result"]
