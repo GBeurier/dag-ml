@@ -4,6 +4,7 @@
 
 - Reduce TCV1 canonicalization allocations for ASCII strings, borrowed values and object keys while preserving canonical bytes and validation.
 - Stream stable JSON arrays and structures into one output buffer; preserve sorted map keys and serde JSON scalar encoding.
+- Restore the output buffer after failed child serialization so custom serializers can recover and continue arrays, structs and enum variants.
 - Share direct hexadecimal encoding across campaign, prediction and provenance hashes; preserve all hash bytes.
 - Refresh the Python extension and current source-bound training/replay packs for this implementation.
 
