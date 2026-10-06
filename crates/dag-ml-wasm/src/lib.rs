@@ -104,6 +104,17 @@ pub fn derive_controller_manifest_list_json(
     serde_json::to_string(&manifests).map_err(js_serde_error)
 }
 
+/// Sign a descriptor whose native facts were inspected by the owning bridge.
+/// Consumers must reinspect N4ME bytes before accepting this descriptor.
+#[wasm_bindgen]
+pub fn native_estimator_descriptor_json(json: &str) -> Result<String, JsValue> {
+    let mut descriptor: dag_ml_core::NativeEstimatorDescriptorV1 =
+        serde_json::from_str(json).map_err(js_serde_error)?;
+    descriptor.descriptor_fingerprint = descriptor.compute_fingerprint().map_err(js_core_error)?;
+    descriptor.validate().map_err(js_core_error)?;
+    serde_json::to_string(&descriptor).map_err(js_serde_error)
+}
+
 /// One HostControllerSpec per graph role of an n4m method manifest
 /// (`n4m_method_manifest_json`).
 #[wasm_bindgen]
