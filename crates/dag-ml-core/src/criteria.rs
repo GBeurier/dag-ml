@@ -1165,77 +1165,72 @@ pub fn builtin_loss_catalog() -> Result<BTreeMap<String, LossSpec>> {
 }
 
 pub fn builtin_metric_catalog() -> Result<BTreeMap<String, MetricSpec>> {
-    let all_levels = BTreeSet::from([
-        PredictionLevel::Observation,
-        PredictionLevel::Sample,
-        PredictionLevel::Target,
-        PredictionLevel::Group,
-    ]);
-    let target_prediction = BTreeSet::from([CriterionInput::Target, CriterionInput::Prediction]);
-    let decomposable = BTreeSet::from([MetricCapability::Decomposable]);
-    let mut specs = Vec::new();
-    for (name, objective) in [
-        ("mse", MetricObjective::Minimize),
-        ("rmse", MetricObjective::Minimize),
-        ("mae", MetricObjective::Minimize),
-        ("r2", MetricObjective::Maximize),
-    ] {
-        specs.push(MetricSpec::new(
-            format!("dagml.metric.{name}@1"),
-            SemanticSpecKind::BuiltIn,
+    [
+        "mse",
+        "rmse",
+        "mae",
+        "r2",
+        "accuracy",
+        "balanced_accuracy",
+        "f1",
+    ]
+    .into_iter()
+    .map(|name| {
+        let spec = builtin_metric_spec(name)?;
+        Ok((spec.metric_id.clone(), spec))
+    })
+    .collect()
+}
+
+pub(crate) fn builtin_metric_spec(name: &str) -> Result<MetricSpec> {
+    let (task_kinds, prediction_kind, objective) = match name {
+        "mse" | "rmse" | "mae" => (
             BTreeSet::from([LearningTaskKind::Regression]),
-            BTreeSet::from([PredictionKind::RegressionPoint]),
-            objective,
-            all_levels.clone(),
-            MetricDecomposition::PerOutput,
-            MetricReduction::Mean,
-            target_prediction.clone(),
-            decomposable.clone(),
-            empty_parameters(),
-        )?);
-    }
-    for (name, tasks) in [
-        (
-            "accuracy",
+            PredictionKind::RegressionPoint,
+            MetricObjective::Minimize,
+        ),
+        "r2" => (
+            BTreeSet::from([LearningTaskKind::Regression]),
+            PredictionKind::RegressionPoint,
+            MetricObjective::Maximize,
+        ),
+        "accuracy" => (
             BTreeSet::from([
                 LearningTaskKind::BinaryClassification,
                 LearningTaskKind::MulticlassClassification,
                 LearningTaskKind::MultilabelClassification,
             ]),
-        ),
-        (
-            "balanced_accuracy",
-            BTreeSet::from([
-                LearningTaskKind::BinaryClassification,
-                LearningTaskKind::MulticlassClassification,
-            ]),
-        ),
-        (
-            "f1",
-            BTreeSet::from([
-                LearningTaskKind::BinaryClassification,
-                LearningTaskKind::MulticlassClassification,
-            ]),
-        ),
-    ] {
-        specs.push(MetricSpec::new(
-            format!("dagml.metric.{name}@1"),
-            SemanticSpecKind::BuiltIn,
-            tasks,
-            BTreeSet::from([PredictionKind::ClassLabel]),
+            PredictionKind::ClassLabel,
             MetricObjective::Maximize,
-            all_levels.clone(),
-            MetricDecomposition::PerOutput,
-            MetricReduction::Mean,
-            target_prediction.clone(),
-            decomposable.clone(),
-            empty_parameters(),
-        )?);
-    }
-    Ok(specs
-        .into_iter()
-        .map(|spec| (spec.metric_id.clone(), spec))
-        .collect())
+        ),
+        "balanced_accuracy" | "f1" => (
+            BTreeSet::from([
+                LearningTaskKind::BinaryClassification,
+                LearningTaskKind::MulticlassClassification,
+            ]),
+            PredictionKind::ClassLabel,
+            MetricObjective::Maximize,
+        ),
+        _ => return contract_error(format!("missing `dagml.metric.{name}@1` catalog entry")),
+    };
+    MetricSpec::new(
+        format!("dagml.metric.{name}@1"),
+        SemanticSpecKind::BuiltIn,
+        task_kinds,
+        BTreeSet::from([prediction_kind]),
+        objective,
+        BTreeSet::from([
+            PredictionLevel::Observation,
+            PredictionLevel::Sample,
+            PredictionLevel::Target,
+            PredictionLevel::Group,
+        ]),
+        MetricDecomposition::PerOutput,
+        MetricReduction::Mean,
+        BTreeSet::from([CriterionInput::Target, CriterionInput::Prediction]),
+        BTreeSet::from([MetricCapability::Decomposable]),
+        empty_parameters(),
+    )
 }
 
 fn empty_parameters() -> serde_json::Value {
@@ -1485,6 +1480,53 @@ mod tests {
             MetricObjective::Maximize
         );
         assert!(metrics.values().all(|spec| spec.validate().is_ok()));
+    }
+
+    #[test]
+    fn built_in_metric_fingerprints_preserve_published_040_contracts() {
+        // These fingerprints come from the published v0.3.40 catalog, independently
+        // of the single-spec constructor used by the current implementation.
+        let expected = [
+            (
+                "accuracy",
+                "bda774f8fbcceff87cffe56e9b30db015b4707157142a21e0fc93c04c20eb055",
+            ),
+            (
+                "balanced_accuracy",
+                "6c16f18df87d2e2fce63603907fdb815e964dcc802c387c16f218cd455e99710",
+            ),
+            (
+                "f1",
+                "6331b29d59f6660d068d84f48b4c4c296d8503fdea189d6f560fa779da6fe4c2",
+            ),
+            (
+                "mae",
+                "8e08e1d15a7edc72b7f59ca8a6a72034d02df8bdbb0395636238b378366184bc",
+            ),
+            (
+                "mse",
+                "2d2016f07d835dc5ed7dd2633ce56b201c0c5e7cecafc280bafd75ac0d96ff15",
+            ),
+            (
+                "r2",
+                "4aa7324acd39aafd0459c6c77c592f76884ebd0bfb0bea34bbce0b222d0c1cb2",
+            ),
+            (
+                "rmse",
+                "f66db39bc6ca937d167bea3d77306270fa394d0076539609b645cb3a33bab059",
+            ),
+        ];
+        let catalog = builtin_metric_catalog().unwrap();
+        assert_eq!(catalog.len(), expected.len());
+        for (name, fingerprint) in expected {
+            let spec = builtin_metric_spec(name).unwrap();
+            assert_eq!(spec.spec_fingerprint, fingerprint, "{name}");
+            assert_eq!(spec, catalog[&format!("dagml.metric.{name}@1")]);
+        }
+        assert!(builtin_metric_spec("unknown")
+            .unwrap_err()
+            .to_string()
+            .contains("missing `dagml.metric.unknown@1` catalog entry"));
     }
 
     #[test]

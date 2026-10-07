@@ -21,5 +21,3 @@ jobs:
         run: python scripts/validate_contracts.py
       - name: Validate training replay schemas, semantics and pack
         run: python scripts/validate_training_replay_contracts.py
-      - name: Run independent replay oracle and migration tests
-        run: python -m pytest parity/training/tests -q

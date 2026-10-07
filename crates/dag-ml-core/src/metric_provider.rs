@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::aggregation::PredictionUnitId;
 use crate::criteria::{
-    builtin_metric_catalog, fingerprint_without, validate_fingerprint, validate_token,
-    CriterionInput, ImplementationCapability, ImplementationDescriptor, ImplementationSemanticKind,
+    builtin_metric_spec, fingerprint_without, validate_fingerprint, validate_token, CriterionInput,
+    ImplementationCapability, ImplementationDescriptor, ImplementationSemanticKind,
     LearningTaskKind, MetricDecomposition, MetricReduction, MetricReference, PortabilityClass,
     ReplayabilityClass,
 };
@@ -151,7 +151,9 @@ impl MetricEvaluationTask {
             task_fingerprint: String::new(),
         };
         task.task_fingerprint = task.compute_fingerprint()?;
-        task.validate()?;
+        // This owned task cannot change between minting the fingerprint and these
+        // checks. Public validation still recomputes fingerprints for caller data.
+        task.validate_fields()?;
         Ok(task)
     }
 
@@ -169,7 +171,13 @@ impl MetricEvaluationTask {
         fingerprint_without(self, "task_fingerprint", "metric evaluation task")
     }
 
-    pub fn validate(&self) -> Result<()> {
+    // The token is private, short-lived and owns only an immutable borrow.
+    fn validated(&self) -> Result<ValidatedMetricTask<'_>> {
+        self.validate()?;
+        Ok(ValidatedMetricTask { task: self })
+    }
+
+    fn validate_fields(&self) -> Result<()> {
         if self.schema_version != METRIC_EVALUATION_TASK_SCHEMA_VERSION {
             return task_error(format!(
                 "metric evaluation task schema_version {} is unsupported",
@@ -224,6 +232,11 @@ impl MetricEvaluationTask {
             ));
         }
         validate_optional_inputs(self, row_count, target_width)?;
+        Ok(())
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        self.validate_fields()?;
         validate_fingerprint("metric evaluation task", &self.task_fingerprint)?;
         let expected = self.compute_fingerprint()?;
         if self.task_fingerprint != expected {
@@ -234,6 +247,11 @@ impl MetricEvaluationTask {
         }
         Ok(())
     }
+}
+
+#[derive(Clone, Copy)]
+struct ValidatedMetricTask<'a> {
+    task: &'a MetricEvaluationTask,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -261,11 +279,11 @@ pub struct MetricEvaluationResult {
 }
 
 impl MetricEvaluationResult {
-    pub fn for_task(
+    fn unvalidated_for_task(
         task: &MetricEvaluationTask,
         values: Vec<MetricEvaluationValue>,
-    ) -> Result<Self> {
-        let mut result = Self {
+    ) -> Self {
+        Self {
             schema_version: METRIC_EVALUATION_RESULT_SCHEMA_VERSION,
             request_id: task.request_id.clone(),
             semantic_id: task.metric.spec.metric_id.clone(),
@@ -279,9 +297,26 @@ impl MetricEvaluationResult {
             scope: task.scope.clone(),
             values,
             result_fingerprint: String::new(),
-        };
+        }
+    }
+
+    pub fn for_task(
+        task: &MetricEvaluationTask,
+        values: Vec<MetricEvaluationValue>,
+    ) -> Result<Self> {
+        let mut result = Self::unvalidated_for_task(task, values);
         result.result_fingerprint = result.compute_fingerprint()?;
         result.validate_against(task)?;
+        Ok(result)
+    }
+
+    fn for_validated_task(
+        task: ValidatedMetricTask<'_>,
+        values: Vec<MetricEvaluationValue>,
+    ) -> Result<Self> {
+        let mut result = Self::unvalidated_for_task(task.task, values);
+        result.result_fingerprint = result.compute_fingerprint()?;
+        result.validate_against_validated(task)?;
         Ok(result)
     }
 
@@ -300,7 +335,11 @@ impl MetricEvaluationResult {
     }
 
     pub fn validate_against(&self, task: &MetricEvaluationTask) -> Result<()> {
-        task.validate()?;
+        self.validate_against_validated(task.validated()?)
+    }
+
+    fn validate_against_validated(&self, validated: ValidatedMetricTask<'_>) -> Result<()> {
+        let task = validated.task;
         if self.schema_version != METRIC_EVALUATION_RESULT_SCHEMA_VERSION {
             return result_error(format!(
                 "metric evaluation result schema_version {} is unsupported",
@@ -343,6 +382,11 @@ impl MetricEvaluationResult {
         self.reduce(task)
     }
 
+    fn aggregate_for_validated_task(&self, task: ValidatedMetricTask<'_>) -> Result<f64> {
+        self.validate_against_validated(task)?;
+        self.reduce(task.task)
+    }
+
     fn reduce(&self, task: &MetricEvaluationTask) -> Result<f64> {
         let value = match task.metric.spec.reduction {
             MetricReduction::Global => self.values[0].value,
@@ -382,9 +426,14 @@ pub trait MetricProvider: Send + Sync {
     fn evaluate(&self, task: &MetricEvaluationTask) -> Result<MetricEvaluationResult>;
 }
 
+enum RegisteredMetricProvider {
+    External(Arc<dyn MetricProvider>),
+    BuiltIn(BuiltinMetricProvider),
+}
+
 #[derive(Default)]
 pub struct MetricProviderRegistry {
-    providers: LocalImplementationRegistry<Arc<dyn MetricProvider>>,
+    providers: LocalImplementationRegistry<RegisteredMetricProvider>,
 }
 
 impl MetricProviderRegistry {
@@ -392,6 +441,14 @@ impl MetricProviderRegistry {
         &mut self,
         descriptor: ImplementationDescriptor,
         provider: Arc<dyn MetricProvider>,
+    ) -> Result<()> {
+        self.register_entry(descriptor, RegisteredMetricProvider::External(provider))
+    }
+
+    fn register_entry(
+        &mut self,
+        descriptor: ImplementationDescriptor,
+        provider: RegisteredMetricProvider,
     ) -> Result<()> {
         descriptor.validate()?;
         if descriptor.semantic_kind != ImplementationSemanticKind::Metric {
@@ -401,21 +458,21 @@ impl MetricProviderRegistry {
     }
 
     pub fn evaluate(&self, task: &MetricEvaluationTask) -> Result<ValidatedMetricEvaluation> {
-        task.validate()?;
+        let validated = task.validated()?;
         let provider = self.providers.resolve_metric(&task.metric)?;
-        let result = provider.evaluate(task)?;
-        let aggregate = result.aggregate_for_task(task)?;
+        let result = match provider {
+            RegisteredMetricProvider::External(provider) => provider.evaluate(task)?,
+            RegisteredMetricProvider::BuiltIn(provider) => {
+                provider.evaluate_validated(validated)?
+            }
+        };
+        let aggregate = result.aggregate_for_validated_task(validated)?;
         Ok(ValidatedMetricEvaluation { result, aggregate })
     }
 }
 
 pub fn builtin_metric_reference(metric: RegressionMetricKind) -> Result<MetricReference> {
-    let metric_id = format!("dagml.metric.{}@1", metric.name());
-    let spec = builtin_metric_catalog()?
-        .remove(&metric_id)
-        .ok_or_else(|| {
-            DagMlError::CampaignValidation(format!("missing `{metric_id}` catalog entry"))
-        })?;
+    let spec = builtin_metric_spec(metric.name())?;
     let implementation = ImplementationDescriptor::new(
         ImplementationSemanticKind::Metric,
         &spec.metric_id,
@@ -451,9 +508,9 @@ pub fn builtin_metric_registry() -> Result<MetricProviderRegistry> {
         RegressionMetricKind::F1,
     ] {
         let reference = builtin_metric_reference(metric)?;
-        registry.register(
+        registry.register_entry(
             reference.implementation,
-            Arc::new(BuiltinMetricProvider { metric }),
+            RegisteredMetricProvider::BuiltIn(BuiltinMetricProvider { metric }),
         )?;
     }
     Ok(registry)
@@ -463,8 +520,8 @@ struct BuiltinMetricProvider {
     metric: RegressionMetricKind,
 }
 
-impl MetricProvider for BuiltinMetricProvider {
-    fn evaluate(&self, task: &MetricEvaluationTask) -> Result<MetricEvaluationResult> {
+impl BuiltinMetricProvider {
+    fn evaluate_values(&self, task: &MetricEvaluationTask) -> Result<Vec<MetricEvaluationValue>> {
         let expected_id = format!("dagml.metric.{}@1", self.metric.name());
         if task.metric.spec.metric_id != expected_id {
             return result_error(format!(
@@ -489,7 +546,17 @@ impl MetricProvider for BuiltinMetricProvider {
                     value,
                 })
                 .collect();
-        MetricEvaluationResult::for_task(task, values)
+        Ok(values)
+    }
+
+    fn evaluate_validated(&self, task: ValidatedMetricTask<'_>) -> Result<MetricEvaluationResult> {
+        MetricEvaluationResult::for_validated_task(task, self.evaluate_values(task.task)?)
+    }
+}
+
+impl MetricProvider for BuiltinMetricProvider {
+    fn evaluate(&self, task: &MetricEvaluationTask) -> Result<MetricEvaluationResult> {
+        MetricEvaluationResult::for_task(task, self.evaluate_values(task)?)
     }
 }
 
@@ -626,6 +693,8 @@ fn result_error<T>(message: impl Into<String>) -> Result<T> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use serde_json::json;
 
     use super::*;
@@ -831,6 +900,179 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("descriptor"));
+    }
+
+    #[test]
+    fn public_task_and_result_apis_reject_mutation_and_preserve_error_order() {
+        let task = custom_task();
+        let result = BiasProvider.evaluate(&task).unwrap();
+        let mut tampered = task.clone();
+        tampered.predictions[0][0] += 1.0;
+        let expected = tampered.validate().unwrap_err().to_string();
+        assert!(expected.contains("task fingerprint mismatch"));
+        assert_eq!(
+            result.validate_against(&tampered).unwrap_err().to_string(),
+            expected
+        );
+        assert_eq!(
+            result
+                .aggregate_for_task(&tampered)
+                .unwrap_err()
+                .to_string(),
+            expected
+        );
+        assert_eq!(
+            MetricEvaluationResult::from_json_for_task(
+                &serde_json::to_string(&result).unwrap(),
+                &tampered,
+            )
+            .unwrap_err()
+            .to_string(),
+            expected,
+        );
+        assert_eq!(
+            MetricEvaluationResult::for_task(&tampered, result.values.clone())
+                .unwrap_err()
+                .to_string(),
+            expected,
+        );
+        assert_eq!(
+            MetricEvaluationTask::from_json(&serde_json::to_string(&tampered).unwrap())
+                .unwrap_err()
+                .to_string(),
+            expected,
+        );
+
+        // Field errors retain priority over both non-finite matrices and hashes.
+        tampered.request_id = String::new();
+        tampered.predictions[0][0] = f64::NAN;
+        tampered.task_fingerprint = String::new();
+        let first = tampered.validate().unwrap_err().to_string();
+        assert!(first.contains("request_id"));
+        assert_eq!(
+            result.validate_against(&tampered).unwrap_err().to_string(),
+            first
+        );
+        assert_eq!(
+            MetricEvaluationTask::new(
+                "",
+                task.metric.clone(),
+                task.task_kind,
+                task.prediction_kind,
+                task.scope.clone(),
+                task.unit_ids.clone(),
+                tampered.predictions,
+                task.targets.clone(),
+                task.output_ids.clone(),
+                None,
+                None,
+                None,
+            )
+            .unwrap_err()
+            .to_string(),
+            first,
+        );
+
+        let mut duplicate = task;
+        duplicate.unit_ids[1] = duplicate.unit_ids[0].clone();
+        duplicate.predictions[0][0] = f64::NAN;
+        assert!(duplicate
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("duplicate unit ids"));
+    }
+
+    struct ReturningProvider {
+        result: MetricEvaluationResult,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl MetricProvider for ReturningProvider {
+        fn evaluate(&self, _: &MetricEvaluationTask) -> Result<MetricEvaluationResult> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(self.result.clone())
+        }
+    }
+
+    #[test]
+    fn externally_registered_builtin_descriptor_keeps_all_result_guards() {
+        let mut task = custom_task();
+        task.metric = builtin_metric_reference(RegressionMetricKind::Rmse).unwrap();
+        task.task_fingerprint = task.compute_fingerprint().unwrap();
+        let valid = builtin_metric_registry()
+            .unwrap()
+            .evaluate(&task)
+            .unwrap()
+            .result;
+        let mut cases = Vec::new();
+        let mut result = valid.clone();
+        result.values[0].value = f64::NAN;
+        cases.push((result, "non-finite"));
+        let mut result = valid.clone();
+        result.request_id.push_str(":substituted");
+        result.result_fingerprint = result.compute_fingerprint().unwrap();
+        cases.push((result, "identity/fingerprint"));
+        let mut result = valid.clone();
+        result.scope.partition = PredictionPartition::Test;
+        result.result_fingerprint = result.compute_fingerprint().unwrap();
+        cases.push((result, "scope"));
+        let mut result = valid.clone();
+        result.values[0].output_id = Some("unknown".to_string());
+        result.result_fingerprint = result.compute_fingerprint().unwrap();
+        cases.push((result, "scope/order"));
+        let mut result = valid.clone();
+        result.values.clear();
+        result.result_fingerprint = result.compute_fingerprint().unwrap();
+        cases.push((result, "returned no values"));
+        let mut result = valid.clone();
+        result.values.push(result.values[0].clone());
+        result.result_fingerprint = result.compute_fingerprint().unwrap();
+        cases.push((result, "coverage"));
+        let mut result = valid.clone();
+        result.result_fingerprint = "0".repeat(64);
+        cases.push((result, "result fingerprint mismatch"));
+        for (result, expected) in cases {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let mut registry = MetricProviderRegistry::default();
+            registry
+                .register(
+                    task.metric.implementation.clone(),
+                    Arc::new(ReturningProvider {
+                        result,
+                        calls: Arc::clone(&calls),
+                    }),
+                )
+                .unwrap();
+            assert!(
+                registry
+                    .evaluate(&task)
+                    .unwrap_err()
+                    .to_string()
+                    .contains(expected),
+                "{expected}"
+            );
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+        }
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut registry = MetricProviderRegistry::default();
+        registry
+            .register(
+                task.metric.implementation.clone(),
+                Arc::new(ReturningProvider {
+                    result: valid,
+                    calls: Arc::clone(&calls),
+                }),
+            )
+            .unwrap();
+        task.predictions[0][0] += 1.0;
+        assert!(registry
+            .evaluate(&task)
+            .unwrap_err()
+            .to_string()
+            .contains("task fingerprint mismatch"));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 
     #[cfg(dag_ml_workspace_contract_fixtures)]
