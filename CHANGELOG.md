@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.41
+
+- Reduce repeated built-in metric construction and validation during native scoring by reusing a validated immutable task.
+- Preserve published metric fingerprints, public task/result checks, external-provider validation and refusal order.
+- Add regression coverage for all seven built-in metric specifications and adversarial task/provider mutations.
+
 ## 0.3.40
 
 - Reduce TCV1 canonicalization allocations for ASCII strings, borrowed values and object keys while preserving canonical bytes and validation.

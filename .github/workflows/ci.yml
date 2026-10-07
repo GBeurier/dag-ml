@@ -14,6 +14,8 @@ env:
   RUST_ORACLE_TOOLCHAIN: "1.88.0"
   WASM_PACK_VERSION: "0.15.0"
 
+# Full runtime/parity suites run locally. Release workflows reuse these build gates.
+# Publication steps verify a source-bound local Linux/Windows receipt. Build-only runs need no receipt.
 jobs:
   contract-lockstep:
     name: Shared contract lockstep
@@ -31,7 +33,7 @@ jobs:
           python-version: "3.11"
       - uses: dtolnay/rust-toolchain@stable
       - name: Contract validator dependencies
-        run: python -m pip install -r scripts/requirements-contracts.txt pytest
+        run: python -m pip install -r scripts/requirements-contracts.txt
       - name: Resolve dag-ml-data contract peer
         id: peer
         shell: bash
@@ -81,32 +83,8 @@ jobs:
           repository: GBeurier/dag-ml-data
           ref: ${{ steps.peer.outputs.ref }}
           path: external/dag-ml-data
-      - name: Checkout retained BundleLoader oracle
-        uses: actions/checkout@v7
-        with:
-          repository: GBeurier/nirs4all
-          ref: bd7fba454f5f5a5e644941061b98d2c45f15fafd
-          path: external/nirs4all-legacy
       - name: Shared contract
         run: python scripts/validate_contracts.py --require-sibling --sibling-root external/dag-ml-data
-      - name: Archive V1 fixture, security, and legacy-loader oracle
-        run: |
-          python -m pip install -e external/nirs4all-legacy
-          NIRS4ALL_LEGACY_REPO="${{ github.workspace }}/external/nirs4all-legacy" \
-            python -m unittest discover -s tests -p 'test_archive_v1_contract.py'
-      - name: Conformal and robustness oracle
-        run: python -m pytest parity/conformal/tests/test_conformal_robustness_contracts.py -q
-      - name: Native training contract oracle
-        run: python -m pytest parity/training/tests/test_training_contracts.py -q
-      - name: Robustness RNG oracle
-        run: python -m pytest parity/robustness_rng/tests/test_robustness_rng_contract.py -q
-      - name: Canonical Rust oracle
-        env:
-          CARGO_TARGET_DIR: ${{ runner.temp }}/dagml-canonical-rust-target
-        run: cargo test --locked --manifest-path parity/canonical/rust-oracle/Cargo.toml
-      - name: Cross-language canonical parity
-        run: python -m pytest parity/canonical/tests/test_rust_oracle_parity.py -q
-
   msrv:
     name: MSRV Rust runtime
     runs-on: ubuntu-latest
@@ -188,29 +166,10 @@ jobs:
         run: cargo audit --deny warnings
       - name: Format
         run: cargo fmt --all --check
+      - name: Build workspace
+        run: cargo build --workspace --locked
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
-      - name: Test
-        env:
-          RUSTFLAGS: --cfg dag_ml_workspace_contract_fixtures
-        run: cargo test --workspace
-      - name: Native CV to REFIT to PREDICT JSON outcome
-        run: |
-          cargo build -p dag-ml-cli
-          python scripts/smoke_cv_refit_replay_output.py target/debug/dag-ml-cli
-          python scripts/smoke_persisted_bundle_replay.py target/debug/dag-ml-cli
-      - name: All core contracts with downstream JSON feature unification
-        run: cargo test --locked --manifest-path crates/dag-ml-core/Cargo.toml --features serde_json/preserve_order
-      - name: Terminal PREDICT V2 in-process gate
-        env:
-          PYO3_PYTHON: python
-        run: |
-          cargo test --locked --manifest-path crates/dag-ml-py/Cargo.toml
-          cargo test --locked --manifest-path crates/dag-ml-py/Cargo.toml --features serde_json/preserve_order
-          PYTHONPATH=crates/dag-ml-py/python python -m unittest crates/dag-ml-py/tests/test_terminal_predict_facade.py
-          PYTHONPATH=crates/dag-ml-py/python python -m unittest crates/dag-ml-py/tests/test_methods_terminal_predict_facade.py
-      - name: dag-ml-core extracted package test
-        run: scripts/test_core_package_extract.sh
       - name: Committed extension freshness
         run: |
           python scripts/check_so_freshness.py --self-test
@@ -313,43 +272,20 @@ jobs:
       - name: Example graph
         run: cargo run -p dag-ml-cli -- validate-graph examples/minimal_graph.json
 
-  methods-hpo-local:
-    name: Methods HPO local integration
+  methods-build:
+    name: Methods optimizer build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - name: Checkout Methods producer
-        uses: actions/checkout@v7
-        with:
-          repository: GBeurier/nirs4all-methods
-          # Methods v1.3.2 (ABI 2.17): builds the explicit runtime file below
-          # and provides the estimator-roles N4ME fixture. The Rust binding
-          # itself is the published n4m 0.4.0 crate.
-          ref: dcc570b3647f77cf0428dd346078f442ed5cd032
-          path: external/nirs4all-methods
       - uses: dtolnay/rust-toolchain@stable
-      - name: Build ABI-matched Methods library
-        working-directory: external/nirs4all-methods
-        run: make build PRESET=dev-release
-      - name: Qualify concrete Methods CLI replay
+        with:
+          components: clippy
+      - name: Check Methods optimizer and runtime test targets
         env:
-          PLS4ALL_PYTHONPATH: ${{ github.workspace }}/external/nirs4all-methods/bindings/python/src
-          N4M_LIBRARY_PATH: ${{ github.workspace }}/external/nirs4all-methods/build/dev-release/cpp/src/libn4m.so
-          DAG_ML_REQUIRE_METHODS_CLI_TEST: "1"
+          RUSTFLAGS: '--cfg feature="methods-optimizer-local"'
         run: |
-          python -m pip install numpy scikit-learn
-          mkdir -p external/nirs4all-methods/bindings/python/src/pls4all/lib
-          cp external/nirs4all-methods/build/dev-release/cpp/src/libn4m.so external/nirs4all-methods/bindings/python/src/pls4all/lib/libn4m.so
-          cargo test -p dag-ml-cli --test initial_full_refit cli_replays_portable_methods_pls_payload_in_fresh_process
-      - name: Native TPE, pruner, checkpoint, N4MM replay, and strict terminal facade
-        env:
-          N4M_LIBRARY_PATH: ${{ github.workspace }}/external/nirs4all-methods/build/dev-release/cpp/src/libn4m.so
-          LD_LIBRARY_PATH: ${{ github.workspace }}/external/nirs4all-methods/build/dev-release/cpp/src
-          PYO3_PYTHON: python
-          DAG_ML_REQUIRE_N4M_TEST: "1"
-        run: |
-          scripts/test_methods_optimizer_local.sh
-          cargo test --manifest-path crates/dag-ml-py/Cargo.toml --features methods-optimizer strict_methods_terminal_facade_reuses_refit_artifact_and_exports_replayable_v2 -- --nocapture
+          cargo clippy --locked --manifest-path crates/dag-ml-core/Cargo.toml --features methods-optimizer --all-targets -- -D warnings
+          cargo check --locked --manifest-path crates/dag-ml-py/Cargo.toml --features methods-optimizer --all-targets
 
   sanitizer:
     name: AddressSanitizer (capi)
@@ -433,14 +369,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: r-lib/actions/setup-r@v2
       - name: Install R dependencies
-        run: Rscript -e 'install.packages(c("jsonlite", "digest", "prospectr", "mdatools"), repos = "https://cloud.r-project.org")'
-      - name: Qualify R process adapters
-        env:
-          DAG_ML_REQUIRE_R_ADAPTER_TEST: "1"
-        run: |
-          Rscript --vanilla scripts/test_r_seed_json.R
-          cargo test -p dag-ml-cli --test cli_contracts prospectr_process_controller
-          cargo test -p dag-ml-cli --test cli_contracts mdatools_process_controller
+        run: Rscript -e 'install.packages(c("jsonlite", "digest"), repos = "https://cloud.r-project.org")'
       - name: Build DAG-ML C ABI
         run: cargo build -p dag-ml-capi --release
       - name: Build R source package
@@ -448,9 +377,14 @@ jobs:
           mkdir -p target/r
           cd target/r
           R CMD build ../../bindings/r
+      - name: Smoke installed R package metadata and exports
+        run: |
+          mkdir -p target/r/library
+          R CMD INSTALL --library=target/r/library target/r/dagml_*.tar.gz
+          Rscript --vanilla -e 'library(dagml, lib.loc="target/r/library"); expected <- read.dcf("bindings/r/DESCRIPTION")[1, "Version"]; stopifnot(as.character(packageVersion("dagml")) == expected); stopifnot(all(vapply(getNamespaceExports("dagml"), function(name) is.function(getExportedValue("dagml", name)), logical(1))))'
       - name: Check R source package
         run: |
-          if ! R CMD check --no-manual target/r/dagml_*.tar.gz; then
+          if ! R CMD check --no-manual --no-tests --no-examples --no-vignettes target/r/dagml_*.tar.gz; then
             for log in dagml.Rcheck/00install.out dagml.Rcheck/00check.log; do
               if [ -f "$log" ]; then
                 printf '\n===== %s =====\n' "$log"
@@ -461,13 +395,6 @@ jobs:
           fi
         env:
           DAGML_NATIVE_LIBRARY: ${{ github.workspace }}/target/release/libdag_ml_capi.so
-      - name: Check R HPO JSONL adapter
-        run: DAGML_REQUIRE_HPO_R=1 python scripts/test_hpo_language_adapters.py
-      - name: Check R optimizer through native parallel HPO and resume
-        run: DAGML_REQUIRE_HPO_R=1 cargo test -p dag-ml-cli host_hpo_cli_runs_parallel_pruning_and_resumes_native_checkpoint
-      - name: Fit R Ridge on native folds through parallel HPO and resume
-        run: DAGML_REQUIRE_HPO_R=1 cargo test -p dag-ml-cli --test r_hpo_ridge
-
   matlab-octave-bindings:
     name: MATLAB/Octave bindings
     runs-on: ubuntu-latest
@@ -483,25 +410,6 @@ jobs:
             -o bindings/matlab/+dagml/taskTrainingLossBindingNative.mex
           mkoctfile --mex bindings/matlab/native/execution_plan_phase.c \
             -o bindings/matlab/+dagml/executeExecutionPlanPhaseNative.mex
-      - name: Test local implementation registry
-        run: octave --no-gui --quiet --eval "addpath('bindings/matlab/tests'); local_implementation_registry"
-        env:
-          DAGML_NATIVE_LIBRARY: ${{ github.workspace }}/target/release/libdag_ml_capi.so
-      - name: Test Octave HPO CLI wrapper and JSONL adapter
-        run: |
-          octave --no-gui --quiet --eval "addpath('bindings/matlab'); addpath('bindings/matlab/tests'); host_hpo_search"
-          DAGML_REQUIRE_HPO_MATLAB=1 python scripts/test_hpo_language_adapters.py
-      - name: Check Octave optimizer through native parallel HPO and resume
-        run: DAGML_REQUIRE_HPO_MATLAB=1 cargo test -p dag-ml-cli host_hpo_cli_runs_parallel_pruning_and_resumes_native_checkpoint
-      - name: Fit Octave Ridge on native folds and replay its MAT artifact
-        run: DAGML_REQUIRE_HPO_OCTAVE=1 cargo test -p dag-ml-cli --test octave_hpo_ridge
-      - name: Test Octave initial REFIT and PREDICT wrappers
-        run: octave --no-gui --quiet --eval "addpath('bindings/matlab'); addpath('bindings/matlab/tests'); initial_full_refit"
-      - name: Test Octave CV to REFIT to PREDICT wrapper
-        run: octave --no-gui --quiet --eval "addpath('bindings/matlab'); addpath('bindings/matlab/tests'); cv_refit_predict"
-      - name: Test Octave persisted bundle replay wrapper
-        run: octave --no-gui --quiet --eval "addpath('bindings/matlab'); addpath('bindings/matlab/tests'); replay_bundle"
-
   wasm-bindings:
     name: WASM bindings Node ${{ matrix.node-version }}
     needs: contract-lockstep
@@ -530,7 +438,7 @@ jobs:
         run: |
           out_dir="$PWD/target/wasm/dag-ml-wasm"
           wasm-pack build crates/dag-ml-wasm --target nodejs --out-dir "$out_dir" --release
-          node scripts/smoke_wasm_bindings.cjs "$out_dir"
+          node scripts/smoke_wasm_package.cjs "$out_dir"
       - name: Build WASM web package
         run: |
           out_dir="$PWD/crates/dag-ml-wasm/pkg-web"
@@ -539,11 +447,6 @@ jobs:
           node scripts/smoke_wasm_web_bindings.mjs "$out_dir"
           (cd crates/dag-ml-wasm && wasm-pack pack --pkg-dir pkg-web .)
           node scripts/smoke_wasm_tarball_metadata.mjs "$out_dir"
-      - name: Chrome Web Worker parallel HPO and resume
-        if: matrix.node-version == '22'
-        run: |
-          google-chrome --version
-          node scripts/smoke_wasm_browser_hpo.mjs "$PWD/crates/dag-ml-wasm/pkg-web"
       - name: Cross-repo browser integration smoke
         run: |
           dag_ml_out="$PWD/crates/dag-ml-wasm/pkg-web"

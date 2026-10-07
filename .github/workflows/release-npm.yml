@@ -26,6 +26,9 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -101,6 +104,10 @@ jobs:
             echo "do=false" >> "$GITHUB_OUTPUT"
             echo "Dry-run only (no publish)."
           fi
+
+      - name: Verify local runtime qualification before publication
+        if: steps.gate.outputs.do == 'true'
+        run: python scripts/verify_local_qualification.py --project dag --receipt compat/local-qualification.json --root .
 
       - name: Publish to npm
         if: steps.gate.outputs.do == 'true'

@@ -40,6 +40,10 @@ jobs:
       - name: Validate publish plan
         run: python scripts/release/check_publish_plan.py
 
+      - name: Verify local runtime qualification before publication
+        if: github.event_name != 'workflow_dispatch' || inputs.dry_run == 'false'
+        run: python scripts/verify_local_qualification.py --project dag --receipt compat/local-qualification.json --root .
+
       - name: Publish workspace crates to crates.io
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
