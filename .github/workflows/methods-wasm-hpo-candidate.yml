@@ -1,6 +1,7 @@
-name: Methods-backed WASM HPO candidate
+name: Methods-backed WASM build candidate
 
-# Cross-repository qualification only. No npm or Python package is published.
+# Builds/package smokes only. Full local qualification commands:
+# docs/qualification/methods-candidates-local.md. No package is published.
 on:
   push:
     branches: [main]
@@ -63,8 +64,7 @@ jobs:
           node scripts/stage_wasm_host_adapters.mjs "$PWD/target/wasm/dag-ml-wasm"
           wasm-pack build crates/dag-ml-wasm --target web --out-dir "$PWD/target/wasm-web/dag-ml-wasm" --release
           node scripts/stage_wasm_host_adapters.mjs "$PWD/target/wasm-web/dag-ml-wasm"
-          node scripts/smoke_wasm_bindings.cjs "$PWD/target/wasm/dag-ml-wasm"
-          node scripts/smoke_wasm_web_bindings.mjs "$PWD/target/wasm-web/dag-ml-wasm"
+          node scripts/smoke_wasm_package.cjs "$PWD/target/wasm/dag-ml-wasm"
           node scripts/smoke_wasm_tarball_metadata.mjs "$PWD/target/wasm/dag-ml-wasm"
           node scripts/smoke_wasm_tarball_metadata.mjs "$PWD/target/wasm-web/dag-ml-wasm"
       - name: Build candidate Methods JS/WASM without publishing
@@ -92,40 +92,36 @@ jobs:
               --strict --noEmit --module NodeNext --moduleResolution NodeNext \
               --target ES2022 --lib ESNext,DOM "$consumer/consumer.mts"
           done
-      - name: Fit Ridge with Methods proposals, resume and replay selected refit
+      - name: Check the built Methods module version without fitting
         run: |
-          node scripts/smoke_wasm_n4m_hpo.mjs \
-            "$PWD/target/wasm/dag-ml-wasm" \
-            "$PWD/external/nirs4all-methods/bindings/js/dist"
-      - name: Qualify the public controller and four-source nested OOF search
-        run: |
-          node scripts/test_wasm_n4m_controller.mjs \
-            "$PWD/target/wasm/dag-ml-wasm" \
-            "$PWD/external/nirs4all-methods/bindings/js/dist"
-          node scripts/smoke_wasm_multimodal_methods_hpo.mjs \
-            "$PWD/target/wasm/dag-ml-wasm" \
-            "$PWD/external/nirs4all-methods/bindings/js/dist" \
-            "$RUNNER_TEMP/four-source-receipt.json"
-          node scripts/test_wasm_n4m_controller.mjs \
-            "$PWD/target/wasm-web/dag-ml-wasm" \
-            "$PWD/external/nirs4all-methods/bindings/js/dist"
-          node scripts/smoke_wasm_multimodal_methods_hpo.mjs \
-            "$PWD/target/wasm-web/dag-ml-wasm" \
-            "$PWD/external/nirs4all-methods/bindings/js/dist"
-      - name: Preserve the unchanged four-source qualification capture
+          node --input-type=module - <<'JSCODE'
+          import assert from "node:assert/strict";
+          import fs from "node:fs";
+          import path from "node:path";
+          import { pathToFileURL } from "node:url";
+          const methods = await import(pathToFileURL(path.resolve("external/nirs4all-methods/bindings/js/dist/index.js")));
+          await methods.loadModule();
+          const header = fs.readFileSync("external/nirs4all-methods/cpp/include/n4m/n4m_version.h", "utf8");
+          function versionPart(name) {
+            const match = header.match(new RegExp("^#define\\s+" + name + "\\s+(\\d+)\\s*$", "m"));
+            assert.ok(match, "Missing source version macro: " + name);
+            return Number(match[1]);
+          }
+          const fields = ["MAJOR", "MINOR", "PATCH"];
+          const project = fields.map(field => versionPart("N4M_PROJECT_VERSION_" + field)).join(".");
+          const abi = fields.map(field => versionPart("N4M_ABI_VERSION_" + field));
+          assert.equal(JSON.parse(fs.readFileSync("external/nirs4all-methods/bindings/js/package.json", "utf8")).version, project);
+          assert.deepEqual(methods.abiVersion(), abi);
+          assert.equal(methods.version(), project + "+abi." + abi.join("."));
+          console.log("METHODS_MODULE_VERSION_OK", methods.version(), abi);
+          JSCODE
+      - name: Preserve candidate package build artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: methods-four-source-fixture
-          path: ${{ runner.temp }}/four-source-receipt.json
+          name: methods-wasm-build-candidate
+          path: |
+            target/wasm/dag-ml-wasm
+            target/wasm-web/dag-ml-wasm
+            external/nirs4all-methods/bindings/js/dist
           if-no-files-found: error
           retention-days: 30
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.11"
-      - name: Compare native Python folds and scores with the WASM search
-        run: |
-          python -m pip install maturin 'nirs4all-methods==1.2.1' 'pls4all==1.2.1' numpy scikit-learn
-          python -m maturin build --manifest-path crates/dag-ml-py/Cargo.toml --release --locked --features extension-module --out "$RUNNER_TEMP/dagml-parity-wheels"
-          python -m pip install --force-reinstall --no-deps "$RUNNER_TEMP"/dagml-parity-wheels/*.whl
-          python scripts/qualify_multimodal_methods_hpo_python.py \
-            "$RUNNER_TEMP/four-source-receipt.json" "$RUNNER_TEMP/python-parity.json"
