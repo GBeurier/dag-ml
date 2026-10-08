@@ -1,0 +1,17 @@
+{
+  "command": [
+    "/home/delete/.local/bin/rtk",
+    "proxy",
+    "maturin",
+    "build",
+    "--release",
+    "--locked",
+    "--manifest-path",
+    "crates/dag-ml-py/Cargo.toml",
+    "--out",
+    "/mnt/c/Temp/n4a-dag041-20261008/wheels-terminal-replay"
+  ],
+  "direct_command_exit_code": 0,
+  "seconds": 98.82395630999235,
+  "independent_child_wrapper_pid": 3289847
+}

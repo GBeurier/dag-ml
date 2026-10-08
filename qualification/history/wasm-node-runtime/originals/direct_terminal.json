@@ -1,0 +1,12 @@
+{
+  "command": [
+    "/home/delete/.local/bin/rtk",
+    "proxy",
+    "/home/delete/.nvm/versions/node/v22.21.1/bin/node",
+    "scripts/smoke_wasm_bindings.cjs",
+    "/mnt/c/Temp/n4a-dag041-20261008/wasm-node041"
+  ],
+  "direct_command_exit_code": 0,
+  "seconds": 0.3550096270046197,
+  "independent_child_wrapper_pid": 3361749
+}

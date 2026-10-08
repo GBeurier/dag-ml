@@ -1,0 +1,54 @@
+{
+  "independent_command_terminal": {
+    "command": [
+      "/home/delete/.local/bin/rtk",
+      "proxy",
+      "/home/delete/nirs4all/nirs4all/.venv/bin/python",
+      "scripts/check_error_taxonomy.py"
+    ],
+    "direct_command_exit_code": 0,
+    "seconds": 0.09857274795649573,
+    "independent_child_wrapper_pid": 3292597
+  },
+  "gate": "error-taxonomy",
+  "command": [
+    "/home/delete/.local/bin/rtk",
+    "proxy",
+    "/home/delete/nirs4all/nirs4all/.venv/bin/python",
+    "scripts/check_error_taxonomy.py"
+  ],
+  "exit_code": 0,
+  "stop_reason": null,
+  "seconds": 9.072602602012921,
+  "before": {
+    "target_bytes": 541826962,
+    "other_bytes": 66142961,
+    "free_bytes": 302604349440,
+    "vanished_owned_temporaries": 0
+  },
+  "after": {
+    "target_bytes": 541826962,
+    "other_bytes": 66143836,
+    "free_bytes": 302604345344,
+    "vanished_owned_temporaries": 0
+  },
+  "observed_peak": {
+    "target_bytes": 541826962,
+    "other_bytes": 66143836,
+    "free_bytes": 302604345344,
+    "vanished_owned_temporaries": 0
+  },
+  "functional_source_unchanged": true,
+  "logs": {
+    "stdout.log": {
+      "path": "/mnt/c/Temp/n4a-dag041-20261008/gates/error-taxonomy/stdout.log",
+      "bytes": 52,
+      "sha256": "7726d6651cc65ceff817d049a6602d944b2ec83c70a65148c91acbcb6c5c10b3"
+    },
+    "stderr.log": {
+      "path": "/mnt/c/Temp/n4a-dag041-20261008/gates/error-taxonomy/stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  }
+}

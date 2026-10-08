@@ -1,0 +1,18 @@
+{
+  "command": [
+    "/home/delete/.local/bin/rtk",
+    "proxy",
+    "cargo",
+    "run",
+    "--offline",
+    "--locked",
+    "-p",
+    "dag-ml-cli",
+    "--",
+    "validate-graph",
+    "examples/minimal_graph.json"
+  ],
+  "direct_command_exit_code": 0,
+  "seconds": 31.019839356013108,
+  "independent_child_wrapper_pid": 3312778
+}

@@ -1,0 +1,18 @@
+{
+  "continuity_report": {
+    "bytes": 827,
+    "path": "qualification/history/wheel-metadata/continuity.json",
+    "sha256": "336058294ddde95b8dbc997ee538ac4710c181bb45b1a72f68633411003f3ae7"
+  },
+  "historical_manifest": {
+    "bytes": 3543,
+    "path": "qualification/history/wheel-metadata/historical-manifest.json",
+    "sha256": "3f2c7c9ad2dd3e31c31ea4ebde08259d8654e124781f21e61adb4880ce823050"
+  },
+  "input_fingerprints": {
+    "crates/dag-ml-py/pyproject.toml": "60b1fbffced07868cabb5409321ce6bb89f318e3e1d6310ae29f9efe251c1a88",
+    "scripts/smoke_python_wheel_metadata.py": "cb3d6abd28771651b4d699e0baa2167a9672826737208efa20d51fe97326a97e"
+  },
+  "lineage_format": "controlled-runner-duration.v1",
+  "mode": "inherited"
+}

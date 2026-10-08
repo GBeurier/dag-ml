@@ -1,0 +1,17 @@
+{
+  "command": [
+    "/home/delete/.local/bin/rtk",
+    "proxy",
+    "cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "dag-ml-cli",
+    "--test",
+    "r_hpo_ridge"
+  ],
+  "direct_command_exit_code": 0,
+  "seconds": 6.872813168971334,
+  "independent_child_wrapper_pid": 3341698
+}

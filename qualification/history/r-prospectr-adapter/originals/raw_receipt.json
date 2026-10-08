@@ -1,0 +1,57 @@
+{
+  "gate": "r-prospectr-adapter",
+  "command": [
+    "/home/delete/.local/bin/rtk",
+    "proxy",
+    "cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "dag-ml-cli",
+    "--test",
+    "cli_contracts",
+    "prospectr_process_controller"
+  ],
+  "cwd": "/home/delete/nirs4all/_worktrees/2026-10-07-dag-metric-validation",
+  "exit_code": 0,
+  "direct_terminal": {
+    "command": [
+      "/home/delete/.local/bin/rtk",
+      "proxy",
+      "cargo",
+      "test",
+      "--offline",
+      "--locked",
+      "-p",
+      "dag-ml-cli",
+      "--test",
+      "cli_contracts",
+      "prospectr_process_controller"
+    ],
+    "direct_command_exit_code": 0,
+    "seconds": 35.58530218602391,
+    "independent_child_wrapper_pid": 3338695
+  },
+  "stop_reason": null,
+  "seconds": 47.443676833005156,
+  "observed_peak": {
+    "target_bytes": 5883314547,
+    "other_bytes": 205609570,
+    "free_bytes": 297392041984
+  },
+  "source_tree": "7e77957b89fae7097886d310e71e249dc5eb9c45",
+  "source_unchanged_after": true,
+  "logs": {
+    "stdout.log": {
+      "path": "/mnt/c/Temp/n4a-dag041-20261008/gates/r-prospectr-adapter/stdout.log",
+      "sha256": "ace807a9d69a856d95fd239abb425fd59eaa6b337015cb05a24468b75b8b022f",
+      "bytes": 569
+    },
+    "stderr.log": {
+      "path": "/mnt/c/Temp/n4a-dag041-20261008/gates/r-prospectr-adapter/stderr.log",
+      "sha256": "318d9ee1ca6ea4816ddc94d07f926e236f4b55dde717aa8e66d72f6bdbe698d6",
+      "bytes": 661
+    }
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "command": [
+    "/home/delete/.local/bin/rtk",
+    "proxy",
+    "/mnt/c/Temp/n4a-dag041-20261008/octave-elf-cache/bin/octave",
+    "--no-gui",
+    "--quiet",
+    "--eval",
+    "addpath('/mnt/c/Temp/n4a-dag041-20261008/octave-bindings/tests'); initial_full_refit"
+  ],
+  "direct_command_exit_code": 0,
+  "seconds": 0.7038415640126914,
+  "independent_child_wrapper_pid": 3353845
+}

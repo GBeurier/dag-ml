@@ -1,0 +1,58 @@
+{
+  "independent_command_terminal": {
+    "command": [
+      "/home/delete/.local/bin/rtk",
+      "proxy",
+      "/home/delete/nirs4all/nirs4all/.venv/bin/python",
+      "-m",
+      "unittest",
+      "crates/dag-ml-py/tests/test_terminal_predict_facade.py"
+    ],
+    "direct_command_exit_code": 0,
+    "seconds": 0.08339207799872383,
+    "independent_child_wrapper_pid": 3314411
+  },
+  "gate": "facade",
+  "command": [
+    "/home/delete/.local/bin/rtk",
+    "proxy",
+    "/home/delete/nirs4all/nirs4all/.venv/bin/python",
+    "-m",
+    "unittest",
+    "crates/dag-ml-py/tests/test_terminal_predict_facade.py"
+  ],
+  "exit_code": 0,
+  "stop_reason": null,
+  "seconds": 22.767180983966682,
+  "before": {
+    "target_bytes": 5311921171,
+    "other_bytes": 66871096,
+    "free_bytes": 298011058176,
+    "vanished_owned_temporaries": 0
+  },
+  "after": {
+    "target_bytes": 5311921171,
+    "other_bytes": 66872199,
+    "free_bytes": 298010980352,
+    "vanished_owned_temporaries": 0
+  },
+  "observed_peak": {
+    "target_bytes": 5311921171,
+    "other_bytes": 66872199,
+    "free_bytes": 298011045888,
+    "vanished_owned_temporaries": 0
+  },
+  "functional_source_unchanged": true,
+  "logs": {
+    "stdout.log": {
+      "path": "/mnt/c/Temp/n4a-dag041-20261008/gates/facade/stdout.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "stderr.log": {
+      "path": "/mnt/c/Temp/n4a-dag041-20261008/gates/facade/stderr.log",
+      "bytes": 100,
+      "sha256": "cc4ce8d54ec0f6a2d972abf34157488e5e132e9d71efaebb422979f2bf3356f8"
+    }
+  }
+}

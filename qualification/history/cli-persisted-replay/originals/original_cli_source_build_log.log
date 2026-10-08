@@ -1,0 +1,21 @@
+   Compiling serde_json v1.0.151
+   Compiling tracing-core v0.1.36
+   Compiling regex-syntax v0.8.11
+   Compiling log v0.4.34
+   Compiling lazy_static v1.5.0
+   Compiling thread_local v1.1.10
+   Compiling nu-ansi-term v0.50.3
+   Compiling smallvec v1.15.2
+   Compiling sharded-slab v0.1.7
+   Compiling arrow-ipc v59.3.0
+   Compiling tracing v0.1.44
+   Compiling tracing-log v0.2.0
+   Compiling tracing-serde v0.2.0
+   Compiling regex-automata v0.4.18
+   Compiling dag-ml-core v0.3.41 (/home/delete/nirs4all/_worktrees/2026-10-07-dag-metric-validation/crates/dag-ml-core)
+   Compiling matchers v0.2.0
+   Compiling tracing-subscriber v0.3.23
+   Compiling dag-ml-arrow v0.3.41 (/home/delete/nirs4all/_worktrees/2026-10-07-dag-metric-validation/crates/dag-ml-arrow)
+   Compiling dag-ml-cli v0.3.41 (/home/delete/nirs4all/_worktrees/2026-10-07-dag-metric-validation/crates/dag-ml-cli)
+    Finished `dev` profile [unoptimized] target(s) in 30.86s
+     Running `/mnt/c/Temp/n4a-dag041-20261008/target/debug/dag-ml-cli validate-graph examples/minimal_graph.json`

@@ -1,0 +1,415 @@
+{
+  "fingerprints": [
+    {
+      "family": "dag-ml-core",
+      "path": "/mnt/c/Temp/n4a-dag041-20261008/target/release/.fingerprint/dag-ml-core-d194e1f688978d73/lib-dag_ml_core.json",
+      "sha256": "7a2b273287ec43d32893842f8b0217a9e7f9a8d30a651e825c58f52f10fad417",
+      "features": "[\"default\", \"methods-optimizer\"]",
+      "declared_features": "[\"default\", \"methods-optimizer\"]",
+      "profile": 6706835165384032970,
+      "deps": [
+        [
+          1957009224993739128,
+          "thiserror",
+          false,
+          7740424007405731148
+        ],
+        [
+          5330460842384404171,
+          "serde_json",
+          false,
+          4228293047501471579
+        ],
+        [
+          6557439603276904804,
+          "serde",
+          false,
+          16562943261981307846
+        ],
+        [
+          7477499173016652821,
+          "unicode_normalization",
+          false,
+          16254544799100675246
+        ],
+        [
+          7601204863279997586,
+          "n4m",
+          false,
+          1996206048438477555
+        ],
+        [
+          7738336380555875465,
+          "serde_ignored",
+          false,
+          17695138839196766209
+        ],
+        [
+          9857275760291862238,
+          "sha2",
+          false,
+          6643941000188315093
+        ],
+        [
+          10803948934966270697,
+          "yaml_serde",
+          false,
+          5484127473265747794
+        ],
+        [
+          11774132962602622357,
+          "indexmap",
+          false,
+          13932098505127386292
+        ],
+        [
+          14757622794040968908,
+          "tracing",
+          false,
+          14532086951183148560
+        ]
+      ]
+    },
+    {
+      "family": "dag-ml-results",
+      "path": "/mnt/c/Temp/n4a-dag041-20261008/target/release/.fingerprint/dag-ml-results-f9c3b59de0e71274/lib-dag_ml_results.json",
+      "sha256": "5c85db30b1a4b0265040ae326cf6254c427aac0df1f315f8658ebf98f420e6e6",
+      "features": "[]",
+      "declared_features": "[]",
+      "profile": 2040997289075261528,
+      "deps": [
+        [
+          1957009224993739128,
+          "thiserror",
+          false,
+          7740424007405731148
+        ],
+        [
+          5330460842384404171,
+          "serde_json",
+          false,
+          4228293047501471579
+        ],
+        [
+          6557439603276904804,
+          "serde",
+          false,
+          16562943261981307846
+        ],
+        [
+          9565297005770673577,
+          "arrow_array",
+          false,
+          9860779420699018815
+        ],
+        [
+          9857275760291862238,
+          "sha2",
+          false,
+          6643941000188315093
+        ],
+        [
+          14463375775354195458,
+          "parquet",
+          false,
+          4109126307469861566
+        ],
+        [
+          16661531121686810826,
+          "arrow_schema",
+          false,
+          1489936626292224323
+        ]
+      ]
+    },
+    {
+      "family": "dag-ml-py",
+      "path": "/mnt/c/Temp/n4a-dag041-20261008/target/release/.fingerprint/dag-ml-py-2625a89cf8fe6c46/lib-_dag_ml.json",
+      "sha256": "0e14f66cabca4bbe505b4ebb3800e5a70a74c087c233c85aa7d400e7711d1950",
+      "features": "[\"default\", \"extension-module\", \"methods-optimizer\"]",
+      "declared_features": "[\"default\", \"extension-module\", \"methods-optimizer\"]",
+      "profile": 2040997289075261528,
+      "deps": [
+        [
+          3095596562945164996,
+          "dag_ml_core",
+          false,
+          9609723253953801797
+        ],
+        [
+          3902110657731208025,
+          "pyo3",
+          false,
+          11188947971810081536
+        ],
+        [
+          5330460842384404171,
+          "serde_json",
+          false,
+          4228293047501471579
+        ],
+        [
+          6557439603276904804,
+          "serde",
+          false,
+          16562943261981307846
+        ],
+        [
+          9857275760291862238,
+          "sha2",
+          false,
+          6643941000188315093
+        ],
+        [
+          11912253282650009103,
+          "pythonize",
+          false,
+          17404775035133949129
+        ],
+        [
+          12131300910801502075,
+          "dag_ml_results",
+          false,
+          13898919853657173888
+        ]
+      ]
+    },
+    {
+      "family": "serde_json",
+      "path": "/mnt/c/Temp/n4a-dag041-20261008/target/release/.fingerprint/serde_json-7a9f3ef89a561573/lib-serde_json.json",
+      "sha256": "0e2cb460c1b2d3298d2e7e6219dd3b870316187d12e535bf7439d2b8becc610b",
+      "features": "[\"default\", \"float_roundtrip\", \"indexmap\", \"preserve_order\", \"std\"]",
+      "declared_features": "[\"alloc\", \"arbitrary_precision\", \"default\", \"float_roundtrip\", \"indexmap\", \"preserve_order\", \"raw_value\", \"std\", \"unbounded_depth\"]",
+      "profile": 2040997289075261528,
+      "deps": [
+        [
+          5330460842384404171,
+          "build_script_build",
+          false,
+          16267946332337364319
+        ],
+        [
+          5532778797167691009,
+          "itoa",
+          false,
+          2950526789797795819
+        ],
+        [
+          11029742160753049355,
+          "serde_core",
+          false,
+          17710467868175045928
+        ],
+        [
+          11774132962602622357,
+          "indexmap",
+          false,
+          13932098505127386292
+        ],
+        [
+          12613788554453945248,
+          "memchr",
+          false,
+          7180490990863984766
+        ],
+        [
+          16226529040278277557,
+          "zmij",
+          false,
+          3713696843933183791
+        ]
+      ]
+    },
+    {
+      "family": "pyo3",
+      "path": "/mnt/c/Temp/n4a-dag041-20261008/target/release/.fingerprint/pyo3-557ecefeb3624755/lib-pyo3.json",
+      "sha256": "dcb7b68c7ddef60bfba5ef1b9b02af9afdb48a0fa66b008e0fd1a0b1e285a348",
+      "features": "[\"abi3\", \"abi3-py311\", \"abi3-py312\", \"abi3-py313\", \"abi3-py314\", \"abi3-py315\", \"default\", \"extension-module\", \"macros\", \"pyo3-macros\"]",
+      "declared_features": "[\"abi3\", \"abi3-py310\", \"abi3-py311\", \"abi3-py312\", \"abi3-py313\", \"abi3-py314\", \"abi3-py315\", \"abi3-py38\", \"abi3-py39\", \"abi3t\", \"abi3t-py315\", \"anyhow\", \"arc_lock\", \"auto-initialize\", \"bigdecimal\", \"bytes\", \"chrono\", \"chrono-local\", \"chrono-tz\", \"default\", \"either\", \"experimental-async\", \"experimental-inspect\", \"extension-module\", \"eyre\", \"full\", \"generate-import-lib\", \"hashbrown\", \"indexmap\", \"inventory\", \"jiff-02\", \"lock_api\", \"macros\", \"multiple-pymethods\", \"nightly\", \"num-bigint\", \"num-complex\", \"num-rational\", \"ordered-float\", \"parking_lot\", \"py-clone\", \"pyo3-macros\", \"rust_decimal\", \"serde\", \"smallvec\", \"time\", \"uuid\"]",
+      "profile": 7359083860615168088,
+      "deps": [
+        [
+          3902110657731208025,
+          "build_script_build",
+          false,
+          4952134485779123960
+        ],
+        [
+          4884873376658218508,
+          "pyo3_ffi",
+          false,
+          15903899910432634679
+        ],
+        [
+          5855319743879205494,
+          "once_cell",
+          false,
+          11025988069503770283
+        ],
+        [
+          10504718112287328430,
+          "libc",
+          false,
+          17540553702546917524
+        ],
+        [
+          17624765519746172670,
+          "pyo3_macros",
+          false,
+          802608009824065913
+        ]
+      ]
+    },
+    {
+      "family": "pyo3",
+      "path": "/mnt/c/Temp/n4a-dag041-20261008/target/release/.fingerprint/pyo3-build-config-ef124a54e58cf903/lib-pyo3_build_config.json",
+      "sha256": "40a26f662fa2005e15e15a6b0418e57eebea27eb78bf5ab49b322a7fa8ed8520",
+      "features": "[\"default\", \"extension-module\"]",
+      "declared_features": "[\"default\", \"extension-module\", \"generate-import-lib\", \"resolve-config\"]",
+      "profile": 1369601567987815722,
+      "deps": [
+        [
+          678405767588742021,
+          "target_lexicon",
+          false,
+          3475332853216144736
+        ]
+      ]
+    },
+    {
+      "family": "pyo3",
+      "path": "/mnt/c/Temp/n4a-dag041-20261008/target/release/.fingerprint/pyo3-ffi-58cff318bd81c849/lib-pyo3_ffi.json",
+      "sha256": "fda0b3d51d336de64ed24c44e56ddbaafaf65a7f8377634f159f325aefc0e17b",
+      "features": "[\"abi3\", \"abi3-py311\", \"abi3-py312\", \"abi3-py313\", \"abi3-py314\", \"abi3-py315\", \"default\", \"extension-module\"]",
+      "declared_features": "[\"abi3\", \"abi3-py310\", \"abi3-py311\", \"abi3-py312\", \"abi3-py313\", \"abi3-py314\", \"abi3-py315\", \"abi3-py38\", \"abi3-py39\", \"abi3t\", \"abi3t-py315\", \"default\", \"extension-module\", \"generate-import-lib\"]",
+      "profile": 7359083860615168088,
+      "deps": [
+        [
+          4884873376658218508,
+          "build_script_build",
+          false,
+          5039186540429868597
+        ],
+        [
+          10504718112287328430,
+          "libc",
+          false,
+          17540553702546917524
+        ]
+      ]
+    },
+    {
+      "family": "pyo3",
+      "path": "/mnt/c/Temp/n4a-dag041-20261008/target/release/.fingerprint/pyo3-macros-1f1ce1c457aa8a63/lib-pyo3_macros.json",
+      "sha256": "3b0a01c7d99ab50ae4e46cc9801f6ddb6db2572a9cfe538fc38a4d627bffae11",
+      "features": "[]",
+      "declared_features": "[\"experimental-async\", \"experimental-inspect\", \"multiple-pymethods\"]",
+      "profile": 6248474101653609461,
+      "deps": [
+        [
+          1704242956153263102,
+          "pyo3_macros_backend",
+          false,
+          18335408260643083739
+        ],
+        [
+          8949245912927223590,
+          "quote",
+          false,
+          7415143792760254808
+        ],
+        [
+          10190449710562616856,
+          "syn",
+          false,
+          4843579334821909420
+        ],
+        [
+          16346726298725429545,
+          "proc_macro2",
+          false,
+          15115900461186614744
+        ]
+      ]
+    },
+    {
+      "family": "pyo3",
+      "path": "/mnt/c/Temp/n4a-dag041-20261008/target/release/.fingerprint/pyo3-macros-backend-4a071d23e7a5b7c7/lib-pyo3_macros_backend.json",
+      "sha256": "6434d6c4fa23b44547a556e17a846905f2e335ac4ae39738910445caebb00d24",
+      "features": "[]",
+      "declared_features": "[\"experimental-async\", \"experimental-inspect\"]",
+      "profile": 6248474101653609461,
+      "deps": [
+        [
+          8949245912927223590,
+          "quote",
+          false,
+          7415143792760254808
+        ],
+        [
+          10190449710562616856,
+          "syn",
+          false,
+          4843579334821909420
+        ],
+        [
+          13077543566650298139,
+          "heck",
+          false,
+          7267792789635471866
+        ],
+        [
+          16346726298725429545,
+          "proc_macro2",
+          false,
+          15115900461186614744
+        ]
+      ]
+    },
+    {
+      "family": "pyo3-ffi",
+      "path": "/mnt/c/Temp/n4a-dag041-20261008/target/release/.fingerprint/pyo3-ffi-58cff318bd81c849/lib-pyo3_ffi.json",
+      "sha256": "fda0b3d51d336de64ed24c44e56ddbaafaf65a7f8377634f159f325aefc0e17b",
+      "features": "[\"abi3\", \"abi3-py311\", \"abi3-py312\", \"abi3-py313\", \"abi3-py314\", \"abi3-py315\", \"default\", \"extension-module\"]",
+      "declared_features": "[\"abi3\", \"abi3-py310\", \"abi3-py311\", \"abi3-py312\", \"abi3-py313\", \"abi3-py314\", \"abi3-py315\", \"abi3-py38\", \"abi3-py39\", \"abi3t\", \"abi3t-py315\", \"default\", \"extension-module\", \"generate-import-lib\"]",
+      "profile": 7359083860615168088,
+      "deps": [
+        [
+          4884873376658218508,
+          "build_script_build",
+          false,
+          5039186540429868597
+        ],
+        [
+          10504718112287328430,
+          "libc",
+          false,
+          17540553702546917524
+        ]
+      ]
+    },
+    {
+      "family": "n4m",
+      "path": "/mnt/c/Temp/n4a-dag041-20261008/target/release/.fingerprint/n4m-427379cbe4de406f/lib-n4m.json",
+      "sha256": "0e79bbf8759ab810f961ef2a448ca2e65d50c8f56d98514ac24434739557ef9c",
+      "features": "[\"dynamic\"]",
+      "declared_features": "[\"default\", \"dynamic\", \"linked\"]",
+      "profile": 16042830479834269363,
+      "deps": [
+        [
+          7601204863279997586,
+          "build_script_build",
+          false,
+          5931957145636949488
+        ],
+        [
+          7883780462905440460,
+          "libloading",
+          false,
+          17368592853414685384
+        ]
+      ]
+    }
+  ],
+  "required_public_features_verified": true
+}

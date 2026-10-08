@@ -1,0 +1,56 @@
+{
+  "independent_command_terminal": {
+    "command": [
+      "/home/delete/.local/bin/rtk",
+      "proxy",
+      "/home/delete/nirs4all/nirs4all/.venv/bin/python",
+      "scripts/smoke_python_wheel_metadata.py",
+      "/mnt/c/Temp/n4a-dag041-20261008/wheels/dag_ml-0.3.41-cp311-abi3-manylinux_2_34_x86_64.whl"
+    ],
+    "direct_command_exit_code": 0,
+    "seconds": 0.04528473800746724,
+    "independent_child_wrapper_pid": 3292108
+  },
+  "gate": "wheel-metadata",
+  "command": [
+    "/home/delete/.local/bin/rtk",
+    "proxy",
+    "/home/delete/nirs4all/nirs4all/.venv/bin/python",
+    "scripts/smoke_python_wheel_metadata.py",
+    "/mnt/c/Temp/n4a-dag041-20261008/wheels/dag_ml-0.3.41-cp311-abi3-manylinux_2_34_x86_64.whl"
+  ],
+  "exit_code": 0,
+  "stop_reason": null,
+  "seconds": 9.228095510974526,
+  "before": {
+    "target_bytes": 541826962,
+    "other_bytes": 66128578,
+    "free_bytes": 302604677120,
+    "vanished_owned_temporaries": 0
+  },
+  "after": {
+    "target_bytes": 541826962,
+    "other_bytes": 66129856,
+    "free_bytes": 302604566528,
+    "vanished_owned_temporaries": 0
+  },
+  "observed_peak": {
+    "target_bytes": 541826962,
+    "other_bytes": 66129856,
+    "free_bytes": 302604607488,
+    "vanished_owned_temporaries": 0
+  },
+  "functional_source_unchanged": true,
+  "logs": {
+    "stdout.log": {
+      "path": "/mnt/c/Temp/n4a-dag041-20261008/gates/wheel-metadata/stdout.log",
+      "bytes": 47,
+      "sha256": "3e719a0c37d2c2543090642c9c7fdbc2ecee08be6b102056f0a03152e3acae49"
+    },
+    "stderr.log": {
+      "path": "/mnt/c/Temp/n4a-dag041-20261008/gates/wheel-metadata/stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  }
+}

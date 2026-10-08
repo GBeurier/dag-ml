@@ -1,0 +1,49 @@
+{
+  "gate": "r-source-package-install",
+  "command": [
+    "/home/delete/.local/bin/rtk",
+    "proxy",
+    "/home/delete/miniconda3/bin/R",
+    "CMD",
+    "INSTALL",
+    "--library=/mnt/c/Temp/n4a-dag041-20261008/r-source-local/library",
+    "/mnt/c/Temp/n4a-dag041-20261008/r-source-local/dagml_0.3.41.tar.gz"
+  ],
+  "cwd": "/mnt/c/Temp/n4a-dag041-20261008/r-source-local",
+  "exit_code": 0,
+  "direct_terminal": {
+    "command": [
+      "/home/delete/.local/bin/rtk",
+      "proxy",
+      "/home/delete/miniconda3/bin/R",
+      "CMD",
+      "INSTALL",
+      "--library=/mnt/c/Temp/n4a-dag041-20261008/r-source-local/library",
+      "/mnt/c/Temp/n4a-dag041-20261008/r-source-local/dagml_0.3.41.tar.gz"
+    ],
+    "direct_command_exit_code": 0,
+    "seconds": 2.9687360140378587,
+    "independent_child_wrapper_pid": 3335583
+  },
+  "stop_reason": null,
+  "seconds": 31.72286997595802,
+  "observed_peak": {
+    "target_bytes": 5883314547,
+    "other_bytes": 205253326,
+    "free_bytes": 297392615424
+  },
+  "source_tree": "7e77957b89fae7097886d310e71e249dc5eb9c45",
+  "source_unchanged_after": true,
+  "logs": {
+    "stdout.log": {
+      "path": "/mnt/c/Temp/n4a-dag041-20261008/gates/r-source-package-install/stdout.log",
+      "sha256": "4c7b6a751e7a24f3dd1da7c4f72cce0f5ec5db55fb321e949c99fc90bfb9ebc5",
+      "bytes": 1062
+    },
+    "stderr.log": {
+      "path": "/mnt/c/Temp/n4a-dag041-20261008/gates/r-source-package-install/stderr.log",
+      "sha256": "74f0393d697373eb7c00b5024ce625950ec437c0a86f303eb93b9d96f9ab8e9d",
+      "bytes": 745
+    }
+  }
+}

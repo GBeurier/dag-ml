@@ -1,0 +1,8 @@
+test_matlab_or_octave_jsonl (__main__.HostHpoLanguageAdapterTests.test_matlab_or_octave_jsonl) ... ok
+test_python_reference (__main__.HostHpoLanguageAdapterTests.test_python_reference) ... ok
+test_r_jsonl (__main__.HostHpoLanguageAdapterTests.test_r_jsonl) ... ok
+
+----------------------------------------------------------------------
+Ran 3 tests in 0.852s
+
+OK

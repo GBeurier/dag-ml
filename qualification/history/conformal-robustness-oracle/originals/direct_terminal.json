@@ -1,0 +1,15 @@
+{
+  "command": [
+    "/home/delete/.local/bin/rtk",
+    "proxy",
+    "/home/delete/nirs4all/nirs4all/.venv/bin/python",
+    "-m",
+    "pytest",
+    "--capture=sys",
+    "parity/conformal/tests/test_conformal_robustness_contracts.py",
+    "-q"
+  ],
+  "direct_command_exit_code": 0,
+  "seconds": 7.658138194005005,
+  "independent_child_wrapper_pid": 3344909
+}

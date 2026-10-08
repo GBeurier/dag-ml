@@ -1,0 +1,79 @@
+{
+  "evidence": {
+    "active": {
+      "bytes": 369,
+      "path": "qualification/history/wheel-metadata/originals/active.json",
+      "sha256": "dbf3ff64886dc8cbb9ddc961c081fee067f4e676fd1bcc110244701df506a609"
+    },
+    "child_wrapper": {
+      "bytes": 631,
+      "path": "qualification/history/wheel-metadata/originals/child_wrapper.py",
+      "sha256": "4417ae7ae2cdb01bf8b9e08f268cdb21db11e2149bdd80b43090428a1a2f7572"
+    },
+    "direct_terminal": {
+      "bytes": 379,
+      "path": "qualification/history/wheel-metadata/originals/direct_terminal.json",
+      "sha256": "86f2789065298d2a0725e680243d355c8acba08628a1d4a1f8996f09655cc704"
+    },
+    "historical_file_map": {
+      "bytes": 247485,
+      "path": "qualification/history/wheel-metadata/originals/historical_file_map.json",
+      "sha256": "d375bd87e26b4f516adef83eaf70196deb2354d11af03ab74c0a63aeba9d911c"
+    },
+    "original_maturin_features": {
+      "bytes": 12502,
+      "path": "qualification/history/wheel-metadata/originals/original_maturin_features.json",
+      "sha256": "f4b45e4c22b5b7b7195d112ce1efa0a3aaa1abc2b0e2da2bbc1e4ef172837f5a"
+    },
+    "original_prebuild_inputs": {
+      "bytes": 10819,
+      "path": "qualification/history/wheel-metadata/originals/original_prebuild_inputs.json",
+      "sha256": "2ea45241e3b194e09d1d1440176d99af7395f2ebdcdf15953d42c58445fe8066"
+    },
+    "original_terminal_wheel_replay": {
+      "bytes": 823,
+      "path": "qualification/history/wheel-metadata/originals/original_terminal_wheel_replay.json",
+      "sha256": "b7bb288e121ea94b8b468d078d026c07e3f665960da1f58f6afe38ee86c45c81"
+    },
+    "original_versioned_wheel": {
+      "bytes": 931,
+      "path": "qualification/history/wheel-metadata/originals/original_versioned_wheel.json",
+      "sha256": "843c4d11c4b095f11b80ba4804c15916f6a5707f0fa69d406eb179f7c8a7b419"
+    },
+    "raw_receipt": {
+      "bytes": 1726,
+      "path": "qualification/history/wheel-metadata/originals/raw_receipt.json",
+      "sha256": "078203d94eb7c02811ea9b4b8135434df3dd67e1620ae43cdcc095525f525d4f"
+    },
+    "runner": {
+      "bytes": 8223,
+      "path": "qualification/history/wheel-metadata/originals/runner.py",
+      "sha256": "69cb018d8ff94899ca842a18965955a17b618cf8bf78b5c437f7711486240d8a"
+    },
+    "source_freeze": {
+      "bytes": 5194,
+      "path": "qualification/history/wheel-metadata/originals/source_freeze.json",
+      "sha256": "bc3af11cfa038105f50b639d80ac6557d8df5271e5ba874cd859cdcb4e7307cf"
+    }
+  },
+  "format": "controlled-runner-duration.v1",
+  "input_fingerprints": {
+    "crates/dag-ml-py/pyproject.toml": "60b1fbffced07868cabb5409321ce6bb89f318e3e1d6310ae29f9efe251c1a88",
+    "scripts/smoke_python_wheel_metadata.py": "cb3d6abd28771651b4d699e0baa2167a9672826737208efa20d51fe97326a97e"
+  },
+  "retained_logs": {
+    "stderr.log": {
+      "bytes": 0,
+      "path": "qualification/history/wheel-metadata/logs/stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "stdout.log": {
+      "bytes": 47,
+      "path": "qualification/history/wheel-metadata/logs/stdout.log",
+      "sha256": "3e719a0c37d2c2543090642c9c7fdbc2ecee08be6b102056f0a03152e3acae49"
+    }
+  },
+  "source_basis": "reconstructed_from_reviewed_tree",
+  "source_basis_detail": "reconstructed_from_reviewed_base_plus_frozen16; original runner verified frozen16 and two numerical source files; no observed historical full-map PRE capture and no historical wall timestamps",
+  "source_sha": "65adf2780bdfafba9ca90209d39102dc2439fea6"
+}

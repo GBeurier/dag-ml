@@ -1,0 +1,11 @@
+
+running 6 tests
+test mdatools_process_controller_describes_supported_protocol_modes ... ok
+test mdatools_process_controller_manifest_validates_and_matches_registry ... ok
+test mdatools_process_controller_rejects_artifact_uri_outside_artifact_dir ... ok
+test mdatools_process_controller_runs_plsda_one_shot ... ok
+test mdatools_process_controller_refits_then_predicts_via_rds ... ok
+test mdatools_process_controller_runs_pca_one_shot ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 29 filtered out; finished in 2.42s
+

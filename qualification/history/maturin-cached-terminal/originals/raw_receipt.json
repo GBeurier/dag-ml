@@ -1,0 +1,66 @@
+{
+  "independent_command_terminal": {
+    "command": [
+      "/home/delete/.local/bin/rtk",
+      "proxy",
+      "maturin",
+      "build",
+      "--release",
+      "--locked",
+      "--manifest-path",
+      "crates/dag-ml-py/Cargo.toml",
+      "--out",
+      "/mnt/c/Temp/n4a-dag041-20261008/wheels-terminal-replay"
+    ],
+    "direct_command_exit_code": 0,
+    "seconds": 98.82395630999235,
+    "independent_child_wrapper_pid": 3289847
+  },
+  "gate": "maturin-cached-terminal",
+  "command": [
+    "/home/delete/.local/bin/rtk",
+    "proxy",
+    "maturin",
+    "build",
+    "--release",
+    "--locked",
+    "--manifest-path",
+    "crates/dag-ml-py/Cargo.toml",
+    "--out",
+    "/mnt/c/Temp/n4a-dag041-20261008/wheels-terminal-replay"
+  ],
+  "exit_code": 0,
+  "stop_reason": null,
+  "seconds": 105.49539865599945,
+  "before": {
+    "target_bytes": 541826962,
+    "other_bytes": 14347687,
+    "free_bytes": 302659997696,
+    "vanished_owned_temporaries": 0
+  },
+  "after": {
+    "target_bytes": 541826962,
+    "other_bytes": 26842118,
+    "free_bytes": 302646288384,
+    "vanished_owned_temporaries": 0
+  },
+  "observed_peak": {
+    "target_bytes": 541826962,
+    "other_bytes": 26842118,
+    "free_bytes": 302646353920,
+    "vanished_owned_temporaries": 0
+  },
+  "functional_source_unchanged": true,
+  "logs": {
+    "stdout.log": {
+      "path": "/mnt/c/Temp/n4a-dag041-20261008/gates/maturin-cached-terminal/stdout.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "stderr.log": {
+      "path": "/mnt/c/Temp/n4a-dag041-20261008/gates/maturin-cached-terminal/stderr.log",
+      "bytes": 2410,
+      "sha256": "46bb6fdc03de17e1b9117e78e1850df3d2cc9b8138c9497cacbd1dc88e89eba0"
+    }
+  }
+}

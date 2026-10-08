@@ -1,0 +1,54 @@
+
+running 44 tests
+test in_process::generated_view_manifest_tests::same_view_key_cannot_hide_changed_content_or_selector ... ok
+test tests::compiles_minimal_fixture_dsl ... ok
+test tests::contract_manifest_declares_binding_surface ... ok
+test in_process::tests::in_process_refit_plan_replays_multiple_operator_choices ... ok
+test local_implementation::tests::python_callable_is_retained_resolved_and_executed ... ok
+test local_implementation::tests::python_metric_callable_uses_the_separate_metric_resolution_path ... ok
+test in_process::tests::in_process_resolve_refit_variant_runs_operator_select_and_labels_reports ... ok
+test in_process::tests::in_process_surfaces_loser_validation_predictions_tagged_by_variant ... ok
+test tests::native_named_source_alignment_exposes_row_permutations ... ok
+test in_process::tests::in_process_winner_report_carries_variant_label ... ok
+test in_process::tests::initial_full_refit_raw_package_replays_without_host_sidecars ... ok
+test tests::replay_request_signer_owns_the_tcv1_fingerprint ... ok
+test in_process::tests::explicit_phase_refit_and_predict_use_distinct_attested_universes_without_cv ... ok
+test in_process::tests::python_artifact_callback_exports_hydrates_and_releases_portable_payloads ... ok
+test in_process::tests::in_process_callback_result_preserves_closed_object_shapes ... ok
+test in_process::tests::py_in_process_terminal_predict_replays_refit_artifact_for_exact_v2_cohort ... ok
+test local_implementation::tests::python_registry_rejects_non_callables_and_serialization ... ok
+test tests::derives_controller_manifest_from_host_spec_json ... ok
+test tests::canonical_operator_variant_label_matches_cross_repo_fixture ... ok
+test training::tests::strict_methods_terminal_public_native_types_reject_object_new_and_rebinding ... ok
+test local_implementation::tests::python_attestation_helper_uses_the_resolved_role_and_phase ... ok
+test in_process::tests::explicit_phase_refuses_fold_campaign_instead_of_ignoring_training_order ... ok
+test in_process::tests::explicit_phase_rejects_invalid_phase_and_unattested_predict_before_callback ... ok
+test in_process::tests::py_in_process_terminal_predict_preflights_selector_and_aggregation_before_callback ... ok
+test local_implementation::tests::python_registry_rejects_another_bindings_descriptor ... ok
+test tests::derives_controller_manifest_list_and_validates_registry ... ok
+test in_process::tests::explicit_phase_rejects_unresolved_operator_choices_before_callback ... ok
+test in_process::tests::py_in_process_terminal_predict_refuses_v1_before_callback ... ok
+test tests::invalid_graph_raises_binding_error ... ok
+test training::tests::strict_relation_and_envelope_contracts_reject_unknown_or_positional_fields_before_callback ... ok
+test tests::python_binding_rejects_d9_invalid_unit_join_plan ... ok
+test in_process::tests::explicit_phase_rejects_missing_duplicate_subset_or_external_training_ids ... ok
+test tests::native_predict_cohort_producer_derives_and_attaches_v2_envelope ... ok
+test training::tests::methods_portable_refit_replay_fails_closed_without_native_methods_support ... ok
+test tests::error_subclasses_map_by_category ... ok
+test training::tests::methods_portable_full_refit_fails_closed_without_native_methods_support ... ok
+test tests::default_binding_refuses_methods_runtime_configuration ... ok
+test in_process::tests::initial_full_refit_package_has_no_cv_parent_or_selection ... ok
+test training::tests::strict_methods_terminal_facade_fails_closed_without_native_support ... ok
+test tests::fingerprint_and_signing_helpers_reject_duplicate_json_keys ... ok
+test training::tests::strict_envelope_map_rejects_duplicate_keys_before_callback ... ok
+test tests::w10_training_contract_bindings_validate_and_project_fixtures ... ok
+test training::tests::owning_training_result_retains_resources_and_detaches_portably ... ok
+test training::tests::pyo3_training_result_filters_explicit_multi_prediction_port_outputs ... ok
+
+test result: ok. 44 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.66s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

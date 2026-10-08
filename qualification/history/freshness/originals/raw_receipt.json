@@ -1,0 +1,54 @@
+{
+  "independent_command_terminal": {
+    "command": [
+      "/home/delete/.local/bin/rtk",
+      "proxy",
+      "/home/delete/nirs4all/nirs4all/.venv/bin/python",
+      "scripts/check_so_freshness.py"
+    ],
+    "direct_command_exit_code": 0,
+    "seconds": 0.05328226200072095,
+    "independent_child_wrapper_pid": 3292484
+  },
+  "gate": "freshness",
+  "command": [
+    "/home/delete/.local/bin/rtk",
+    "proxy",
+    "/home/delete/nirs4all/nirs4all/.venv/bin/python",
+    "scripts/check_so_freshness.py"
+  ],
+  "exit_code": 0,
+  "stop_reason": null,
+  "seconds": 9.108206092030741,
+  "before": {
+    "target_bytes": 541826962,
+    "other_bytes": 66140400,
+    "free_bytes": 302604378112,
+    "vanished_owned_temporaries": 0
+  },
+  "after": {
+    "target_bytes": 541826962,
+    "other_bytes": 66141463,
+    "free_bytes": 302604353536,
+    "vanished_owned_temporaries": 0
+  },
+  "observed_peak": {
+    "target_bytes": 541826962,
+    "other_bytes": 66141463,
+    "free_bytes": 302604353536,
+    "vanished_owned_temporaries": 0
+  },
+  "functional_source_unchanged": true,
+  "logs": {
+    "stdout.log": {
+      "path": "/mnt/c/Temp/n4a-dag041-20261008/gates/freshness/stdout.log",
+      "bytes": 248,
+      "sha256": "fa7730401cfeb6d7cdc0259e80664fdabe1e760637156ab512a7a34ac6f24c12"
+    },
+    "stderr.log": {
+      "path": "/mnt/c/Temp/n4a-dag041-20261008/gates/freshness/stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  }
+}

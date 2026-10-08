@@ -1,0 +1,54 @@
+{
+  "independent_command_terminal": {
+    "command": [
+      "/home/delete/.local/bin/rtk",
+      "proxy",
+      "bash",
+      "scripts/test_core_package_extract.sh"
+    ],
+    "direct_command_exit_code": 0,
+    "seconds": 94.89908767596353,
+    "independent_child_wrapper_pid": 3316582
+  },
+  "gate": "core-package-extract",
+  "command": [
+    "/home/delete/.local/bin/rtk",
+    "proxy",
+    "bash",
+    "scripts/test_core_package_extract.sh"
+  ],
+  "exit_code": 0,
+  "stop_reason": null,
+  "seconds": 118.18920544401044,
+  "before": {
+    "target_bytes": 5457475213,
+    "other_bytes": 66881902,
+    "free_bytes": 297847861248,
+    "vanished_owned_temporaries": 0
+  },
+  "after": {
+    "target_bytes": 5457475213,
+    "other_bytes": 66972764,
+    "free_bytes": 297850728448,
+    "vanished_owned_temporaries": 0
+  },
+  "observed_peak": {
+    "target_bytes": 5457475213,
+    "other_bytes": 1240691475,
+    "free_bytes": 296695754752,
+    "vanished_owned_temporaries": 0
+  },
+  "functional_source_unchanged": true,
+  "logs": {
+    "stdout.log": {
+      "path": "/mnt/c/Temp/n4a-dag041-20261008/gates/core-package-extract/stdout.log",
+      "bytes": 82451,
+      "sha256": "0917ab57130a0f953c8d8bd6df6cb3ebdc34ae4a776ad4e27e640ddbc905cfe4"
+    },
+    "stderr.log": {
+      "path": "/mnt/c/Temp/n4a-dag041-20261008/gates/core-package-extract/stderr.log",
+      "bytes": 7742,
+      "sha256": "fd06344505a44f12cc0dc0376928eb9a1577f89e698c2cbd2957c4e4e8d35b2e"
+    }
+  }
+}

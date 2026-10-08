@@ -1,0 +1,63 @@
+{
+  "evidence": {
+    "active": {
+      "bytes": 265,
+      "path": "qualification/history/error-taxonomy/originals/active.json",
+      "sha256": "5506343d97b463467c47c7146cfc7c1a1f0d29fba9076ab28da9b82aaa9a55ef"
+    },
+    "child_wrapper": {
+      "bytes": 631,
+      "path": "qualification/history/error-taxonomy/originals/child_wrapper.py",
+      "sha256": "4417ae7ae2cdb01bf8b9e08f268cdb21db11e2149bdd80b43090428a1a2f7572"
+    },
+    "direct_terminal": {
+      "bytes": 275,
+      "path": "qualification/history/error-taxonomy/originals/direct_terminal.json",
+      "sha256": "b0507fb99aee243a84b65e61e210958a179d2ff8c8724c81a79c157c8790aaa4"
+    },
+    "historical_file_map": {
+      "bytes": 247485,
+      "path": "qualification/history/error-taxonomy/originals/historical_file_map.json",
+      "sha256": "d375bd87e26b4f516adef83eaf70196deb2354d11af03ab74c0a63aeba9d911c"
+    },
+    "raw_receipt": {
+      "bytes": 1516,
+      "path": "qualification/history/error-taxonomy/originals/raw_receipt.json",
+      "sha256": "5cb674da4674ea5ede34607dcd48495675b1ba1f4f0f17aa5211d6ad915719b0"
+    },
+    "runner": {
+      "bytes": 8223,
+      "path": "qualification/history/error-taxonomy/originals/runner.py",
+      "sha256": "69cb018d8ff94899ca842a18965955a17b618cf8bf78b5c437f7711486240d8a"
+    },
+    "source_freeze": {
+      "bytes": 5194,
+      "path": "qualification/history/error-taxonomy/originals/source_freeze.json",
+      "sha256": "bc3af11cfa038105f50b639d80ac6557d8df5271e5ba874cd859cdcb4e7307cf"
+    }
+  },
+  "format": "controlled-runner-duration.v1",
+  "input_fingerprints": {
+    "crates/dag-ml-capi/src/lib.rs": "6b2d016a9d20e9aa718d3aab86f4d4da78c274bd3476e4051796a7e77a8e30f3",
+    "crates/dag-ml-core/src/error.rs": "afe30d5497fc7c52eab44e32f78288a05c6a3e22c337ab2213704591e340275e",
+    "crates/dag-ml-py/src/lib.rs": "1ecd2044def7dcadda0f4231828a6695b1ba1c6001f58c2a85074e399f736396",
+    "crates/dag-ml-wasm/src/lib.rs": "bf2ba2282d2d55ab6a5208c69865989c3240ec2b13d0e332d7e1c898b0a2f64a",
+    "docs/adr/ADR-11-error-taxonomy.md": "6622d888737abc5e34384af82ff901ea4f7ae7f82bbeb1737a98eb5771224299",
+    "scripts/check_error_taxonomy.py": "a26205d25d83d50781cad1a53473d0c460deaaf56b669d800c938476d7561602"
+  },
+  "retained_logs": {
+    "stderr.log": {
+      "bytes": 0,
+      "path": "qualification/history/error-taxonomy/logs/stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "stdout.log": {
+      "bytes": 52,
+      "path": "qualification/history/error-taxonomy/logs/stdout.log",
+      "sha256": "7726d6651cc65ceff817d049a6602d944b2ec83c70a65148c91acbcb6c5c10b3"
+    }
+  },
+  "source_basis": "reconstructed_from_reviewed_tree",
+  "source_basis_detail": "reconstructed_from_reviewed_base_plus_frozen16; original runner verified frozen16 and two numerical source files; no observed historical full-map PRE capture and no historical wall timestamps",
+  "source_sha": "65adf2780bdfafba9ca90209d39102dc2439fea6"
+}

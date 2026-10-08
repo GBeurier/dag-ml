@@ -1,0 +1,9 @@
+   Compiling dag-ml-cli v0.3.41 (/home/delete/nirs4all/_worktrees/2026-10-07-dag-metric-validation/crates/dag-ml-cli)
+    Finished `test` profile [unoptimized] target(s) in 5.68s
+     Running unittests src/main.rs (/mnt/c/Temp/n4a-dag041-20261008/target/debug/deps/dag_ml_cli-1637a3e95c77b6ff)
+     Running tests/cli_contracts.rs (/mnt/c/Temp/n4a-dag041-20261008/target/debug/deps/cli_contracts-35ba12ddece0cd51)
+     Running tests/dag001_arrow_replay.rs (/mnt/c/Temp/n4a-dag041-20261008/target/debug/deps/dag001_arrow_replay-fa234e721ed8da99)
+     Running tests/initial_full_refit.rs (/mnt/c/Temp/n4a-dag041-20261008/target/debug/deps/initial_full_refit-591573f675ef10e5)
+     Running tests/octave_hpo_ridge.rs (/mnt/c/Temp/n4a-dag041-20261008/target/debug/deps/octave_hpo_ridge-dbd1fc1a8ca4e3f5)
+     Running tests/r_hpo_ridge.rs (/mnt/c/Temp/n4a-dag041-20261008/target/debug/deps/r_hpo_ridge-d32cde24b695eff3)
+     Running tests/training_contracts.rs (/mnt/c/Temp/n4a-dag041-20261008/target/debug/deps/training_contracts-81e0cc8e54583bc4)

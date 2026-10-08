@@ -1,0 +1,54 @@
+Metadata-Version: 2.4
+Name: nirs4all-methods
+Version: 1.3.4
+Summary: nirs4all-methods — portable PLS / NIRS engine (full surface) over the libn4m C ABI.
+Home-page: https://github.com/GBeurier/nirs4all-methods
+Author: Grégory Beurier and contributors
+License-Expression: CECILL-2.1
+Project-URL: Homepage, https://github.com/GBeurier/nirs4all-methods
+Project-URL: Repository, https://github.com/GBeurier/nirs4all-methods
+Project-URL: Issues, https://github.com/GBeurier/nirs4all-methods/issues
+Project-URL: Documentation, https://methods.nirs4all.org/
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: numpy>=1.21
+Requires-Dist: typing-extensions>=4.0; python_version < "3.11"
+Dynamic: license-file
+
+# nirs4all-methods
+
+nirs4all-methods is the full numerical/method engine distribution. The Python
+distribution name is `nirs4all-methods`; the import package is `n4m`, matching
+the stable `libn4m` C ABI and `n4m_*` exported symbols.
+
+The wheel bundles the `libn4m` shared library, so `pip install nirs4all-methods`
+is self-contained — no separate native build is required. The slim `pls4all`
+distribution remains available for PLS-focused users; both distributions load
+the same ABI family.
+
+```python
+import n4m
+from n4m.estimators.regression.latent import PLS
+
+print(n4m.version())      # project version + ABI, e.g. "1.3.4+abi.2.17.0"
+print(n4m.abi_version())  # ABI triple, e.g. (2, 17, 0)
+
+model = PLS(n_components=2).fit(X, y)
+pred = model.predict(X)
+```
+
+`n4m` loads `libn4m` via `ctypes.CDLL` and exposes version/ABI helpers,
+`Context`, and role-based packages such as `n4m.estimators`, `n4m.transform`,
+`n4m.feature_selection`, `n4m.model_selection`, and `n4m.augmentation`.
+Estimator-style wrappers live under those role packages; there is no flat
+`n4m.sklearn` package in the ABI 2 surface.
+
+Native hyperparameter studies can be checkpointed without Python pickles:
+`checkpoint = optimizer.save()` returns portable N4MOPT bytes and
+`Optimizer.load(checkpoint)` resumes the exact sequential ask/tell trajectory.
+
+Set `N4M_LIB_PATH` to point at a development `libn4m` build when overriding the
+bundled wheel library.
+
+See <https://github.com/GBeurier/nirs4all-methods> for documentation.

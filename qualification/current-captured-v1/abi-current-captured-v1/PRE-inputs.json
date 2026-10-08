@@ -1,0 +1,10 @@
+{
+  "mode": "captured",
+  "source_sha": "4ecadda9f0ce06dbf4323967f4fd5b2812f269c7",
+  "captured_at": "2026-10-08T01:01:59.405628+00:00",
+  "input_fingerprints": {
+    "crates/dag-ml-capi/include/dag_ml.h": "0c139e5d9b4379e7c9f54917bd846235a7e00956263dd784ce7b8897c454d0a8",
+    "docs/contracts/abi_snapshot.v1.json": "1d8718e2e070a8c886a75b57c7c4599b90e6ba38235e8414dc6363e05f25e654",
+    "scripts/validate_abi_snapshot.py": "9294b2fb8c2c7ddda7dbdb0a9a061171cc2d388d7a14147e95abc1156cc92bf0"
+  }
+}

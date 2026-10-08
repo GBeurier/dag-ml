@@ -1,0 +1,69 @@
+{
+  "artifact": {
+    "artifact_path": "/mnt/c/Temp/n4a-dag041-20261008/target/release/libdag_ml_capi.so",
+    "bytes": 23607744,
+    "name": "dag-ml-capi",
+    "origin": "original pre-language-run CAPI capture dag041-r-native-capi-provenance.json; source7e77957 locallybuilt; current byte continuity rechecked separately",
+    "sha256": "1d76df5dbf33bf5ab16292ed49339f1927f9581c2e4eea3c12bb568da7227fe8",
+    "version": "0.3.41"
+  },
+  "historical_derivation": "Authentic raw receipt and embedded independent direct terminal; actual stdout/stderr counts and first source verification preserved. Explicit environment overrides derived from retained runner(s); ambient inherited PATH is not reconstructed. Original full R CMDcheck Status: OK, five named installed API test scripts; source tarball and real CAPI qualified separately. ; native provenance derives retained genuine source builds/original native captures; late inventory is explicitly continuity, never an invented before-run capture",
+  "log_sha256": "26679a80abe7ba1e939667827376d17425a3a0b9c6b73244bacb85c8eedf70e3",
+  "run_identity": {
+    "command": [
+      "/home/delete/.local/bin/rtk",
+      "proxy",
+      "/home/delete/miniconda3/bin/R",
+      "CMD",
+      "check",
+      "--no-manual",
+      "/mnt/c/Temp/n4a-dag041-20261008/r-source-local/dagml_0.3.41.tar.gz"
+    ],
+    "cwd": "/mnt/c/Temp/n4a-dag041-20261008/r-source-local",
+    "environment": {
+      "CARGO_INCREMENTAL": "0",
+      "CARGO_NET_OFFLINE": "true",
+      "CARGO_PROFILE_DEV_DEBUG": "0",
+      "CARGO_PROFILE_TEST_DEBUG": "0",
+      "CARGO_TARGET_DIR": "/mnt/c/Temp/n4a-dag041-20261008/target",
+      "DAGML_NATIVE_LIBRARY": "/mnt/c/Temp/n4a-dag041-20261008/target/release/libdag_ml_capi.so",
+      "DAGML_REQUIRE_HPO_R": "1",
+      "DAG_ML_DATA_REPO": "/home/delete/nirs4all/dag-ml-data",
+      "DAG_ML_REQUIRE_R_ADAPTER_TEST": "1",
+      "PYO3_PYTHON": "/home/delete/nirs4all/nirs4all/.venv/bin/python",
+      "R_LIBS": "/mnt/c/Temp/n4a-dag041-20261008/r-source-local/library",
+      "TMPDIR": "/mnt/c/Temp/n4a-dag041-20261008/tmp"
+    },
+    "exit_code": 0,
+    "finished_at": null,
+    "host": "local-wsl-linux",
+    "id": "r-source-package-check",
+    "input_fingerprints": {
+      "bindings/r/DESCRIPTION": "2dbfd359ecb9b79e5c6febfdb3f98f72ec87f168c1ec071e25aafeda75158f18",
+      "bindings/r/NAMESPACE": "7cf25fe461ff3c9398a8271b2f224d3a3fa8219e2d66ac44e4efa08c598cbf9f",
+      "bindings/r/R/cv_refit_predict.R": "b5aa8fbbde2d244359b16a9fcf1430e3d7a3281d893c5de716889be2f0144c15",
+      "bindings/r/R/host_hpo_search.R": "a3bad370f49bcebb03a1c9a02eaf856348a7580c68f586195f49d360a628a54f",
+      "bindings/r/R/initial_full_refit.R": "f69ce5c8fbfc928f5e97db3826fa48f897e63bb824f14fd3062df52b1b4fb860",
+      "bindings/r/R/local_implementation_registry.R": "a460b99e7b472744d1d08beca74cb299b4ea9bb9a8597430101d5b2d39e73382",
+      "bindings/r/R/replay_bundle.R": "a7a7a6ab1506619a3bf09fef3941e8c514dcd791826111430060f2945178b09c",
+      "bindings/r/README.md": "e1e63797520a64ca4be17406b9da53b972a50d61d07ae9ec51e993ce5f417ea8",
+      "bindings/r/inst/extdata/r_local_implementations.v1.json": "c43dae5ee791f7dc078f35de34faa1b5a7475ec8a6368b245de9bdd170cd6961",
+      "bindings/r/man/dagml_cv_refit_predict.Rd": "65e1f02628f23bd4c21169f02757ab8a17b4aa9e24600c37305e5a49ff3c33de",
+      "bindings/r/man/dagml_execute_execution_plan_phase.Rd": "66b679f076a1bdbf01514f94550d7634258066f795ff44f4a6ca536e3cf56aff",
+      "bindings/r/man/dagml_host_hpo_search.Rd": "bbb2f4790730992d084fd07e90c471c10150af565de72aac3077ea55855bb80f",
+      "bindings/r/man/dagml_initial_full_refit.Rd": "be4b20c07217eb8e059e8c6b34ebf6d6c83750400b88367e9f0ee20b649a8b35",
+      "bindings/r/man/dagml_initial_full_refit_predict.Rd": "526e0f8b9f465628c4de869c0d02383a66b58b07097c4ea73d3d9a974200cdd1",
+      "bindings/r/man/dagml_local_implementation_registry.Rd": "123eb75cef0269d3fb344429d4466530c0e038c77e6842db3eae7940b5e3c1be",
+      "bindings/r/man/dagml_replay_bundle.Rd": "a81c2d72df513db66b131c086f1340ba852386d82b08093b4cdfc810e84ebd57",
+      "bindings/r/src/task_training_loss_binding.c": "7ca655dd206ffa08aaa9bbe423e367bb2921e8db457ae95fa947dd0a808bca59",
+      "bindings/r/tests/cv_refit_predict.R": "934410cf1ff965bd7a1f454413d2e6eefc7c6f203fd8907ac4a6755af3665ef3",
+      "bindings/r/tests/host_hpo_search.R": "0cc84bacf37c0f8f0cd6fa71f8c6562a8f7612f6de81754e0d8933c1dbb8cf83",
+      "bindings/r/tests/initial_full_refit.R": "8ff1a0f01a8af2400ea10df81086efc43d8ad764570d9537124e65a996b348cf",
+      "bindings/r/tests/local_implementation_registry.R": "e11d9317065390ecfb2039b7b2882cab9b59e3a98a897b74171b612e399fc3f8",
+      "bindings/r/tests/replay_bundle.R": "4d1d116eb2d6f3f0820aa2b77e0140820e8985f43bfda53e0755cea84ac6cc40",
+      "scripts/test_r_seed_json.R": "2b6e6cc9491815c2e9b37ce12c75004ceb795ba1f416ffbb483d5340f68b91c9"
+    },
+    "started_at": null
+  },
+  "source_sha": "7e77957b89fae7097886d310e71e249dc5eb9c45"
+}

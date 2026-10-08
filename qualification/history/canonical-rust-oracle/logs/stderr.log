@@ -1,0 +1,8 @@
+    Blocking waiting for file lock on build directory
+   Compiling tinyvec v1.10.0
+   Compiling unicode-normalization v0.1.25
+   Compiling dagml-canonical-rust-oracle v0.1.0 (/home/delete/nirs4all/_worktrees/2026-10-07-dag-metric-validation/parity/canonical/rust-oracle)
+    Finished `test` profile [unoptimized] target(s) in 32.97s
+     Running unittests src/lib.rs (/mnt/c/Temp/n4a-dag041-20261008/target/debug/deps/dagml_canonical_rust_oracle-308efe33837ed6e9)
+     Running unittests src/main.rs (/mnt/c/Temp/n4a-dag041-20261008/target/debug/deps/dagml_canonical_rust_oracle-91809d9ff2ebe001)
+   Doc-tests dagml_canonical_rust_oracle

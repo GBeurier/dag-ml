@@ -1,0 +1,56 @@
+{
+  "source_origin": "afc610ccbad8a3030171a1867d57afaaedffafe7",
+  "source_origin_tree": "7e77957b89fae7097886d310e71e249dc5eb9c45",
+  "captured_at": "2026-10-08T00:35:21.984269+00:00",
+  "runs": [
+    {
+      "run": {
+        "path": "qualification/windows-v2-native-identity.final.run.json",
+        "bytes": 42382,
+        "sha256": "d7fc9a27390678d010ec57e7c988cacc02ead5ea6a83f91fb40a610b5064a541"
+      },
+      "source_sha": "afc610ccbad8a3030171a1867d57afaaedffafe7",
+      "project": "dag"
+    },
+    {
+      "run": {
+        "path": "qualification/windows-v2-training-result.final.run.json",
+        "bytes": 42383,
+        "sha256": "a95635324abbc6c5e1ea1faa36bf1c2a15a4a1e385b06c6863cc342ea8a5696a"
+      },
+      "source_sha": "afc610ccbad8a3030171a1867d57afaaedffafe7",
+      "project": "dag"
+    },
+    {
+      "run": {
+        "path": "qualification/windows-v2-terminal-predict-facade.final.run.json",
+        "bytes": 42422,
+        "sha256": "57eac899ae3cc18ba6955a24d679c607da78fcb08f5d9c2228ba5e83368549bb"
+      },
+      "source_sha": "afc610ccbad8a3030171a1867d57afaaedffafe7",
+      "project": "dag"
+    },
+    {
+      "run": {
+        "path": "qualification/windows-v2-installed-wheel-smoke.final.run.json",
+        "bytes": 42412,
+        "sha256": "8469416c9e806fb27d4f6d4f0eac3df0cb66fff9d18da82129d016fb888b20ea"
+      },
+      "source_sha": "afc610ccbad8a3030171a1867d57afaaedffafe7",
+      "project": "dag"
+    }
+  ],
+  "policy": {
+    "path": "qualification/policy.json",
+    "bytes": 15675,
+    "sha256": "59f25813362473da3a699bab752478829b745282cd1306ba2653fe003d2f3d0d"
+  },
+  "driver": {
+    "path": "qualification/windows_gate_driver.py",
+    "bytes": 2425,
+    "sha256": "4eb4e9a3e024ec8036f1db79c30f455c937eb29730e9701075d6e5eb6e25a9c2"
+  },
+  "public_qualification": false,
+  "scope": "four short Windows commands only; no full E2E rebuild",
+  "all_four_actual_native_windows_passed": true
+}

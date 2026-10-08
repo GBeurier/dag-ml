@@ -1,0 +1,6 @@
+check_so_freshness: fresh — crates/dag-ml-py/python/dag_ml/_dag_ml.abi3.so (ct=2000000) is at/after the newest Rust source crates/dag-ml-core/src/lib.rs (ct=1000000); checked 6 Rust path(s).
+check_so_freshness: paired dirty state — 1 compiled Rust input(s) and crates/dag-ml-py/python/dag_ml/_dag_ml.abi3.so are modified; commit-time freshness is inapplicable. Require the public source-tree import smoke before accepting this worktree.
+check_so_freshness: fresh — commits newer than crates/dag-ml-py/python/dag_ml/_dag_ml.abi3.so do not change its compiled inputs; tracked .so ct=1000000, newest Rust ct=2000000; checked 6 Rust path(s).
+check_so_freshness: fresh — crates/dag-ml-py/python/dag_ml/_dag_ml.abi3.so (ct=1000000) is at/after the newest Rust source crates/dag-ml-core/src/lib.rs (ct=1000000); checked 6 Rust path(s).
+check_so_freshness: fresh — commits newer than crates/dag-ml-py/python/dag_ml/_dag_ml.abi3.so do not change its compiled inputs; tracked .so ct=1000000, newest Rust ct=2000000; checked 6 Rust path(s).
+check_so_freshness: self-test passed (fresh -> exit 0, stale -> exit 1).

@@ -1,0 +1,66 @@
+{
+  "independent_command_terminal": {
+    "command": [
+      "/home/delete/.local/bin/rtk",
+      "proxy",
+      "cargo",
+      "test",
+      "--offline",
+      "--locked",
+      "--manifest-path",
+      "crates/dag-ml-py/Cargo.toml",
+      "--features",
+      "methods-optimizer"
+    ],
+    "direct_command_exit_code": 0,
+    "seconds": 3.404511080996599,
+    "independent_child_wrapper_pid": 3312347
+  },
+  "gate": "python-methods-correct-env",
+  "command": [
+    "/home/delete/.local/bin/rtk",
+    "proxy",
+    "cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "--manifest-path",
+    "crates/dag-ml-py/Cargo.toml",
+    "--features",
+    "methods-optimizer"
+  ],
+  "exit_code": 0,
+  "stop_reason": null,
+  "seconds": 20.140788640012033,
+  "before": {
+    "target_bytes": 5016218970,
+    "other_bytes": 66854234,
+    "free_bytes": 298309038080,
+    "vanished_owned_temporaries": 0
+  },
+  "after": {
+    "target_bytes": 5016218970,
+    "other_bytes": 66860016,
+    "free_bytes": 298308874240,
+    "vanished_owned_temporaries": 0
+  },
+  "observed_peak": {
+    "target_bytes": 5016218970,
+    "other_bytes": 66860016,
+    "free_bytes": 298308882432,
+    "vanished_owned_temporaries": 0
+  },
+  "functional_source_unchanged": true,
+  "logs": {
+    "stdout.log": {
+      "path": "/mnt/c/Temp/n4a-dag041-20261008/gates/python-methods-correct-env/stdout.log",
+      "bytes": 4556,
+      "sha256": "3eab12676b4e8a749a853cd38a35a326151b8dc1645769bd7848e6ae5fe46018"
+    },
+    "stderr.log": {
+      "path": "/mnt/c/Temp/n4a-dag041-20261008/gates/python-methods-correct-env/stderr.log",
+      "bytes": 193,
+      "sha256": "8258d90592f63c280503fc738dbae1c133a2919e7f8ecb75f0c66dde3fa1fbdb"
+    }
+  }
+}

@@ -1,0 +1,90 @@
+{
+  "scope": "Exact unmodified source/fixtures copies in owned directory for co-located MEX discovery",
+  "files": {
+    "buildNativeBinding.m": {
+      "source": "/home/delete/nirs4all/_worktrees/2026-10-07-dag-metric-validation/bindings/matlab/buildNativeBinding.m",
+      "sha256": "8cc518c345e49a256f37691e3673d0e6e5001bafbf6e56e98ec32e739393fe57",
+      "bytes": 746
+    },
+    "README.md": {
+      "source": "/home/delete/nirs4all/_worktrees/2026-10-07-dag-metric-validation/bindings/matlab/README.md",
+      "sha256": "15fccdaf19dd2fe7d7d0235d589247e78db572bf3dca031384999bff59077a89",
+      "bytes": 5786
+    },
+    "+dagml/LocalImplementationRegistry.m": {
+      "source": "/home/delete/nirs4all/_worktrees/2026-10-07-dag-metric-validation/bindings/matlab/+dagml/LocalImplementationRegistry.m",
+      "sha256": "9466cc9f28db3381a4a1d7b5970509d56acbe6b6275b2d2742fdac2570bd4cd8",
+      "bytes": 14941
+    },
+    "+dagml/initialFullRefit.m": {
+      "source": "/home/delete/nirs4all/_worktrees/2026-10-07-dag-metric-validation/bindings/matlab/+dagml/initialFullRefit.m",
+      "sha256": "78bc76875b50459a44b23c948f51d072f3ef4b000e93a44bc9ca220618945050",
+      "bytes": 6016
+    },
+    "+dagml/replayBundle.m": {
+      "source": "/home/delete/nirs4all/_worktrees/2026-10-07-dag-metric-validation/bindings/matlab/+dagml/replayBundle.m",
+      "sha256": "0c5c738ebb21ed77267759dbe94c0990dec2335b1063383f731bb3ebef6784d8",
+      "bytes": 6424
+    },
+    "+dagml/hostHpoSearch.m": {
+      "source": "/home/delete/nirs4all/_worktrees/2026-10-07-dag-metric-validation/bindings/matlab/+dagml/hostHpoSearch.m",
+      "sha256": "dfbfe7879f06842515015af34a451aa38e978f9e257192c7c873bd11fbbfa978",
+      "bytes": 4967
+    },
+    "+dagml/cvRefitPredict.m": {
+      "source": "/home/delete/nirs4all/_worktrees/2026-10-07-dag-metric-validation/bindings/matlab/+dagml/cvRefitPredict.m",
+      "sha256": "c94eaba9fc66f02058ad899a49365038e864c9549f7aa4866d6a1cbdfc70bfd0",
+      "bytes": 6002
+    },
+    "+dagml/executeExecutionPlanPhase.m": {
+      "source": "/home/delete/nirs4all/_worktrees/2026-10-07-dag-metric-validation/bindings/matlab/+dagml/executeExecutionPlanPhase.m",
+      "sha256": "bc846eeb0f0c8cc680c4b114ba6350aabe84d3b77988318a2c9ca8043136b725",
+      "bytes": 4058
+    },
+    "+dagml/predictInitialFullRefit.m": {
+      "source": "/home/delete/nirs4all/_worktrees/2026-10-07-dag-metric-validation/bindings/matlab/+dagml/predictInitialFullRefit.m",
+      "sha256": "4ff52000f8e7af5f680403936b11ed03fb4019d6f01f976cbea64a4f505e0a53",
+      "bytes": 4203
+    },
+    "native/task_training_loss_binding.c": {
+      "source": "/home/delete/nirs4all/_worktrees/2026-10-07-dag-metric-validation/bindings/matlab/native/task_training_loss_binding.c",
+      "sha256": "a224a071947086afbc56d376087552bb6d18f4a39c56495b62792ec7735d8bdb",
+      "bytes": 6641
+    },
+    "native/execution_plan_phase.c": {
+      "source": "/home/delete/nirs4all/_worktrees/2026-10-07-dag-metric-validation/bindings/matlab/native/execution_plan_phase.c",
+      "sha256": "2b17bb8147eee99268d5b9b62a16ce72e9a5125a1a991329b5ca935d75c9ff75",
+      "bytes": 12369
+    },
+    "fixtures/matlab_local_implementations.v1.json": {
+      "source": "/home/delete/nirs4all/_worktrees/2026-10-07-dag-metric-validation/bindings/matlab/fixtures/matlab_local_implementations.v1.json",
+      "sha256": "630f9ab1860dd60945c62cd2d081208d07bcfe8d0446ce55a0ec9ab00f39f7f5",
+      "bytes": 31216
+    },
+    "tests/initial_full_refit.m": {
+      "source": "/home/delete/nirs4all/_worktrees/2026-10-07-dag-metric-validation/bindings/matlab/tests/initial_full_refit.m",
+      "sha256": "26b04d2ed8a7d7959d8e1039a410fe52f25a36a12f45dc3e156b2ee1465d88a0",
+      "bytes": 3815
+    },
+    "tests/host_hpo_search.m": {
+      "source": "/home/delete/nirs4all/_worktrees/2026-10-07-dag-metric-validation/bindings/matlab/tests/host_hpo_search.m",
+      "sha256": "fe91903627be18ff961a33a632179aa36b630f59d33178a01624e086a9ed3804",
+      "bytes": 3306
+    },
+    "tests/replay_bundle.m": {
+      "source": "/home/delete/nirs4all/_worktrees/2026-10-07-dag-metric-validation/bindings/matlab/tests/replay_bundle.m",
+      "sha256": "1c18275b203a403bdc1b1138c095b7129de0671edbe36db65252437f62180ad8",
+      "bytes": 2779
+    },
+    "tests/local_implementation_registry.m": {
+      "source": "/home/delete/nirs4all/_worktrees/2026-10-07-dag-metric-validation/bindings/matlab/tests/local_implementation_registry.m",
+      "sha256": "259110efc1479508cbcbe0ce43443384090cf986350999c98b4269c73a7e2f32",
+      "bytes": 5602
+    },
+    "tests/cv_refit_predict.m": {
+      "source": "/home/delete/nirs4all/_worktrees/2026-10-07-dag-metric-validation/bindings/matlab/tests/cv_refit_predict.m",
+      "sha256": "8a85c5da426acc41023e3cad7ddcd59115e544ec778f7cf1036c75148aee04c4",
+      "bytes": 2900
+    }
+  }
+}

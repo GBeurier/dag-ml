@@ -1,0 +1,108 @@
+{
+  "base_commit": "36af82eaf661de5c20311a3c2d55e24fbfcf287f",
+  "virtual_full_git_tree": "65adf2780bdfafba9ca90209d39102dc2439fea6",
+  "changed_files": {
+    "CHANGELOG.md": {
+      "sha256": "43f915efb8746645b72449aae4a8418b077c51848f47034afaa8a53a57ca8852",
+      "git_blob": "727f2fa35154f8c7eeffb7b1c3f807459afd5dce",
+      "bytes": 33758,
+      "old_git_blob": "5735012af81ffda935ee8653e216e4b5f68d435c"
+    },
+    "Cargo.lock": {
+      "sha256": "7ee5323faf61e0f80f3259cac1305649c5e16a9b226459ccb1fe508e39ea792c",
+      "git_blob": "e7884e16ef9d9c398f047d77e2378dbd37b21a3d",
+      "bytes": 57927,
+      "old_git_blob": "a2fce70d6566cbadf1f5f4d4cb321dacbc18d9dd"
+    },
+    "Cargo.toml": {
+      "sha256": "6e0f1901dc6bd65a5cb5928013c1e4b2ad88ccf1f542249e8688278b17ae5fc2",
+      "git_blob": "492569001a1fa53789bf916d7c133e38901e0d74",
+      "bytes": 2031,
+      "old_git_blob": "79651331e0e1c2ece19c0943cc9b25a7927607e4"
+    },
+    "bindings/r/DESCRIPTION": {
+      "sha256": "2dbfd359ecb9b79e5c6febfdb3f98f72ec87f168c1ec071e25aafeda75158f18",
+      "git_blob": "25333d8c3f04ff80db5790c1590f0afdd5fbc210",
+      "bytes": 836,
+      "old_git_blob": "e212e7027c8766bca7603a6f74f65a2807654fc0"
+    },
+    "crates/dag-ml-core/src/criteria.rs": {
+      "sha256": "fe11ed0e1c503078bb20924efbaf3960955c52db8c16d3fb725969b1afe20f14",
+      "git_blob": "920aaef58999b6b0aed04f3705f2e71c9c3d7374",
+      "bytes": 71192,
+      "old_git_blob": "4591de0e0c0c92af9a49c1f19c71a333f1c941dc"
+    },
+    "crates/dag-ml-core/src/metric_provider.rs": {
+      "sha256": "c4c6e9561647b430465fe2d147b997c340685ff6b8acc7fbec0333cb63324fae",
+      "git_blob": "5c86880462fdbc654bbab9f4afb324e61b165504",
+      "bytes": 40557,
+      "old_git_blob": "e73e78bbb1054602974761631a086ce9c838ac25"
+    },
+    "crates/dag-ml-py/Cargo.lock": {
+      "sha256": "7a7868e0e7e5e64a0c3eca2f3e82e48e13cd3cc766d8707a489caab92bccbf0c",
+      "git_blob": "97889bb7907869b4bfb8411f3cd9f45151059722",
+      "bytes": 30570,
+      "old_git_blob": "d5de6f4f2075b64cec4f74872ea8dbd351be4b03"
+    },
+    "crates/dag-ml-py/Cargo.toml": {
+      "sha256": "923233e2165a022f835b25970101598d99deb63bdf4b33f5aa0349ebe5c78e81",
+      "git_blob": "ff4f49db8a253547c87abc83648cfcdaa26e041f",
+      "bytes": 1546,
+      "old_git_blob": "5acb96ccd7c4ed287e7c238ff194c07ebf21e386"
+    },
+    "crates/dag-ml-py/pyproject.toml": {
+      "sha256": "60b1fbffced07868cabb5409321ce6bb89f318e3e1d6310ae29f9efe251c1a88",
+      "git_blob": "2758b76a399c2190774d7e9e800cc32ecc598a71",
+      "bytes": 1630,
+      "old_git_blob": "d505214b80b582541fa9931d7850c4da4003a81a"
+    },
+    "crates/dag-ml-py/python/dag_ml/_dag_ml.abi3.so": {
+      "sha256": "6a57a4d3c67ac7127215985056a09897cef0b2e96f927cf19101d64d39714c1a",
+      "git_blob": "33b65c40ae6b3cc685c9be527d06510cb37f24cc",
+      "bytes": 39018136,
+      "old_git_blob": "5873955740ac94092d24c88163fb8cb3677e9f92"
+    },
+    "docs/contracts/abi_snapshot.v1.json": {
+      "sha256": "1d8718e2e070a8c886a75b57c7c4599b90e6ba38235e8414dc6363e05f25e654",
+      "git_blob": "f50b0727aaac22f7a1c915478e77e1d2e02d87ee",
+      "bytes": 246,
+      "old_git_blob": "db1babbb302cda9847135f6f1d66d373f754f19d"
+    },
+    "docs/contracts/training_contract_conformance_pack.v1.json": {
+      "sha256": "ae92c00549e3ee091ccbb6aa5b298e112aafb0041cbb199e4659ee68a72c87cb",
+      "git_blob": "4e6f460c06d5d0025372b38ab3a835fb479aa7c3",
+      "bytes": 25941,
+      "old_git_blob": "627ebe101dc224ecabf40f19969290e1a60cccc4"
+    },
+    "docs/contracts/training_replay_contract_conformance_pack.v1.json": {
+      "sha256": "5d69571642d55fd00ca2d8e3ec27fb85f7f84ab9290b52a1c84479f4e32e35a5",
+      "git_blob": "b003f387a6c2f513a03fd9b95dbec58a6e6b0f70",
+      "bytes": 37225,
+      "old_git_blob": "7f3d298cb41211462ee30a7400ca7aad90377f73"
+    },
+    "parity/training/generate_training_replay_fixtures.py": {
+      "sha256": "01a72f51055ca69c64a17994806b4982dd249a82976f4d64db538501d6a5a09b",
+      "git_blob": "d573230800780d96ddbf4ad6ecc6c25c7ac82c61",
+      "bytes": 66017,
+      "old_git_blob": "6d9cec37110eb863d3d1b4519c7f961778fa35b3"
+    },
+    "parity/training/tests/test_training_replay_contracts.py": {
+      "sha256": "729675a929fadd526c1554576da9933872b3aeb896df1cb261b7cecb63033d21",
+      "git_blob": "f1abba7bdb8d8c8d049c0cdc35a6cad08a460f69",
+      "bytes": 36684,
+      "old_git_blob": "57cce5fcbb59bcd9ac1a19d9de3c02f1d435a212"
+    },
+    "scripts/validate_training_replay_contracts.py": {
+      "sha256": "97405b70dc9d92828090089a5c32db7b3cc5474f6b0b941f275abc8ff5f8ce37",
+      "git_blob": "c6f849b0ecdbefd9d535f7570d1398c037dc7428",
+      "bytes": 99395,
+      "old_git_blob": "636d8f06a51b77de119347169ce13a94e930cc47"
+    }
+  },
+  "text_patch_path": "/home/delete/nirs4all/_audits/2026-10-07-strict-speed-diagnostic/dag041-versioned-source-review.patch",
+  "text_patch_sha256": "3981a636c4365d9e05944c88cc03950d21ed4de258ebea8a81bcfd3e9107612e",
+  "no_commit_index_or_git_object_mutation": true,
+  "full_gates_pending": true,
+  "previous_functional_sol_review": "phase-0f26-REVIEW/review.json",
+  "source_functional_patch_sha256": "0f26cab205a89831f9060af0f883312d5976ddd395a0f5ad54d576b85627d47b"
+}

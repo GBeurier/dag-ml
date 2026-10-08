@@ -1,0 +1,9 @@
+   Compiling serde_json v1.0.151
+   Compiling cc v1.4.4
+   Compiling dag-ml-core v0.3.41 (/home/delete/nirs4all/_worktrees/2026-10-07-dag-metric-validation/crates/dag-ml-core)
+   Compiling tracing-subscriber v0.3.23
+   Compiling n4m v0.4.0
+   Compiling dag-ml-arrow v0.3.41 (/home/delete/nirs4all/_worktrees/2026-10-07-dag-metric-validation/crates/dag-ml-arrow)
+   Compiling dag-ml-cli v0.3.41 (/home/delete/nirs4all/_worktrees/2026-10-07-dag-metric-validation/crates/dag-ml-cli)
+    Finished `test` profile [unoptimized] target(s) in 34.17s
+     Running tests/cli_contracts.rs (/mnt/c/Temp/n4a-dag041-20261008/target/debug/deps/cli_contracts-35ba12ddece0cd51)

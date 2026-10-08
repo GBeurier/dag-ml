@@ -1,0 +1,17 @@
+{
+  "command": [
+    "/home/delete/.local/bin/rtk",
+    "proxy",
+    "/home/delete/nirs4all/nirs4all/.venv/bin/python",
+    "-m",
+    "unittest",
+    "discover",
+    "-s",
+    "tests",
+    "-p",
+    "test_archive_v1_contract.py"
+  ],
+  "direct_command_exit_code": 0,
+  "seconds": 3.434547949989792,
+  "independent_child_wrapper_pid": 3344370
+}

@@ -1,0 +1,43 @@
+{
+  "gate": "r-octave-hpo-adapters",
+  "command": [
+    "/home/delete/.local/bin/rtk",
+    "proxy",
+    "/home/delete/nirs4all/nirs4all/.venv/bin/python",
+    "scripts/test_hpo_language_adapters.py"
+  ],
+  "cwd": "/home/delete/nirs4all/_worktrees/2026-10-07-dag-metric-validation",
+  "exit_code": 0,
+  "direct_terminal": {
+    "command": [
+      "/home/delete/.local/bin/rtk",
+      "proxy",
+      "/home/delete/nirs4all/nirs4all/.venv/bin/python",
+      "scripts/test_hpo_language_adapters.py"
+    ],
+    "direct_command_exit_code": 0,
+    "seconds": 0.8963495640200563,
+    "independent_child_wrapper_pid": 3348590
+  },
+  "stop_reason": null,
+  "seconds": 28.877901970990933,
+  "observed_peak": {
+    "target_bytes": 6242991613,
+    "other_bytes": 150174516,
+    "free_bytes": 297106911232
+  },
+  "source_tree": "7e77957b89fae7097886d310e71e249dc5eb9c45",
+  "source_unchanged_after": true,
+  "logs": {
+    "stdout.log": {
+      "path": "/mnt/c/Temp/n4a-dag041-20261008/gates/r-octave-hpo-adapters/stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "stderr.log": {
+      "path": "/mnt/c/Temp/n4a-dag041-20261008/gates/r-octave-hpo-adapters/stderr.log",
+      "sha256": "9067091ffd656ef4434f92fb5f4b7421cde9bc001ac2158615aa1e78739fbde8",
+      "bytes": 362
+    }
+  }
+}

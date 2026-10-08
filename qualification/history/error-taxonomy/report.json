@@ -1,0 +1,56 @@
+{
+  "command": [
+    "/home/delete/.local/bin/rtk",
+    "proxy",
+    "/home/delete/nirs4all/nirs4all/.venv/bin/python",
+    "scripts/check_error_taxonomy.py"
+  ],
+  "cwd": "/home/delete/nirs4all/_worktrees/2026-10-07-dag-metric-validation",
+  "duration_seconds": 0.09857274795649573,
+  "environment": {
+    "CARGO_INCREMENTAL": "0",
+    "CARGO_NET_OFFLINE": "true",
+    "CARGO_PROFILE_DEV_DEBUG": "0",
+    "CARGO_PROFILE_TEST_DEBUG": "0",
+    "CARGO_TARGET_DIR": "/mnt/c/Temp/n4a-dag041-20261008/target",
+    "DAG_ML_DATA_REPO": "/home/delete/nirs4all/dag-ml-data",
+    "N4M_LIBRARY_PATH": "/home/delete/nirs4all/_audits/2026-10-06-debt-extension/workflow/public-methods-134-full/n4m/lib/libn4m.so.2.17.0",
+    "N4M_LIB_PATH": "/home/delete/nirs4all/_audits/2026-10-06-debt-extension/workflow/public-methods-134-full/n4m/lib/libn4m.so.2.17.0",
+    "PYO3_PYTHON": "/home/delete/nirs4all/nirs4all/.venv/bin/python",
+    "TMPDIR": "/mnt/c/Temp/n4a-dag041-20261008/tmp"
+  },
+  "exit_code": 0,
+  "facts": {},
+  "finished_at": null,
+  "host": "local-wsl-linux",
+  "id": "error-taxonomy",
+  "input_evidence": {
+    "bytes": 1152,
+    "path": "qualification/history/error-taxonomy/inputs.json",
+    "sha256": "6726bdad662e7dc06c8d1101f203fd8c1c828db5cba7bfa566a1c91c9aec2395"
+  },
+  "input_fingerprints": {
+    "crates/dag-ml-capi/src/lib.rs": "6b2d016a9d20e9aa718d3aab86f4d4da78c274bd3476e4051796a7e77a8e30f3",
+    "crates/dag-ml-core/src/error.rs": "afe30d5497fc7c52eab44e32f78288a05c6a3e22c337ab2213704591e340275e",
+    "crates/dag-ml-py/src/lib.rs": "1ecd2044def7dcadda0f4231828a6695b1ba1c6001f58c2a85074e399f736396",
+    "crates/dag-ml-wasm/src/lib.rs": "bf2ba2282d2d55ab6a5208c69865989c3240ec2b13d0e332d7e1c898b0a2f64a",
+    "docs/adr/ADR-11-error-taxonomy.md": "6622d888737abc5e34384af82ff901ea4f7ae7f82bbeb1737a98eb5771224299",
+    "scripts/check_error_taxonomy.py": "a26205d25d83d50781cad1a53473d0c460deaaf56b669d800c938476d7561602"
+  },
+  "log": {
+    "bytes": 52,
+    "path": "qualification/history/error-taxonomy/logs/stdout.log",
+    "sha256": "7726d6651cc65ceff817d049a6602d944b2ec83c70a65148c91acbcb6c5c10b3"
+  },
+  "observations_basis": "Original receipt and independent embedded direct terminal; direct-command parser of exact retained stdout/stderr. Zero for direct-command means no unit-test count is asserted.",
+  "provenance": {},
+  "raw_reports": {},
+  "skips": [],
+  "started_at": null,
+  "summary": {
+    "failed": 0,
+    "passed": 0,
+    "skipped": 0
+  },
+  "timing_basis": "historical-duration"
+}

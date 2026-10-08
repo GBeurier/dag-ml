@@ -1,0 +1,49 @@
+{
+  "gate": "octave-initial-full-refit",
+  "command": [
+    "/home/delete/.local/bin/rtk",
+    "proxy",
+    "/mnt/c/Temp/n4a-dag041-20261008/octave-elf-cache/bin/octave",
+    "--no-gui",
+    "--quiet",
+    "--eval",
+    "addpath('/mnt/c/Temp/n4a-dag041-20261008/octave-bindings/tests'); initial_full_refit"
+  ],
+  "cwd": "/home/delete/nirs4all/_worktrees/2026-10-07-dag-metric-validation",
+  "exit_code": 0,
+  "direct_terminal": {
+    "command": [
+      "/home/delete/.local/bin/rtk",
+      "proxy",
+      "/mnt/c/Temp/n4a-dag041-20261008/octave-elf-cache/bin/octave",
+      "--no-gui",
+      "--quiet",
+      "--eval",
+      "addpath('/mnt/c/Temp/n4a-dag041-20261008/octave-bindings/tests'); initial_full_refit"
+    ],
+    "direct_command_exit_code": 0,
+    "seconds": 0.7038415640126914,
+    "independent_child_wrapper_pid": 3353845
+  },
+  "stop_reason": null,
+  "seconds": 34.18328224297147,
+  "observed_peak": {
+    "target_bytes": 7364962537,
+    "other_bytes": 146321805,
+    "free_bytes": 296038887424
+  },
+  "source_tree": "7e77957b89fae7097886d310e71e249dc5eb9c45",
+  "source_unchanged_after": true,
+  "logs": {
+    "stdout.log": {
+      "path": "/mnt/c/Temp/n4a-dag041-20261008/gates/octave-initial-full-refit/stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "stderr.log": {
+      "path": "/mnt/c/Temp/n4a-dag041-20261008/gates/octave-initial-full-refit/stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    }
+  }
+}

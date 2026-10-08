@@ -1,0 +1,5 @@
+# Retained qualification output and wheel RECORD files are byte-for-byte evidence.
+# Preserve original line endings and blank EOF lines; keep diffs readable.
+qualification/history/*/logs/*.log -text whitespace=cr-at-eol,-blank-at-eof
+qualification/history/*/originals/original_methods_public_wheel_record -text whitespace=cr-at-eol,-blank-at-eof
+qualification/windows-v2-*.log -text whitespace=cr-at-eol,-blank-at-eof

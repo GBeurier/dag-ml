@@ -1,0 +1,57 @@
+{
+  "gate": "r-mdatools-adapter",
+  "command": [
+    "/home/delete/.local/bin/rtk",
+    "proxy",
+    "cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "dag-ml-cli",
+    "--test",
+    "cli_contracts",
+    "mdatools_process_controller"
+  ],
+  "cwd": "/home/delete/nirs4all/_worktrees/2026-10-07-dag-metric-validation",
+  "exit_code": 0,
+  "direct_terminal": {
+    "command": [
+      "/home/delete/.local/bin/rtk",
+      "proxy",
+      "cargo",
+      "test",
+      "--offline",
+      "--locked",
+      "-p",
+      "dag-ml-cli",
+      "--test",
+      "cli_contracts",
+      "mdatools_process_controller"
+    ],
+    "direct_command_exit_code": 0,
+    "seconds": 6.9058302189805545,
+    "independent_child_wrapper_pid": 3340293
+  },
+  "stop_reason": null,
+  "seconds": 32.514401818974875,
+  "observed_peak": {
+    "target_bytes": 5904671865,
+    "other_bytes": 205613909,
+    "free_bytes": 297368408064
+  },
+  "source_tree": "7e77957b89fae7097886d310e71e249dc5eb9c45",
+  "source_unchanged_after": true,
+  "logs": {
+    "stdout.log": {
+      "path": "/mnt/c/Temp/n4a-dag041-20261008/gates/r-mdatools-adapter/stdout.log",
+      "sha256": "ab05d62a20a11861fcf0b21984d83904e06b698c2f699ae2b2d827b49c25c7c7",
+      "bytes": 538
+    },
+    "stderr.log": {
+      "path": "/mnt/c/Temp/n4a-dag041-20261008/gates/r-mdatools-adapter/stderr.log",
+      "sha256": "55120c00f15f14375df1df0dbe40b4fdb399f7cf652641d94e4a07058f2c0e47",
+      "bytes": 322
+    }
+  }
+}
