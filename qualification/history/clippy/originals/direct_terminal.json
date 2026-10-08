@@ -1,0 +1,18 @@
+{
+  "command": [
+    "/home/delete/.local/bin/rtk",
+    "proxy",
+    "cargo",
+    "clippy",
+    "--offline",
+    "--locked",
+    "--workspace",
+    "--all-targets",
+    "--",
+    "-D",
+    "warnings"
+  ],
+  "direct_command_exit_code": 0,
+  "seconds": 51.43133540102281,
+  "independent_child_wrapper_pid": 3292865
+}

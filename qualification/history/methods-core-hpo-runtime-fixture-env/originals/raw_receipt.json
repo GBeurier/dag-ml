@@ -1,0 +1,43 @@
+{
+  "gate": "methods-core-hpo-runtime-fixture-env",
+  "command": [
+    "/home/delete/.local/bin/rtk",
+    "proxy",
+    "bash",
+    "scripts/test_methods_optimizer_local.sh"
+  ],
+  "cwd": "/home/delete/nirs4all/_worktrees/2026-10-07-dag-metric-validation",
+  "exit_code": 0,
+  "direct_terminal": {
+    "command": [
+      "/home/delete/.local/bin/rtk",
+      "proxy",
+      "bash",
+      "scripts/test_methods_optimizer_local.sh"
+    ],
+    "direct_command_exit_code": 0,
+    "seconds": 180.86117979203118,
+    "independent_child_wrapper_pid": 3355157
+  },
+  "stop_reason": null,
+  "seconds": 214.3860437439871,
+  "observed_peak": {
+    "target_bytes": 7596644026,
+    "other_bytes": 160233581,
+    "free_bytes": 295601000448
+  },
+  "source_tree": "7e77957b89fae7097886d310e71e249dc5eb9c45",
+  "source_unchanged_after": true,
+  "logs": {
+    "stdout.log": {
+      "path": "/mnt/c/Temp/n4a-dag041-20261008/gates/methods-core-hpo-runtime-fixture-env/stdout.log",
+      "sha256": "ea9e4b6984142c48a4cf62e9a389a59c1ac6e176821ef1aa7a625499df037072",
+      "bytes": 86141
+    },
+    "stderr.log": {
+      "path": "/mnt/c/Temp/n4a-dag041-20261008/gates/methods-core-hpo-runtime-fixture-env/stderr.log",
+      "sha256": "847d8c9f2dc8fbfb0aadc2849c0efb09363e53503a03f405f3a81758a640adf5",
+      "bytes": 5051
+    }
+  }
+}

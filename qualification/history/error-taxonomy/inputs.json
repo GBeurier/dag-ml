@@ -1,0 +1,22 @@
+{
+  "continuity_report": {
+    "bytes": 1242,
+    "path": "qualification/history/error-taxonomy/continuity.json",
+    "sha256": "42cb9225d192246384420c81c2c8d077fbd2e152156e76a74afc9cbd10033524"
+  },
+  "historical_manifest": {
+    "bytes": 2988,
+    "path": "qualification/history/error-taxonomy/historical-manifest.json",
+    "sha256": "aea14593b7365c7c62a7312d203ad3c598978ec2e52a4b0460baf0bb66c57fcb"
+  },
+  "input_fingerprints": {
+    "crates/dag-ml-capi/src/lib.rs": "6b2d016a9d20e9aa718d3aab86f4d4da78c274bd3476e4051796a7e77a8e30f3",
+    "crates/dag-ml-core/src/error.rs": "afe30d5497fc7c52eab44e32f78288a05c6a3e22c337ab2213704591e340275e",
+    "crates/dag-ml-py/src/lib.rs": "1ecd2044def7dcadda0f4231828a6695b1ba1c6001f58c2a85074e399f736396",
+    "crates/dag-ml-wasm/src/lib.rs": "bf2ba2282d2d55ab6a5208c69865989c3240ec2b13d0e332d7e1c898b0a2f64a",
+    "docs/adr/ADR-11-error-taxonomy.md": "6622d888737abc5e34384af82ff901ea4f7ae7f82bbeb1737a98eb5771224299",
+    "scripts/check_error_taxonomy.py": "a26205d25d83d50781cad1a53473d0c460deaaf56b669d800c938476d7561602"
+  },
+  "lineage_format": "controlled-runner-duration.v1",
+  "mode": "inherited"
+}

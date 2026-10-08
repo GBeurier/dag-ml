@@ -1,0 +1,57 @@
+{
+  "gate": "methods-cli-real-replay",
+  "command": [
+    "/home/delete/.local/bin/rtk",
+    "proxy",
+    "cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "dag-ml-cli",
+    "--test",
+    "initial_full_refit",
+    "cli_replays_portable_methods_pls_payload_in_fresh_process"
+  ],
+  "cwd": "/home/delete/nirs4all/_worktrees/2026-10-07-dag-metric-validation",
+  "exit_code": 0,
+  "direct_terminal": {
+    "command": [
+      "/home/delete/.local/bin/rtk",
+      "proxy",
+      "cargo",
+      "test",
+      "--offline",
+      "--locked",
+      "-p",
+      "dag-ml-cli",
+      "--test",
+      "initial_full_refit",
+      "cli_replays_portable_methods_pls_payload_in_fresh_process"
+    ],
+    "direct_command_exit_code": 0,
+    "seconds": 11.188762508041691,
+    "independent_child_wrapper_pid": 3345164
+  },
+  "stop_reason": null,
+  "seconds": 33.565994567994494,
+  "observed_peak": {
+    "target_bytes": 6001421262,
+    "other_bytes": 186226966,
+    "free_bytes": 297294360576
+  },
+  "source_tree": "7e77957b89fae7097886d310e71e249dc5eb9c45",
+  "source_unchanged_after": true,
+  "logs": {
+    "stdout.log": {
+      "path": "/mnt/c/Temp/n4a-dag041-20261008/gates/methods-cli-real-replay/stdout.log",
+      "sha256": "bbb9ea0a704b42f194020b4ab0acc2446d655cc61701eb7911bb5ab71ef0c156",
+      "bytes": 182
+    },
+    "stderr.log": {
+      "path": "/mnt/c/Temp/n4a-dag041-20261008/gates/methods-cli-real-replay/stderr.log",
+      "sha256": "1c5c84272dd55f6c44c88a23b2e0a7c483c12f8155f161056900d4c06130d076",
+      "bytes": 190
+    }
+  }
+}

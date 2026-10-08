@@ -1,0 +1,16 @@
+   Compiling target-lexicon v0.13.5
+   Compiling serde_core v1.0.229
+   Compiling pyo3-build-config v0.29.2
+   Compiling pyo3-ffi v0.29.2
+   Compiling pyo3 v0.29.2
+   Compiling serde v1.0.229
+   Compiling serde_json v1.0.151
+   Compiling serde_ignored v0.1.14
+   Compiling yaml_serde v0.10.7
+   Compiling dag-ml-results v0.3.41 (/home/delete/nirs4all/_worktrees/2026-10-07-dag-metric-validation/crates/dag-ml-results)
+   Compiling dag-ml-core v0.3.41 (/home/delete/nirs4all/_worktrees/2026-10-07-dag-metric-validation/crates/dag-ml-core)
+   Compiling pythonize v0.29.0
+   Compiling dag-ml-py v0.3.41 (/home/delete/nirs4all/_worktrees/2026-10-07-dag-metric-validation/crates/dag-ml-py)
+    Finished `test` profile [unoptimized] target(s) in 32.20s
+     Running unittests src/lib.rs (/mnt/c/Temp/n4a-dag041-20261008/target/debug/deps/_dag_ml-5c6f0c86b6b6aab4)
+   Doc-tests _dag_ml

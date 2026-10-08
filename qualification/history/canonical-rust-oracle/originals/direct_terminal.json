@@ -1,0 +1,15 @@
+{
+  "command": [
+    "/home/delete/.local/bin/rtk",
+    "proxy",
+    "cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "--manifest-path",
+    "parity/canonical/rust-oracle/Cargo.toml"
+  ],
+  "direct_command_exit_code": 0,
+  "seconds": 33.209526024991646,
+  "independent_child_wrapper_pid": 3351712
+}

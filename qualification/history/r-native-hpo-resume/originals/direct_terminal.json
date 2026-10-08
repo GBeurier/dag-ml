@@ -1,0 +1,16 @@
+{
+  "command": [
+    "/home/delete/.local/bin/rtk",
+    "proxy",
+    "cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "dag-ml-cli",
+    "host_hpo_cli_runs_parallel_pruning_and_resumes_native_checkpoint"
+  ],
+  "direct_command_exit_code": 0,
+  "seconds": 7.7797559929895215,
+  "independent_child_wrapper_pid": 3341151
+}

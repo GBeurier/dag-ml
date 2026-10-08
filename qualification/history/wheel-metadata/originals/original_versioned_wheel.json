@@ -1,0 +1,15 @@
+{
+  "version": "0.3.41",
+  "wheel": "/mnt/c/Temp/n4a-dag041-20261008/wheels/dag_ml-0.3.41-cp311-abi3-manylinux_2_34_x86_64.whl",
+  "wheel_sha256": "5fcd359229db6f697f85e64eeca79f794ee3e4e5a306cba84961b8b1b308abc9",
+  "wheel_bytes": 12490848,
+  "metadata_sha256": "37673a5d88aa8fd20e8de29d0ec18af0cd89b77e4b1bd3217179578bc6399d9e",
+  "record_sha256": "7c6e432c62739c0931e3374ccbc09de7b4a0c56f8d3ab3e121ac517842b65237",
+  "tracked_so": "/home/delete/nirs4all/_worktrees/2026-10-07-dag-metric-validation/crates/dag-ml-py/python/dag_ml/_dag_ml.abi3.so",
+  "tracked_so_sha256": "6a57a4d3c67ac7127215985056a09897cef0b2e96f927cf19101d64d39714c1a",
+  "tracked_so_bytes": 39018136,
+  "old_tracked_so_sha256": "a7d85605ba0dc07dc5889e9ac94cd077b89917cb688811b59c92317ede13bb38",
+  "source87_and_locked_metadata_unchanged": true,
+  "private_prototype_not_reused": true,
+  "direct_maturin_exit_status_unknown_monitor_incident_explicit": true
+}

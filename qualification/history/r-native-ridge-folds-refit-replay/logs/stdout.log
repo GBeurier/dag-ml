@@ -1,0 +1,6 @@
+
+running 1 test
+test r_ridge_hpo_uses_fold_train_ids_and_native_parallel_pruning_resume ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.72s
+

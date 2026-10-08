@@ -1,0 +1,62 @@
+{
+  "independent_command_terminal": {
+    "command": [
+      "/home/delete/.local/bin/rtk",
+      "proxy",
+      "cargo",
+      "test",
+      "--offline",
+      "--locked",
+      "--manifest-path",
+      "crates/dag-ml-py/Cargo.toml"
+    ],
+    "direct_command_exit_code": 0,
+    "seconds": 37.15277862199582,
+    "independent_child_wrapper_pid": 3309943
+  },
+  "gate": "python-default",
+  "command": [
+    "/home/delete/.local/bin/rtk",
+    "proxy",
+    "cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "--manifest-path",
+    "crates/dag-ml-py/Cargo.toml"
+  ],
+  "exit_code": 0,
+  "stop_reason": null,
+  "seconds": 51.50451946200337,
+  "before": {
+    "target_bytes": 4158965164,
+    "other_bytes": 66830033,
+    "free_bytes": 299166679040,
+    "vanished_owned_temporaries": 0
+  },
+  "after": {
+    "target_bytes": 4723762850,
+    "other_bytes": 66836717,
+    "free_bytes": 298604097536,
+    "vanished_owned_temporaries": 0
+  },
+  "observed_peak": {
+    "target_bytes": 4723762850,
+    "other_bytes": 66836717,
+    "free_bytes": 298604101632,
+    "vanished_owned_temporaries": 0
+  },
+  "functional_source_unchanged": true,
+  "logs": {
+    "stdout.log": {
+      "path": "/mnt/c/Temp/n4a-dag041-20261008/gates/python-default/stdout.log",
+      "bytes": 4152,
+      "sha256": "2880d5289017c5e33ed2e6271f37867d1bc4e1053212cc4099c9dac583128185"
+    },
+    "stderr.log": {
+      "path": "/mnt/c/Temp/n4a-dag041-20261008/gates/python-default/stderr.log",
+      "bytes": 1655,
+      "sha256": "8677130cb9c8926b877642da9da588f9109509ab6231c7a2573bc1f7cc1802e3"
+    }
+  }
+}

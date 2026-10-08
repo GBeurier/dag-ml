@@ -1,0 +1,11 @@
+{
+  "command": [
+    "/home/delete/.local/bin/rtk",
+    "proxy",
+    "bash",
+    "scripts/test_core_package_extract.sh"
+  ],
+  "direct_command_exit_code": 0,
+  "seconds": 94.89908767596353,
+  "independent_child_wrapper_pid": 3316582
+}

@@ -1,0 +1,44 @@
+{
+  "artifact": {
+    "artifact_path": "/mnt/c/Temp/n4a-dag041-20261008/wheels/dag_ml-0.3.41-cp311-abi3-manylinux_2_34_x86_64.whl",
+    "bytes": 12490848,
+    "name": "dag-ml-wheel",
+    "origin": "local maturin wheel built from reviewed source 65adf2780bdfafba9ca90209d39102dc2439fea6; original versioned-wheel and exact cached-terminal replay captures",
+    "sha256": "5fcd359229db6f697f85e64eeca79f794ee3e4e5a306cba84961b8b1b308abc9",
+    "version": "0.3.41"
+  },
+  "historical_derivation": "Original receipt and independent embedded direct terminal; direct-command parser of exact retained stdout/stderr. Zero for direct-command means no unit-test count is asserted. Six-field artifact records use original retained wheel/binding SHA+bytes and pre-gate frozen16/pre-build lock hashes; current byte checks establish continued identity only, not an invented historical capture. The locked-build dependency row describes the binding build closure, not a Cargo test consuming a wheel.",
+  "log_sha256": "3e719a0c37d2c2543090642c9c7fdbc2ecee08be6b102056f0a03152e3acae49",
+  "run_identity": {
+    "command": [
+      "/home/delete/.local/bin/rtk",
+      "proxy",
+      "/home/delete/nirs4all/nirs4all/.venv/bin/python",
+      "scripts/smoke_python_wheel_metadata.py",
+      "/mnt/c/Temp/n4a-dag041-20261008/wheels/dag_ml-0.3.41-cp311-abi3-manylinux_2_34_x86_64.whl"
+    ],
+    "cwd": "/home/delete/nirs4all/_worktrees/2026-10-07-dag-metric-validation",
+    "environment": {
+      "CARGO_INCREMENTAL": "0",
+      "CARGO_NET_OFFLINE": "true",
+      "CARGO_PROFILE_DEV_DEBUG": "0",
+      "CARGO_PROFILE_TEST_DEBUG": "0",
+      "CARGO_TARGET_DIR": "/mnt/c/Temp/n4a-dag041-20261008/target",
+      "DAG_ML_DATA_REPO": "/home/delete/nirs4all/dag-ml-data",
+      "N4M_LIBRARY_PATH": "/home/delete/nirs4all/_audits/2026-10-06-debt-extension/workflow/public-methods-134-full/n4m/lib/libn4m.so.2.17.0",
+      "N4M_LIB_PATH": "/home/delete/nirs4all/_audits/2026-10-06-debt-extension/workflow/public-methods-134-full/n4m/lib/libn4m.so.2.17.0",
+      "PYO3_PYTHON": "/home/delete/nirs4all/nirs4all/.venv/bin/python",
+      "TMPDIR": "/mnt/c/Temp/n4a-dag041-20261008/tmp"
+    },
+    "exit_code": 0,
+    "finished_at": null,
+    "host": "local-wsl-linux",
+    "id": "wheel-metadata",
+    "input_fingerprints": {
+      "crates/dag-ml-py/pyproject.toml": "60b1fbffced07868cabb5409321ce6bb89f318e3e1d6310ae29f9efe251c1a88",
+      "scripts/smoke_python_wheel_metadata.py": "cb3d6abd28771651b4d699e0baa2167a9672826737208efa20d51fe97326a97e"
+    },
+    "started_at": null
+  },
+  "source_sha": "65adf2780bdfafba9ca90209d39102dc2439fea6"
+}

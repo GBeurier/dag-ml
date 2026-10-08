@@ -1,0 +1,12 @@
+{
+  "command": [
+    "/home/delete/.local/bin/rtk",
+    "proxy",
+    "/home/delete/nirs4all/nirs4all/.venv/bin/python",
+    "scripts/smoke_cv_refit_replay_output.py",
+    "/mnt/c/Temp/n4a-dag041-20261008/target/debug/dag-ml-cli"
+  ],
+  "direct_command_exit_code": 0,
+  "seconds": 0.32241190498461947,
+  "independent_child_wrapper_pid": 3313364
+}

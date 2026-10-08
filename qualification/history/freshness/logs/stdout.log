@@ -1,0 +1,1 @@
+check_so_freshness: paired dirty state — 5 compiled Rust input(s) and crates/dag-ml-py/python/dag_ml/_dag_ml.abi3.so are modified; commit-time freshness is inapplicable. Require the public source-tree import smoke before accepting this worktree.

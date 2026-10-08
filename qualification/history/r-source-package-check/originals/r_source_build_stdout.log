@@ -1,0 +1,7 @@
+* checking for file ‘/home/delete/nirs4all/_worktrees/2026-10-07-dag-metric-validation/bindings/r/DESCRIPTION’ ... OK
+* preparing ‘dagml’:
+* checking DESCRIPTION meta-information ... OK
+* cleaning src
+* checking for LF line-endings in source and make files and shell scripts
+* checking for empty or unneeded directories
+* building ‘dagml_0.3.41.tar.gz’

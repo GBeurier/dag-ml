@@ -1,0 +1,68 @@
+    Checking typenum v1.20.1
+    Checking memchr v2.8.3
+   Compiling serde_json v1.0.151
+   Compiling wasm-bindgen-shared v0.2.129
+    Checking serde_core v1.0.229
+    Checking indexmap v2.13.1
+    Checking num-traits v0.2.19
+    Checking getrandom v0.3.4
+    Checking bitflags v2.13.2
+    Checking regex-syntax v0.8.11
+   Compiling syn v3.0.4
+    Checking zlib-rs v0.6.8
+   Compiling rustversion v1.0.23
+    Checking zerocopy v0.8.56
+    Checking tracing v0.1.44
+    Checking snap v1.1.2
+    Checking zstd-sys v2.0.13+zstd.1.5.6
+    Checking base64 v0.23.1
+    Checking simdutf8 v0.1.5
+    Checking anyhow v1.0.104
+    Checking clap v4.5.53
+    Checking flatbuffers v25.12.19
+    Checking zstd-safe v7.2.1
+    Checking generic-array v0.14.7
+    Checking num-integer v0.1.47
+    Checking num-complex v0.4.6
+    Checking chrono v0.4.45
+    Checking zstd v0.13.3
+    Checking regex-automata v0.4.18
+    Checking num-bigint v0.5.1
+    Checking flate2 v1.1.10
+    Checking block-buffer v0.10.4
+    Checking crypto-common v0.1.7
+    Checking digest v0.10.7
+   Compiling wasm-bindgen v0.2.129
+    Checking sha2 v0.10.9
+    Checking serde_ignored v0.1.14
+    Checking matchers v0.2.0
+   Compiling wasm-bindgen-macro-support v0.2.129
+    Checking half v2.7.1
+    Checking ahash v0.8.12
+   Compiling serde_derive v1.0.229
+   Compiling thiserror-impl v2.0.21
+    Checking arrow-buffer v59.3.0
+    Checking arrow-data v59.3.0
+    Checking arrow-array v59.3.0
+    Checking thiserror v2.0.21
+   Compiling wasm-bindgen-macro v0.2.129
+    Checking serde v1.0.229
+    Checking yaml_serde v0.10.7
+    Checking tracing-serde v0.2.0
+    Checking arrow-select v59.3.0
+    Checking tracing-subscriber v0.3.23
+    Checking dag-ml-core v0.3.41 (/home/delete/nirs4all/_worktrees/2026-10-07-dag-metric-validation/crates/dag-ml-core)
+ Documenting dag-ml-core v0.3.41 (/home/delete/nirs4all/_worktrees/2026-10-07-dag-metric-validation/crates/dag-ml-core)
+    Checking arrow-ipc v59.3.0
+    Checking js-sys v0.3.106
+    Checking parquet v59.3.0
+    Checking wasm-bindgen-futures v0.4.79
+ Documenting dag-ml-results v0.3.41 (/home/delete/nirs4all/_worktrees/2026-10-07-dag-metric-validation/crates/dag-ml-results)
+    Checking dag-ml-arrow v0.3.41 (/home/delete/nirs4all/_worktrees/2026-10-07-dag-metric-validation/crates/dag-ml-arrow)
+ Documenting dag-ml v0.3.41 (/home/delete/nirs4all/_worktrees/2026-10-07-dag-metric-validation/crates/dag-ml)
+ Documenting dag-ml-wasm v0.3.41 (/home/delete/nirs4all/_worktrees/2026-10-07-dag-metric-validation/crates/dag-ml-wasm)
+ Documenting dag-ml-arrow v0.3.41 (/home/delete/nirs4all/_worktrees/2026-10-07-dag-metric-validation/crates/dag-ml-arrow)
+ Documenting dag-ml-capi v0.3.41 (/home/delete/nirs4all/_worktrees/2026-10-07-dag-metric-validation/crates/dag-ml-capi)
+ Documenting dag-ml-cli v0.3.41 (/home/delete/nirs4all/_worktrees/2026-10-07-dag-metric-validation/crates/dag-ml-cli)
+    Finished `dev` profile [unoptimized] target(s) in 50.43s
+   Generated /mnt/c/Temp/n4a-dag041-20261008/target/doc/dag_ml/index.html and 6 other files

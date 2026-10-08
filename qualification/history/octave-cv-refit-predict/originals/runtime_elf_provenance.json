@@ -1,0 +1,427 @@
+{
+  "scope": "Real GNUOctave10.3 loaded ELF closure from readonly cached packages; not a full condaenv",
+  "wrappers": {
+    "octave": {
+      "path": "/mnt/c/Temp/n4a-dag041-20261008/octave-elf-cache/bin/octave",
+      "sha256": "7fc474ed9ce0f8b03a3958796ffb024005ce5d797afc40b09362265847e71685",
+      "bytes": 51851
+    },
+    "mkoctfile": {
+      "path": "/mnt/c/Temp/n4a-dag041-20261008/octave-elf-cache/bin/mkoctfile",
+      "sha256": "c6d3a4fd8018f01f26fbaa9cad6bf64f62b0cc6087c18b35a740487a115f0f8b",
+      "bytes": 51875
+    }
+  },
+  "loaded_elf_ldd_inventory": [
+    {
+      "path": "/home/delete/miniconda3/pkgs/octave-10.3.0-pl5321hd0fbda6_4/lib/octave/10.3.0/liboctmex.so.1.0.0",
+      "sha256": "a2bf8bd8f9bc1353d0def82c8582b5e9c3093cb41fabf266289a0c879165915c",
+      "bytes": 119264
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/octave-10.3.0-pl5321hd0fbda6_4/lib/octave/10.3.0/liboctinterp.so.13.1.1",
+      "sha256": "7f04de5653604522f4d9fd017577daa845bb613f3f61cda414ff41964423698a",
+      "bytes": 25339136
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/octave-10.3.0-pl5321hd0fbda6_4/lib/octave/10.3.0/liboctave.so.12.0.2",
+      "sha256": "5a4a7c21036cfaac48da93a3fc1630589273bf0b26ad6ecdd83bcff4f4f00b8b",
+      "bytes": 23507320
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/libstdcxx-16.2.0-h934c35e_5/lib/libstdc++.so.6.0.36",
+      "sha256": "00ea87fc32a44f4aefee1b88232b6a1c3528b8084064ee47dd6330adb215e586",
+      "bytes": 23874544
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/libgcc-16.2.0-ha9f2e26_5/lib/libgcc_s.so.1",
+      "sha256": "ccfe0ccebfa3053b546b3d27dc9f744223164a18232363cc01063a8838fc0a3c",
+      "bytes": 922624
+    },
+    {
+      "path": "/usr/lib/x86_64-linux-gnu/libc.so.6",
+      "sha256": "b2cf6c33b74d2f22543b7a469a75b538911e690f769d0b238843a49465b83793",
+      "bytes": 2220400
+    },
+    {
+      "path": "/usr/lib/x86_64-linux-gnu/libutil.so.1",
+      "sha256": "ee98a316fe33727cf23cc81d3a7f9628350d6ef75e905c7b713e5f5e68e177dc",
+      "bytes": 14432
+    },
+    {
+      "path": "/usr/lib/x86_64-linux-gnu/libm.so.6",
+      "sha256": "3dd5511ae94785c9f921429b0f2b2f7aabb461b6f0e6de6dfdbef15f24bdfee6",
+      "bytes": 940560
+    },
+    {
+      "path": "/usr/lib/x86_64-linux-gnu/libgomp.so.1.0.0",
+      "sha256": "d46f9225c1883039e8a6853e6d96ca1af11d034ce186a090952e4a7c8a7c2fdc",
+      "bytes": 298776
+    },
+    {
+      "path": "/usr/lib/x86_64-linux-gnu/libpthread.so.0",
+      "sha256": "fbed9505adacada2abb37c6b43be2df6de81e742712c6025694ba48de62c7e78",
+      "bytes": 21448
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/libfreetype6-2.14.3-h5e6c136_2/lib/libfreetype.so.6.20.6",
+      "sha256": "f3883f46a19a8b0705352aba6ebdc3bbfe45bb8145ce38f18bbb366f5eac8979",
+      "bytes": 874488
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/hdf5-1.14.6-nompi_h19486de_106/lib/libhdf5.so.310.5.1",
+      "sha256": "6da83192580b741504e82f8287d9a2b700077791c3e587e8d342ad13896465a3",
+      "bytes": 4628992
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/graphicsmagick-1.3.46-hbf38a57_0/lib/libGraphicsMagick++.so.12.8.2",
+      "sha256": "984f4af02c401daf44b73a3b55f75add060e44849c110738cebeeb37e3e3209e",
+      "bytes": 677968
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/graphicsmagick-1.3.46-hbf38a57_0/lib/libGraphicsMagick.so.3.26.0",
+      "sha256": "7054e95b0472427f2a08011686f145fb1400a518dcfbf7bf78bc73006fedea09",
+      "bytes": 3007368
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/libzlib-1.3.2-h25fd6f3_3/lib/libz.so.1.3.2",
+      "sha256": "3c6fd78e248a60e45081bcc77031204a7cb64a88ff2e27fc786ef12ae7e91fca",
+      "bytes": 117168
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/libcholmod-5.3.1-h59ddab4_7100102/lib/libcholmod.so.5.3.1",
+      "sha256": "3f102f2b99c49ae6ce8650127345cf77df8d83451134145a0be95c519b946fb3",
+      "bytes": 2505256
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/libumfpack-6.3.5-heb53515_7100102/lib/libumfpack.so.6.3.5",
+      "sha256": "025104b5db689ab2fb6efd11cc1d65739662e05ed84f6bae479bb4516138e80e",
+      "bytes": 976504
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/libamd-3.3.3-haaf9dc3_7100102/lib/libamd.so.3.3.3",
+      "sha256": "9b610640a287edc7db2423363dc6f864b445c2ef2026b9ebaadd10f583eeeae8",
+      "bytes": 62240
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/libcamd-3.3.3-h32481e8_7100102/lib/libcamd.so.3.3.3",
+      "sha256": "68a04c2bac424ac9197ba93ec71358751334f48ad8c74630c68e9905996461b3",
+      "bytes": 58024
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/libcolamd-3.3.4-h32481e8_7100102/lib/libcolamd.so.3.3.4",
+      "sha256": "7d8008c89c9a38cf447b02e2173f15c88f02336b86fde3832a72c2b12380a315",
+      "bytes": 32360
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/libccolamd-3.3.4-h32481e8_7100102/lib/libccolamd.so.3.3.4",
+      "sha256": "6d2da34dc5a0a49506c69df7c4099026727728800d8f92bbc31c4a84ec47fe39",
+      "bytes": 53320
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/libcxsparse-4.4.1-h32481e8_7100102/lib/libcxsparse.so.4.4.1",
+      "sha256": "9fa3db3ef9a63f992f3b1b8f363b7156d9f39c02a214bd5ba8acf8345c5af641",
+      "bytes": 255928
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/libsuitesparseconfig-7.10.1-h92d6892_7100102/lib/libsuitesparseconfig.so.7.10.1",
+      "sha256": "e11b32072c810f534af0936d905f77c79c04122ff00b142e4dc59afccb2bc4ca",
+      "bytes": 21520
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/libspqr-4.3.4-h852d39f_7100102/lib/libspqr.so.4.3.4",
+      "sha256": "a89b975c4dd6f535bfc6a71b3d8003c90e5f7247ccd2d0cd731d795097ba96a9",
+      "bytes": 492512
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/fftw-3.3.11-nompi_h3b011a4_100/lib/libfftw3_threads.so.3.7.11",
+      "sha256": "6be8e06f51516ba9fc00552488d4e087afa41c83d9edc224b6f579baeb5c082d",
+      "bytes": 41312
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/fftw-3.3.11-nompi_h3b011a4_100/lib/libfftw3.so.3.7.11",
+      "sha256": "d4c8dcb28be5c66895a3c99f86609dd32d358a219a53917cf689e604e067df17",
+      "bytes": 2524816
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/fftw-3.3.11-nompi_h3b011a4_100/lib/libfftw3f_threads.so.3.7.11",
+      "sha256": "649a794fe36dc4b1ef37a7a915a1f0bc8352a96dad3e14a47d7ec9280c61cae9",
+      "bytes": 41368
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/fftw-3.3.11-nompi_h3b011a4_100/lib/libfftw3f.so.3.7.11",
+      "sha256": "327598eefe7e98c4ca3791efa69a14729fdae2c65cf00553805d50d0f3592d99",
+      "bytes": 2542248
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/libgl-1.7.0-ha4b6fd6_5/lib/libGL.so.1.7.0",
+      "sha256": "3929382b3712189d005f2c8496d7eee27d63817a4af858a84db12feae3bd29a3",
+      "bytes": 727544
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/libglu-9.0.3-h5888daf_1/lib/libGLU.so.1.3.1",
+      "sha256": "c7ca744f5701c9e320b4a19d801e589a271a13c9f9d1c89f541258b1296a5131",
+      "bytes": 450056
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/fontconfig-2.18.3-h4db4eae_1/lib/libfontconfig.so.1.17.0",
+      "sha256": "adeeecef1c6d5aa71440055689ce01a292ea252f5c1ab6fcb80975271f57fa66",
+      "bytes": 529024
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/xorg-libx11-1.8.13-he1eb515_1/lib/libX11.so.6.4.0",
+      "sha256": "b06b5159458443d36b4311f771e81326c1fcd6c2cea1e93d8947bf6c0c943268",
+      "bytes": 1476144
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/gl2ps-1.4.2-h36e74d4_2/lib/libgl2ps.so.1.4.2",
+      "sha256": "2c14af024fdfe14c1effe7813ac89e1b9e0ca41ec04878b170cc981096ea9c9c",
+      "bytes": 128928
+    },
+    {
+      "path": "/usr/lib/x86_64-linux-gnu/lapack/liblapack.so.3.10.0",
+      "sha256": "86b2c20720e2aafb6b84d20d252cd39c5b22a6f7452f8bb920a06d8c8439124c",
+      "bytes": 7567224
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/libcurl-8.20.0-hcf29cc6_0/lib/libcurl.so.4.8.0",
+      "sha256": "89f13a9afdabf392a6ec60dba6b06e6e0ccc5e12d3d1e3624cd2a61121f67631",
+      "bytes": 1064648
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/arpack-3.9.1-nompi_hf03ea27_102/lib/libarpack.so.2.1.0",
+      "sha256": "46bee104c481d0e68a1b5a48fc3ca8a6ae9b993180b4993086f4896bc548b332",
+      "bytes": 353104
+    },
+    {
+      "path": "/usr/lib/x86_64-linux-gnu/blas/libblas.so.3.10.0",
+      "sha256": "bd8a282c845e100cbb28dd31f9cf19757d508bf7a07a7f62bbe8c04cafb81646",
+      "bytes": 673632
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/pcre-8.45-h9c3ff4c_0/lib/libpcre.so.1.2.13",
+      "sha256": "cd63798f0174433e95eccda2de473cf9358ab28f34e3d39351fc383683a4c07e",
+      "bytes": 288832
+    },
+    {
+      "path": "/usr/lib/x86_64-linux-gnu/libdl.so.2",
+      "sha256": "3eaaa4aefd9c28f3867c96a427c3cbec9191cb61c4c9d0a2cb4a765d66064499",
+      "bytes": 14432
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/libgfortran5-16.2.0-h6b99dfc_5/lib/libgfortran.so.5.0.0",
+      "sha256": "981950814d366d23a6f5529e5735b6bf8143e599bceedfb33cc1b7cc797d2102",
+      "bytes": 11532656
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/libgcc-16.2.0-ha9f2e26_5/lib/libquadmath.so.0.0.0",
+      "sha256": "25b886a70267375aecfea427143e160baadf2914499ae8f4371d9fb485b0db60",
+      "bytes": 991312
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/libiconv-1.18-h0cb94f2_3/lib/libiconv.so.2.7.0",
+      "sha256": "59b942b8a9dfabcfec7d65ff2be1de2e59902765837768ca37468cef5dca9571",
+      "bytes": 1182640
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/readline-8.3-hd6e31c0_1/lib/libreadline.so.8.3",
+      "sha256": "3c1830a4ce87a037ddc676dc53856bc6f6dc8091b12998a964f19431f07cf831",
+      "bytes": 434560
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/libpng-1.6.58-h922cc85_1/lib/libpng16.so.16.58.0",
+      "sha256": "37856f3833c1ad01276c9c1b39fdf37d110534bb1a4fbc690466f55248296647",
+      "bytes": 276184
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/openssl-3.6.4-h781a0a9_0/lib/libcrypto.so.3",
+      "sha256": "e1b243ce2ca7727a9242caef16d5d9376ca8ec5f4e36c777377425a033c850f2",
+      "bytes": 7252520
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/libaec-1.1.5-h088129d_0/lib/libsz.so.2.0.1",
+      "sha256": "c034db431229f40daed1602f2413c2fbdebe6c2fbd1ca13be44ab747238cd3ce",
+      "bytes": 55392
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/libtiff-4.7.1-h9d88235_1/lib/libtiff.so.6.2.0",
+      "sha256": "1c9c4392893fcf25ec9d41cfbf0567e422955016a6ea908ebae336cd4beb487f",
+      "bytes": 667120
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/libwebp-base-1.6.0-hd42ef1d_0/lib/libwebp.so.7.2.0",
+      "sha256": "d97406a18e48cae0a4c98f77e74f4ea6bb77471f188224c094d42f04a682da0d",
+      "bytes": 785488
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/libwebp-base-1.6.0-hd42ef1d_0/lib/libwebpmux.so.3.1.2",
+      "sha256": "64cf7cc29a878aa9c26c080f2cfe81d4c38bbc8f8dcc1611f0842ccb3c255087",
+      "bytes": 52328
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/libwebp-base-1.6.0-hd42ef1d_0/lib/libsharpyuv.so.0.1.2",
+      "sha256": "4ca18185ea0d828d54b9f7c0f52c10ce5fb146bae387298d84bab3dcb94bded4",
+      "bytes": 46048
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/libjpeg-turbo-3.1.2-hb03c661_0/lib/libjpeg.so.8.3.2",
+      "sha256": "56349d3167fe19b5db60aa1fe0529981b0d0170e24fb6321157fc49d4b381dec",
+      "bytes": 889744
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/zstd-1.5.7-h11fc155_0/lib/libzstd.so.1.5.7",
+      "sha256": "04386b17742680c97e5c4a9da31414238477d4951ec04f5c9499a0728e41ba3d",
+      "bytes": 1187048
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/bzip2-1.0.8-hda65f42_10/lib/libbz2.so.1.0.8",
+      "sha256": "89167cfb36a81306dcf8f439436f46dda12f0bbf4877b9f87abfd079bf765c46",
+      "bytes": 241912
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/libglvnd-1.7.0-ha4b6fd6_2/lib/libGLdispatch.so.0.0.0",
+      "sha256": "67177f7517a6ff8993fbacd0df3df65c1925bcaef7a12c498530e701470a54a2",
+      "bytes": 1030840
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/libglx-1.7.0-ha4b6fd6_2/lib/libGLX.so.0.0.0",
+      "sha256": "88b4a062d4a8ea20cc57b88bd99eb65408e9a8d6888add3eaff46972518349f7",
+      "bytes": 348424
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/libopengl-1.7.0-ha4b6fd6_2/lib/libOpenGL.so.0.0.0",
+      "sha256": "af175f9673e55e1ac1c6db174a5b7b04174015f1c7c3861b7cbda83e6d38ef6d",
+      "bytes": 224424
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/libexpat-2.7.3-h7354ed3_4/lib/libexpat.so.1.11.1",
+      "sha256": "1942f429528ea82c1058dddb5927f5c36d3a5e33420128505dc086326d3b729a",
+      "bytes": 223320
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/libxcb-1.17.0-h8a09558_0/lib/libxcb.so.1.1.0",
+      "sha256": "fadbc18909741294d01b1622a00ca935fa5dc344b3b3e1465d632e01215dce5e",
+      "bytes": 228624
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/libnghttp2-1.67.0-had1ee68_0/lib/libnghttp2.so.14.29.0",
+      "sha256": "1428bd5ce3aad7eb4c0c48d45a0d2ee5fb3d791a9c46a00e362c901d83018f67",
+      "bytes": 200576
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/libssh2-1.11.1-h251f7ec_0/lib/libssh2.so.1.0.1",
+      "sha256": "40d7337e163108c07a261ca5fd825513063c9c3e7b5c748207892c981be6e32c",
+      "bytes": 331760
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/openssl-3.6.4-h781a0a9_0/lib/libssl.so.3",
+      "sha256": "0246a392f07abf2c65cf701b2e0fa5f8c673d4606e13dff940defac1c6017659",
+      "bytes": 1219104
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/krb5-1.21.3-h659f571_0/lib/libgssapi_krb5.so.2.2",
+      "sha256": "3a74b52b259553f9bb1fbfe72feebe24216225dc15d38e0c711347c0f795eb04",
+      "bytes": 392480
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/ncurses-6.6-hdb14827_1/lib/libtinfo.so.6.6",
+      "sha256": "29e592796eb4e5cd54a9e5775ea453b8b6abf8c097065883d300b1a41690719f",
+      "bytes": 305016
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/liblzma-5.8.3-hb03c661_1/lib/liblzma.so.5",
+      "sha256": "491c01c02da5a22f5825a7c05a561e175aa70c203d5e462dfe90b5040dbdaf50",
+      "bytes": 222712
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/lerc-4.0.0-h0aef613_1/lib/libLerc.so.4",
+      "sha256": "72b478d063fd6dcc2ea52731400332c784209c38f12be2b961d0c8ff949603c8",
+      "bytes": 884568
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/libdeflate-1.25-h17f619e_0/lib/libdeflate.so.0",
+      "sha256": "9f915c3467f59a215e969f24fa341425fe7bd6972a340079529d2cf21f818a28",
+      "bytes": 101872
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/xorg-libxau-1.0.12-h7cc23a3_2/lib/libXau.so.6.0.0",
+      "sha256": "dcc7de4960c165b97b5faa8b3bdeb4dfc2439b5066f1f9b2f2e3aca9478267ff",
+      "bytes": 17144
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/xorg-libxdmcp-1.1.5-h7cc23a3_2/lib/libXdmcp.so.6.0.0",
+      "sha256": "dcdabcb94e17c6b1057a751e43574882ba44bf9b0fa0ff0e75dbf7b30f9e3b63",
+      "bytes": 30144
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/krb5-1.21.3-h659f571_0/lib/libkrb5.so.3.3",
+      "sha256": "66f1b98b466ab3c8033f4271a118e3cdb4f4429c768e7ee5ea745e5d52095b34",
+      "bytes": 1051368
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/krb5-1.21.3-h659f571_0/lib/libk5crypto.so.3.1",
+      "sha256": "ddd2f581efbe6839a41bacca42c7eb95bf96e5e8618c97b0c5aaa81f8e303185",
+      "bytes": 108360
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/krb5-1.21.3-h659f571_0/lib/libcom_err.so.3.0",
+      "sha256": "08b34f69895df6aad018ffea0570a94954faacc7aaf51137c45286af02bfe38f",
+      "bytes": 22232
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/krb5-1.21.3-h659f571_0/lib/libkrb5support.so.0.1",
+      "sha256": "41cbade63e6672228101b586b9ccc00bc3742daff580cbc0a41a3953543ba95d",
+      "bytes": 66824
+    },
+    {
+      "path": "/home/delete/miniconda3/pkgs/keyutils-1.6.3-h7cc23a3_1/lib/libkeyutils.so.1.10",
+      "sha256": "bfe024accca85c9f39b7c0e5bf8f2e551f45989db6ea4de2d4cf5bd5319f8e9d",
+      "bytes": 39192
+    },
+    {
+      "path": "/usr/lib/x86_64-linux-gnu/libresolv.so.2",
+      "sha256": "7230adfc1d3676f2485bec78f2d5c916d6becb15bc554ff95901f46800215194",
+      "bytes": 64456
+    }
+  ],
+  "ldd_missing": 0,
+  "results": [
+    {
+      "label": "native-version",
+      "command": [
+        "/mnt/c/Temp/n4a-dag041-20261008/octave-elf-cache/bin/octave",
+        "--no-gui",
+        "--quiet",
+        "--eval",
+        "printf('VERSION=%s\\n', version); printf('OCTAVE_HOME=%s\\n', OCTAVE_HOME); assert(strcmp(version, '10.3.0')); assert(isequal([1,2;3,4]*[1;1], [3;7]));"
+      ],
+      "exit_code": 0,
+      "stdout": "VERSION=10.3.0\nOCTAVE_HOME=/home/delete/miniconda3/pkgs/octave-10.3.0-pl5321hd0fbda6_4\n",
+      "stderr": ""
+    },
+    {
+      "label": "mex-compiler-CC",
+      "command": [
+        "/mnt/c/Temp/n4a-dag041-20261008/octave-elf-cache/bin/mkoctfile",
+        "-p",
+        "CC"
+      ],
+      "exit_code": 0,
+      "stdout": "/usr/bin/gcc\n",
+      "stderr": ""
+    },
+    {
+      "label": "mex-includedirs",
+      "command": [
+        "/mnt/c/Temp/n4a-dag041-20261008/octave-elf-cache/bin/mkoctfile",
+        "-p",
+        "INCFLAGS"
+      ],
+      "exit_code": 0,
+      "stdout": "-I/home/delete/miniconda3/pkgs/octave-10.3.0-pl5321hd0fbda6_4/include/octave-10.3.0/octave/.. -I/home/delete/miniconda3/pkgs/octave-10.3.0-pl5321hd0fbda6_4/include/octave-10.3.0/octave -I/home/delete/miniconda3/pkgs/octave-10.3.0-pl5321hd0fbda6_4/include\n",
+      "stderr": ""
+    }
+  ],
+  "no_user_HOME_override": true,
+  "primary_cache_packages_unmodified": true
+}

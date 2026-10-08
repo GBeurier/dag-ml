@@ -1,0 +1,41 @@
+   Compiling target-lexicon v0.13.5
+   Compiling serde_core v1.0.229
+   Compiling typenum v1.20.1
+   Compiling bitflags v2.13.2
+   Compiling indexmap v2.13.1
+   Compiling zlib-rs v0.6.8
+   Compiling memchr v2.8.3
+   Compiling getrandom v0.3.4
+   Compiling simdutf8 v0.1.5
+   Compiling base64 v0.23.1
+   Compiling pyo3-macros-backend v0.29.2
+   Compiling flatbuffers v25.12.19
+   Compiling zstd-sys v2.0.13+zstd.1.5.6
+   Compiling ahash v0.8.12
+   Compiling generic-array v0.14.7
+   Compiling arrow-array v59.3.0
+   Compiling block-buffer v0.10.4
+   Compiling crypto-common v0.1.7
+   Compiling digest v0.10.7
+   Compiling sha2 v0.10.9
+   Compiling pyo3-build-config v0.29.2
+   Compiling flate2 v1.1.10
+   Compiling pyo3-ffi v0.29.2
+   Compiling pyo3 v0.29.2
+   Compiling serde v1.0.229
+   Compiling serde_json v1.0.151
+   Compiling serde_ignored v0.1.14
+   Compiling pyo3-macros v0.29.2
+   Compiling arrow-select v59.3.0
+   Compiling yaml_serde v0.10.7
+   Compiling dag-ml-core v0.3.41 (/home/delete/nirs4all/_worktrees/2026-10-07-dag-metric-validation/crates/dag-ml-core)
+   Compiling arrow-ipc v59.3.0
+   Compiling zstd-safe v7.2.1
+   Compiling zstd v0.13.3
+   Compiling parquet v59.3.0
+   Compiling pythonize v0.29.0
+   Compiling dag-ml-results v0.3.41 (/home/delete/nirs4all/_worktrees/2026-10-07-dag-metric-validation/crates/dag-ml-results)
+   Compiling dag-ml-py v0.3.41 (/home/delete/nirs4all/_worktrees/2026-10-07-dag-metric-validation/crates/dag-ml-py)
+    Finished `test` profile [unoptimized] target(s) in 35.68s
+     Running unittests src/lib.rs (/mnt/c/Temp/n4a-dag041-20261008/target/debug/deps/_dag_ml-5c6f0c86b6b6aab4)
+   Doc-tests _dag_ml

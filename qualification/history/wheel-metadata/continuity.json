@@ -1,0 +1,12 @@
+{
+  "comparison": "exact scoped SHA-256 equality",
+  "current_source_sha": "4ecadda9f0ce06dbf4323967f4fd5b2812f269c7",
+  "historical_manifest_sha256": "3f2c7c9ad2dd3e31c31ea4ebde08259d8654e124781f21e61adb4880ce823050",
+  "historical_source_basis": "reconstructed_from_reviewed_tree",
+  "historical_source_sha": "65adf2780bdfafba9ca90209d39102dc2439fea6",
+  "input_fingerprints": {
+    "crates/dag-ml-py/pyproject.toml": "60b1fbffced07868cabb5409321ce6bb89f318e3e1d6310ae29f9efe251c1a88",
+    "scripts/smoke_python_wheel_metadata.py": "cb3d6abd28771651b4d699e0baa2167a9672826737208efa20d51fe97326a97e"
+  },
+  "source_basis_detail": "reconstructed_from_reviewed_base_plus_frozen16; original runner verified frozen16 and two numerical source files; no observed historical full-map PRE capture and no historical wall timestamps"
+}

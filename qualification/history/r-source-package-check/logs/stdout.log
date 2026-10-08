@@ -1,0 +1,64 @@
+* using log directory ‘/mnt/c/Temp/n4a-dag041-20261008/r-source-local/dagml.Rcheck’
+* using R version 4.6.0 (2026-04-24)
+* using platform: x86_64-conda-linux-gnu
+* R was compiled by
+    x86_64-conda-linux-gnu-cc (conda-forge gcc 10.4.0-19) 10.4.0
+    GNU Fortran (conda-forge gcc 10.4.0-19) 10.4.0
+* running under: Ubuntu 22.04.5 LTS
+* using session charset: UTF-8
+* current time: 2026-10-07 23:36:20 UTC
+* using option ‘--no-manual’
+* checking for file ‘dagml/DESCRIPTION’ ... OK
+* this is package ‘dagml’ version ‘0.3.41’
+* package encoding: UTF-8
+* checking package namespace information ... OK
+* checking package dependencies ... OK
+* checking if this is a source package ... OK
+* checking if there is a namespace ... OK
+* checking for executable files ... OK
+* checking for hidden files and directories ... OK
+* checking for portable file names ... OK
+* checking for sufficient/correct file permissions ... OK
+* checking whether package ‘dagml’ can be installed ... OK
+* used C compiler: ‘x86_64-conda-linux-gnu-cc (conda-forge gcc 15.2.0-19) 15.2.0’
+* checking installed package size ... OK
+* checking package directory ... OK
+* checking DESCRIPTION meta-information ... OK
+* checking top-level files ... OK
+* checking for left-over files ... OK
+* checking index information ... OK
+* checking package subdirectories ... OK
+* checking code files for non-ASCII characters ... OK
+* checking R files for syntax errors ... OK
+* checking whether the package can be loaded ... OK
+* checking whether the package can be loaded with stated dependencies ... OK
+* checking whether the package can be unloaded cleanly ... OK
+* checking whether the namespace can be loaded with stated dependencies ... OK
+* checking whether the namespace can be unloaded cleanly ... OK
+* checking loading without being on the library search path ... OK
+* checking dependencies in R code ... OK
+* checking S3 generic/method consistency ... OK
+* checking replacement functions ... OK
+* checking foreign function calls ... OK
+* checking R code for possible problems ... OK
+* checking Rd files ... OK
+* checking Rd metadata ... OK
+* checking Rd cross-references ... OK
+* checking for missing documentation entries ... OK
+* checking for code/documentation mismatches ... OK
+* checking Rd \usage sections ... OK
+* checking Rd contents ... OK
+* checking for unstated dependencies in examples ... OK
+* checking line endings in C/C++/Fortran sources/headers ... OK
+* checking compiled code ... OK
+* checking examples ... NONE
+* checking for unstated dependencies in ‘tests’ ... OK
+* checking tests ...
+  Running ‘cv_refit_predict.R’
+  Running ‘host_hpo_search.R’
+  Running ‘initial_full_refit.R’
+  Running ‘local_implementation_registry.R’
+  Running ‘replay_bundle.R’
+ OK
+* DONE
+Status: OK

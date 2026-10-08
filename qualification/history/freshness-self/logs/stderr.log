@@ -1,0 +1,32 @@
+check_so_freshness: STALE — the committed extension binary is older than its Rust sources.
+  tracked .so : crates/dag-ml-py/python/dag_ml/_dag_ml.abi3.so (last commit ct=1000000, mtime=1791412215)
+  newest Rust : crates/dag-ml-core/src/lib.rs (last commit ct=2000000)
+  Rust files committed after the .so:
+  - crates/dag-ml-core/src/lib.rs
+  Remediation: rebuild + commit the .so via `maturin develop --release` (in crates/dag-ml-py), then `git add` the .so.
+check_so_freshness: STALE — compiled Rust inputs are dirty or untracked while crates/dag-ml-py/python/dag_ml/_dag_ml.abi3.so is unchanged.
+  Dirty Rust inputs:
+  - crates/dag-ml-core/src/lib.rs
+  Remediation: rebuild the tracked extension with `maturin develop --release`, then run a public source-tree import smoke.
+check_so_freshness: STALE — the committed extension binary is older than its Rust sources.
+  tracked .so : crates/dag-ml-py/python/dag_ml/_dag_ml.abi3.so (last commit ct=1000000, mtime=1791412217)
+  newest Rust : Cargo.lock (last commit ct=3000000)
+  Rust files committed after the .so:
+  - Cargo.lock
+  Remediation: rebuild + commit the .so via `maturin develop --release` (in crates/dag-ml-py), then `git add` the .so.
+check_so_freshness: STALE — the committed extension binary is older than its Rust sources.
+  tracked .so : crates/dag-ml-py/python/dag_ml/_dag_ml.abi3.so (last commit ct=1000000, mtime=1791412220)
+  newest Rust : crates/dag-ml-py/Cargo.lock (last commit ct=2000000)
+  Rust files committed after the .so:
+  - crates/dag-ml-py/Cargo.lock
+  Remediation: rebuild + commit the .so via `maturin develop --release` (in crates/dag-ml-py), then `git add` the .so.
+check_so_freshness: STALE — compiled Rust inputs are dirty or untracked while crates/dag-ml-py/python/dag_ml/_dag_ml.abi3.so is unchanged.
+  Dirty Rust inputs:
+  - crates/dag-ml-core/Cargo.toml
+  Remediation: rebuild the tracked extension with `maturin develop --release`, then run a public source-tree import smoke.
+check_so_freshness: STALE — the committed extension binary is older than its Rust sources.
+  tracked .so : crates/dag-ml-py/python/dag_ml/_dag_ml.abi3.so (last commit ct=1000000, mtime=1791412223)
+  newest Rust : crates/dag-ml-core/Cargo.toml (last commit ct=3000000)
+  Rust files committed after the .so:
+  - crates/dag-ml-core/Cargo.toml
+  Remediation: rebuild + commit the .so via `maturin develop --release` (in crates/dag-ml-py), then `git add` the .so.

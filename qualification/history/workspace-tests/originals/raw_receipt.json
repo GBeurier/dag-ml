@@ -1,0 +1,60 @@
+{
+  "independent_command_terminal": {
+    "command": [
+      "/home/delete/.local/bin/rtk",
+      "proxy",
+      "cargo",
+      "test",
+      "--offline",
+      "--locked",
+      "--workspace"
+    ],
+    "direct_command_exit_code": 0,
+    "seconds": 132.8064612330054,
+    "independent_child_wrapper_pid": 3296128
+  },
+  "gate": "workspace-tests",
+  "command": [
+    "/home/delete/.local/bin/rtk",
+    "proxy",
+    "cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "--workspace"
+  ],
+  "exit_code": 0,
+  "stop_reason": null,
+  "seconds": 140.41789870301727,
+  "before": {
+    "target_bytes": 834511959,
+    "other_bytes": 66162133,
+    "free_bytes": 302329151488,
+    "vanished_owned_temporaries": 0
+  },
+  "after": {
+    "target_bytes": 3111141119,
+    "other_bytes": 66737350,
+    "free_bytes": 300212527104,
+    "vanished_owned_temporaries": 0
+  },
+  "observed_peak": {
+    "target_bytes": 3111141119,
+    "other_bytes": 66834069,
+    "free_bytes": 300212314112,
+    "vanished_owned_temporaries": 0
+  },
+  "functional_source_unchanged": true,
+  "logs": {
+    "stdout.log": {
+      "path": "/mnt/c/Temp/n4a-dag041-20261008/gates/workspace-tests/stdout.log",
+      "bytes": 106772,
+      "sha256": "701216b8bfe45d5a87e38dcbd63c176f8dab2d49503806b61b437bf7ef8f12ea"
+    },
+    "stderr.log": {
+      "path": "/mnt/c/Temp/n4a-dag041-20261008/gates/workspace-tests/stderr.log",
+      "bytes": 27184,
+      "sha256": "638833e02e0e6b3a0bc3257f79ac348264905ca91a7eab415032d80be70fc5d3"
+    }
+  }
+}

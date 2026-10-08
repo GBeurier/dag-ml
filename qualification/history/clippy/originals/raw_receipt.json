@@ -1,0 +1,68 @@
+{
+  "independent_command_terminal": {
+    "command": [
+      "/home/delete/.local/bin/rtk",
+      "proxy",
+      "cargo",
+      "clippy",
+      "--offline",
+      "--locked",
+      "--workspace",
+      "--all-targets",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "direct_command_exit_code": 0,
+    "seconds": 51.43133540102281,
+    "independent_child_wrapper_pid": 3292865
+  },
+  "gate": "clippy",
+  "command": [
+    "/home/delete/.local/bin/rtk",
+    "proxy",
+    "cargo",
+    "clippy",
+    "--offline",
+    "--locked",
+    "--workspace",
+    "--all-targets",
+    "--",
+    "-D",
+    "warnings"
+  ],
+  "exit_code": 0,
+  "stop_reason": null,
+  "seconds": 65.42704875295749,
+  "before": {
+    "target_bytes": 541826962,
+    "other_bytes": 66152487,
+    "free_bytes": 302604464128,
+    "vanished_owned_temporaries": 0
+  },
+  "after": {
+    "target_bytes": 834511959,
+    "other_bytes": 66160543,
+    "free_bytes": 302329159680,
+    "vanished_owned_temporaries": 0
+  },
+  "observed_peak": {
+    "target_bytes": 834511959,
+    "other_bytes": 66160543,
+    "free_bytes": 302329118720,
+    "vanished_owned_temporaries": 0
+  },
+  "functional_source_unchanged": true,
+  "logs": {
+    "stdout.log": {
+      "path": "/mnt/c/Temp/n4a-dag041-20261008/gates/clippy/stdout.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "stderr.log": {
+      "path": "/mnt/c/Temp/n4a-dag041-20261008/gates/clippy/stderr.log",
+      "bytes": 7123,
+      "sha256": "2911dc8f6a6e58d2b7aff2c307738535a82ca26c209b3b773152d8e3531cd578"
+    }
+  }
+}

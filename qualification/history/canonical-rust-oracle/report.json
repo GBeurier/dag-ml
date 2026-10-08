@@ -1,0 +1,66 @@
+{
+  "command": [
+    "/home/delete/.local/bin/rtk",
+    "proxy",
+    "cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "--manifest-path",
+    "parity/canonical/rust-oracle/Cargo.toml"
+  ],
+  "cwd": "/home/delete/nirs4all/_worktrees/2026-10-07-dag-metric-validation",
+  "duration_seconds": 33.209526024991646,
+  "environment": {
+    "CARGO_INCREMENTAL": "0",
+    "CARGO_NET_OFFLINE": "true",
+    "CARGO_PROFILE_DEV_DEBUG": "0",
+    "CARGO_PROFILE_TEST_DEBUG": "0",
+    "CARGO_TARGET_DIR": "/mnt/c/Temp/n4a-dag041-20261008/target",
+    "DAGML_NATIVE_LIBRARY": "/mnt/c/Temp/n4a-dag041-20261008/target/release/libdag_ml_capi.so",
+    "DAGML_REQUIRE_HPO_R": "1",
+    "DAG_ML_DATA_REPO": "/home/delete/nirs4all/dag-ml-data",
+    "DAG_ML_REQUIRE_R_ADAPTER_TEST": "1",
+    "NIRS4ALL_LEGACY_REPO": "/home/delete/nirs4all/nirs4all",
+    "PYO3_PYTHON": "/home/delete/nirs4all/nirs4all/.venv/bin/python",
+    "R_LIBS": "/mnt/c/Temp/n4a-dag041-20261008/r-source-local/library",
+    "TMPDIR": "/mnt/c/Temp/n4a-dag041-20261008/tmp"
+  },
+  "exit_code": 0,
+  "facts": {},
+  "finished_at": null,
+  "host": "local-wsl-linux",
+  "id": "canonical-rust-oracle",
+  "input_evidence": {
+    "bytes": 1568,
+    "path": "qualification/history/canonical-rust-oracle/inputs.json",
+    "sha256": "7e30499efeac8b4fce47244793c8e5ba8fa2705a0eb8457442a7b9a57829c53a"
+  },
+  "input_fingerprints": {
+    "parity/canonical/README.md": "1898d913e7f747090abce7ff157d6158e1785b66aa464d120f245e2fa7921eac",
+    "parity/canonical/__init__.py": "5f2fcc3fe54f16f887798fd69d1aa86830b8b0377ef4e7896f32de810065dcee",
+    "parity/canonical/golden/tcv1_jcs_cross_language.v1.json": "7ce376f6a222874ee440d7b1ff14413ed9ab12111eee0e9fe39500813c219e68",
+    "parity/canonical/rust-oracle/.gitignore": "306fd52e74fca6746e12acc750f232de15e71da917756a1270d74c91f5eb7368",
+    "parity/canonical/rust-oracle/Cargo.lock": "e2bbd4af5e708da9244bad744b100073abb9604fcd4c88f48623264c821cbd00",
+    "parity/canonical/rust-oracle/Cargo.toml": "799d6a1783491e6bd04189a655db423f1b9d21b659483855fb097ce3f8de5e1d",
+    "parity/canonical/rust-oracle/src/lib.rs": "5e0dc032777100258a4daeff343628b86a7b70bb4dab2138a4d241717df40171",
+    "parity/canonical/rust-oracle/src/main.rs": "325bb366178e845723fce7b30adf0aa6184dcc490e08494d9a5cad90703f3ab2",
+    "parity/canonical/tests/test_rust_oracle_parity.py": "1e3c1f9a65f7ca62c3e57c00193453772624174d265f50adda6ed3d209a0ae2b"
+  },
+  "log": {
+    "bytes": 634,
+    "path": "qualification/history/canonical-rust-oracle/logs/stdout.log",
+    "sha256": "c6f9772b822ab121e3af5e4a6b0b287296bc2165e607660fbf9732d6b2ee5b4e"
+  },
+  "observations_basis": "Authentic raw receipt and embedded independent direct terminal; actual stdout/stderr counts and first source verification preserved. Explicit environment overrides derived from retained runner(s); ambient inherited PATH is not reconstructed. ",
+  "provenance": {},
+  "raw_reports": {},
+  "skips": [],
+  "started_at": null,
+  "summary": {
+    "failed": 0,
+    "passed": 4,
+    "skipped": 0
+  },
+  "timing_basis": "historical-duration"
+}

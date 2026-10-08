@@ -1,0 +1,61 @@
+🍹 Building a mixed python/rust project
+🐍 Found CPython 3.11 at /home/delete/nirs4all/nirs4all/.venv/bin/python
+🔗 Found pyo3 bindings with abi3-py3.11 support
+📡 Using build options features from pyproject.toml
+   Compiling proc-macro2 v1.0.107
+   Compiling libc v0.2.189
+   Compiling libm v0.2.16
+   Compiling zerocopy v0.8.56
+   Compiling target-lexicon v0.13.5
+   Compiling serde_core v1.0.229
+   Compiling getrandom v0.3.4
+   Compiling serde v1.0.229
+   Compiling generic-array v0.14.7
+   Compiling ahash v0.8.12
+   Compiling zmij v1.0.23
+   Compiling snap v1.1.2
+   Compiling thiserror v2.0.21
+   Compiling pyo3-build-config v0.29.2
+   Compiling quote v1.0.47
+   Compiling crypto-common v0.1.7
+   Compiling block-buffer v0.10.4
+   Compiling syn v2.0.119
+   Compiling syn v3.0.4
+   Compiling num-traits v0.2.19
+   Compiling digest v0.10.7
+   Compiling jobserver v0.1.35
+   Compiling pyo3-ffi v0.29.2
+   Compiling pyo3 v0.29.2
+   Compiling cc v1.4.4
+   Compiling sha2 v0.10.9
+   Compiling num-integer v0.1.47
+   Compiling chrono v0.4.45
+   Compiling num-complex v0.4.6
+   Compiling num-bigint v0.5.1
+   Compiling serde_json v1.0.151
+   Compiling serde_ignored v0.1.14
+   Compiling zstd-sys v2.0.13+zstd.1.5.6
+   Compiling n4m v0.4.0
+   Compiling serde_derive v1.0.229
+   Compiling thiserror-impl v2.0.21
+   Compiling pyo3-macros-backend v0.29.2
+   Compiling zerocopy-derive v0.8.56
+   Compiling tracing-attributes v0.1.31
+   Compiling tracing v0.1.44
+   Compiling yaml_serde v0.10.7
+   Compiling pyo3-macros v0.29.2
+   Compiling dag-ml-core v0.3.41 (/home/delete/nirs4all/_worktrees/2026-10-07-dag-metric-validation/crates/dag-ml-core)
+   Compiling half v2.7.1
+   Compiling arrow-buffer v59.3.0
+   Compiling arrow-data v59.3.0
+   Compiling pythonize v0.29.0
+   Compiling arrow-array v59.3.0
+   Compiling zstd-safe v7.2.1
+   Compiling zstd v0.13.3
+   Compiling arrow-select v59.3.0
+   Compiling arrow-ipc v59.3.0
+   Compiling parquet v59.3.0
+   Compiling dag-ml-results v0.3.41 (/home/delete/nirs4all/_worktrees/2026-10-07-dag-metric-validation/crates/dag-ml-results)
+   Compiling dag-ml-py v0.3.41 (/home/delete/nirs4all/_worktrees/2026-10-07-dag-metric-validation/crates/dag-ml-py)
+    Finished `release` profile [optimized] target(s) in 1m 36s
+📦 Built wheel for abi3 Python ≥ 3.11 to /mnt/c/Temp/n4a-dag041-20261008/wheels-terminal-replay/dag_ml-0.3.41-cp311-abi3-manylinux_2_34_x86_64.whl

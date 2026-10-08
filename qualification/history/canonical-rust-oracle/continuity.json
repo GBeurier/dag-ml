@@ -1,0 +1,19 @@
+{
+  "comparison": "exact scoped SHA-256 equality",
+  "current_source_sha": "4ecadda9f0ce06dbf4323967f4fd5b2812f269c7",
+  "historical_manifest_sha256": "d2a54488b15c5eab9157c38b38cebda45ab26c7a0e438775eeead68e36b3b2ac",
+  "historical_source_basis": "observed_full_map_verification",
+  "historical_source_sha": "7e77957b89fae7097886d310e71e249dc5eb9c45",
+  "input_fingerprints": {
+    "parity/canonical/README.md": "1898d913e7f747090abce7ff157d6158e1785b66aa464d120f245e2fa7921eac",
+    "parity/canonical/__init__.py": "5f2fcc3fe54f16f887798fd69d1aa86830b8b0377ef4e7896f32de810065dcee",
+    "parity/canonical/golden/tcv1_jcs_cross_language.v1.json": "7ce376f6a222874ee440d7b1ff14413ed9ab12111eee0e9fe39500813c219e68",
+    "parity/canonical/rust-oracle/.gitignore": "306fd52e74fca6746e12acc750f232de15e71da917756a1270d74c91f5eb7368",
+    "parity/canonical/rust-oracle/Cargo.lock": "e2bbd4af5e708da9244bad744b100073abb9604fcd4c88f48623264c821cbd00",
+    "parity/canonical/rust-oracle/Cargo.toml": "799d6a1783491e6bd04189a655db423f1b9d21b659483855fb097ce3f8de5e1d",
+    "parity/canonical/rust-oracle/src/lib.rs": "5e0dc032777100258a4daeff343628b86a7b70bb4dab2138a4d241717df40171",
+    "parity/canonical/rust-oracle/src/main.rs": "325bb366178e845723fce7b30adf0aa6184dcc490e08494d9a5cad90703f3ab2",
+    "parity/canonical/tests/test_rust_oracle_parity.py": "1e3c1f9a65f7ca62c3e57c00193453772624174d265f50adda6ed3d209a0ae2b"
+  },
+  "source_basis_detail": "The retained controlled runner actually verified every file SHA in this retained source freeze both before and after this actual execution; no reconstructed pre-run hash or walltime."
+}

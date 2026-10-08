@@ -1,0 +1,17 @@
+* installing *source* package ‘dagml’ ...
+** this is package ‘dagml’ version ‘0.3.41’
+** using staged installation
+** libs
+using C compiler: ‘x86_64-conda-linux-gnu-cc (conda-forge gcc 15.2.0-19) 15.2.0’
+installing to /mnt/c/Temp/n4a-dag041-20261008/r-source-local/library/00LOCK-dagml/00new/dagml/libs
+** R
+** inst
+** byte-compile and prepare package for lazy loading
+** help
+*** installing help indices
+** building package indices
+** testing if installed package can be loaded from temporary location
+** checking absolute paths in shared objects and dynamic libraries
+** testing if installed package can be loaded from final location
+** testing if installed package keeps a record of temporary installation path
+* DONE (dagml)

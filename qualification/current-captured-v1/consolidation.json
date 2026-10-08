@@ -1,0 +1,212 @@
+{
+  "status": "ALL11_CURRENT_METADATA_PROTOCOL_CAPTURES_PASS",
+  "source_sha": "4ecadda9f0ce06dbf4323967f4fd5b2812f269c7",
+  "policy_sha256": "f4098036241bf8fd46103b3e6b30aee8d12d94d0619c5b9b92b7491d0dcde28f",
+  "ids": [
+    "metadata-root-current-captured-v1",
+    "metadata-python-current-captured-v1",
+    "release-metadata-current-captured-v1",
+    "publish-plan-current-captured-v1",
+    "abi-current-captured-v1",
+    "fmt-current-captured-v1",
+    "diff-current-captured-v1",
+    "deprecations-current-captured-v1",
+    "contracts-current-captured-v1",
+    "replay-contracts-current-captured-v1",
+    "replay-tests-current-captured-v1"
+  ],
+  "commands": {
+    "metadata-root-current-captured-v1": [
+      "/home/delete/.local/bin/rtk",
+      "proxy",
+      "cargo",
+      "metadata",
+      "--offline",
+      "--locked",
+      "--format-version",
+      "1"
+    ],
+    "metadata-python-current-captured-v1": [
+      "/home/delete/.local/bin/rtk",
+      "proxy",
+      "cargo",
+      "metadata",
+      "--offline",
+      "--locked",
+      "--format-version",
+      "1",
+      "--manifest-path",
+      "crates/dag-ml-py/Cargo.toml"
+    ],
+    "release-metadata-current-captured-v1": [
+      "/home/delete/.local/bin/rtk",
+      "proxy",
+      "/home/delete/nirs4all/nirs4all/.venv/bin/python",
+      "scripts/validate_release_metadata.py",
+      "--release"
+    ],
+    "publish-plan-current-captured-v1": [
+      "/home/delete/.local/bin/rtk",
+      "proxy",
+      "/home/delete/nirs4all/nirs4all/.venv/bin/python",
+      "scripts/release/check_publish_plan.py"
+    ],
+    "abi-current-captured-v1": [
+      "/home/delete/.local/bin/rtk",
+      "proxy",
+      "/home/delete/nirs4all/nirs4all/.venv/bin/python",
+      "scripts/validate_abi_snapshot.py"
+    ],
+    "fmt-current-captured-v1": [
+      "/home/delete/.local/bin/rtk",
+      "proxy",
+      "cargo",
+      "fmt",
+      "--all",
+      "--check"
+    ],
+    "diff-current-captured-v1": [
+      "/home/delete/.local/bin/rtk",
+      "proxy",
+      "git",
+      "diff",
+      "--check"
+    ],
+    "deprecations-current-captured-v1": [
+      "/home/delete/.local/bin/rtk",
+      "proxy",
+      "/home/delete/nirs4all/nirs4all/.venv/bin/python",
+      "scripts/check_deprecations.py"
+    ],
+    "contracts-current-captured-v1": [
+      "/home/delete/.local/bin/rtk",
+      "proxy",
+      "/home/delete/nirs4all/nirs4all/.venv/bin/python",
+      "scripts/validate_contracts.py",
+      "--require-sibling",
+      "--sibling-root",
+      "/home/delete/nirs4all/dag-ml-data"
+    ],
+    "replay-contracts-current-captured-v1": [
+      "/home/delete/.local/bin/rtk",
+      "proxy",
+      "/home/delete/nirs4all/nirs4all/.venv/bin/python",
+      "scripts/validate_training_replay_contracts.py"
+    ],
+    "replay-tests-current-captured-v1": [
+      "/home/delete/.local/bin/rtk",
+      "proxy",
+      "/home/delete/nirs4all/nirs4all/.venv/bin/python",
+      "-m",
+      "pytest",
+      "--capture=sys",
+      "-q",
+      "parity/training/tests/test_training_replay_contracts.py"
+    ]
+  },
+  "no_build_no_fit": true,
+  "max_each_seconds": 180,
+  "raw_outputs_max_bytes": 67108864,
+  "original_assertions_and_fixtures_unchanged": true,
+  "results": [
+    {
+      "run": {
+        "path": "qualification/current-captured-v1/metadata-root-current-captured-v1/normalized.run.json",
+        "bytes": 59011,
+        "sha256": "33e8687cf5d57eeff88f0a16613d4fa9dfa9c543a925a183e14a406091efc55c"
+      },
+      "source_sha": "4ecadda9f0ce06dbf4323967f4fd5b2812f269c7",
+      "project": "dag"
+    },
+    {
+      "run": {
+        "path": "qualification/current-captured-v1/metadata-python-current-captured-v1/normalized.run.json",
+        "bytes": 59076,
+        "sha256": "bd857e829048fc83f4f250d174f85d1b82de624b71a81b9ef5751358f75a5c49"
+      },
+      "source_sha": "4ecadda9f0ce06dbf4323967f4fd5b2812f269c7",
+      "project": "dag"
+    },
+    {
+      "run": {
+        "path": "qualification/current-captured-v1/release-metadata-current-captured-v1/normalized.run.json",
+        "bytes": 50542,
+        "sha256": "cc359ce34d5cfde97ca548d4821452e67c6534c727e428ab0cba6962d3fd8dcf"
+      },
+      "source_sha": "4ecadda9f0ce06dbf4323967f4fd5b2812f269c7",
+      "project": "dag"
+    },
+    {
+      "run": {
+        "path": "qualification/current-captured-v1/publish-plan-current-captured-v1/normalized.run.json",
+        "bytes": 24202,
+        "sha256": "5273c193b17c58a9c08d3edc18a5b082de16ff742f6871699be5c16ee9cfe126"
+      },
+      "source_sha": "4ecadda9f0ce06dbf4323967f4fd5b2812f269c7",
+      "project": "dag"
+    },
+    {
+      "run": {
+        "path": "qualification/current-captured-v1/abi-current-captured-v1/normalized.run.json",
+        "bytes": 1630,
+        "sha256": "08589ee520efc0d796f431d2aedd18968e7df7ae7d94b879d4e1670510fe13c7"
+      },
+      "source_sha": "4ecadda9f0ce06dbf4323967f4fd5b2812f269c7",
+      "project": "dag"
+    },
+    {
+      "run": {
+        "path": "qualification/current-captured-v1/fmt-current-captured-v1/normalized.run.json",
+        "bytes": 58922,
+        "sha256": "ef3f671f963a0b8c5b8672d1960c0f6db1a7724448cf27af2d5c8ac36469fb78"
+      },
+      "source_sha": "4ecadda9f0ce06dbf4323967f4fd5b2812f269c7",
+      "project": "dag"
+    },
+    {
+      "run": {
+        "path": "qualification/current-captured-v1/diff-current-captured-v1/normalized.run.json",
+        "bytes": 89712,
+        "sha256": "27a98cfeeeccfd7e4efec6c45a9b8d5642ec2a4f72c7a72fc70ab9396160076c"
+      },
+      "source_sha": "4ecadda9f0ce06dbf4323967f4fd5b2812f269c7",
+      "project": "dag"
+    },
+    {
+      "run": {
+        "path": "qualification/current-captured-v1/deprecations-current-captured-v1/normalized.run.json",
+        "bytes": 31240,
+        "sha256": "46d755dddd503a392d2a1d00e561bb796ac835dac69e99785a201c22373604f6"
+      },
+      "source_sha": "4ecadda9f0ce06dbf4323967f4fd5b2812f269c7",
+      "project": "dag"
+    },
+    {
+      "run": {
+        "path": "qualification/current-captured-v1/contracts-current-captured-v1/normalized.run.json",
+        "bytes": 75953,
+        "sha256": "e845c84d1e6935c9f0807ca89477c0dae38bfeae903b12521e2f5a0e7e9c95ac"
+      },
+      "source_sha": "4ecadda9f0ce06dbf4323967f4fd5b2812f269c7",
+      "project": "dag"
+    },
+    {
+      "run": {
+        "path": "qualification/current-captured-v1/replay-contracts-current-captured-v1/normalized.run.json",
+        "bytes": 75909,
+        "sha256": "748ad12d912a90f51fa9999d70125aaa6c5b9041fc74edffcfac1c01ff1bde1b"
+      },
+      "source_sha": "4ecadda9f0ce06dbf4323967f4fd5b2812f269c7",
+      "project": "dag"
+    },
+    {
+      "run": {
+        "path": "qualification/current-captured-v1/replay-tests-current-captured-v1/normalized.run.json",
+        "bytes": 75959,
+        "sha256": "755ab115516e789955888d1d03f6aa955b5c15daee49e99cf43334ebcae8a039"
+      },
+      "source_sha": "4ecadda9f0ce06dbf4323967f4fd5b2812f269c7",
+      "project": "dag"
+    }
+  ]
+}

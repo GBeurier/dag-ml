@@ -1,0 +1,53 @@
+{
+  "gate": "r-native-hpo-resume",
+  "command": [
+    "/home/delete/.local/bin/rtk",
+    "proxy",
+    "cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "dag-ml-cli",
+    "host_hpo_cli_runs_parallel_pruning_and_resumes_native_checkpoint"
+  ],
+  "cwd": "/home/delete/nirs4all/_worktrees/2026-10-07-dag-metric-validation",
+  "exit_code": 0,
+  "direct_terminal": {
+    "command": [
+      "/home/delete/.local/bin/rtk",
+      "proxy",
+      "cargo",
+      "test",
+      "--offline",
+      "--locked",
+      "-p",
+      "dag-ml-cli",
+      "host_hpo_cli_runs_parallel_pruning_and_resumes_native_checkpoint"
+    ],
+    "direct_command_exit_code": 0,
+    "seconds": 7.7797559929895215,
+    "independent_child_wrapper_pid": 3341151
+  },
+  "stop_reason": null,
+  "seconds": 33.030506605049595,
+  "observed_peak": {
+    "target_bytes": 6001421262,
+    "other_bytes": 205616052,
+    "free_bytes": 297301987328
+  },
+  "source_tree": "7e77957b89fae7097886d310e71e249dc5eb9c45",
+  "source_unchanged_after": true,
+  "logs": {
+    "stdout.log": {
+      "path": "/mnt/c/Temp/n4a-dag041-20261008/gates/r-native-hpo-resume/stdout.log",
+      "sha256": "2eacc2f2fa09df5d0a52c8119503189dcd295975694e0e9af7be2591bbe7ba07",
+      "bytes": 876
+    },
+    "stderr.log": {
+      "path": "/mnt/c/Temp/n4a-dag041-20261008/gates/r-native-hpo-resume/stderr.log",
+      "sha256": "1e972d0dc9d7be7e39728466bb646236f9c1cd1f97893a33466ea38f148e8b0c",
+      "bytes": 1042
+    }
+  }
+}

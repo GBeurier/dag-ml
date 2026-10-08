@@ -1,0 +1,54 @@
+{
+  "independent_command_terminal": {
+    "command": [
+      "/home/delete/.local/bin/rtk",
+      "proxy",
+      "/home/delete/nirs4all/nirs4all/.venv/bin/python",
+      "scripts/check_public_docs.py"
+    ],
+    "direct_command_exit_code": 0,
+    "seconds": 0.08201391401235014,
+    "independent_child_wrapper_pid": 3292771
+  },
+  "gate": "public-docs",
+  "command": [
+    "/home/delete/.local/bin/rtk",
+    "proxy",
+    "/home/delete/nirs4all/nirs4all/.venv/bin/python",
+    "scripts/check_public_docs.py"
+  ],
+  "exit_code": 0,
+  "stop_reason": null,
+  "seconds": 9.104139261995442,
+  "before": {
+    "target_bytes": 541826962,
+    "other_bytes": 66150127,
+    "free_bytes": 302604472320,
+    "vanished_owned_temporaries": 0
+  },
+  "after": {
+    "target_bytes": 541826962,
+    "other_bytes": 66150986,
+    "free_bytes": 302604468224,
+    "vanished_owned_temporaries": 0
+  },
+  "observed_peak": {
+    "target_bytes": 541826962,
+    "other_bytes": 66150986,
+    "free_bytes": 302604468224,
+    "vanished_owned_temporaries": 0
+  },
+  "functional_source_unchanged": true,
+  "logs": {
+    "stdout.log": {
+      "path": "/mnt/c/Temp/n4a-dag041-20261008/gates/public-docs/stdout.log",
+      "bytes": 48,
+      "sha256": "2acd52a7cc26b04ac94589532e2c76ba4127fb29b0d22726d327421f9e9d6946"
+    },
+    "stderr.log": {
+      "path": "/mnt/c/Temp/n4a-dag041-20261008/gates/public-docs/stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  }
+}

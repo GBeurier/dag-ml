@@ -1,0 +1,19 @@
+
+running 4 tests
+test tests::parser_preserves_integer_and_binary64_token_kinds ... ok
+test tests::parser_rejects_duplicate_members_surrogates_and_out_of_range_numbers ... ok
+test tests::profiles_keep_their_key_orders_disjoint ... ok
+test tests::tcv1_rejects_nfc_colliding_keys_but_jcs_keeps_them_distinct ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

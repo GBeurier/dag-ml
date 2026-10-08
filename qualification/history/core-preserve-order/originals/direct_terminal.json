@@ -1,0 +1,17 @@
+{
+  "command": [
+    "/home/delete/.local/bin/rtk",
+    "proxy",
+    "cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "--manifest-path",
+    "crates/dag-ml-core/Cargo.toml",
+    "--features",
+    "serde_json/preserve_order"
+  ],
+  "direct_command_exit_code": 0,
+  "seconds": 85.10303340200335,
+  "independent_child_wrapper_pid": 3305402
+}

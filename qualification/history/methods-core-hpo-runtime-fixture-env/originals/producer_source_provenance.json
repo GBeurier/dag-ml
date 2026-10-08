@@ -1,0 +1,631 @@
+{
+  "scope": "Immutable legacy Python producer source for unchanged historic CLI oracle; native runtime remains actual public Methods1.3.4 ABI2.17",
+  "producer_commit": "dcc570b3647f77cf0428dd346078f442ed5cd032",
+  "files": {
+    "bindings/python/src/n4m/__init__.py": {
+      "git_blob": "730275816a05922816085512add1237db36627e0",
+      "sha256": "efa60ca17c4e09c4429ab020e9787176e4863c1de3415f5138c892013a981469",
+      "bytes": 3423
+    },
+    "bindings/python/src/n4m/_build.py": {
+      "git_blob": "82303a046a8115519e761f30255519ca38c44b37",
+      "sha256": "3f7495b27d7e82f4d763993b1a9db4f45ffb188979f68deedc749c12833739ec",
+      "bytes": 2276
+    },
+    "bindings/python/src/n4m/_context.py": {
+      "git_blob": "bcb575b2daf63baf201bde077e9c9dcbb6b661a8",
+      "sha256": "a74503575ebe7eec019a6b672e7a1a01974ea6ac7c3368e5107ae62ef7735968",
+      "bytes": 2545
+    },
+    "bindings/python/src/n4m/_errors.py": {
+      "git_blob": "6faa6ba9371dd90a33cf8b41b71ff9883435d1f9",
+      "sha256": "5e06989d8c49ef96cb8b19dfdfa6c72d9f13643e88823f76afe959836f491927",
+      "bytes": 2891
+    },
+    "bindings/python/src/n4m/_ffi.py": {
+      "git_blob": "a977efcfacd8ed84ba6a9196524f4658bc26ae7d",
+      "sha256": "b605eb3b0df034c1f84009dca404a3b205b37c215ca695d762b22c97932212c8",
+      "bytes": 7196
+    },
+    "bindings/python/src/n4m/_ffi_decls.py": {
+      "git_blob": "24d7724bcc19e6d8b338a97c251b325d0340d375",
+      "sha256": "5f02877c091f42341a8baa2162c98391fb909e1d05946966eaa058af11800b18",
+      "bytes": 81957
+    },
+    "bindings/python/src/n4m/_impl/__init__.py": {
+      "git_blob": "e9c6cea7003db07003f972ab1a8db02b6f78f076",
+      "sha256": "1d147efa74df9c5c5692f62a0dd6ac09fb7c46eef945e00965224d47db0e9e08",
+      "bytes": 9868
+    },
+    "bindings/python/src/n4m/_impl/advanced.py": {
+      "git_blob": "8eaf5fddddc4fa9a4f4372486aed5689ba24340e",
+      "sha256": "fc34367beac1161257bec8f190c46667234176c01641ad9ad31c3b4b9b4dfc7a",
+      "bytes": 19546
+    },
+    "bindings/python/src/n4m/_impl/affine_result.py": {
+      "git_blob": "989f2711336f3f4c9dd8a9139eabf019b059248c",
+      "sha256": "5ef2bb5fa15afcb03df2eb537346167bba3bb5fa1d631d7dab612b99946696d5",
+      "bytes": 3946
+    },
+    "bindings/python/src/n4m/_impl/aom_facade.py": {
+      "git_blob": "1297b217ad20389259f4710c5612cc1358fbce0c",
+      "sha256": "2ecd62d5d1f4354ce36009b2728d3bd6bda50e5a63eea5e17dc428b61d9a2781",
+      "bytes": 42955
+    },
+    "bindings/python/src/n4m/_impl/aom_portfolio.py": {
+      "git_blob": "9ee576c4f86b08c29b1317972187216de5651f02",
+      "sha256": "611acfd46234c5316ce157a9ebee64f22f8d711ad10a96cd9de8879bc51946c3",
+      "bytes": 95617
+    },
+    "bindings/python/src/n4m/_impl/augmentation.py": {
+      "git_blob": "ccde223c78cb69c62196d705f837e17ae47af17e",
+      "sha256": "b0ed1f25a5f34d073c03b8199b701097a6e32843a9301d37e3a1a7fc2f344ec8",
+      "bytes": 47670
+    },
+    "bindings/python/src/n4m/_impl/baseline.py": {
+      "git_blob": "7e4b538d07fead06131f6d439064ae12b55c92e8",
+      "sha256": "08f9147264a113a9d98f605597e3401a32eac5f30993d5583532ed9eb0f5a1b9",
+      "bytes": 7978
+    },
+    "bindings/python/src/n4m/_impl/compat.py": {
+      "git_blob": "11e967e6ff6486ea2d28dce89e169cb3dbf64284",
+      "sha256": "4ddf164d9dc30fe03e820795ff99be618f5dffc83064c13c3f3095851660d5fb",
+      "bytes": 1550
+    },
+    "bindings/python/src/n4m/_impl/domain_invariant.py": {
+      "git_blob": "706188fe02c8acfcfbae44f994221f03096df3d4",
+      "sha256": "c40e981d31e29c721f09fb839bd47f9ebe6b14246c3e3e41f7391a3685490cad",
+      "bytes": 3539
+    },
+    "bindings/python/src/n4m/_impl/estimator_base.py": {
+      "git_blob": "a4fbffc1a4e76625fdc0c22fa0d5131471e5668f",
+      "sha256": "30ce3d8addb626c832f2f0dc57e95d339da1ba4d2a259e28122d657b3a8c8ccf",
+      "bytes": 5058
+    },
+    "bindings/python/src/n4m/_impl/feature_extraction.py": {
+      "git_blob": "f62e23d5644e17fe2b8fd04cdd5c28fd32ec1735",
+      "sha256": "146ab68e7fbcf9ea69d960eb2812849851bd5df00b4e6ec669edc65f9065e674",
+      "bytes": 7418
+    },
+    "bindings/python/src/n4m/_impl/filters.py": {
+      "git_blob": "fbd1df2747ecc26c1f75ed222bb96810aac5d97d",
+      "sha256": "69372a02e00ab8d35852b0dceffd47cb70e6092f0f18a193f648de598b8f8275",
+      "bytes": 16982
+    },
+    "bindings/python/src/n4m/_impl/linear_ridge_stack.py": {
+      "git_blob": "eeac22f235f1d26766b3533520028d93c68c534b",
+      "sha256": "6a9addfeefbd89a7ea04067fdf68c824cedaee6fcc49d2efe0bace623aeb13d5",
+      "bytes": 8181
+    },
+    "bindings/python/src/n4m/_impl/metrics.py": {
+      "git_blob": "a16bf2c235c49143e5ee7736eb6cef546f054266",
+      "sha256": "210b6a8ffdf7c36cd91dd83319bf8e2415e1cd20bc1c3b1f2f90f86eca462942",
+      "bytes": 3963
+    },
+    "bindings/python/src/n4m/_impl/moment_facade.py": {
+      "git_blob": "b8696737d1ebd34f564033f1458c04e9dead2e56",
+      "sha256": "c2edd346671f509440934fd3acda12a00c61ad9d1bed2ce3732fc0c698c854ca",
+      "bytes": 58061
+    },
+    "bindings/python/src/n4m/_impl/native.py": {
+      "git_blob": "1d5de8307c3f2a7a474065c9bffd71e4c77f8d76",
+      "sha256": "dfd50e418eddbac5057ecf885ba14fcf2b6b20bc947e865c4db74b615e0ca2ef",
+      "bytes": 404062
+    },
+    "bindings/python/src/n4m/_impl/native_sweeps.py": {
+      "git_blob": "ae72bb7e6118470acfd7f3f6e1ca1c9ccf62be0b",
+      "sha256": "313374a71738535fa11e93efc769c320a217eabc4cdeb9a3ac5c7c0436834f7b",
+      "bytes": 180378
+    },
+    "bindings/python/src/n4m/_impl/preprocessing.py": {
+      "git_blob": "b780519de9223a50ebba8891cfe6494571eed22a",
+      "sha256": "a38b08dbb92f7a17b530f34a9fa530a517b4c6386f4c4ef49532a8c8ef7b0ee1",
+      "bytes": 20086
+    },
+    "bindings/python/src/n4m/_impl/resampling.py": {
+      "git_blob": "0af896449c48c7fc0cb9176be7c0dc0e81e590a3",
+      "sha256": "4e127c72bf25bdd44ce27dc58ecb274c2e7813f3cda26aabd5d5086f1ab922a7",
+      "bytes": 9290
+    },
+    "bindings/python/src/n4m/_impl/selection.py": {
+      "git_blob": "1a8184eb1ff4d6cde4026cbe5b4e6c4ad6a317b5",
+      "sha256": "691e5a2b5aa4c9fe06369487b5a3f0b4a911d406de52c3dcb151c87426acb0a3",
+      "bytes": 32710
+    },
+    "bindings/python/src/n4m/_impl/splitters.py": {
+      "git_blob": "9da2ef659121e3eeb9a9cbd43becf13f2a3edcce",
+      "sha256": "021a4f195a4a3cc5318e66210adb2541d4b8ca7376e0a49b99afa7fc55f93435",
+      "bytes": 16898
+    },
+    "bindings/python/src/n4m/_matrix.py": {
+      "git_blob": "9a3d14168d73703d3d2dfe1bfa3c47f3d0bf16ea",
+      "sha256": "13913bd442c15a75dde4f817044ec437672f69033bff047d18b8dd3f4ba8be65",
+      "bytes": 2573
+    },
+    "bindings/python/src/n4m/_rng.py": {
+      "git_blob": "3bc3f9853023a28d14234a541dc97d3d4ef21c75",
+      "sha256": "3bbe4532be84fa829a20e4be117c7e2377dadc4c836f66e6ff59dcecdef60b9d",
+      "bytes": 1415
+    },
+    "bindings/python/src/n4m/_spectral_encoding.py": {
+      "git_blob": "6d92a3df1df971f8c4c8cd8d113e3cf7480091f8",
+      "sha256": "dfedc610d3bbd730bde3fc9c2869178b2c5d248ad887bf056f711ec825bf0edc",
+      "bytes": 5249
+    },
+    "bindings/python/src/n4m/_types.py": {
+      "git_blob": "8148d3d59104dade02ce35e0b01f68ea5a1d161c",
+      "sha256": "65e475614aba08d07abd1980c4d95941ad8f3d077616b448d8f698d8f9f0d2f3",
+      "bytes": 9190
+    },
+    "bindings/python/src/n4m/_validation.py": {
+      "git_blob": "d96923d2dbfa3e0f50214e860072f8fa7b203098",
+      "sha256": "dfbca20031d740e6ab9aab0b9f162ae2c9a89227c913a1da780aa3a534ab14e8",
+      "bytes": 8614
+    },
+    "bindings/python/src/n4m/augmentation/__init__.py": {
+      "git_blob": "a2bd560f5f8dc9b69d4ef7b7bf42f96f59a2f901",
+      "sha256": "2426972e09f85ddc61baa3d6cd3c61db894cc7a3d093688381b7b5f6d393fe3c",
+      "bytes": 450
+    },
+    "bindings/python/src/n4m/augmentation/drift.py": {
+      "git_blob": "d736ffa6b9452fbcb31373d7d660798cb3c2c377",
+      "sha256": "ddf3df93f6e34f695fef527300aad23258c0f71033874fe4e6ae93c0ef572121",
+      "bytes": 244
+    },
+    "bindings/python/src/n4m/augmentation/instrument.py": {
+      "git_blob": "2a61df334971f43784c96126d52768e7b279f7cb",
+      "sha256": "2ba8f790fe07e9319239fdd993e230c90cb3c56b27b1f13825d47c485e5d3478",
+      "bytes": 470
+    },
+    "bindings/python/src/n4m/augmentation/mixup.py": {
+      "git_blob": "5267db5cc403bae338b955354bda00f6cd4ed9fe",
+      "sha256": "5a3dbc9429f2579dddf911ecf978c05e667671d3da8956c6f5c84468a96171a0",
+      "bytes": 282
+    },
+    "bindings/python/src/n4m/augmentation/native.py": {
+      "git_blob": "259a0ecf7d910838462d4a2581504f8ead3d7a98",
+      "sha256": "2f0040e98433f06132009c391d6bffee094200985c5afff239aca15357c9a404",
+      "bytes": 2982
+    },
+    "bindings/python/src/n4m/augmentation/noise.py": {
+      "git_blob": "b99cf1b0fcde40ac805c53dc924036b657b34ad4",
+      "sha256": "6178b439abb9776cd361775373fb6afca45c8f7d9c995a6f731fdd498567d6b9",
+      "bytes": 294
+    },
+    "bindings/python/src/n4m/augmentation/scattering.py": {
+      "git_blob": "12e0f551e8fbf8dd266728efa57d94733e93afb2",
+      "sha256": "0724eaeb4e34544ef281380baa76272c3ca1e542eeee46a7bd259cc48578f2ec",
+      "bytes": 428
+    },
+    "bindings/python/src/n4m/augmentation/spectral.py": {
+      "git_blob": "f65987592c0b5159c53921c3bab68363f0e9cdfb",
+      "sha256": "a0eb94b9d1f729fe6a8fd2a08ac55b009c686cac3d4a979bf57641962aa9843b",
+      "bytes": 372
+    },
+    "bindings/python/src/n4m/augmentation/splines.py": {
+      "git_blob": "5893b9d8c4cdfe680a91fa91e17e24dd7af28b4e",
+      "sha256": "2a20a6606bbaec33b49040dac51ddef121b85e804cee6af600b0794e32f06e92",
+      "bytes": 438
+    },
+    "bindings/python/src/n4m/augmentation/wavelength.py": {
+      "git_blob": "fc38ce65a89363ba793a111cb2b060ed4f38bcde",
+      "sha256": "cd58b1bcecf3041af19d1400f7dce8179c6cb2f459b92951528ad2be2c0864c3",
+      "bytes": 352
+    },
+    "bindings/python/src/n4m/compose/__init__.py": {
+      "git_blob": "e24aea16cd60d468303faefb4ca14445484047df",
+      "sha256": "2d28c20fb9556f015cb1299236ea401a7a228190276c7389ffb0fcd719f9a110",
+      "bytes": 336
+    },
+    "bindings/python/src/n4m/compose/aom_superblock.py": {
+      "git_blob": "7ce35c6900ad96e431d4056a14e8d8415367a210",
+      "sha256": "eb01b010da9558b19c0830b0a17744f47ac7861a445e3c72c979acd20625c7bf",
+      "bytes": 1852
+    },
+    "bindings/python/src/n4m/compose/preprocessing.py": {
+      "git_blob": "86d8c4fc4a61eb6d068138790a4e0195cfd9309f",
+      "sha256": "dbb4048779b2699ceed1852cc1276149a1bea3f45e22916a3cea300be27fbbcc",
+      "bytes": 10429
+    },
+    "bindings/python/src/n4m/decomposition.py": {
+      "git_blob": "39ddfa0f6f5b7642716008aa1c00ec67b018c9d7",
+      "sha256": "0e694e177b5d0759b12ff9cbd9d6e5c0cb117e38ada7730c8c90478b04be4395",
+      "bytes": 220
+    },
+    "bindings/python/src/n4m/domain_adaptation/__init__.py": {
+      "git_blob": "0434195dfb9bd772e31a4a127d98fb0ffcfcd0e0",
+      "sha256": "0575df83a67e2e99f29f54b9435bb6b9ba349609405c3ce4fe90eb02fb1030cc",
+      "bytes": 266
+    },
+    "bindings/python/src/n4m/domain_adaptation/invariant.py": {
+      "git_blob": "556269ac82974f64682b529214bf91f3ba0b3b97",
+      "sha256": "ec66c5176eddab3a792a3346ea2f4d64a9abdde29ea848f5951746e869d435e0",
+      "bytes": 254
+    },
+    "bindings/python/src/n4m/domain_adaptation/metrics.py": {
+      "git_blob": "f7ce050da9ff774b3203c037b54ba437bd58b676",
+      "sha256": "8a336a357d2c6000132ca439633de5393c6e99f94eace4c12795d75ce029d713",
+      "bytes": 163
+    },
+    "bindings/python/src/n4m/domain_adaptation/orthogonalization.py": {
+      "git_blob": "9cd033ddc867bb121e39e15d001fb3e73ac0a898",
+      "sha256": "fb71ac5973f2ee3d5b222a588ccc70114968f9fb9ad95dc099481b0135b09ecc",
+      "bytes": 170
+    },
+    "bindings/python/src/n4m/domain_adaptation/standardization.py": {
+      "git_blob": "79497113855a7f405c3bdafc76ea8cb256bc6084",
+      "sha256": "f1f1be0cf1cb46480cb2f3dcbb842bd1af324b613ad9a7e13259167649ef7b4e",
+      "bytes": 1001
+    },
+    "bindings/python/src/n4m/ensemble.py": {
+      "git_blob": "53a62199661e1cd791ee770c220fcb5edfad5a10",
+      "sha256": "a4f39f8e64f2075ebb1d2851e88d2633a758e68e66ddca1a7fe084d26a02105a",
+      "bytes": 1326
+    },
+    "bindings/python/src/n4m/estimators/__init__.py": {
+      "git_blob": "aabf6ff9c259f7337f3f38e8b3a4304e12d836a7",
+      "sha256": "51f548ed02e943ee4bd602a8d633a166f929109f2c4f8bdc288ec2fc0bb923d0",
+      "bytes": 247
+    },
+    "bindings/python/src/n4m/estimators/classification.py": {
+      "git_blob": "30df9231cf01bb7b8cfab37c2eb660411a6a73df",
+      "sha256": "d8654cfb6d7103ef82324db7c7b82b4614697b56057857e5864765086d899fa9",
+      "bytes": 63
+    },
+    "bindings/python/src/n4m/estimators/multiblock.py": {
+      "git_blob": "30df9231cf01bb7b8cfab37c2eb660411a6a73df",
+      "sha256": "d8654cfb6d7103ef82324db7c7b82b4614697b56057857e5864765086d899fa9",
+      "bytes": 63
+    },
+    "bindings/python/src/n4m/estimators/regression/__init__.py": {
+      "git_blob": "878ebdb6e75a56abdfdc35d31800280fb087aa55",
+      "sha256": "b9d8d294b6464b4c6bdcf4c6b9f190b1c3ed6d62306b6f827f9bdb5cef1a253b",
+      "bytes": 354
+    },
+    "bindings/python/src/n4m/estimators/regression/glm.py": {
+      "git_blob": "30df9231cf01bb7b8cfab37c2eb660411a6a73df",
+      "sha256": "d8654cfb6d7103ef82324db7c7b82b4614697b56057857e5864765086d899fa9",
+      "bytes": 63
+    },
+    "bindings/python/src/n4m/estimators/regression/kernel.py": {
+      "git_blob": "30df9231cf01bb7b8cfab37c2eb660411a6a73df",
+      "sha256": "d8654cfb6d7103ef82324db7c7b82b4614697b56057857e5864765086d899fa9",
+      "bytes": 63
+    },
+    "bindings/python/src/n4m/estimators/regression/latent.py": {
+      "git_blob": "c4cc94a1fa2ac8e8427d5e2db5be8ee0dec83c24",
+      "sha256": "efd64755314066f6513159bf5eae3ccf2539d31c5f9fd8494f65bc4cb9c9c26c",
+      "bytes": 646
+    },
+    "bindings/python/src/n4m/estimators/regression/local.py": {
+      "git_blob": "30df9231cf01bb7b8cfab37c2eb660411a6a73df",
+      "sha256": "d8654cfb6d7103ef82324db7c7b82b4614697b56057857e5864765086d899fa9",
+      "bytes": 63
+    },
+    "bindings/python/src/n4m/estimators/regression/online.py": {
+      "git_blob": "30df9231cf01bb7b8cfab37c2eb660411a6a73df",
+      "sha256": "d8654cfb6d7103ef82324db7c7b82b4614697b56057857e5864765086d899fa9",
+      "bytes": 63
+    },
+    "bindings/python/src/n4m/estimators/regression/regularized.py": {
+      "git_blob": "f06e1ce58e57985b65942ae4de5778044f409397",
+      "sha256": "9ed0c661d55f8670a04bc1a8a6589dfe30f121fce5b2abe85a6339c435373cc5",
+      "bytes": 316
+    },
+    "bindings/python/src/n4m/estimators/regression/robust.py": {
+      "git_blob": "dd53b7ff8169915eb6c67a00532f9e1ec5829e77",
+      "sha256": "7a18bf107cab3d1dc5d2a6dde0dfe0fc35853ef67f73ed00bd3882bf7b9fa1e9",
+      "bytes": 361
+    },
+    "bindings/python/src/n4m/estimators/regression/sparse.py": {
+      "git_blob": "397b9e8cac56164f425a9e379a781f41122e76b7",
+      "sha256": "85175d799b0138070a8d6749f29c885c42617a67d6e0fef2125f2fabd17a49a7",
+      "bytes": 4083
+    },
+    "bindings/python/src/n4m/estimators/regression/tensor.py": {
+      "git_blob": "30df9231cf01bb7b8cfab37c2eb660411a6a73df",
+      "sha256": "d8654cfb6d7103ef82324db7c7b82b4614697b56057857e5864765086d899fa9",
+      "bytes": 63
+    },
+    "bindings/python/src/n4m/estimators/survival.py": {
+      "git_blob": "30df9231cf01bb7b8cfab37c2eb660411a6a73df",
+      "sha256": "d8654cfb6d7103ef82324db7c7b82b4614697b56057857e5864765086d899fa9",
+      "bytes": 63
+    },
+    "bindings/python/src/n4m/feature_selection/__init__.py": {
+      "git_blob": "cdf82e0216feeb1cdec48d28af511117ce72cd5d",
+      "sha256": "0296a16b783dc3a02f563351ccab34164815f8d035ee234bbd99acdeebc4b336",
+      "bytes": 314
+    },
+    "bindings/python/src/n4m/feature_selection/filter.py": {
+      "git_blob": "54845a7cb8abc3da928872a3a86a6829ed58b4b9",
+      "sha256": "dc0a9ae0a0ba888fadde5ed3a910af58dbeaf3256e6fd08723c0e6585440dcf4",
+      "bytes": 170
+    },
+    "bindings/python/src/n4m/feature_selection/generic.py": {
+      "git_blob": "4c7f9c8ce2e0994eb40dc5e71976d99afd20b5f8",
+      "sha256": "c79a5f64da551b4594a29abe5affa7ebf6a5a54e3fa19cdc236c59f5df216c52",
+      "bytes": 11120
+    },
+    "bindings/python/src/n4m/feature_selection/interval.py": {
+      "git_blob": "5c0f0527ef530dab75955441737176145487071a",
+      "sha256": "24434eb9c2a3e98411fa6557b08890d12acd0d4fcd48e184efdb6d67cfabef99",
+      "bytes": 243
+    },
+    "bindings/python/src/n4m/feature_selection/ranking.py": {
+      "git_blob": "1305c77e75e064620ff583398e986df90d9c5242",
+      "sha256": "d6d973e902ceb08f20cd8fd891bd115724d05bac4204875e470db8e8d1472c5b",
+      "bytes": 132
+    },
+    "bindings/python/src/n4m/feature_selection/wrapper.py": {
+      "git_blob": "a13ae6635dedd825fe4179b55cc0ecb7b94cd6f1",
+      "sha256": "e76ebbeb0184bd9969a9b0c624384cd5bb64749bb3ee86ac2156da083fde9f8e",
+      "bytes": 668
+    },
+    "bindings/python/src/n4m/lowlevel/__init__.py": {
+      "git_blob": "4c2219e0e65e4c873f8066749ba323f996101ea9",
+      "sha256": "0002908bafda1b0a4b4249fea7ad699af0607f09e6431a39aec48904ec0ba9a9",
+      "bytes": 165
+    },
+    "bindings/python/src/n4m/lowlevel/migration.py": {
+      "git_blob": "1ed194c04d91ce4bf9b88a7684a3e88da11a9138",
+      "sha256": "ffd03541879025c190c701333b384b295be25c73a04f048c9d710fd9685b823d",
+      "bytes": 7631
+    },
+    "bindings/python/src/n4m/lowlevel/moments.py": {
+      "git_blob": "a5c2c096a13d4cc7d1cdb0bdc0e236321a58785d",
+      "sha256": "560e22f72120b1ad6bef5adaa234d9b52a8d9406c47a7583e2866dfe375e5e46",
+      "bytes": 234
+    },
+    "bindings/python/src/n4m/metrics/__init__.py": {
+      "git_blob": "4d3d534f0e40e101b2dbfaf7c780e88d6575398d",
+      "sha256": "261904f2c4eef117909916b6381dcb087696eed628d0664fab1368d47232821b",
+      "bytes": 168
+    },
+    "bindings/python/src/n4m/metrics/diagnostics.py": {
+      "git_blob": "30df9231cf01bb7b8cfab37c2eb660411a6a73df",
+      "sha256": "d8654cfb6d7103ef82324db7c7b82b4614697b56057857e5864765086d899fa9",
+      "bytes": 63
+    },
+    "bindings/python/src/n4m/metrics/scoring.py": {
+      "git_blob": "abe16016b186fcfc4fc533dc3583542eb57373d9",
+      "sha256": "e14f8cd313611ba20c465ee34f0a2ef64bf35ed034c800a5988054bce53338eb",
+      "bytes": 353
+    },
+    "bindings/python/src/n4m/model_selection/__init__.py": {
+      "git_blob": "06e7b052dc4de29d4eec48e63290b57bfeee5b66",
+      "sha256": "893ce82da815da04da836ab2f2774bb754bb7e63281990e4f36a12359a5865fe",
+      "bytes": 1313
+    },
+    "bindings/python/src/n4m/model_selection/aom_calibration.py": {
+      "git_blob": "92a4d0d6426947d830a0480d421fced760ab17e3",
+      "sha256": "bbee43d9cf083a61ac072312696ee24eba9d75eb732ba47307051571cbe87745",
+      "bytes": 12598
+    },
+    "bindings/python/src/n4m/model_selection/aom_campaign.py": {
+      "git_blob": "74a603bda595eadfbb6b097ab2bdb325cfeaabce",
+      "sha256": "3285261de2ee58ab710149c01a789e7fade2437dcefabd47a5c08da92b51d1b9",
+      "bytes": 1440
+    },
+    "bindings/python/src/n4m/model_selection/aom_search.py": {
+      "git_blob": "a780f3f7e64cbf8645685e9499ff0aa912ec1e8c",
+      "sha256": "53b0234efe5188f10699f893d347353d10e29745e67304c07070000b61cd8dba",
+      "bytes": 4034
+    },
+    "bindings/python/src/n4m/model_selection/optimizer.py": {
+      "git_blob": "79f37d0cac873f6c139983614f2ef559179c7192",
+      "sha256": "1e9f61726b15b808267885e8c3bcc95574d9b45ec08904b1b1fa359d341c4693",
+      "bytes": 54722
+    },
+    "bindings/python/src/n4m/model_selection/splitters.py": {
+      "git_blob": "44bd8cf124e29b6a178fa5dfeab054be5af5d580",
+      "sha256": "71a9dc16da14124d925473427bb4553a3801a78e2763ca481e96bd060a888879",
+      "bytes": 1286
+    },
+    "bindings/python/src/n4m/model_selection/sweep.py": {
+      "git_blob": "551bf4cd431d1daa10cb1406068800f439ca1c55",
+      "sha256": "27474c2f8964f2fbfb530b653e87eb144a4264ff7b3d086d5c10d24cb45a3513",
+      "bytes": 344
+    },
+    "bindings/python/src/n4m/outlier_detection.py": {
+      "git_blob": "ddc84bec3f76f27e7b5790de22052f460b4dafb4",
+      "sha256": "d73b701a1f58c36f40eed52daf925fc4cdc94aaa7e9d4c9d94e47e57157cbd7b",
+      "bytes": 606
+    },
+    "bindings/python/src/n4m/roles/__init__.py": {
+      "git_blob": "8af3c6174c3ef5f9af1a40ff682559323853ac76",
+      "sha256": "80b76a5977c0da2d8e36cb7d4088394bbe2b656125def5b4005870502a21f9cd",
+      "bytes": 9021
+    },
+    "bindings/python/src/n4m/roles/_base.py": {
+      "git_blob": "e748d17c2f5df98e5c932149652528dea78a3e6f",
+      "sha256": "73053e06143b77e97a59cbff3b225fd16e1b0a0fbad6f55ac4ffbbe054806ae2",
+      "bytes": 39446
+    },
+    "bindings/python/src/n4m/roles/_generated.py": {
+      "git_blob": "3057b5922f05aac3f3611bf0d35fae212679e1ca",
+      "sha256": "d7ec9f8a588e936416ef35a87d0fc0b0f462f8aa9bc2c84e2f196bd463bf0fd9",
+      "bytes": 142320
+    },
+    "bindings/python/src/n4m/roles/_multimodal.py": {
+      "git_blob": "195122abdd5abb7f52ac5ff3d4848b6e2114c956",
+      "sha256": "bee669e75773c568171ef5ced6c8575a4fead0265b4426856ceba3cb4251ef38",
+      "bytes": 21224
+    },
+    "bindings/python/src/n4m/roles/_multimodal_classifier.py": {
+      "git_blob": "df19e02c2d1d4692200df786562637f1c6ca6cbf",
+      "sha256": "03c36cfac86faf43e16249cfbb545e93c7aa118839dbc1f475f4ab63e855cf90",
+      "bytes": 13601
+    },
+    "bindings/python/src/n4m/roles/_pipeline.py": {
+      "git_blob": "e8244ba52c762eade0e634d8288239851144020d",
+      "sha256": "50060d0db6a3d71331b453b4f19f150ca477ed58393b22cd68254329e74ad650",
+      "bytes": 20953
+    },
+    "bindings/python/src/n4m/transform/__init__.py": {
+      "git_blob": "20ed511331409deab49a9d89c1c7455b2602672a",
+      "sha256": "7635ad1b87261699e1eb7c4ea9916a6fd11a724b0074e068d7c68a9034f36519",
+      "bytes": 450
+    },
+    "bindings/python/src/n4m/transform/alignment.py": {
+      "git_blob": "64f0ed751c275b00cfe5405fce3bf2c6d7f23023",
+      "sha256": "7b882f93719043bd29153c0996d9e74698d08be6c9e4dae4cde39c336ddbf17c",
+      "bytes": 328
+    },
+    "bindings/python/src/n4m/transform/baseline.py": {
+      "git_blob": "f9c10562a7c4c4fb5f350d890c4ed1219ef56b30",
+      "sha256": "795751e3b21c29b4ad6dbe2a5f277745d892f8fb6cdaff52be3fd15fd9889228",
+      "bytes": 344
+    },
+    "bindings/python/src/n4m/transform/orthogonalization.py": {
+      "git_blob": "b69ba145fd51cdbe482be64c6010d82d40f792fb",
+      "sha256": "54a5a3cc0c5098afbfc72205c3bf3917ac6d7d5661585938ec5fc41cd9d4d9ca",
+      "bytes": 100
+    },
+    "bindings/python/src/n4m/transform/resampling.py": {
+      "git_blob": "1b7c773103b240d6291b65ed9a1795ca7e1d0683",
+      "sha256": "5bac6e235deca125d946961bcde9fa3b87d8be2c06be6255da826915f0db661c",
+      "bytes": 314
+    },
+    "bindings/python/src/n4m/transform/scaling.py": {
+      "git_blob": "e79d8a1090464bd2b6552cea19f7290f9ee4b3a9",
+      "sha256": "ac18c4d5c9e693e322f5a147ca7521760875dddf756e71315a29a634c9200e41",
+      "bytes": 228
+    },
+    "bindings/python/src/n4m/transform/scatter.py": {
+      "git_blob": "43b49e65ce664407b042f2e3ceb91d070eb54c9e",
+      "sha256": "9a7c697619c763cf67592c82520a34f61e8463256f07d2f60d81322038336ec9",
+      "bytes": 494
+    },
+    "bindings/python/src/n4m/transform/signal_conversion.py": {
+      "git_blob": "d2f0483f297430db6fd5fb652317693a22d572a2",
+      "sha256": "8bfcce22cda5ba26f9680b893b757284bf301fd7e98ed7b6b0d2760e872ddfe7",
+      "bytes": 413
+    },
+    "bindings/python/src/n4m/transform/smoothing.py": {
+      "git_blob": "315a6f4396302357176232f582523c4f4b6b8055",
+      "sha256": "4ca3dd0fb720e78c15c592fbf1247e7c6930070e057474229178c736fcaedf43",
+      "bytes": 312
+    },
+    "bindings/python/src/n4m/transform/specialized.py": {
+      "git_blob": "666eca71cac3a9c6db155b84d25bc9c7bdc8c8d1",
+      "sha256": "429586e8bc41971973f348435aa1f35d6de88e90108fefa1f7cdb11d5e990176",
+      "bytes": 134
+    },
+    "bindings/python/src/n4m/transform/wavelet.py": {
+      "git_blob": "4fccbad758766803a9ed71911739939298177609",
+      "sha256": "3c72816bb98cfd7ab79cd6620bb1dc9e8128e9136567a6c1d9ea07d72ab1826e",
+      "bytes": 284
+    },
+    "bindings/python/src/pls4all/__init__.py": {
+      "git_blob": "6ca5da4bd701803c51eb08af40c94dbc5263ff38",
+      "sha256": "46982366c9013a4c5b5a460e2ae968844b11686d4fadbc01d5fdf4cdefdf44b1",
+      "bytes": 5643
+    },
+    "bindings/python/src/pls4all/_aom.py": {
+      "git_blob": "c06223bb37aaf2da49ceaf1eb461765e2b1e82d4",
+      "sha256": "63d72b7aefc5314c4b744575ab6d086266a4b128af1280148cb36b76fdc0699e",
+      "bytes": 13449
+    },
+    "bindings/python/src/pls4all/_config.py": {
+      "git_blob": "41dcfd77a11ec3bb139148bbbcc1acf35faee58e",
+      "sha256": "75ef205f5f222d531dba7eb1ef70eee67d962a07e63002defee5bfa7e0a0fd4f",
+      "bytes": 6501
+    },
+    "bindings/python/src/pls4all/_context.py": {
+      "git_blob": "c59e0883ee0c07415ba8d176822c04f2811fb675",
+      "sha256": "b7e0ae9797c0c8753f59a3fdbedc571c08b8a3d168d671360acab109c8f20bf5",
+      "bytes": 3687
+    },
+    "bindings/python/src/pls4all/_errors.py": {
+      "git_blob": "5c594be399b9a28e275d0d3400eb83ec7b0b8db0",
+      "sha256": "f1ed5908a5c270a0b856f26c2e127cde78e0d03ca311b34ba4daa4b0e9b04174",
+      "bytes": 743
+    },
+    "bindings/python/src/pls4all/_ffi.py": {
+      "git_blob": "805871070dd104468cf8b3641884b965b46ae23f",
+      "sha256": "cacead18045969679f7b9fe5b6be3a18562747ac273224b2ff9c67cca31cb920",
+      "bytes": 24044
+    },
+    "bindings/python/src/pls4all/_methods.py": {
+      "git_blob": "b2d064c375aa4970ac3abee8c256cb61d52a0b4b",
+      "sha256": "acdf11919b47afe543b98e73d9f3238f9f43bd85e5d3e8ee306ce4f89ddc508e",
+      "bytes": 80755
+    },
+    "bindings/python/src/pls4all/_model.py": {
+      "git_blob": "8e4070aea733c68bebc3a88a2dd3acaaacb2af0b",
+      "sha256": "a4eadf72567479d7a20293188c28fba4a6fd917ec6897a86293cbf25fb56287f",
+      "bytes": 13515
+    },
+    "bindings/python/src/pls4all/_types.py": {
+      "git_blob": "36c9a6d518ce5dd1320c0454dc4f07d898f448aa",
+      "sha256": "164b51855648e9e6915d0c9575a8d07194bbd1600a8770dc14f2e47fdb82332d",
+      "bytes": 1747
+    },
+    "bindings/python/src/pls4all/migration.py": {
+      "git_blob": "3d55681e359ccd34f5f6918ffd028e535ed04adf",
+      "sha256": "6da1650d7d038a866786a1b2a69bb88512869f720290c9638578f2fd68ad05d5",
+      "bytes": 3780
+    },
+    "bindings/python/src/pls4all/sklearn/__init__.py": {
+      "git_blob": "57c0bba9f92ac0c371f96869e7a3399e33f74ea2",
+      "sha256": "557abb59894c3f361e73a62c889b60728c12372505d6af9b831bf506706ac04a",
+      "bytes": 7036
+    },
+    "bindings/python/src/pls4all/sklearn/_base.py": {
+      "git_blob": "af58f207e5ac2a63ba76cb33cfa00526b62cb5ba",
+      "sha256": "cbb01f9370079d14a8af2b44d2ca50b493f71c88fbbf0d64d4016b5e69376d4f",
+      "bytes": 8142
+    },
+    "bindings/python/src/pls4all/sklearn/_classification.py": {
+      "git_blob": "78c7b5f07add00a5a6f265b827832e832cb3274d",
+      "sha256": "86ffeadfa3fb5eff17ba997b55fbc4f3da09539facb12b23e41c4ba5a0885be2",
+      "bytes": 5596
+    },
+    "bindings/python/src/pls4all/sklearn/_classifiers_extras.py": {
+      "git_blob": "086cb4d13a85bc8b146a3abead1ef14f0aa260ca",
+      "sha256": "6fc65be88ae92c79bd71854b8f6f628696cacbd70f8a86ca88b435232935c942",
+      "bytes": 11984
+    },
+    "bindings/python/src/pls4all/sklearn/_diagnostics.py": {
+      "git_blob": "8164cd3c4bfbe4f004426ed71f32db2ad008d4a3",
+      "sha256": "f4b74cad1f31d65bcade676b748a24bcd16baa292a954bb0348f8481cba8e178",
+      "bytes": 9807
+    },
+    "bindings/python/src/pls4all/sklearn/_in_sample.py": {
+      "git_blob": "aa69ce8a1aeadd74f4e0c49d0342073332420c3a",
+      "sha256": "049bbf7b3d48c16306b49ea94e31e5b988829919badc5cdede781ffb463ce8c8",
+      "bytes": 18521
+    },
+    "bindings/python/src/pls4all/sklearn/_method_result.py": {
+      "git_blob": "7049d4e3c2b87afd14215086dc6bb00722bed4e3",
+      "sha256": "12f01783cff4f26cabc98c2e39e17826f0b6d07f927db9ff8b6529c795068e32",
+      "bytes": 6245
+    },
+    "bindings/python/src/pls4all/sklearn/_method_result_regressors.py": {
+      "git_blob": "5e7ae5784b0d78575110c3dcb57f59e6137a7e32",
+      "sha256": "6cb9630c2dd1033313c2e1da14aec09f7be521d2f1f1df1eeddc1503537e818d",
+      "bytes": 20983
+    },
+    "bindings/python/src/pls4all/sklearn/_regression.py": {
+      "git_blob": "2c9cc542270ed76e800c4c4dc9f14049d0569457",
+      "sha256": "02caef5df9538a74bc970ce4a0ffbf32cbe4ce3085982be2b1bb49a8b9c4ff36",
+      "bytes": 13635
+    },
+    "bindings/python/src/pls4all/sklearn/_selection.py": {
+      "git_blob": "a3105369bd9b676f1aafd3e427364803ad49a553",
+      "sha256": "a5732537378542e7c1544ff721dd31f85d26e810c38ab1a4a53acf2b0b3e1ea6",
+      "bytes": 45528
+    },
+    "bindings/python/src/pls4all/sklearn/_transformers.py": {
+      "git_blob": "6c77ebdb16107e8e40ff4ac73f65a5c82bfbfafb",
+      "sha256": "0c450f807ea953e64442e83b7023305d6d2b288a8fb66c67a2f6d60529a1e393",
+      "bytes": 3981
+    }
+  },
+  "native_library": {
+    "path": "/home/delete/nirs4all/_audits/2026-10-06-debt-extension/workflow/public-methods-134-full/n4m/lib/libn4m.so.2.17.0",
+    "sha256": "cd1b370691c599b6fed66d3e389cd99a9ded565de3ab58ac2a6dd744d1cf0385",
+    "bytes": 5449304
+  }
+}

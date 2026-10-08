@@ -1,0 +1,13 @@
+{
+  "command": [
+    "/home/delete/.local/bin/rtk",
+    "proxy",
+    "/home/delete/nirs4all/nirs4all/.venv/bin/python",
+    "-m",
+    "unittest",
+    "crates/dag-ml-py/tests/test_terminal_predict_facade.py"
+  ],
+  "direct_command_exit_code": 0,
+  "seconds": 0.08339207799872383,
+  "independent_child_wrapper_pid": 3314411
+}

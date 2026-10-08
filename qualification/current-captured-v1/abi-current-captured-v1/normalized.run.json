@@ -1,0 +1,40 @@
+{
+  "id": "abi-current-captured-v1",
+  "host": "local-wsl-linux",
+  "command": [
+    "/home/delete/.local/bin/rtk",
+    "proxy",
+    "/home/delete/nirs4all/nirs4all/.venv/bin/python",
+    "scripts/validate_abi_snapshot.py"
+  ],
+  "cwd": "/home/delete/nirs4all/_worktrees/2026-10-07-dag-metric-validation",
+  "environment": {
+    "TMPDIR": "/mnt/c/Temp/n4a-dag041-20261008/tmp",
+    "CARGO_TARGET_DIR": "/mnt/c/Temp/n4a-dag041-20261008/target",
+    "CARGO_NET_OFFLINE": "true",
+    "CARGO_INCREMENTAL": "0"
+  },
+  "started_at": "2026-10-08T01:01:59.405781+00:00",
+  "finished_at": "2026-10-08T01:01:59.599987+00:00",
+  "exit_code": 0,
+  "input_fingerprints": {
+    "crates/dag-ml-capi/include/dag_ml.h": "0c139e5d9b4379e7c9f54917bd846235a7e00956263dd784ce7b8897c454d0a8",
+    "docs/contracts/abi_snapshot.v1.json": "1d8718e2e070a8c886a75b57c7c4599b90e6ba38235e8414dc6363e05f25e654",
+    "scripts/validate_abi_snapshot.py": "9294b2fb8c2c7ddda7dbdb0a9a061171cc2d388d7a14147e95abc1156cc92bf0"
+  },
+  "log": {
+    "path": "qualification/current-captured-v1/abi-current-captured-v1/direct.log",
+    "bytes": 41,
+    "sha256": "6d163516462024342989ce9e7023a9aab3883c17d3cacf30d56c227d9134541c"
+  },
+  "input_evidence": {
+    "path": "qualification/current-captured-v1/abi-current-captured-v1/normalized.inputs.json",
+    "bytes": 1949,
+    "sha256": "d0fed05038086b65b23e3229934aa2bd3ac2b1afdadb06ce3cba438f936e756d"
+  },
+  "report": {
+    "path": "qualification/current-captured-v1/abi-current-captured-v1/normalized.report.json",
+    "bytes": 1563,
+    "sha256": "7302ceb02ed56793a788da89541992585ad59f1be73855f1793766dbcec627f5"
+  }
+}

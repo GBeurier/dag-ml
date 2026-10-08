@@ -1,0 +1,15 @@
+{
+  "command": [
+    "/home/delete/.local/bin/rtk",
+    "proxy",
+    "cargo",
+    "doc",
+    "--offline",
+    "--locked",
+    "--workspace",
+    "--no-deps"
+  ],
+  "direct_command_exit_code": 0,
+  "seconds": 50.50547551095951,
+  "independent_child_wrapper_pid": 3314802
+}

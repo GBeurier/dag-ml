@@ -1,0 +1,71 @@
+{
+  "observation_kind": "POST_RUN_READONLY_ACTUAL_ARTIFACT_INVENTORY_NOT_A_NEW_FIT_OR_BEFORE_RUN_CAPTURE",
+  "observed_at": "2026-10-08T00:40:09.989416+00:00",
+  "versions_observed_now": {
+    "python": "Python 3.11.15",
+    "cargo": "cargo 1.96.0 (30a34c682 2026-05-25)",
+    "rustc": "rustc 1.96.0 (ac68faa20 2026-05-25)",
+    "R": "Rscript (R) version 4.6.0 (2026-04-24)",
+    "node": "v22.21.1",
+    "chrome": "Google Chrome for Testing 149.0.7827.55"
+  },
+  "artifacts": {
+    "linux-python-binding": {
+      "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-07-dag-metric-validation/crates/dag-ml-py/python/dag_ml/_dag_ml.abi3.so",
+      "bytes": 39018136,
+      "sha256": "6a57a4d3c67ac7127215985056a09897cef0b2e96f927cf19101d64d39714c1a"
+    },
+    "dag-capi": {
+      "artifact_path": "/mnt/c/Temp/n4a-dag041-20261008/target/release/libdag_ml_capi.so",
+      "bytes": 23607744,
+      "sha256": "1d76df5dbf33bf5ab16292ed49339f1927f9581c2e4eea3c12bb568da7227fe8"
+    },
+    "dag-cli": {
+      "artifact_path": "/mnt/c/Temp/n4a-dag041-20261008/target/debug/dag-ml-cli",
+      "bytes": 76214712,
+      "sha256": "e3c48520c6e77ac619efff6c3a91a7a524452919aee95ebcf073bf6ed1fdcc95"
+    },
+    "methods134": {
+      "artifact_path": "/home/delete/nirs4all/_audits/2026-10-06-debt-extension/workflow/public-methods-134-full/n4m/lib/libn4m.so.2.17.0",
+      "bytes": 5449304,
+      "sha256": "cd1b370691c599b6fed66d3e389cd99a9ded565de3ab58ac2a6dd744d1cf0385"
+    },
+    "r-script": {
+      "artifact_path": "/home/delete/miniconda3/bin/Rscript",
+      "bytes": 16960,
+      "sha256": "a75a4864c24aed9a72ecb13c2cd0913e47150b38c275d59bd64eaf92a9b78d5e"
+    },
+    "octave-wrapper": {
+      "artifact_path": "/mnt/c/Temp/n4a-dag041-20261008/octave-elf-cache/bin/octave",
+      "bytes": 51851,
+      "sha256": "7fc474ed9ce0f8b03a3958796ffb024005ce5d797afc40b09362265847e71685"
+    },
+    "wasm-node": {
+      "artifact_path": "/mnt/c/Temp/n4a-dag041-20261008/wasm-node041/dag_ml_wasm_bg.wasm",
+      "bytes": 10833099,
+      "sha256": "fa527345189655ce150edbde41aadefae279857c207e29efa5de7df6a981a46c"
+    },
+    "wasm-web": {
+      "artifact_path": "/mnt/c/Temp/n4a-dag041-20261008/wasm-web041/dag_ml_wasm_bg.wasm",
+      "bytes": 10833099,
+      "sha256": "fa527345189655ce150edbde41aadefae279857c207e29efa5de7df6a981a46c"
+    },
+    "node22": {
+      "artifact_path": "/home/delete/.nvm/versions/node/v22.21.1/bin/node",
+      "bytes": 123395824,
+      "sha256": "92181daccf61361e7c54d6404a3e2c2307a916d076492e3c0b388e6e5f86a854"
+    },
+    "chrome": {
+      "artifact_path": "/home/delete/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome",
+      "bytes": 278568152,
+      "sha256": "2d18db9d8608b052b6a552ee00ec1e830f93692e928b65ecc67d693bd33fe801"
+    }
+  },
+  "native_cohort_versions": {
+    "dag": "0.3.41",
+    "methods": "public1.3.4_ABI2.17",
+    "octave": "10.3.0_real_readonly_ELF_closure",
+    "R": "4.6.0_source_package041"
+  },
+  "origin_historical_runs_preserved": true
+}

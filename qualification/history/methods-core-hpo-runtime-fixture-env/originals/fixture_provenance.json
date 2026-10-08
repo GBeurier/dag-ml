@@ -1,0 +1,9 @@
+{
+  "producer_commit": "dcc570b3647f77cf0428dd346078f442ed5cd032",
+  "path": "parity/fixtures/estimator_roles_n4me.json",
+  "owned_path": "/mnt/c/Temp/n4a-dag041-20261008/methods-producer-dcc570/parity/fixtures/estimator_roles_n4me.json",
+  "git_blob": "d00fa022d173dbd55a4fed05c251aa76182481c2",
+  "sha256": "a1b6fe5653f67b5f6285a1da998af54e1654efba3ca9224c05c185b762a7aa82",
+  "bytes": 995367,
+  "unchanged_historical_numeric_oracle": true
+}

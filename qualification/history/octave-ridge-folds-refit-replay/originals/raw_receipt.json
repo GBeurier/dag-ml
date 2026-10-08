@@ -1,0 +1,55 @@
+{
+  "gate": "octave-ridge-folds-refit-replay",
+  "command": [
+    "/home/delete/.local/bin/rtk",
+    "proxy",
+    "cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "dag-ml-cli",
+    "--test",
+    "octave_hpo_ridge"
+  ],
+  "cwd": "/home/delete/nirs4all/_worktrees/2026-10-07-dag-metric-validation",
+  "exit_code": 0,
+  "direct_terminal": {
+    "command": [
+      "/home/delete/.local/bin/rtk",
+      "proxy",
+      "cargo",
+      "test",
+      "--offline",
+      "--locked",
+      "-p",
+      "dag-ml-cli",
+      "--test",
+      "octave_hpo_ridge"
+    ],
+    "direct_command_exit_code": 0,
+    "seconds": 12.228889777965378,
+    "independent_child_wrapper_pid": 3353342
+  },
+  "stop_reason": null,
+  "seconds": 29.998222330992576,
+  "observed_peak": {
+    "target_bytes": 7314743494,
+    "other_bytes": 145320837,
+    "free_bytes": 296055250944
+  },
+  "source_tree": "7e77957b89fae7097886d310e71e249dc5eb9c45",
+  "source_unchanged_after": true,
+  "logs": {
+    "stdout.log": {
+      "path": "/mnt/c/Temp/n4a-dag041-20261008/gates/octave-ridge-folds-refit-replay/stdout.log",
+      "sha256": "bf5298ca43f7266b913a7dc6712db19c9d206558a23bc272618d357533a8f96a",
+      "bytes": 197
+    },
+    "stderr.log": {
+      "path": "/mnt/c/Temp/n4a-dag041-20261008/gates/octave-ridge-folds-refit-replay/stderr.log",
+      "sha256": "6f023c1804ac1054db64544b2ab7ddbf62b9811c78a79128b160bcab0702f44c",
+      "bytes": 186
+    }
+  }
+}

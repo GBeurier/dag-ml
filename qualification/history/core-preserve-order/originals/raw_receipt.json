@@ -1,0 +1,66 @@
+{
+  "independent_command_terminal": {
+    "command": [
+      "/home/delete/.local/bin/rtk",
+      "proxy",
+      "cargo",
+      "test",
+      "--offline",
+      "--locked",
+      "--manifest-path",
+      "crates/dag-ml-core/Cargo.toml",
+      "--features",
+      "serde_json/preserve_order"
+    ],
+    "direct_command_exit_code": 0,
+    "seconds": 85.10303340200335,
+    "independent_child_wrapper_pid": 3305402
+  },
+  "gate": "core-preserve-order",
+  "command": [
+    "/home/delete/.local/bin/rtk",
+    "proxy",
+    "cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "--manifest-path",
+    "crates/dag-ml-core/Cargo.toml",
+    "--features",
+    "serde_json/preserve_order"
+  ],
+  "exit_code": 0,
+  "stop_reason": null,
+  "seconds": 117.20010622503469,
+  "before": {
+    "target_bytes": 3111141119,
+    "other_bytes": 66738850,
+    "free_bytes": 300212523008,
+    "vanished_owned_temporaries": 0
+  },
+  "after": {
+    "target_bytes": 4158965164,
+    "other_bytes": 66828332,
+    "free_bytes": 299166679040,
+    "vanished_owned_temporaries": 0
+  },
+  "observed_peak": {
+    "target_bytes": 4231910504,
+    "other_bytes": 66827871,
+    "free_bytes": 299166576640,
+    "vanished_owned_temporaries": 0
+  },
+  "functional_source_unchanged": true,
+  "logs": {
+    "stdout.log": {
+      "path": "/mnt/c/Temp/n4a-dag041-20261008/gates/core-preserve-order/stdout.log",
+      "bytes": 81939,
+      "sha256": "9ad1eebcd4d01bfc097123b816192500771265f0fdc3eeb07ae2d51c8327b457"
+    },
+    "stderr.log": {
+      "path": "/mnt/c/Temp/n4a-dag041-20261008/gates/core-preserve-order/stderr.log",
+      "bytes": 6470,
+      "sha256": "7ac006cb01f1220aa728dd03749a687e183f587c59ee09e542533b79d3ba0a4d"
+    }
+  }
+}

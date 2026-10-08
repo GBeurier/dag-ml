@@ -1,0 +1,11 @@
+{
+  "path": "/mnt/c/Temp/n4a-dag041-20261008/target/release/libdag_ml_capi.so",
+  "sha256": "1d76df5dbf33bf5ab16292ed49339f1927f9581c2e4eea3c12bb568da7227fe8",
+  "version": [
+    0,
+    3,
+    41
+  ],
+  "source_tree": "7e77957b89fae7097886d310e71e249dc5eb9c45",
+  "scope": "genuine locallycompiled041 CAPI; nopublicbinaryclaim"
+}

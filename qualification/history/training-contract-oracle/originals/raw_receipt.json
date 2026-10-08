@@ -1,0 +1,51 @@
+{
+  "gate": "training-contract-oracle",
+  "command": [
+    "/home/delete/.local/bin/rtk",
+    "proxy",
+    "/home/delete/nirs4all/nirs4all/.venv/bin/python",
+    "-m",
+    "pytest",
+    "--capture=sys",
+    "parity/training/tests/test_training_contracts.py",
+    "-q"
+  ],
+  "cwd": "/home/delete/nirs4all/_worktrees/2026-10-07-dag-metric-validation",
+  "exit_code": 0,
+  "direct_terminal": {
+    "command": [
+      "/home/delete/.local/bin/rtk",
+      "proxy",
+      "/home/delete/nirs4all/nirs4all/.venv/bin/python",
+      "-m",
+      "pytest",
+      "--capture=sys",
+      "parity/training/tests/test_training_contracts.py",
+      "-q"
+    ],
+    "direct_command_exit_code": 0,
+    "seconds": 7.027768808009569,
+    "independent_child_wrapper_pid": 3345754
+  },
+  "stop_reason": null,
+  "seconds": 27.242301988997497,
+  "observed_peak": {
+    "target_bytes": 6001421262,
+    "other_bytes": 185774590,
+    "free_bytes": 297294090240
+  },
+  "source_tree": "7e77957b89fae7097886d310e71e249dc5eb9c45",
+  "source_unchanged_after": true,
+  "logs": {
+    "stdout.log": {
+      "path": "/mnt/c/Temp/n4a-dag041-20261008/gates/training-contract-oracle/stdout.log",
+      "sha256": "0b5d77a9072ed6509987b7fb2b2f68df84a528d331ea2f69bb2113e0594e2943",
+      "bytes": 180
+    },
+    "stderr.log": {
+      "path": "/mnt/c/Temp/n4a-dag041-20261008/gates/training-contract-oracle/stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    }
+  }
+}

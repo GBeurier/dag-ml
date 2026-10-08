@@ -1,0 +1,18 @@
+{
+  "command": [
+    "/home/delete/.local/bin/rtk",
+    "proxy",
+    "cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "dag-ml-cli",
+    "--test",
+    "initial_full_refit",
+    "cli_replays_portable_methods_pls_payload_in_fresh_process"
+  ],
+  "direct_command_exit_code": 0,
+  "seconds": 11.188762508041691,
+  "independent_child_wrapper_pid": 3345164
+}
