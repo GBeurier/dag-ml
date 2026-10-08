@@ -1,6 +1,7 @@
-name: Methods-backed Octave role candidate
+name: Methods-backed Octave build candidate
 
-# Explicit cross-repository qualification; no packages are published.
+# Builds/version/MEX readiness only. Full local qualification commands:
+# docs/qualification/methods-candidates-local.md. No package is published.
 on:
   workflow_dispatch:
     inputs:
@@ -12,9 +13,6 @@ on:
         description: "nirs4all commit containing public native phase facades and Octave tests"
         required: true
         default: main
-      node_capture_run_id:
-        description: "Successful Methods-backed WASM HPO candidate run with methods-four-source-fixture"
-        required: true
       core_version:
         description: "Installed Core distribution version providing Archive V2"
         required: true
@@ -22,7 +20,6 @@ on:
 
 permissions:
   contents: read
-  actions: read
 
 jobs:
   octave-native-role-archive:
@@ -80,62 +77,52 @@ jobs:
       - name: Compile the real public Methods role and version MEX
         working-directory: external/nirs4all-methods/bindings/matlab
         run: octave --no-gui --quiet --eval "build_mex({'n4m_role_pipeline_mex','n4m_version_mex'})"
-      - name: Public ABI 2.14 role binding fixture
+      - name: Check real public Methods MEX version and role binding readiness
         working-directory: external/nirs4all-methods/bindings/matlab
-        run: |
-          mkdir -p "$GITHUB_WORKSPACE/target"
-          python test/export_role_pipeline_fixture.py "$N4M_ROLE_PIPELINE_JSON_FIXTURE" \
-            "$GITHUB_WORKSPACE/target/octave-methods-fixture.m"
-          octave --no-gui --quiet --eval "addpath('test'); test_role_pipeline('$GITHUB_WORKSPACE/target/octave-methods-fixture.m')"
+        run: octave --no-gui --quiet --eval "assert(exist(fullfile(pwd, '+n4m', ['n4m_role_pipeline_mex.' mexext()]), 'file') == 3); assert(exist(fullfile(pwd, '+n4m', ['n4m_version_mex.' mexext()]), 'file') == 3); assert(strcmp(n4m.n4m_version_mex(), '1.2.1+abi.2.14.0')); disp('METHODS_MEX_VERSION_AND_ROLE_READY')"
       - name: Build current DAG Python wheel and CLI
         run: |
           maturin build --release --locked --manifest-path crates/dag-ml-py/Cargo.toml \
             --features extension-module,methods-optimizer --out target/octave-wheels
           python -m pip install --force-reinstall --no-deps target/octave-wheels/dag_ml-*.whl
           cargo build -p dag-ml-cli --release --features dag-ml-core/methods-optimizer
-      - name: Read the existing numerical witness
-        uses: actions/download-artifact@v8
-        with:
-          name: methods-four-source-fixture
-          run-id: ${{ inputs.node_capture_run_id }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          path: target/octave-capture
-      - name: Native role archive validators and mandatory real Octave protocol
+      - name: Check built DAG facade and installed package metadata
         env:
-          DAGML_REQUIRE_OCTAVE_ROLES: "1"
-          DAG_ML_OCTAVE: /usr/bin/octave
-          NIRS4ALL_OCTAVE_ROLE_NODE_CAPTURE: ${{ github.workspace }}/target/octave-capture/four-source-receipt.json
+          EXPECTED_CORE_VERSION: ${{ inputs.core_version }}
         run: |
-          cargo test -p dag-ml-core archive_workspace
-          python -m pytest tests/test_archive_v2_contract.py tests/test_octave_methods_role_adapter.py
-      - name: Same three proposals, five RAW models and fresh no-fit archive replay
+          python - <<'PYCODE'
+          from importlib import metadata
+          import json
+          import os
+          import tomllib
+          import dag_ml
+          import dag_ml._dag_ml as native
+          with open("crates/dag-ml-py/pyproject.toml", "rb") as handle:
+              expected = tomllib.load(handle)["project"]["version"]
+          assert metadata.version("dag-ml") == dag_ml.version() == native.version() == expected
+          assert json.loads(dag_ml.contract_manifest_json())["python_package_version"] == expected
+          assert metadata.version("nirs4all-core") == os.environ["EXPECTED_CORE_VERSION"]
+          print("INSTALLED_PACKAGE_VERSIONS_OK", expected, metadata.version("nirs4all"))
+          PYCODE
+      - name: Require both package MEX outputs before upload
         run: |
-          python scripts/qualify_multimodal_methods_hpo_octave.py \
-            --node-capture target/octave-capture/four-source-receipt.json \
-            --cli target/release/dag-ml-cli --octave /usr/bin/octave \
-            --workdir target/octave-qualification
-      - name: Public SDK phases and installed isolated archive consumer
-        env:
-          NIRS4ALL_REQUIRE_OCTAVE_ROLE_CAMPAIGN: "1"
-          NIRS4ALL_OCTAVE_ROLE_NODE_CAPTURE: ${{ github.workspace }}/target/octave-capture/four-source-receipt.json
-          NIRS4ALL_DAG_ML_ROOT: ${{ github.workspace }}
-          DAG_ML_OCTAVE: /usr/bin/octave
-          DAG_ML_OCTAVE_MEX_PATH: ${{ github.workspace }}/external/nirs4all-methods/bindings/matlab
-          PYTHONPATH: ${{ github.workspace }}/external/nirs4all
-        run: |
-          export NIRS4ALL_OCTAVE_ROLE_INSTALLED_PYTHON="$(python -c 'import sys; print(sys.executable)')"
-          python -m pytest external/nirs4all/tests/integration/api/test_octave_multimodal_role_archive.py \
-            --basetemp=target/octave-sdk-proof
-      - name: Retain native qualification evidence
-        if: always()
+          shopt -s nullglob
+          for mex_name in n4m_role_pipeline_mex n4m_version_mex; do
+            matches=(external/nirs4all-methods/bindings/matlab/+n4m/"$mex_name".mex*)
+            if [[ "${#matches[@]}" -ne 1 || ! -s "${matches[0]}" ]]; then
+              echo "::error::Expected one nonempty package MEX output for $mex_name"
+              exit 1
+            fi
+          done
+      - name: Retain candidate build artifacts
+        if: success()
         uses: actions/upload-artifact@v7
         with:
-          name: octave-methods-role-evidence
+          name: octave-methods-build-candidate
           path: |
-            target/octave-qualification
-            target/octave-capture
             target/octave-wheels
-            target/octave-sdk-proof
-            target/octave-methods-fixture.m
+            target/release/dag-ml-cli
+            external/nirs4all-methods/bindings/matlab/+n4m/n4m_role_pipeline_mex.mex*
+            external/nirs4all-methods/bindings/matlab/+n4m/n4m_version_mex.mex*
           if-no-files-found: error
           retention-days: 30
