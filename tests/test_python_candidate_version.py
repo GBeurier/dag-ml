@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import shutil
 import sys
 from pathlib import Path
@@ -193,3 +194,142 @@ def test_ci_refuses_loss_of_locked_runtime_or_oracle_checks(
     (target / "ci.yml").write_text(workflow.replace(old, new, 1))
     with pytest.raises(SystemExit, match=message):
         release_metadata.validate_ci(tmp_path)
+
+
+def test_local_qualification_guards_precede_each_publication_writer() -> None:
+    release_metadata.validate_local_publication_guards(ROOT)
+
+
+@pytest.mark.parametrize(
+    "filename,job",
+    [
+        ("release-python.yml", "publish-pypi"),
+        ("release-python.yml", "github-release"),
+        ("release-crates.yml", "publish-crates"),
+        ("release-npm.yml", "build-and-publish"),
+    ],
+)
+@pytest.mark.parametrize("mutation", ["remove", "disable", "continue", "move_after"])
+def test_publication_refuses_bypassed_local_qualification(
+    tmp_path: Path, filename: str, job: str, mutation: str
+) -> None:
+    target = tmp_path / ".github/workflows"
+    target.mkdir(parents=True)
+    for name in ["release-python.yml", "release-crates.yml", "release-npm.yml"]:
+        shutil.copyfile(ROOT / ".github/workflows" / name, target / name)
+    p = target / filename
+    source = p.read_text()
+    marker = "  " + job + ":\n"
+    prefix, content = source.split(marker, 1)
+    command = "        run: python scripts/verify_local_qualification.py --project dag --receipt compat/local-qualification.json --root ."
+    assert command in content
+    if mutation == "remove":
+        content = content.replace(command, "        run: echo removed", 1)
+    elif mutation == "disable":
+        start = content.index(
+            "      - name: Verify local runtime qualification before publication"
+        )
+        end = content.index(command, start)
+        content = (
+            content[:start]
+            + content[start:end].replace("        if:", "        # old condition:")
+            + "        if: false\n"
+            + content[end:]
+        )
+    elif mutation == "continue":
+        content = content.replace(
+            command, "        continue-on-error: true\n" + command, 1
+        )
+    else:
+        start = content.index(
+            "      - name: Verify local runtime qualification before publication"
+        )
+        end = content.index(command, start) + len(command) + 1
+        guard = content[start:end]
+        content = content[:start] + content[end:] + guard
+    p.write_text(prefix + marker + content)
+    with pytest.raises(SystemExit, match="local qualification"):
+        release_metadata.validate_local_publication_guards(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "filename,job",
+    [
+        ("release-python.yml", "publish-pypi"),
+        ("release-python.yml", "github-release"),
+        ("release-crates.yml", "publish-crates"),
+    ],
+)
+def test_writer_cannot_run_after_failed_local_qualification(
+    tmp_path: Path, filename: str, job: str
+) -> None:
+    target = tmp_path / ".github/workflows"
+    target.mkdir(parents=True)
+    for name in ["release-python.yml", "release-crates.yml", "release-npm.yml"]:
+        shutil.copyfile(ROOT / ".github/workflows" / name, target / name)
+    p = target / filename
+    prefix, content = p.read_text().split("  " + job + ":\n", 1)
+    if job == "publish-pypi":
+        content = content.replace(
+            "      - uses: pypa/gh-action-pypi-publish@release/v1",
+            "      - uses: pypa/gh-action-pypi-publish@release/v1\n        if: always()",
+            1,
+        )
+    elif job == "github-release":
+        content = content.replace(
+            "      - uses: softprops/action-gh-release@v3",
+            "      - uses: softprops/action-gh-release@v3\n        if: always()",
+            1,
+        )
+    else:
+        content = content.replace(
+            "      - name: Publish workspace crates to crates.io",
+            "      - name: Publish workspace crates to crates.io\n        if: always()",
+            1,
+        )
+    p.write_text(prefix + "  " + job + ":\n" + content)
+    with pytest.raises(SystemExit, match="publication condition"):
+        release_metadata.validate_local_publication_guards(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["missing", "command", "count", "scope", "exclusion", "provenance", "host"],
+)
+def test_local_policy_preserves_extracted_package_coverage(
+    tmp_path: Path, mutation: str
+) -> None:
+    target = tmp_path / ".github/workflows"
+    target.mkdir(parents=True)
+    for name in ["release-python.yml", "release-crates.yml", "release-npm.yml"]:
+        shutil.copyfile(ROOT / ".github/workflows" / name, target / name)
+    gate = {
+        "id": "core-package-extract",
+        "hosts": ["linux"],
+        "commands": {"linux": ["bash", "scripts/test_core_package_extract.sh"]},
+        "minimum_passed": 920,
+        "input_paths": ["scripts/test_core_package_extract.sh"],
+        "requires_provenance": True,
+    }
+    policy = {"gates": [gate]}
+    path = tmp_path / "qualification/policy.json"
+    path.parent.mkdir()
+    path.write_text(json.dumps(policy))
+    release_metadata.validate_local_publication_guards(tmp_path)
+    if mutation == "missing":
+        policy["gates"] = []
+    elif mutation == "command":
+        gate["commands"]["linux"] = ["echo", "passed"]
+    elif mutation == "count":
+        gate["minimum_passed"] = 0
+    elif mutation == "scope":
+        gate["input_paths"] = ["README.md"]
+    elif mutation == "exclusion":
+        gate["input_exclusions"] = ["scripts/test_core_package_extract.sh"]
+    elif mutation == "provenance":
+        gate["requires_provenance"] = False
+    else:
+        gate["hosts"] = ["windows"]
+    path.write_text(json.dumps(policy))
+    with pytest.raises(SystemExit, match="extracted Core package"):
+        release_metadata.validate_local_publication_guards(tmp_path)

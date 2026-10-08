@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 from pathlib import Path
@@ -338,8 +339,8 @@ def validate_ci(repo: Path) -> None:
         "CI must package Cargo crates",
     )
     require(
-        "scripts/test_core_package_extract.sh" in workflow,
-        "CI must test the extracted dag-ml-core package",
+        "run: cargo build --workspace --locked\n" in workflow,
+        "CI must build the locked workspace before packaging",
     )
     require(
         "scripts/release/check_publish_plan.py --dry-run" in workflow,
@@ -362,6 +363,118 @@ def validate_ci(repo: Path) -> None:
         in workflow,
         "CI must exercise dag-ml-capi unit tests under AddressSanitizer",
     )
+
+
+def validate_local_publication_guards(repo: Path) -> None:
+    """Keep scientific qualification local and require it before every writer.
+
+    Candidate platform builds intentionally run before their local runtime
+    receipts exist. Publication must pass the common verifier, including the
+    extracted Core package gate, immediately before writing to a registry.
+    """
+    command = (
+        "python scripts/verify_local_qualification.py --project dag "
+        "--receipt compat/local-qualification.json --root ."
+    )
+    rules = [
+        (
+            "release-python.yml",
+            "publish-pypi",
+            r"(?m)^      - uses: pypa/gh-action-pypi-publish@",
+            None,
+        ),
+        (
+            "release-python.yml",
+            "github-release",
+            r"(?m)^      - uses: softprops/action-gh-release@",
+            None,
+        ),
+        (
+            "release-crates.yml",
+            "publish-crates",
+            r"(?m)^          python scripts/release/publish_crates\.py ",
+            "github.event_name != 'workflow_dispatch' || inputs.dry_run == 'false'",
+        ),
+        (
+            "release-npm.yml",
+            "build-and-publish",
+            r"(?m)^            npm publish --access public$",
+            "steps.gate.outputs.do == 'true'",
+        ),
+    ]
+    for filename, job_id, writer_pattern, condition in rules:
+        source = (repo / ".github/workflows" / filename).read_text(encoding="utf-8")
+        job = re.search(
+            r"(?ms)^  " + re.escape(job_id) + r":\n(.*?)(?=^  [\w-]+:\n|\Z)", source
+        )
+        require(
+            job is not None, f"{filename}: required publication job {job_id} is missing"
+        )
+        starts = list(re.finditer(r"(?m)^      - ", job.group(1)))
+        steps = [
+            job.group(1)[
+                match.start() : starts[index + 1].start()
+                if index + 1 < len(starts)
+                else None
+            ]
+            for index, match in enumerate(starts)
+        ]
+        writers = [
+            index for index, step in enumerate(steps) if re.search(writer_pattern, step)
+        ]
+        guards = [
+            index
+            for index, step in enumerate(steps)
+            if re.search(r"(?m)^        run: " + re.escape(command) + r"$", step)
+        ]
+        require(
+            len(writers) == 1 and len(guards) == 1 and guards[0] < writers[0],
+            f"{filename}/{job_id}: local qualification must precede its publication writer",
+        )
+        guard = steps[guards[0]]
+        require(
+            not re.search(r"(?m)^        continue-on-error:", guard),
+            f"{filename}/{job_id}: local qualification may not continue on error",
+        )
+        observed = re.findall(r"(?m)^        if: (.*)$", guard)
+        require(
+            observed == ([] if condition is None else [condition]),
+            f"{filename}/{job_id}: local qualification condition must cover publication",
+        )
+        writer_condition = [condition] if filename == "release-npm.yml" else []
+        require(
+            re.findall(r"(?m)^        if: (.*)$", steps[writers[0]])
+            == writer_condition,
+            f"{filename}/{job_id}: publication condition must respect successful local qualification",
+        )
+
+    # Platform candidate builds can precede the receipt/policy commit. The
+    # verifier then refuses publication until that committed evidence exists.
+    # Once present, metadata must also ratchet the extracted package coverage.
+    policy_path = repo / "qualification/policy.json"
+    if policy_path.exists():
+        policy = json.loads(policy_path.read_text(encoding="utf-8"))
+        package_gates = [
+            gate
+            for gate in policy.get("gates", [])
+            if gate.get("id") == "core-package-extract"
+        ]
+        require(
+            len(package_gates) == 1,
+            "local qualification policy must retain the extracted Core package gate",
+        )
+        gate = package_gates[0]
+        require(
+            "linux" in gate.get("hosts", [])
+            and gate.get("commands", {}).get("linux")
+            == ["bash", "scripts/test_core_package_extract.sh"]
+            and gate.get("minimum_passed", 0) >= 920
+            and "scripts/test_core_package_extract.sh" in gate.get("input_paths", [])
+            and "scripts/test_core_package_extract.sh"
+            not in gate.get("input_exclusions", [])
+            and gate.get("requires_provenance") is True,
+            "local qualification policy must preserve extracted Core package tests and provenance",
+        )
 
 
 def validate_governance(repo: Path, repo_name: str) -> None:
@@ -601,9 +714,12 @@ def main() -> None:
     validate_python(repo, repo_name, version, release=release)
     r_description = (repo / "bindings/r/DESCRIPTION").read_text(encoding="utf-8")
     r_version = re.search(r"(?m)^Version:\s*(\S+)", r_description)
-    require(r_version is not None and r_version.group(1) == version,
-            "R DESCRIPTION version must match the Cargo workspace")
+    require(
+        r_version is not None and r_version.group(1) == version,
+        "R DESCRIPTION version must match the Cargo workspace",
+    )
     validate_ci(repo)
+    validate_local_publication_guards(repo)
     validate_governance(repo, repo_name)
     validate_docs_site(repo, repo_name)
     validate_methods_hpo_docs(repo)
