@@ -109,6 +109,7 @@ METHODS_STRUCTURAL_CLASSIFICATION
 guides/python_torch_topology
 HPO_LANGUAGE_QUALIFICATION
 qualification/multimodal-methods-hpo-r
+qualification/methods-candidates-local
 N4M_WASM_CONTROLLERS
 OCTAVE_METHODS_ROLE_ADAPTER
 MULTIMODAL_METHODS_CONTRACT
