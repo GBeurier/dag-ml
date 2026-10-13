@@ -8,9 +8,8 @@
 //! stay with the registered runtime controllers and the host data provider;
 //! the core only sees sample identities, groups, predictions and targets.
 //!
-//! Outer validation targets never reach the inner selection. Each outer
-//! fold also carries the fold-train mean of the target as a reference
-//! predictor scored on exactly the same OOF rows.
+//! Outer validation targets never reach the inner selection. Version 1
+//! refuses masked (unobserved) references: every scored target is complete.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -85,8 +84,6 @@ pub struct NestedSelectionScope {
     pub inner_fold_set: NestedFoldSet,
     pub candidates: Vec<NestedCandidateEvaluation>,
     pub decision: SelectionDecision,
-    /// Mean of the outer training targets, the reference prediction.
-    pub train_mean: f64,
 }
 
 /// One outer OOF row: every sample is validated exactly once.
@@ -97,7 +94,6 @@ pub struct NestedOofRow {
     pub selected_candidate_id: String,
     pub y_true: f64,
     pub prediction: f64,
-    pub train_mean_prediction: f64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -109,8 +105,6 @@ pub struct NestedSelectionOutcome {
     pub oof: Vec<NestedOofRow>,
     /// Pooled outer OOF metrics (`mse`, `rmse`, `mae`, `r2`) of the selected models.
     pub model_metrics: BTreeMap<String, f64>,
-    /// The same metrics of the fold-train mean on the same rows.
-    pub train_mean_metrics: BTreeMap<String, f64>,
     /// Controller FIT_CV invocations of the target node.
     pub n_fits: usize,
 }
@@ -182,6 +176,24 @@ impl NestedSelectionRequest {
     }
 }
 
+/// Prefix an error with the outer fold and candidate it occurred in, keeping
+/// its taxonomy variant.
+fn in_scope(error: DagMlError, scope: &str) -> DagMlError {
+    match error {
+        DagMlError::GraphValidation(m) => DagMlError::GraphValidation(format!("{scope}: {m}")),
+        DagMlError::ControllerValidation(m) => {
+            DagMlError::ControllerValidation(format!("{scope}: {m}"))
+        }
+        DagMlError::CampaignValidation(m) => {
+            DagMlError::CampaignValidation(format!("{scope}: {m}"))
+        }
+        DagMlError::Planning(m) => DagMlError::Planning(format!("{scope}: {m}")),
+        DagMlError::RuntimeValidation(m) => DagMlError::RuntimeValidation(format!("{scope}: {m}")),
+        DagMlError::OofValidation(m) => DagMlError::OofValidation(format!("{scope}: {m}")),
+        other => other,
+    }
+}
+
 /// Validation predictions and targets of the target node after one FIT_CV.
 struct FitCvRows {
     predictions: BTreeMap<SampleId, (FoldId, f64)>,
@@ -213,7 +225,7 @@ fn fit_cv(
     for result in results.iter().filter(|r| r.node_id == request.target_node) {
         rows.n_fits += 1;
         for block in &result.regression_targets {
-            block.validate_shape()?;
+            block.require_complete_targets("nested selection")?;
             for (unit, values) in block.unit_ids.iter().zip(&block.values) {
                 let (PredictionUnitId::Sample(id), [value]) = (unit, values.as_slice()) else {
                     return Err(invalid("targets must be one sample-level column"));
@@ -341,21 +353,29 @@ pub fn execute_nested_selection(
         let mut candidates = Vec::new();
         let mut scores = Vec::new();
         for candidate in &request.candidates {
-            let plan = request.plan(candidate, nested.inner_fold_set.clone(), registry)?;
-            let rows = fit_cv(
-                request,
-                &plan,
-                controllers,
-                provider,
-                &format!(
-                    "run:{}:{}:{}",
-                    request.id, fold.fold_id, candidate.candidate_id
-                ),
-            )?;
+            let scope = format!(
+                "outer fold `{}` candidate `{}`",
+                fold.fold_id, candidate.candidate_id
+            );
+            let rows = request
+                .plan(candidate, nested.inner_fold_set.clone(), registry)
+                .and_then(|plan| {
+                    fit_cv(
+                        request,
+                        &plan,
+                        controllers,
+                        provider,
+                        &format!(
+                            "run:{}:{}:{}",
+                            request.id, fold.fold_id, candidate.candidate_id
+                        ),
+                    )
+                })
+                .map_err(|e| in_scope(e, &scope))?;
             n_fits += rows.n_fits;
             let train = fold.train_sample_ids.iter().collect::<BTreeSet<_>>();
             if rows.predictions.keys().collect::<BTreeSet<_>>() != train
-                || rows.targets.keys().any(|id| !train.contains(id))
+                || rows.targets.keys().collect::<BTreeSet<_>>() != train
             {
                 return Err(invalid(format!(
                     "inner OOF of `{}` must cover exactly the outer training pool",
@@ -408,14 +428,22 @@ pub fn execute_nested_selection(
             partition_mode: FoldPartitionMode::Resampled,
             train_exclusion: outer.train_exclusion,
         };
-        let plan = request.plan(winner, evaluation, registry)?;
-        let rows = fit_cv(
-            request,
-            &plan,
-            controllers,
-            provider,
-            &format!("run:{}:{}:selected", request.id, fold.fold_id),
-        )?;
+        let scope = format!(
+            "outer fold `{}` selected candidate `{}`",
+            fold.fold_id, winner.candidate_id
+        );
+        let rows = request
+            .plan(winner, evaluation, registry)
+            .and_then(|plan| {
+                fit_cv(
+                    request,
+                    &plan,
+                    controllers,
+                    provider,
+                    &format!("run:{}:{}:selected", request.id, fold.fold_id),
+                )
+            })
+            .map_err(|e| in_scope(e, &scope))?;
         n_fits += rows.n_fits;
         let validation = fold.validation_sample_ids.iter().collect::<BTreeSet<_>>();
         if rows.predictions.keys().collect::<BTreeSet<_>>() != validation
@@ -426,17 +454,6 @@ pub fn execute_nested_selection(
                 fold.fold_id
             )));
         }
-        let train_targets = fold
-            .train_sample_ids
-            .iter()
-            .map(|id| {
-                rows.targets
-                    .get(id)
-                    .copied()
-                    .ok_or_else(|| invalid(format!("training sample `{id}` has no target")))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let train_mean = train_targets.iter().sum::<f64>() / train_targets.len() as f64;
         for (id, (_, prediction)) in rows.predictions {
             let y_true = *rows
                 .targets
@@ -448,7 +465,6 @@ pub fn execute_nested_selection(
                 selected_candidate_id: winner.candidate_id.clone(),
                 y_true,
                 prediction,
-                train_mean_prediction: train_mean,
             });
         }
         scopes.push(NestedSelectionScope {
@@ -456,7 +472,6 @@ pub fn execute_nested_selection(
             inner_fold_set: nested,
             candidates,
             decision,
-            train_mean,
         });
     }
     oof.sort_by(|a, b| a.sample_id.cmp(&b.sample_id));
@@ -483,22 +498,12 @@ pub fn execute_nested_selection(
         &request.target_node,
         &kinds,
     )?;
-    let train_mean_metrics = score(
-        &ids,
-        &oof.iter()
-            .map(|r| r.train_mean_prediction)
-            .collect::<Vec<_>>(),
-        &targets,
-        &request.target_node,
-        &kinds,
-    )?;
     Ok(NestedSelectionOutcome {
         schema_version: NESTED_SELECTION_SCHEMA_VERSION,
         outer_fold_set: outer,
         scopes,
         oof,
         model_metrics,
-        train_mean_metrics,
         n_fits,
     })
 }
@@ -543,6 +548,8 @@ mod tests {
     /// Provider-owned rows; every requested view is recorded.
     struct Provider {
         rows: BTreeMap<SampleId, (Vec<f64>, f64)>,
+        /// A sample whose reference is transported as 0 with a false mask.
+        masked: Option<SampleId>,
         views: Mutex<Vec<View>>,
         next: AtomicU64,
     }
@@ -550,8 +557,12 @@ mod tests {
     impl Provider {
         fn dataset(&self, ids: &[SampleId]) -> MethodsPlsDataset {
             let rows = ids.iter().map(|id| &self.rows[id]).collect::<Vec<_>>();
+            let masks = self
+                .masked
+                .as_ref()
+                .map(|masked| ids.iter().map(|id| vec![id != masked]).collect::<Vec<_>>());
             MethodsPlsDataset {
-                y_validity_masks: None,
+                y_validity_masks: masks,
                 sample_ids: ids.to_vec(),
                 x: MethodsPlsMatrix {
                     values: rows.iter().flat_map(|(x, _)| x.clone()).collect(),
@@ -559,7 +570,17 @@ mod tests {
                     cols: rows[0].0.len(),
                 },
                 y: Some(MethodsPlsMatrix {
-                    values: rows.iter().map(|(_, y)| *y).collect(),
+                    values: ids
+                        .iter()
+                        .zip(&rows)
+                        .map(|(id, (_, y))| {
+                            if Some(id) == self.masked.as_ref() {
+                                0.0
+                            } else {
+                                *y
+                            }
+                        })
+                        .collect(),
                     rows: rows.len(),
                     cols: 1,
                 }),
@@ -652,6 +673,7 @@ mod tests {
             .collect();
         Provider {
             rows,
+            masked: None,
             views: Mutex::default(),
             next: AtomicU64::new(0),
         }
@@ -754,25 +776,19 @@ mod tests {
                     .all(|id| outer.train_sample_ids.contains(id)));
             }
         }
-        for scope in &outcome.scopes {
-            let fold = outcome
-                .outer_fold_set
-                .folds
+        for (scope, fold) in outcome.scopes.iter().zip(&outcome.outer_fold_set.folds) {
+            assert_eq!(scope.outer_fold_id, fold.fold_id);
+            for row in outcome
+                .oof
                 .iter()
-                .find(|f| f.fold_id == scope.outer_fold_id)
-                .unwrap();
-            let mean = fold
-                .train_sample_ids
-                .iter()
-                .map(|id| provider.rows[id].1)
-                .sum::<f64>()
-                / fold.train_sample_ids.len() as f64;
-            assert!((scope.train_mean - mean).abs() < 1e-12);
+                .filter(|r| r.outer_fold_id == fold.fold_id)
+            {
+                assert_eq!(row.y_true, provider.rows[&row.sample_id].1);
+            }
             // Two latent directions: one component is not enough.
             assert_ne!(scope.decision.selected_candidate_id, "n_components:001");
         }
         assert!(outcome.model_metrics["r2"] > 0.95);
-        assert!(outcome.model_metrics["rmse"] < outcome.train_mean_metrics["rmse"]);
     }
 
     #[test]
@@ -787,7 +803,6 @@ mod tests {
         let changed = run(&provider(&shifted));
         assert_eq!(base.scopes[0].candidates, changed.scopes[0].candidates);
         assert_eq!(base.scopes[0].decision, changed.scopes[0].decision);
-        assert_eq!(base.scopes[0].train_mean, changed.scopes[0].train_mean);
         let prediction = |o: &NestedSelectionOutcome, id: &SampleId| {
             o.oof
                 .iter()
@@ -817,5 +832,29 @@ mod tests {
         request.inner = GroupKFoldSpec { n_splits: 9 };
         assert!(execute_nested_selection(&request, &registry, &controllers, &provider).is_err());
         assert!(provider.views.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn masked_references_are_refused_rather_than_read_as_values() {
+        let mut provider = provider(&[]);
+        provider.masked = Some(sample(4));
+        let runtime = runtime();
+        let registry = derive_host_controller_registry(
+            &methods_estimator_host_controller_specs(&runtime).unwrap(),
+        )
+        .unwrap();
+        let mut controllers = RuntimeControllerRegistry::new();
+        register_methods_estimator_controllers(&mut controllers, runtime).unwrap();
+        let error = execute_nested_selection(&request(), &registry, &controllers, &provider)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("unsupported for nested selection"),
+            "{error}"
+        );
+        assert!(
+            error.contains("outer fold `fold0` candidate `n_components:001`"),
+            "{error}"
+        );
     }
 }

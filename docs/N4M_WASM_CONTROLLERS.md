@@ -159,3 +159,8 @@ Its bridge uses `export` (return byte values), `hydrate` (return `HandleRef`),
 and `release` (return `None`). Existing calls without RAW artifacts keep the
 optional callback default. RAW coverage, content hashes and sizes are checked
 generically in the core, even when the native Methods feature is disabled.
+
+## Nested grouped selection
+
+`execute_nested_selection_json(requestJson, manifestsJson, envelopeJson, controller.callback)` runs `dag_ml_core::execute_nested_selection` in the browser. The request names a graph template, a campaign template with data bindings, the target model node, the finite candidate list (parameter patches of that node), the sample groups, the outer and inner `GroupKFold` counts and the selection metric. DAG-ML builds every fold set first, runs the inner FIT_CV of each candidate, selects from pooled inner OOF only, then fits the winner on each outer training pool and predicts only its validation rows. The controller resolves rows by the task's sample IDs, as for host HPO. The outcome carries the fold sets, candidate scores, decisions and one OOF row per sample. Masked references are refused in version 1. `scripts/test_wasm_nested_selection.mjs` qualifies it with Methods PLS.
+
