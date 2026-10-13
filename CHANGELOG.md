@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Add `nested_selection` (`execute_nested_selection`): nested grouped selection over a declared, finite candidate list for one single-target regression node. The coordinator builds the outer `GroupKFoldSpec` fold set and one `GroupKFold` inner set inside each outer training pool, all before any controller call. It runs the FIT_CV of every candidate on the inner folds through the ordinary scheduler and selects with `select_candidate` on pooled inner-OOF MSE, RMSE or MAE (ties go to the smallest candidate ID). The selected candidate is then fitted on the outer training pool, through a one-fold resampled FIT_CV that predicts only that fold's validation rows. The outcome returns the fold sets, per-scope candidate scores and decisions, one OOF row per sample with the fold-train target mean as a reference prediction, and pooled MSE, RMSE, MAE and R² of both.
+- Outer validation targets never reach their inner selection. Native tests use the Methods role controllers: no fit or prediction view of an inner fold leaves its outer training pool, the fold-train mean is checked, changing outer-validation targets leaves that scope's scores, decision and predictions unchanged, and infeasible plans are refused before any data request. Requested by nirs4all-preflight (`validation_probe.v1`). No contract schema, C ABI, Python or WASM surface changes.
+
 ## 0.3.41
 
 - Reduce repeated built-in metric construction and validation during native scoring by reusing a validated immutable task.
