@@ -34,6 +34,7 @@ use dag_ml_core::{
 mod host_hpo;
 mod initial_refit;
 mod local_implementation;
+mod nested_selection;
 mod training;
 
 pub use host_hpo::{
@@ -42,6 +43,7 @@ pub use host_hpo::{
 };
 pub use initial_refit::{execute_initial_full_refit_json, replay_initial_full_refit_json};
 pub use local_implementation::{loss_execution_attestation_json, LocalImplementationRegistry};
+pub use nested_selection::execute_nested_selection_json;
 pub use training::{
     attach_predict_cohort_to_envelope_json, build_archive_v2_native_portable_payloads_json,
     execute_training_json, replay_training_package_json, sample_relation_set_fingerprint_json,

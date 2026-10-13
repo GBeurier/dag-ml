@@ -36,11 +36,17 @@ node scripts/smoke_wasm_n4m_hpo.mjs \
 node scripts/test_wasm_n4m_controller.mjs \
   "$PWD/target/wasm/dag-ml-wasm" \
   "$PWD/external/nirs4all-methods/bindings/js/dist"
+node scripts/test_wasm_nested_selection.mjs \
+  "$PWD/target/wasm/dag-ml-wasm" \
+  "$PWD/external/nirs4all-methods/bindings/js/dist"
 node scripts/smoke_wasm_multimodal_methods_hpo.mjs \
   "$PWD/target/wasm/dag-ml-wasm" \
   "$PWD/external/nirs4all-methods/bindings/js/dist" \
   "$QUALIFICATION_DIR/four-source-receipt.json"
 node scripts/test_wasm_n4m_controller.mjs \
+  "$PWD/target/wasm-web/dag-ml-wasm" \
+  "$PWD/external/nirs4all-methods/bindings/js/dist"
+node scripts/test_wasm_nested_selection.mjs \
   "$PWD/target/wasm-web/dag-ml-wasm" \
   "$PWD/external/nirs4all-methods/bindings/js/dist"
 node scripts/smoke_wasm_multimodal_methods_hpo.mjs \
