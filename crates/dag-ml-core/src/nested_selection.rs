@@ -103,7 +103,8 @@ pub struct NestedSelectionOutcome {
     pub scopes: Vec<NestedSelectionScope>,
     /// Sorted by sample id.
     pub oof: Vec<NestedOofRow>,
-    /// Pooled outer OOF metrics (`mse`, `rmse`, `mae`, `r2`) of the selected models.
+    /// Pooled outer OOF metrics (`mse`, `rmse`, `mae`) of the selected
+    /// models, computed by the metrics provider.
     pub model_metrics: BTreeMap<String, f64>,
     /// Controller FIT_CV invocations of the target node.
     pub n_fits: usize,
@@ -265,59 +266,102 @@ fn fit_cv(
     Ok(rows)
 }
 
-fn score(
-    ids: &[SampleId],
-    predictions: &[f64],
-    targets: &BTreeMap<SampleId, f64>,
-    node: &NodeId,
-    metrics: &[RegressionMetricKind],
-) -> Result<BTreeMap<String, f64>> {
-    let block = PredictionBlock {
-        prediction_id: None,
-        producer_node: node.clone(),
-        producer_port: None,
-        partition: PredictionPartition::Validation,
-        fold_id: None,
-        sample_ids: ids.to_vec(),
-        values: predictions.iter().map(|v| vec![*v]).collect(),
-        target_names: vec!["y".into()],
-    };
-    let target_block = RegressionTargetBlock {
-        level: PredictionLevel::Sample,
-        unit_ids: ids.iter().cloned().map(PredictionUnitId::Sample).collect(),
-        values: ids
-            .iter()
-            .map(|id| {
-                targets
-                    .get(id)
-                    .map(|v| vec![*v])
-                    .ok_or_else(|| invalid(format!("sample `{id}` has no target")))
-            })
-            .collect::<Result<_>>()?,
-        validity_masks: None,
-        target_names: vec!["y".into()],
-    };
-    let report = score_regression_prediction_block(&block, &target_block, metrics)?;
-    metrics
-        .iter()
-        .map(|kind| {
-            let name = kind.name().to_string();
-            let value = report
-                .metrics
-                .get(&name)
-                .copied()
-                .ok_or_else(|| invalid(format!("metric `{name}` was not reported")))?;
-            Ok((name, value))
-        })
-        .collect()
+/// Host computation of the regression metrics that decide the selection and
+/// summarize the outer OOF. DAG-ML keeps the plans, the comparison of the
+/// candidates and the tie rule; a host may route the arithmetic to its own
+/// numerical library (for example Methods on CPU or a WASM callback).
+pub trait NestedSelectionMetrics {
+    /// `metric` is `mse`, `rmse` or `mae` of rows aligned by position; the
+    /// value must be finite and nonnegative.
+    fn regression_metric(
+        &self,
+        metric: RegressionMetricKind,
+        y_true: &[f64],
+        y_pred: &[f64],
+    ) -> Result<f64>;
 }
 
-/// Execute a nested grouped selection; see the module documentation.
+/// The DAG-ML metric registry, used when no host metrics are supplied.
+pub struct BuiltinNestedSelectionMetrics;
+
+impl NestedSelectionMetrics for BuiltinNestedSelectionMetrics {
+    fn regression_metric(
+        &self,
+        metric: RegressionMetricKind,
+        y_true: &[f64],
+        y_pred: &[f64],
+    ) -> Result<f64> {
+        let ids = (0..y_true.len())
+            .map(|i| SampleId::new(format!("row:{i:09}")))
+            .collect::<Result<Vec<_>>>()?;
+        let node = NodeId::new("model:nested_selection")?;
+        let block = PredictionBlock {
+            prediction_id: None,
+            producer_node: node,
+            producer_port: None,
+            partition: PredictionPartition::Validation,
+            fold_id: None,
+            sample_ids: ids.clone(),
+            values: y_pred.iter().map(|v| vec![*v]).collect(),
+            target_names: vec!["y".into()],
+        };
+        let target_block = RegressionTargetBlock {
+            level: PredictionLevel::Sample,
+            unit_ids: ids.into_iter().map(PredictionUnitId::Sample).collect(),
+            values: y_true.iter().map(|v| vec![*v]).collect(),
+            validity_masks: None,
+            target_names: vec!["y".into()],
+        };
+        let report = score_regression_prediction_block(&block, &target_block, &[metric])?;
+        report
+            .metrics
+            .get(metric.name())
+            .copied()
+            .ok_or_else(|| invalid(format!("metric `{}` was not reported", metric.name())))
+    }
+}
+
+/// Score rows keyed by sample through the metrics provider.
+fn score(
+    metrics: &dyn NestedSelectionMetrics,
+    kind: RegressionMetricKind,
+    rows: impl Iterator<Item = (f64, f64)>,
+) -> Result<f64> {
+    let (y_true, y_pred): (Vec<f64>, Vec<f64>) = rows.unzip();
+    let value = metrics.regression_metric(kind, &y_true, &y_pred)?;
+    if !(value.is_finite() && value >= 0.0) {
+        return Err(invalid(format!(
+            "metric `{}` must be finite and nonnegative, got {value}",
+            kind.name()
+        )));
+    }
+    Ok(value)
+}
+
+/// Execute a nested grouped selection with the DAG-ML metric registry.
 pub fn execute_nested_selection(
     request: &NestedSelectionRequest,
     registry: &ControllerRegistry,
     controllers: &RuntimeControllerRegistry,
     provider: &dyn RuntimeDataProvider,
+) -> Result<NestedSelectionOutcome> {
+    execute_nested_selection_with_metrics(
+        request,
+        registry,
+        controllers,
+        provider,
+        &BuiltinNestedSelectionMetrics,
+    )
+}
+
+/// Execute a nested grouped selection; see the module documentation. The
+/// host `metrics` computes every selection and pooled metric.
+pub fn execute_nested_selection_with_metrics(
+    request: &NestedSelectionRequest,
+    registry: &ControllerRegistry,
+    controllers: &RuntimeControllerRegistry,
+    provider: &dyn RuntimeDataProvider,
+    metrics: &dyn NestedSelectionMetrics,
 ) -> Result<NestedSelectionOutcome> {
     request.validate()?;
     let outer = request
@@ -382,24 +426,18 @@ pub fn execute_nested_selection(
                     fold.fold_id
                 )));
             }
-            let ids = rows.predictions.keys().cloned().collect::<Vec<_>>();
-            let values = rows
-                .predictions
-                .values()
-                .map(|(_, v)| *v)
-                .collect::<Vec<_>>();
-            let metrics = score(
-                &ids,
-                &values,
-                &rows.targets,
-                &request.target_node,
-                &[request.selection_metric],
-            )?;
-            let value = metrics[&metric_name];
+            let value = score(
+                metrics,
+                request.selection_metric,
+                rows.predictions
+                    .iter()
+                    .map(|(id, (_, prediction))| (rows.targets[id], *prediction)),
+            )
+            .map_err(|e| in_scope(e, &scope))?;
             candidates.push(NestedCandidateEvaluation {
                 candidate_id: candidate.candidate_id.clone(),
                 score: value,
-                n_samples: ids.len(),
+                n_samples: rows.predictions.len(),
             });
             scores.push(CandidateScore {
                 candidate_id: candidate.candidate_id.clone(),
@@ -480,24 +518,19 @@ pub fn execute_nested_selection(
     {
         return Err(invalid("outer OOF must validate every sample exactly once"));
     }
-    let ids = oof.iter().map(|r| r.sample_id.clone()).collect::<Vec<_>>();
-    let targets = oof
-        .iter()
-        .map(|r| (r.sample_id.clone(), r.y_true))
-        .collect::<BTreeMap<_, _>>();
-    let kinds = [
+    let model_metrics = [
         RegressionMetricKind::Mse,
         RegressionMetricKind::Rmse,
         RegressionMetricKind::Mae,
-        RegressionMetricKind::R2,
-    ];
-    let model_metrics = score(
-        &ids,
-        &oof.iter().map(|r| r.prediction).collect::<Vec<_>>(),
-        &targets,
-        &request.target_node,
-        &kinds,
-    )?;
+    ]
+    .into_iter()
+    .map(|kind| {
+        Ok((
+            kind.name().to_string(),
+            score(metrics, kind, oof.iter().map(|r| (r.y_true, r.prediction)))?,
+        ))
+    })
+    .collect::<Result<BTreeMap<_, _>>>()?;
     Ok(NestedSelectionOutcome {
         schema_version: NESTED_SELECTION_SCHEMA_VERSION,
         outer_fold_set: outer,
@@ -788,7 +821,7 @@ mod tests {
             // Two latent directions: one component is not enough.
             assert_ne!(scope.decision.selected_candidate_id, "n_components:001");
         }
-        assert!(outcome.model_metrics["r2"] > 0.95);
+        assert!(outcome.model_metrics["rmse"] < 0.05);
     }
 
     #[test]
@@ -856,5 +889,55 @@ mod tests {
             error.contains("outer fold `fold0` candidate `n_components:001`"),
             "{error}"
         );
+    }
+
+    /// Host metrics that count their calls and score every candidate alike.
+    struct Constant(Mutex<usize>);
+
+    impl NestedSelectionMetrics for Constant {
+        fn regression_metric(
+            &self,
+            _: RegressionMetricKind,
+            y_true: &[f64],
+            y_pred: &[f64],
+        ) -> Result<f64> {
+            assert_eq!(y_true.len(), y_pred.len());
+            *self.0.lock().unwrap() += 1;
+            Ok(1.0)
+        }
+    }
+
+    #[test]
+    fn host_metrics_decide_while_dag_ml_keeps_the_tie_rule() {
+        let provider = provider(&[]);
+        let runtime = runtime();
+        let registry = derive_host_controller_registry(
+            &methods_estimator_host_controller_specs(&runtime).unwrap(),
+        )
+        .unwrap();
+        let mut controllers = RuntimeControllerRegistry::new();
+        register_methods_estimator_controllers(&mut controllers, runtime).unwrap();
+        let metrics = Constant(Mutex::new(0));
+        let outcome = execute_nested_selection_with_metrics(
+            &request(),
+            &registry,
+            &controllers,
+            &provider,
+            &metrics,
+        )
+        .unwrap();
+        // 5 outer folds x 3 candidates, then mse, rmse and mae of the OOF.
+        assert_eq!(*metrics.0.lock().unwrap(), 5 * 3 + 3);
+        for scope in &outcome.scopes {
+            assert!(scope.candidates.iter().all(|c| c.score == 1.0));
+            assert_eq!(scope.decision.selected_candidate_id, "n_components:001");
+        }
+        assert_eq!(outcome.model_metrics["rmse"], 1.0);
+        // The default provider selects two components on the same data.
+        let builtin = run(&provider);
+        assert!(builtin
+            .scopes
+            .iter()
+            .all(|s| s.decision.selected_candidate_id != "n_components:001"));
     }
 }

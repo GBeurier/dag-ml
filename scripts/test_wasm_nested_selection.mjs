@@ -69,7 +69,7 @@ const request = {
 };
 const dense = rows => ({ data: Float64Array.from(rows.flat()), rows: rows.length, cols: rows[0].length });
 
-function run(y) {
+function run(y, metrics) {
   const views = [];
   const controller = new N4mWasmRegressionController({
     methods, operators: { [nodeId]: { type: method } },
@@ -82,7 +82,8 @@ function run(y) {
   try {
     const manifests = [controller.manifest(dagMl)];
     const outcome = JSON.parse(dagMl.execute_nested_selection_json(
-      JSON.stringify(request), JSON.stringify(manifests), JSON.stringify(envelope), controller.callback));
+      JSON.stringify(request), JSON.stringify(manifests), JSON.stringify(envelope), controller.callback,
+      metrics));
     return { outcome, views };
   } finally { controller.close(); }
 }
@@ -121,7 +122,25 @@ for (const scope of outcome.scopes) {
     });
   } finally { model.dispose(); }
 }
-assert.ok(outcome.model_metrics.r2 > 0.95);
+assert.ok(outcome.model_metrics.rmse < 0.05 && !("r2" in outcome.model_metrics));
+
+// Host metrics decide the selection (Methods RMSE here); DAG-ML keeps the
+// comparison and the tie rule (constant metrics tie to the smallest ID).
+if (methods.statsRegressionScores) {
+  let calls = 0;
+  const viaMethods = run(y0, (name, payload) => {
+    calls++;
+    const { y_true, y_pred } = JSON.parse(payload);
+    const s = methods.statsRegressionScores(Float64Array.from(y_true), Float64Array.from(y_pred));
+    return name === "mse" ? s.rmse * s.rmse : name === "rmse" ? s.rmse : s.mae;
+  }).outcome;
+  assert.equal(calls, 5 * 3 + 3);
+  viaMethods.scopes.forEach((scope, i) =>
+    assert.equal(scope.decision.selected_candidate_id, outcome.scopes[i].decision.selected_candidate_id));
+}
+const tied = run(y0, () => 1).outcome;
+assert.ok(tied.scopes.every(scope => scope.decision.selected_candidate_id === "n_components:001"));
+assert.throws(() => run(y0, () => -1), /finite and nonnegative/);
 
 // Outer validation targets never reach their own inner selection.
 const shifted = new Map(y0);
@@ -137,7 +156,7 @@ const refusal = new N4mWasmRegressionController({ methods, operators: { [nodeId]
 try {
   assert.throws(() => dagMl.execute_nested_selection_json(
     JSON.stringify({ ...request, outer: { n_splits: 11 } }), JSON.stringify([refusal.manifest(dagMl)]),
-    JSON.stringify(envelope), refusal.callback), /GroupKFold|exceeds/);
+    JSON.stringify(envelope), refusal.callback, undefined), /GroupKFold|exceeds/);
 } finally { refusal.close(); }
 assert.equal(calls, 0);
 fs.writeSync(1, "WASM nested selection: 5 outer x 3 inner folds, real Methods fits, parity with direct fits\n");
