@@ -256,7 +256,7 @@
     },
     {
       "path": "crates/dag-ml-wasm/src/lib.rs",
-      "sha256": "bf2ba2282d2d55ab6a5208c69865989c3240ec2b13d0e332d7e1c898b0a2f64a",
+      "sha256": "e40c68c83c90b084c139f153b40c4e40beda25c733b759959718666b175231f8",
       "kind": "wasm_binding"
     },
     {
@@ -669,5 +669,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "1ff70955cefa9e2ed0e310e781b406f66d8e975b83c00864822132ef68cf2a21"
+  "pack_checksum": "5c6b01fd06ed139a4ca2cd7d4da5083f7575f80aa3256849aff731e9dafb15ed"
 }
