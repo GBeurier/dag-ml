@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.42 - 2026-10-20
 
 - Add `nested_selection` (`execute_nested_selection`): nested grouped selection over a declared, finite candidate list for one single-target regression node. The coordinator first builds every fold set: the outer `GroupKFoldSpec` set, and one `GroupKFold` inner set inside each outer training pool. Only then does it call a controller.
   - It runs the FIT_CV of every candidate on the inner folds through the ordinary scheduler. It selects with `select_candidate` on pooled inner-OOF MSE, RMSE or MAE; ties go to the smallest candidate ID.
@@ -10,6 +10,7 @@
   - Requested by nirs4all-preflight (`validation_probe.v1`).
 - WASM: `execute_nested_selection_json(request, trusted manifests, envelope, controller callback, metrics callback?)` runs the same coordinator with JavaScript controllers in the same worker, for example `N4mWasmRegressionController` over Methods `RolePipeline`. `scripts/test_wasm_nested_selection.mjs` covers it on the Node and web packages with real Methods fits. It checks grouped folds, inner views confined to the outer training pool, each outer prediction equal to a direct fit of the selected recipe (1e-12), invariance of a scope to its outer-validation targets, and refusal before any controller call.
 - Native tests use the Methods role controllers. They check that inner views never leave the outer training pool, that targets are carried through, that outer-validation targets cannot change their scope, that infeasible plans are refused before any data request, and that masked references are refused. No contract schema, C ABI or Python surface changes.
+- Methods references move to v1.3.7 (`09495e52`, ABI 2.20): the WASM candidate workflow default ref and the local `methods-optimizer` integration helper documentation. The published `n4m` 0.4.0 Rust binding and the `multimodal` extra floor are unchanged.
 
 ## 0.3.41
 

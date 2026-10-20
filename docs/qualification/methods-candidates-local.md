@@ -7,7 +7,7 @@ checks run locally with the existing scripts and assertions below.
 
 The build smokes compare the loaded Methods version's project and ABI components
 with the checked-out header and package metadata. The version string includes
-`+abi.`: the WASM default ref reports `1.2.1+abi.2.15.0`, while the historical
+`+abi.`: the WASM default ref (v1.3.7) reports `1.3.7+abi.2.20.0`, while the historical
 Octave library reports `1.2.1+abi.2.14.0`. Octave MEX files live in `+n4m` and use
 qualified calls such as `n4m.n4m_version_mex()`. Both role and version MEX outputs
 must be present before the build artifact is uploaded.
