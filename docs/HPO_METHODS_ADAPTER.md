@@ -223,8 +223,8 @@ controller; there is no `PATH`, current-directory, sibling-checkout, or
 legacy fallback.
 
 The local integration helper activates the published feature and that
-compiler-only test selector. It uses the Methods v1.3.2 source commit
-`dcc570b3647f77cf0428dd346078f442ed5cd032` (ABI 2.17) to build the explicit
+compiler-only test selector. It uses the Methods v1.3.7 source commit
+`09495e52bc1314612025f0fd1911b4811eb113e6` (ABI 2.20) to build the explicit
 runtime file, but resolves the Rust binding from crates.io. The generic
 estimator tests read `parity/fixtures/estimator_roles_n4me.json` from that
 checkout (`N4M_ESTIMATOR_ROLES_FIXTURE`, defaulting to
@@ -232,7 +232,7 @@ checkout (`N4M_ESTIMATOR_ROLES_FIXTURE`, defaulting to
 the helper from the workspace root:
 
 ```bash
-METHODS_SHA=dcc570b3647f77cf0428dd346078f442ed5cd032
+METHODS_SHA=09495e52bc1314612025f0fd1911b4811eb113e6
 git -C /absolute/path/to/nirs4all-methods fetch --depth=1 origin "$METHODS_SHA"
 git -C /absolute/path/to/nirs4all-methods checkout --detach "$METHODS_SHA"
 make -C /absolute/path/to/nirs4all-methods build PRESET=dev-release
