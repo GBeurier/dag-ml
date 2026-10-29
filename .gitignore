@@ -32,3 +32,7 @@ docs/STUDIO_LITE_WASM_GAPS.md
 docs/TEST_PLAN.md
 docs/TOC.md
 /tools/historical-core-oracle/target/
+
+# Native extensions are built and qualified from wheel artifacts.
+/crates/dag-ml-py/python/dag_ml/_dag_ml*.so
+/crates/dag-ml-py/python/dag_ml/_dag_ml*.pyd
