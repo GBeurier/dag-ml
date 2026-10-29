@@ -258,6 +258,8 @@ pub(crate) fn ensure_aggregation_controller_capability(
 
 #[derive(Clone, Debug)]
 pub struct RunContext {
+    pub(crate) target_domain_policy: Option<crate::target_domain::TargetDomainPolicy>,
+    pub(crate) target_domain_folds: BTreeSet<FoldId>,
     executed_variants: BTreeSet<VariantId>,
     run_resources: BTreeMap<ControllerId, std::sync::Arc<dyn std::fmt::Debug + Send + Sync>>,
     pub run_id: RunId,
@@ -407,6 +409,8 @@ impl RunContext {
     pub fn new(run_id: RunId, root_seed: Option<u64>) -> Self {
         Self {
             executed_variants: BTreeSet::new(),
+            target_domain_policy: None,
+            target_domain_folds: BTreeSet::new(),
             run_resources: BTreeMap::new(),
             run_id,
             root_seed,
@@ -438,6 +442,14 @@ impl RunContext {
         plan: &ExecutionPlan,
         data_provider: &dyn RuntimeDataProvider,
     ) -> Result<()> {
+        self.target_domain_policy = crate::target_domain::TargetDomainPolicy::from_metadata(
+            &plan.graph_plan.graph.metadata,
+        )?;
+        self.target_domain_folds = plan
+            .fold_set
+            .as_ref()
+            .map(|set| set.folds.iter().map(|fold| fold.fold_id.clone()).collect())
+            .unwrap_or_default();
         self.global_oof_aggregation = global_oof_aggregation_specs(plan, data_provider)?;
         Ok(())
     }
@@ -494,6 +506,15 @@ impl RunContext {
         classification_producers: &BTreeSet<NodeId>,
     ) -> Result<()> {
         self.validate_ensemble_variant_scope()?;
+        if let Some(policy) = &self.target_domain_policy {
+            let report = crate::target_domain::macro_fold_report(
+                &self.score_collector,
+                policy,
+                &self.target_domain_folds,
+            )?;
+            self.score_collector.push(report);
+            return Ok(());
+        }
         let scoring_blocks = self
             .prediction_store
             .blocks()
@@ -600,6 +621,9 @@ impl RunContext {
         &mut self,
         selection_metric: RegressionMetricKind,
     ) -> Result<()> {
+        if self.target_domain_policy.is_some() {
+            return Ok(());
+        }
         let allowed = |fold: &Option<FoldId>| {
             self.validation_scoring_fold_ids
                 .as_ref()
@@ -643,6 +667,9 @@ impl RunContext {
         &mut self,
         selection_metric: RegressionMetricKind,
     ) -> Result<()> {
+        if self.target_domain_policy.is_some() {
+            return Ok(());
+        }
         let allowed = self.validation_scoring_fold_ids.as_ref();
         let blocks = self
             .prediction_store
@@ -1274,10 +1301,14 @@ where
                                 || report.grouping_key
                                     == variant_plan.campaign.aggregation_policy.grouping_key)
                     })
-                    && report
-                        .fold_id
-                        .as_ref()
-                        .is_some_and(|fold| fold.as_str() == "avg")
+                    && report.fold_id.as_ref().is_some_and(|fold| {
+                        fold.as_str()
+                            == if ctx.target_domain_policy.is_some() {
+                                "macro"
+                            } else {
+                                "avg"
+                            }
+                    })
             })
             .collect::<Vec<_>>();
         if let Some(models) = pooled_operator_models {
@@ -1318,6 +1349,9 @@ where
             report.variant_id = Some(variant.variant_id.clone());
             report.variant_label = variant_label.clone();
             variant_validation_reports.push(report);
+        }
+        if let Some(policy) = &ctx.target_domain_policy {
+            crate::target_domain::validate_candidate_domains(&variant_validation_reports, policy)?;
         }
     }
 

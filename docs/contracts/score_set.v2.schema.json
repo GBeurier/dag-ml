@@ -21,6 +21,7 @@
       "additionalProperties": false,
       "required": ["producer_node", "producer_port", "partition", "level", "row_count", "target_width", "metrics"],
       "properties": {
+        "target_domain": { "anyOf": [{ "$ref": "https://github.com/GBeurier/dag-ml/schemas/target_domain.v1.schema.json" }, { "type": "null" }] },
         "prediction_id": { "type": ["string", "null"] },
         "variant_id": { "type": ["string", "null"] },
         "variant_label": { "type": ["string", "null"] },

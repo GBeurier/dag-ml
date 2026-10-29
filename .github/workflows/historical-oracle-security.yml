@@ -1,0 +1,19 @@
+name: Historical Core oracle security (separate legacy graph)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  historical-audit:
+    name: Exact Core 0.4.3 legacy audit (known findings remain visible)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: Audit complete immutable historical dependency graph
+        run: cargo audit --deny warnings --file tools/historical-core-oracle/Cargo.lock

@@ -26,7 +26,7 @@
       "enum": ["controller:methods.pls", "controller:methods.ridge"]
     },
     "format": { "const": "N4MM" },
-    "format_version": { "enum": [1, 2] },
+    "format_version": { "enum": [1, 2, 3] },
     "writer_abi": {
       "type": "object",
       "additionalProperties": false,
@@ -55,6 +55,10 @@
   },
   "allOf": [
     {
+      "if": { "properties": { "format_version": { "const": 3 } } },
+      "then": { "properties": { "writer_abi": { "properties": { "minor": { "minimum": 20 } } } } }
+    },
+    {
       "if": { "properties": { "owner_controller": { "const": "controller:methods.pls" } } },
       "then": {
         "properties": {
@@ -66,7 +70,7 @@
         "oneOf": [
           {
             "properties": {
-              "format_version": { "const": 1 },
+              "format_version": { "enum": [1, 3] },
               "capabilities": { "enum": [1, 3, 5, 7] }
             },
             "not": { "required": ["pipeline"] }
@@ -74,7 +78,7 @@
           {
             "required": ["pipeline"],
             "properties": {
-              "format_version": { "const": 2 },
+              "format_version": { "enum": [2, 3] },
               "capabilities": { "enum": [9, 11, 13, 15] }
             }
           }

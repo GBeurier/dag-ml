@@ -18,7 +18,7 @@ members = [
 # mirrors `dag-ml-data`'s excluded `dag-ml-data-r` and the sibling repos'
 # excluded `bindings/python`. Build/test it standalone with
 # `cargo test --manifest-path crates/dag-ml-py/Cargo.toml`.
-exclude = ["crates/dag-ml-py"]
+exclude = ["crates/dag-ml-py", "tools/historical-core-oracle"]
 
 [workspace.package]
 version = "0.3.42"

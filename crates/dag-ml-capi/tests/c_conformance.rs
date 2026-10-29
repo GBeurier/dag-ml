@@ -2425,6 +2425,7 @@ fn node_task_result_fixture() -> (NodeTask, NodeResult) {
             metrics: BTreeMap::new(),
             loss_attestations: Vec::new(),
             early_stopping_records: Vec::new(),
+            target_domain: None,
         },
     };
     result.validate_for_task(&task).unwrap();

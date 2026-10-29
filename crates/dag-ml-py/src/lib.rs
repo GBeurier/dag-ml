@@ -712,8 +712,12 @@ fn canonical_operator_variant_value_json(steps_json: &str) -> PyResult<String> {
     serde_json::to_string(&canonical).map_err(py_serde_error)
 }
 
+#[pyfunction]
+fn fold_local_target_domains_schema_version() -> u32 { 1 }
+
 #[pymodule]
 fn _dag_ml(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_function(wrap_pyfunction!(fold_local_target_domains_schema_version, module)?)?;
     module.add("DagMlError", py.get_type::<DagMlError>())?;
     module.add(
         "DagMlValidationError",
@@ -959,6 +963,8 @@ fn contract_manifest() -> serde_json::Value {
         "surface": "json-contract-bindings",
         "contracts": [
             {"id": "graph_spec", "version": 1},
+            {"id": "target_domain_policy", "version": 1},
+            {"id": "target_domain", "version": 1},
             {"id": "campaign_spec", "version": 1},
             {"id": "controller_manifest", "version": 1},
             {"id": "pipeline_dsl", "version": 1},
@@ -1015,6 +1021,7 @@ fn contract_manifest() -> serde_json::Value {
         },
         "python_exports": [
             "version",
+            "fold_local_target_domains_schema_version",
             "configure_methods_runtime",
             "contract_manifest_json",
             "read_native_results_v2_json",

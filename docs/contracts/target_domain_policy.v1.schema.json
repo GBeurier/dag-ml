@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GBeurier/dag-ml/schemas/target_domain_policy.v1.schema.json",
+  "title": "Fold local macro classification policy v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "mode",
+    "node_id",
+    "recipe_fingerprint",
+    "class_labels"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "mode": {
+      "const": "fold_local_macro"
+    },
+    "node_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "recipe_fingerprint": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "class_labels": {
+      "type": "array",
+      "minItems": 2,
+      "uniqueItems": true,
+      "items": {
+        "type": "number"
+      }
+    }
+  }
+}

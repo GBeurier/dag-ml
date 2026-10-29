@@ -84,3 +84,15 @@ For the 0.3.x RC release window:
    worker pools.
 3. Raise public Rust documentation coverage toward the ADR target in follow-up
    hardening.
+
+
+## Rust support and compression security (local candidate)
+
+The pure control runtime, C ABI, Arrow IPC, WASM and validation CLI support Rust
+1.85. Results storage/reading and its Python binding require Rust 1.88 to use
+Arrow/Parquet 60 with patched ZSTD dependencies. ZSTD decoding remains supported;
+it is not silently removed to make a security audit pass. Native Results JSON,
+Parquet columns, prediction identities and public binding signatures are unchanged.
+The exact historical Core 0.4.3 archive conformance oracle is non-publishable and
+runs through `tools/historical-core-oracle` with trusted generated fixtures only.
+Its legacy security audit is separate from, and does not qualify, the runtime graph.

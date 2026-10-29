@@ -4925,6 +4925,7 @@ impl TrainingOutcome {
 
         self.validate_refit()?;
         self.score_set.validate()?;
+        crate::target_domain::validate_domain_outcome(self)?;
         self.validate_oof_averages()?;
         self.validate_ensemble_averages()?;
         self.validate_version_family()?;
@@ -5460,10 +5461,20 @@ impl TrainingOutcome {
                 && (report.level != PredictionLevel::Group
                     || report.grouping_key
                         == self.effective_plan.campaign.aggregation_policy.grouping_key)
-                && report
-                    .fold_id
-                    .as_ref()
-                    .is_some_and(|fold| fold.as_str() == "avg")
+                && report.fold_id.as_ref().is_some_and(|fold| {
+                    fold.as_str()
+                        == if self
+                            .effective_plan
+                            .graph_plan
+                            .graph
+                            .metadata
+                            .contains_key(crate::target_domain::TARGET_DOMAIN_POLICY_KEY)
+                        {
+                            "macro"
+                        } else {
+                            "avg"
+                        }
+                })
         }) {
             let variant_id = report.variant_id.clone().ok_or_else(|| {
                 DagMlError::CampaignValidation(
@@ -7171,6 +7182,7 @@ mod tests {
     #[test]
     fn auxiliary_report_levels_do_not_override_selection_target_level() {
         let report = |producer: &str, level| crate::metrics::RegressionMetricReport {
+            target_domain: None,
             prediction_id: Some(format!("prediction:{producer}")),
             producer_node: NodeId::new(producer).unwrap(),
             producer_port: None,

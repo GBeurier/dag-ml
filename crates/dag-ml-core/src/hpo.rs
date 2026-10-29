@@ -25,9 +25,11 @@ pub const N4MOPT_CHECKPOINT_SCHEMA_VERSION: u32 = 1;
 pub const N4MOPT_ARTIFACT_KIND: &str = "n4m_optimizer_checkpoint";
 pub const N4MOPT_FORMAT: &str = "N4MOPT";
 pub const METHODS_ABI_MAJOR: u32 = 2;
-pub const METHODS_RUNTIME_ABI_MINOR: u32 = 14;
+pub const METHODS_RUNTIME_ABI_MINOR: u32 = 20;
 pub const METHODS_PLS_N4MM_MIN_ABI_MINOR: u32 = 0;
 pub const METHODS_PIPELINE_N4MM_MIN_ABI_MINOR: u32 = 5;
+/// N4MM v3 records component resolution and requires the Methods 2.20 reader.
+pub const METHODS_COMPONENT_RESOLUTION_N4MM_MIN_ABI_MINOR: u32 = 20;
 pub const METHODS_N4MOPT_MIN_ABI_MINOR: u32 = 2;
 pub const METHODS_IMPORTED_LINEAR_N4MM_MIN_ABI_MINOR: u32 = 3;
 pub const METHODS_N4ME_MIN_ABI_MINOR: u32 = 13;
@@ -62,6 +64,12 @@ pub fn methods_n4mm_abi_requirement(
     let expected_minor = match artifact.controller_id.as_str() {
         METHODS_PLS_CONTROLLER_ID => Some(
             if artifact
+                .native_predictor_descriptor
+                .as_ref()
+                .is_some_and(|descriptor| descriptor.format_version == 3)
+            {
+                METHODS_COMPONENT_RESOLUTION_N4MM_MIN_ABI_MINOR
+            } else if artifact
                 .native_predictor_descriptor
                 .as_ref()
                 .is_some_and(|descriptor| descriptor.pipeline.is_some())
@@ -1213,9 +1221,8 @@ impl MethodsRuntime {
         n4m::configure_library(&canonical).map_err(|error| HpoError::RuntimeConfiguration {
             reason: format!("cannot load libn4m `{}`: {error}", canonical.display()),
         })?;
-        // The binding performs the authoritative dynamic-library negotiation.
-        // Its published interface is ABI 2.14, which is the capability DAG-ML
-        // may safely claim after this preflight succeeds.
+        // The binding owns library negotiation; artifact compatibility must use
+        // the actual selected library, rather than the compilation floor.
         n4m::Context::new().map_err(|error| HpoError::RuntimeConfiguration {
             reason: format!(
                 "libn4m `{}` does not satisfy Methods ABI {}.{}: {error}",
@@ -1224,15 +1231,24 @@ impl MethodsRuntime {
                 METHODS_RUNTIME_ABI_MINOR
             ),
         })?;
+        let (abi_major, abi_minor, _) =
+            n4m::runtime_abi_version().map_err(|error| HpoError::RuntimeConfiguration {
+                reason: format!("cannot query negotiated libn4m ABI: {error}"),
+            })?;
         Ok(Self {
             library_path: canonical,
-            abi_major: METHODS_ABI_MAJOR,
-            abi_minor: METHODS_RUNTIME_ABI_MINOR,
+            abi_major,
+            abi_minor,
         })
     }
 
     pub fn library_path(&self) -> &std::path::Path {
         &self.library_path
+    }
+
+    /// Actual ABI reported by the explicitly selected native Methods library.
+    pub fn abi_version(&self) -> (u32, u32) {
+        (self.abi_major, self.abi_minor)
     }
 
     pub(crate) fn ensure_n4me_compatible(
@@ -2010,6 +2026,7 @@ mod pls_controller {
                     metrics: BTreeMap::new(),
                     loss_attestations: Vec::new(),
                     early_stopping_records: Vec::new(),
+                    target_domain: None,
                 },
             })
         }
@@ -2181,7 +2198,9 @@ mod pls_controller {
                                 plugin_version: None,
                                 abi_major: Some(METHODS_ABI_MAJOR),
                                 abi_min_minor: Some(
-                                    if native_predictor_descriptor.pipeline.is_some() {
+                                    if native_predictor_descriptor.format_version == 3 {
+                                        METHODS_COMPONENT_RESOLUTION_N4MM_MIN_ABI_MINOR
+                                    } else if native_predictor_descriptor.pipeline.is_some() {
                                         METHODS_PIPELINE_N4MM_MIN_ABI_MINOR
                                     } else {
                                         METHODS_PLS_N4MM_MIN_ABI_MINOR
@@ -2564,6 +2583,7 @@ mod pls_controller {
                     metrics: BTreeMap::new(),
                     loss_attestations: Vec::new(),
                     early_stopping_records: Vec::new(),
+                    target_domain: None,
                 },
             })
         }
@@ -3607,6 +3627,34 @@ mod tests {
             Some(METHODS_IMPORTED_LINEAR_N4MM_MIN_ABI_MINOR),
         ))
         .is_err());
+
+        let mut v3 = n4mm_ref(
+            METHODS_PLS_CONTROLLER_ID,
+            Some(METHODS_COMPONENT_RESOLUTION_N4MM_MIN_ABI_MINOR),
+        );
+        let mut descriptor: crate::runtime::NativePredictorDescriptorV1 =
+            serde_json::from_value(serde_json::json!({
+                "descriptor_type": "dagml.native_predictor_descriptor.v1",
+                "schema_version": 1,
+                "artifact_sha256": "a".repeat(64),
+                "owner_controller": METHODS_PLS_CONTROLLER_ID,
+                "format": "N4MM", "format_version": 3,
+                "writer_abi": {"major": 2, "minor": 20, "patch": 0},
+                "storage_algorithm": 0, "capabilities": 3,
+                "dimensions": {"training_samples": 8, "n_features": 3, "n_targets": 1, "n_components": 1},
+                "descriptor_fingerprint": ""
+            })).unwrap();
+        descriptor.descriptor_fingerprint = descriptor.compute_fingerprint().unwrap();
+        descriptor.validate().unwrap();
+        v3.native_predictor_descriptor = Some(descriptor);
+        assert_eq!(methods_n4mm_abi_requirement(&v3).unwrap(), (2, 20));
+        assert!(validate_methods_abi_compatibility(2, 19, 2, 20).is_err());
+        validate_methods_abi_compatibility(2, 20, 2, 20).unwrap();
+        v3.abi_min_minor = Some(METHODS_PIPELINE_N4MM_MIN_ABI_MINOR);
+        assert!(methods_n4mm_abi_requirement(&v3).is_err());
+        v3.abi_major = None;
+        v3.abi_min_minor = None;
+        assert!(methods_n4mm_abi_requirement(&v3).is_err());
     }
 
     #[test]
@@ -3739,6 +3787,13 @@ mod tests {
             .unwrap();
         let controller = MethodsPlsController::new(runtime);
         let controller_id = controller.controller_id().clone();
+        let descriptor =
+            inspect_methods_native_predictor_descriptor_v1(&controller_id, &payload).unwrap();
+        let required_minor = if descriptor.format_version == 3 {
+            METHODS_COMPONENT_RESOLUTION_N4MM_MIN_ABI_MINOR
+        } else {
+            METHODS_PLS_N4MM_MIN_ABI_MINOR
+        };
         let request = ArtifactMaterializationRequest {
             run_id: crate::RunId::new("run:methods-pls.release").unwrap(),
             bundle_id: crate::BundleId::new("bundle:methods-pls.release").unwrap(),
@@ -3757,11 +3812,8 @@ mod tests {
                 plugin: None,
                 plugin_version: None,
                 abi_major: Some(METHODS_ABI_MAJOR),
-                abi_min_minor: Some(METHODS_PLS_N4MM_MIN_ABI_MINOR),
-                native_predictor_descriptor: Some(
-                    inspect_methods_native_predictor_descriptor_v1(&controller_id, &payload)
-                        .unwrap(),
-                ),
+                abi_min_minor: Some(required_minor),
+                native_predictor_descriptor: Some(descriptor),
                 native_estimator_descriptor: None,
             },
             params_fingerprint: "params:methods-pls.release".to_string(),
@@ -3849,7 +3901,14 @@ mod tests {
         );
         let pipeline_descriptor =
             inspect_methods_native_predictor_descriptor_v1(&pls_id, &pipeline_payload).unwrap();
-        assert_eq!(pipeline_descriptor.format_version, 2);
+        assert_eq!(
+            pipeline_descriptor.format_version,
+            if runtime.abi_minor >= METHODS_COMPONENT_RESOLUTION_N4MM_MIN_ABI_MINOR {
+                3
+            } else {
+                2
+            }
+        );
         let inspected_pipeline = pipeline_descriptor.pipeline.as_ref().unwrap();
         assert_eq!(inspected_pipeline.savgol_window, 3);
         assert_eq!(inspected_pipeline.savgol_poly_degree, 2);
@@ -3948,11 +4007,16 @@ mod tests {
             };
 
         let pls_controller = MethodsPlsController::new(runtime.clone());
+        let pls_min_minor = if pls_descriptor.format_version == 3 {
+            METHODS_COMPONENT_RESOLUTION_N4MM_MIN_ABI_MINOR
+        } else {
+            METHODS_PLS_N4MM_MIN_ABI_MINOR
+        };
         let good_pls = request_for(
             pls_id.clone(),
             &pls_payload,
             pls_descriptor.clone(),
-            METHODS_PLS_N4MM_MIN_ABI_MINOR,
+            pls_min_minor,
         );
         let handle = pls_controller
             .hydrate_artifact_payload(&good_pls, &pls_payload)
@@ -3964,12 +4028,8 @@ mod tests {
         let mut wrong_dimensions = pls_descriptor.clone();
         wrong_dimensions.dimensions.n_features += 1;
         wrong_dimensions.descriptor_fingerprint = wrong_dimensions.compute_fingerprint().unwrap();
-        let wrong_dimensions_request = request_for(
-            pls_id,
-            &pls_payload,
-            wrong_dimensions,
-            METHODS_PLS_N4MM_MIN_ABI_MINOR,
-        );
+        let wrong_dimensions_request =
+            request_for(pls_id, &pls_payload, wrong_dimensions, pls_min_minor);
         assert!(pls_controller
             .hydrate_artifact_payload(&wrong_dimensions_request, &pls_payload)
             .unwrap_err()

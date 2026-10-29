@@ -16,6 +16,7 @@ EXPECTED_CLAP_VERSION = "=4.5.53"
 EXPECTED_CARGO_AUDIT_VERSION = "0.22.1"
 EXPECTED_INDEXMAP_VERSION = "=2.13.1"
 EXPECTED_RUST_VERSION = "1.85"
+EXPECTED_RESULTS_RUST_VERSION = "1.88"
 EXPECTED_RUST_TOOLCHAIN = f"{EXPECTED_RUST_VERSION}.0"
 EXPECTED_ORACLE_TOOLCHAIN = "1.88.0"
 EXPECTED_PYO3_VERSION = "0.29"
@@ -114,6 +115,9 @@ def validate_workspace(repo: Path) -> tuple[str, str, list[str]]:
             "repository",
             "homepage",
         ]:
+            if key == "rust-version" and member == "crates/dag-ml-results":
+                require(crate_package.get(key) == EXPECTED_RESULTS_RUST_VERSION, "Results must declare its patched-Parquet Rust 1.88 floor")
+                continue
             require(
                 table_has_workspace_true(crate_package, key),
                 f"{manifest_path}: package.{key} must inherit from workspace",
@@ -174,8 +178,8 @@ def validate_python(
         f"{py_crate / 'Cargo.lock'}: Python crate version must match its manifest",
     )
     require(
-        cargo_package.get("rust-version") == EXPECTED_RUST_VERSION,
-        f"{cargo_path}: package.rust-version must be {EXPECTED_RUST_VERSION}",
+        cargo_package.get("rust-version") == EXPECTED_RESULTS_RUST_VERSION,
+        f"{cargo_path}: package.rust-version must be {EXPECTED_RESULTS_RUST_VERSION}",
     )
     require(
         cargo_package.get("edition") == "2021",
@@ -281,7 +285,7 @@ def validate_ci(repo: Path) -> None:
         "CI must install the pinned MSRV toolchain",
     )
     require(
-        "run: cargo check --workspace --locked\n" in runtime_source,
+        "run: cargo check --workspace --exclude dag-ml-results --locked\n" in runtime_source,
         "CI must check runtime targets on the pinned MSRV with its lock",
     )
     require(
@@ -565,7 +569,13 @@ def validate_methods_hpo_docs(repo: Path) -> None:
         isinstance(binding_version, str) and binding_version,
         "dag-ml-core must pin a published n4m version",
     )
-    archive_core = core.get("dev-dependencies", {}).get("nirs4all_archive_core")
+    require(
+        "nirs4all_archive_core" not in core.get("dev-dependencies", {}),
+        "the historical Core oracle must not be linked into the public runtime workspace",
+    )
+    historical = load_toml(repo / "tools" / "historical-core-oracle" / "Cargo.toml")
+    require(historical.get("package", {}).get("publish") is False, "historical oracle must never be published")
+    archive_core = historical.get("dependencies", {}).get("nirs4all_archive_core")
     require(
         archive_core == {"package": "nirs4all", "version": "=0.4.3"},
         "Archive V2 dev bridge must pin the documented registry baseline =0.4.3",
@@ -581,7 +591,7 @@ def validate_methods_hpo_docs(repo: Path) -> None:
         active_core_refs
         == [
             (
-                "crates/dag-ml-core/Cargo.toml",
+                "tools/historical-core-oracle/Cargo.toml",
                 'nirs4all_archive_core = { package = "nirs4all", version = "=0.4.3" }',
             )
         ],

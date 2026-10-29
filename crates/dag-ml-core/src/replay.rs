@@ -630,6 +630,11 @@ impl TrainingReplayOutcome {
         self.validate()?;
         source.validate()?;
         request.validate()?;
+        crate::target_domain::validate_domain_replay(
+            &source.effective_plan,
+            &source.lineage,
+            &self.lineage,
+        )?;
         if request.source_outcome_fingerprint != source.outcome_fingerprint {
             return contract_error("training replay request does not target source outcome");
         }

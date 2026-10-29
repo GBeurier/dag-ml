@@ -2604,6 +2604,15 @@ fn execute_cv_refit(
     root_seed: u64,
 ) -> Result<CvRefitRun, CoreDagMlError> {
     let plan = &campaign.plan;
+    if let Some(policy) = dag_ml_core::target_domain::TargetDomainPolicy::from_metadata(&plan.graph_plan.graph.metadata)? {
+        if !refit || refit_top_k != 1 || !matches!(metric, RegressionMetricKind::Accuracy | RegressionMetricKind::BalancedAccuracy | RegressionMetricKind::F1) {
+            return Err(CoreDagMlError::RuntimeValidation("fold-local target domains require one final refit and a classification metric".into()));
+        }
+        if !plan.graph_plan.graph.nodes.iter().any(|node| node.id == policy.node_id) {
+            return Err(CoreDagMlError::RuntimeValidation("fold-local domain producer is absent".into()));
+        }
+    }
+
     let operator_variant_models = &campaign.operator_variant_models;
     let run_id = RunId::new(format!("run:{}:in-process", campaign.dsl_id))?;
 
@@ -3421,6 +3430,7 @@ mod tests {
                     metrics: BTreeMap::new(),
                     loss_attestations: Vec::new(),
                     early_stopping_records: Vec::new(),
+            target_domain: None,
                 },
             })
         }
@@ -4094,6 +4104,7 @@ mod tests {
                     metrics: BTreeMap::new(),
                     loss_attestations: Vec::new(),
                     early_stopping_records: Vec::new(),
+            target_domain: None,
                 },
             };
             pythonize(py, &result)

@@ -537,6 +537,7 @@ impl RuntimeController for MethodsNativeRegressionController {
             metrics: Default::default(),
             loss_attestations: Vec::new(),
             early_stopping_records: Vec::new(),
+            target_domain: None,
         };
         Ok(NodeResult {
             schema_version: None,
