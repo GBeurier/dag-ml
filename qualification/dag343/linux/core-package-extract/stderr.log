@@ -1,0 +1,62 @@
+   Packaging dag-ml-core v0.3.43 (/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/crates/dag-ml-core)
+    Updating crates.io index
+    Packaged 122 files, 6.1MiB (1.0MiB compressed)
+    Updating crates.io index
+     Locking 44 packages to latest compatible versions
+      Adding generic-array v0.14.7 (available: v0.14.9)
+      Adding indexmap v2.13.1 (available: v2.14.2)
+      Adding sha2 v0.10.9 (available: v0.11.1)
+      Adding unicode-normalization v0.1.25 (available: v0.1.26)
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.27
+   Compiling version_check v0.9.5
+   Compiling serde_core v1.0.229
+   Compiling typenum v1.20.1
+   Compiling shlex v2.0.1
+   Compiling find-msvc-tools v0.1.15
+   Compiling zmij v1.0.23
+   Compiling serde v1.0.229
+   Compiling cfg-if v1.0.5
+   Compiling hashbrown v0.16.1
+   Compiling serde_json v1.0.154
+   Compiling equivalent v1.0.3
+   Compiling once_cell v1.21.4
+   Compiling thiserror v2.0.21
+   Compiling itoa v1.0.18
+   Compiling pin-project-lite v0.2.17
+   Compiling ryu v1.0.23
+   Compiling cpufeatures v0.2.17
+   Compiling memchr v2.8.3
+   Compiling libyaml-rs v0.3.0
+   Compiling tinyvec v1.13.3
+   Compiling libloading v0.8.9
+   Compiling cc v1.10.0
+   Compiling tracing-core v0.1.36
+   Compiling generic-array v0.14.7
+   Compiling unicode-normalization v0.1.25
+   Compiling indexmap v2.13.1
+   Compiling syn v3.0.9
+   Compiling syn v2.0.119
+   Compiling block-buffer v0.10.4
+   Compiling crypto-common v0.1.7
+   Compiling digest v0.10.7
+   Compiling sha2 v0.10.9
+   Compiling n4m v0.4.1
+   Compiling serde_ignored v0.1.14
+   Compiling serde_derive v1.0.229
+   Compiling thiserror-impl v2.0.21
+   Compiling tracing-attributes v0.1.31
+   Compiling yaml_serde v0.10.7
+   Compiling tracing v0.1.44
+   Compiling dag-ml-core v0.3.43 (/tmp/tmp.cjff2oNxjv/dag-ml-core-0.3.43)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 54.95s
+     Running unittests src/lib.rs (/tmp/tmp.cjff2oNxjv/extract-target/debug/deps/dag_ml_core-cd2a99e76eb14711)
+     Running tests/bug_audit_regressions.rs (/tmp/tmp.cjff2oNxjv/extract-target/debug/deps/bug_audit_regressions-0640d45d1607b2dd)
+     Running tests/bug_reaudit_regressions.rs (/tmp/tmp.cjff2oNxjv/extract-target/debug/deps/bug_reaudit_regressions-dea07505df5cfa99)
+     Running tests/conformal_w0_golden.rs (/tmp/tmp.cjff2oNxjv/extract-target/debug/deps/conformal_w0_golden-c85f78b9219f5391)
+     Running tests/host_hpo_parallel_browser_refusal.rs (/tmp/tmp.cjff2oNxjv/extract-target/debug/deps/host_hpo_parallel_browser_refusal-4bb87d6e2c99a688)
+     Running tests/multi_output_ranked_capture.rs (/tmp/tmp.cjff2oNxjv/extract-target/debug/deps/multi_output_ranked_capture-d1d9621b2b1de241)
+     Running tests/residual_target_contract.rs (/tmp/tmp.cjff2oNxjv/extract-target/debug/deps/residual_target_contract-0af8b861a7ce0a20)
+     Running tests/training_runtime_operation.rs (/tmp/tmp.cjff2oNxjv/extract-target/debug/deps/training_runtime_operation-f2fc5b7764c32499)
+   Doc-tests dag_ml_core

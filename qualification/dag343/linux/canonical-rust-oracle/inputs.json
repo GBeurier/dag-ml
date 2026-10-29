@@ -1,0 +1,78 @@
+{
+  "mode": "captured",
+  "source_sha": "656a73020ee1b1ac581302cf64e7c76ff65499d3",
+  "run_identity": {
+    "id": "canonical-rust-oracle",
+    "host": "linux-wsl",
+    "command": [
+      "cargo",
+      "test",
+      "--offline",
+      "--locked",
+      "--manifest-path",
+      "parity/canonical/rust-oracle/Cargo.toml"
+    ],
+    "cwd": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml",
+    "environment": {
+      "PATH": "/home/delete/nirs4all/_audits/2026-10-29-remediation/publication/octave-bin:/home/delete/.nvm/versions/node/v24.16.0/bin:/home/delete/miniconda3/bin:/home/delete/.codex/packages/app-server-daemon/releases/0.165.0-x86_64-unknown-linux-musl/codex-path:/home/delete/.local/bin:/home/delete/.local/bin:/home/delete/.codex/tmp/arg0-linux/codex-arg0vls4um:/home/delete/.codex/packages/app-server-daemon/releases/0.165.0-x86_64-unknown-linux-musl/codex-path:/home/delete/.codex/tmp/arg0-linux/codex-arg0SHHrTx:/home/delete/.codex/packages/app-server-daemon/releases/0.163.0-x86_64-unknown-linux-musl/codex-path:/home/delete/.codex/tmp/arg0-linux/codex-arg0WkQBJa:/home/delete/.codex/packages/standalone/releases/0.163.0-x86_64-unknown-linux-musl/codex-path:/home/delete/.local/bin:/home/delete/.local/bin:/home/delete/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/usr/lib/wsl/lib:/usr/lib/linux-tools/6.18.54.1-microsoft-standard-WSL2/bin:/mnt/c/Program Files/OpenSSH/OpenSSH-Win64:/mnt/c/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.4/bin:/mnt/c/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.4/libnvvp:/mnt/c/Program Files/Common Files/Oracle/Java/javapath:/mnt/c/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v11.8/bin:/mnt/c/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v11.8/libnvvp:/mnt/c/Program Files/Java/jdk-17/bin:/mnt/c/windows/system32:/mnt/c/windows:/mnt/c/windows/System32/Wbem:/mnt/c/windows/System32/WindowsPowerShell/v1.0/:/mnt/c/Program Files (x86)/Skype/Phone/:/mnt/c/windows/SysWOW64/Empirum:/mnt/c/Program Files (x86)/NVIDIA Corporation/PhysX/Common:/mnt/c/Program Files (x86)/Windows Kits/8.1/Windows Performance Toolkit/:/mnt/c/Program Files/Microsoft SQL Server/110/Tools/Binn/:/mnt/c/Program Files (x86)/Microsoft SQL Server/100/Tools/Binn/:/mnt/c/Program Files/Microsoft SQL Server/100/Tools/Binn/:/mnt/c/Program Files/Microsoft SQL Server/100/DTS/Binn/:/mnt/c/Users/U108-N257/.dnx/bin:/mnt/c/Program Files/Microsoft DNX/Dnvm/:/mnt/c/Program Files/Microsoft SQL Server/130/Tools/Binn/:/mnt/c/Program Files/Microsoft VS Code/bin:/mnt/c/Program Files/SourceGear/Common/DiffMerge/:/mnt/c/Program Files/CMake/bin:/mnt/c/Program Files (x86)/Yarn/bin/:/mnt/c/Program Files/PuTTY/:/mnt/c/Strawberry/perl/bin:/mnt/c/WINDOWS/system32:/mnt/c/WINDOWS:/mnt/c/WINDOWS/System32/Wbem:/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0/:/mnt/c/WINDOWS/System32/OpenSSH/:/mnt/c/Program Files/dotnet/:/mnt/c/rtools42/x86_64-w64-mingw32.static.posix/bin:/mnt/d/programs/Graphviz-11.0.0-win64/bin:/mnt/c/ProgramData/chocolatey/bin:/mnt/c/Program Files/NVIDIA Corporation/Nsight Compute 2024.1.0/:/mnt/c/Program Files/WireGuard/:/mnt/c/Program Files/nodejs/:/mnt/c/Program Files/NVIDIA Corporation/NVIDIA App/NvDLISR:/mnt/c/WINDOWS/system32:/mnt/c/WINDOWS:/mnt/c/WINDOWS/System32/Wbem:/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0/:/mnt/c/Program Files (x86)/Windows Kits/10/Windows Performance Toolkit/:/mnt/c/Program Files/TortoiseGit/bin:/mnt/c/Program Files/Docker/Docker/resources/bin:/mnt/c/Program Files/Git/cmd:/mnt/c/Program Files/WSL/:/mnt/c/Program Files (x86)/PowerShell/7/:/mnt/c/Users/U108-N257/.cargo/bin:/mnt/c/Users/U108-N257/AppData/Local/hermes/node:/mnt/c/Users/U108-N257/AppData/Local/hermes/bin:/mnt/c/Users/U108-N257/AppData/Local/Programs/Python/Python313/Scripts/:/mnt/c/Users/U108-N257/AppData/Local/Programs/Python/Python313/:/mnt/c/Users/U108-N257/AppData/Local/Programs/Python/Python310/Scripts/:/mnt/c/Users/U108-N257/AppData/Local/Programs/Python/Python310/:/mnt/c/Program Files/Java/jdk-17/bin:/mnt/c/windows/system32:/mnt/c/windows:/mnt/c/windows/System32/Wbem:/mnt/c/windows/System32/WindowsPowerShell/v1.0/:/mnt/c/Program Files (x86)/Skype/Phone/:/mnt/c/windows/SysWOW64/Empirum:/mnt/c/Program Files (x86)/NVIDIA Corporation/PhysX/Common:/mnt/c/Program Files (x86)/Windows Kits/8.1/Windows Performance Toolkit/:/mnt/c/Program Files (x86)/Windows Kits/10/Windows Performance Toolkit/:/mnt/c/Program Files/Microsoft SQL Server/110/Tools/Binn/:/mnt/c/Program Files (x86)/Microsoft SQL Server/100/Tools/Binn/:/mnt/c/Program Files/Microsoft SQL Server/100/Tools/Binn/:/mnt/c/Program Files/Microsoft SQL Server/100/DTS/Binn/:/mnt/c/Users/U108-N257/.dnx/bin:/mnt/c/Program Files/Microsoft DNX/Dnvm/:/mnt/c/Program Files/Microsoft SQL Server/130/Tools/Binn/:/mnt/c/Program Files/Microsoft VS Code/bin:/mnt/c/Program Files (x86)/nodejs/:/mnt/c/Program Files/SourceGear/Common/DiffMerge/:/mnt/c/Program Files/CMake/bi:/mnt/c/Users/U108-N257/Documents/ffmpeg/bin:/mnt/c/Users/U108-N257/AppData/Local/Programs/Microsoft VS Code/bin:/mnt/c/Users/U108-N257/AppData/Local/GitHubDesktop/bin:/mnt/c/Users/U108-N257/.lmstudio/bin:/mnt/c/Users/U108-N257/AppData/Local/Programs/Microsoft VS Code Insiders/bin:/mnt/c/Program Files (x86)/Nmap:/mnt/c/Users/U108-N257/AppData/Roaming/npm:/mnt/c/Users/U108-N257/.local/bin:/mnt/c/Users/U108-N257/AppData/Local/gh-cli/bin:/mnt/c/Users/U108-N257/AppData/Local/Microsoft/WindowsApps:/mnt/c/Users/U108-N257/AppData/Local/Microsoft/WinGet/Links:/mnt/c/Users/U108-N257/AppData/Local/Programs/Cua/cua-driver/bin:/snap/bin",
+      "LD_LIBRARY_PATH": "/home/delete/.local/share/uv/python/cpython-3.12.12-linux-x86_64-gnu/lib",
+      "PYO3_PYTHON": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/.venv/bin/python",
+      "PYTHONPATH": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/crates/dag-ml-py/python",
+      "DAG_ML_DATA_REPO": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml-data",
+      "OPENBLAS_NUM_THREADS": "1",
+      "OMP_NUM_THREADS": "1",
+      "N4M_LIBRARY_PATH": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/nirs4all-methods/build/dev-release/cpp/src/libn4m.so",
+      "N4M_LIB_PATH": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/nirs4all-methods/build/dev-release/cpp/src/libn4m.so",
+      "PLS4ALL_LIB_PATH": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/nirs4all-methods/build/dev-release/cpp/src/libn4m.so",
+      "N4M_ESTIMATOR_ROLES_FIXTURE": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/nirs4all-methods/parity/fixtures/estimator_roles_n4me.json",
+      "PLS4ALL_PYTHONPATH": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/nirs4all-methods/bindings/python_pls4all/src",
+      "DAG_ML_HISTORICAL_CORE_ORACLE": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/tools/historical-core-oracle/target/debug/dag-ml-historical-core-oracle",
+      "DAG_ML_CURRENT_CORE_ORACLE": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/tools/current-core-oracle/target/debug/dag-ml-current-core-oracle",
+      "DAG_ML_REQUIRE_METHODS_CLI_TEST": "1",
+      "DAG_ML_REQUIRE_N4M_TEST": "1",
+      "DAG_ML_REQUIRE_R_ADAPTER_TEST": "1",
+      "DAGML_REQUIRE_HPO_R": "1",
+      "DAGML_REQUIRE_HPO_MATLAB": "1",
+      "DAGML_REQUIRE_HPO_OCTAVE": "1",
+      "DAGML_NATIVE_LIBRARY": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/target/release/libdag_ml_capi.so",
+      "CC": "/usr/bin/gcc",
+      "CXX": "/usr/bin/g++",
+      "DL_LD": "/usr/bin/g++"
+    },
+    "started_at": "2026-10-29T15:50:44.996702+00:00",
+    "finished_at": "2026-10-29T15:50:45.062503+00:00",
+    "exit_code": 0,
+    "input_fingerprints": {
+      "parity/canonical/README.md": "1898d913e7f747090abce7ff157d6158e1785b66aa464d120f245e2fa7921eac",
+      "parity/canonical/__init__.py": "5f2fcc3fe54f16f887798fd69d1aa86830b8b0377ef4e7896f32de810065dcee",
+      "parity/canonical/golden/tcv1_jcs_cross_language.v1.json": "7ce376f6a222874ee440d7b1ff14413ed9ab12111eee0e9fe39500813c219e68",
+      "parity/canonical/rust-oracle/.gitignore": "306fd52e74fca6746e12acc750f232de15e71da917756a1270d74c91f5eb7368",
+      "parity/canonical/rust-oracle/Cargo.lock": "e2bbd4af5e708da9244bad744b100073abb9604fcd4c88f48623264c821cbd00",
+      "parity/canonical/rust-oracle/Cargo.toml": "799d6a1783491e6bd04189a655db423f1b9d21b659483855fb097ce3f8de5e1d",
+      "parity/canonical/rust-oracle/src/lib.rs": "5e0dc032777100258a4daeff343628b86a7b70bb4dab2138a4d241717df40171",
+      "parity/canonical/rust-oracle/src/main.rs": "325bb366178e845723fce7b30adf0aa6184dcc490e08494d9a5cad90703f3ab2",
+      "parity/canonical/tests/test_rust_oracle_parity.py": "1e3c1f9a65f7ca62c3e57c00193453772624174d265f50adda6ed3d209a0ae2b"
+    }
+  },
+  "input_fingerprints": {
+    "parity/canonical/README.md": "1898d913e7f747090abce7ff157d6158e1785b66aa464d120f245e2fa7921eac",
+    "parity/canonical/__init__.py": "5f2fcc3fe54f16f887798fd69d1aa86830b8b0377ef4e7896f32de810065dcee",
+    "parity/canonical/golden/tcv1_jcs_cross_language.v1.json": "7ce376f6a222874ee440d7b1ff14413ed9ab12111eee0e9fe39500813c219e68",
+    "parity/canonical/rust-oracle/.gitignore": "306fd52e74fca6746e12acc750f232de15e71da917756a1270d74c91f5eb7368",
+    "parity/canonical/rust-oracle/Cargo.lock": "e2bbd4af5e708da9244bad744b100073abb9604fcd4c88f48623264c821cbd00",
+    "parity/canonical/rust-oracle/Cargo.toml": "799d6a1783491e6bd04189a655db423f1b9d21b659483855fb097ce3f8de5e1d",
+    "parity/canonical/rust-oracle/src/lib.rs": "5e0dc032777100258a4daeff343628b86a7b70bb4dab2138a4d241717df40171",
+    "parity/canonical/rust-oracle/src/main.rs": "325bb366178e845723fce7b30adf0aa6184dcc490e08494d9a5cad90703f3ab2",
+    "parity/canonical/tests/test_rust_oracle_parity.py": "1e3c1f9a65f7ca62c3e57c00193453772624174d265f50adda6ed3d209a0ae2b"
+  },
+  "raw_before": {
+    "path": "qualification/dag343/linux/canonical-rust-oracle/before.json",
+    "bytes": 87790,
+    "sha256": "bfdb80f4273d874bdcd63f90a781e76334e72e79e1c920fd57ee35e0faebbe90"
+  },
+  "raw_terminal": {
+    "path": "qualification/dag343/linux/canonical-rust-oracle/terminal.json",
+    "bytes": 167399,
+    "sha256": "4b49c85170468a0d35e9a013b9db1e1a04b1638cb78745aab1d824e8bd54fc4f"
+  }
+}

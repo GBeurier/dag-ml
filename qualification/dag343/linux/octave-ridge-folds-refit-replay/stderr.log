@@ -1,0 +1,2 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.05s
+     Running tests/octave_hpo_ridge.rs (target/debug/deps/octave_hpo_ridge-9850f11a4b767799)

@@ -36,3 +36,7 @@ docs/TOC.md
 # Native extensions are built and qualified from wheel artifacts.
 /crates/dag-ml-py/python/dag_ml/_dag_ml*.so
 /crates/dag-ml-py/python/dag_ml/_dag_ml*.pyd
+
+# Local Octave bridge products are retained by qualification, never source.
+/bindings/matlab/+dagml/taskTrainingLossBindingNative.mex
+/bindings/matlab/+dagml/executeExecutionPlanPhaseNative.mex
