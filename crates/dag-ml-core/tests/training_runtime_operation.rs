@@ -1,14 +1,11 @@
+use dag_ml_core::training::PredictionSource;
+use dag_ml_core::*;
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 #[cfg(feature = "methods-optimizer-local")]
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-#[cfg(feature = "methods-optimizer-local")]
-use std::time::{SystemTime, UNIX_EPOCH};
-
-use dag_ml_core::training::PredictionSource;
-use dag_ml_core::*;
-use sha2::{Digest, Sha256};
 
 struct FoldDomainController(TrainingController);
 
@@ -210,17 +207,6 @@ struct CallState {
     predict_sample_ids: Mutex<Option<Vec<SampleId>>>,
     scoped_validation_samples: Mutex<BTreeMap<FoldId, Vec<SampleId>>>,
     observed_model_patch_values: Mutex<Vec<Option<serde_json::Value>>>,
-}
-
-#[cfg(feature = "methods-optimizer-local")]
-fn archive_path(name: &str) -> PathBuf {
-    std::env::temp_dir().join(format!(
-        "dag-ml-{name}-{}.n4a",
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock is after Unix epoch")
-            .as_nanos()
-    ))
 }
 
 #[cfg(feature = "methods-optimizer-local")]
