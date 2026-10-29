@@ -3,8 +3,8 @@
   "pack_id": "dag-ml.training-replay-contracts.v1",
   "mode": "current",
   "base_pack_id": "dag-ml.training-contracts.v1",
-  "base_pack_sha256": "d78d96dfa18563e6a3faf14225ff1d27fff0b6e82d9424e62b49682f5564a4cf",
-  "base_pack_checksum": "cd14d46201709b33d3bf5fe51891a14f64d137a972d393549cf69cde86317462",
+  "base_pack_sha256": "2dcef35ab287b9db65551f102382a6c82e06da8d19bc3f60ee999df63ac1cef0",
+  "base_pack_checksum": "7462866f87cd55c0ac747e747a368d4d8a589233fdf572185ddcb040c744212b",
   "base_pack_mode": "current",
   "hash_algorithm": "sha256-file-bytes",
   "canonical_profile": "DAG-ML TCV1",
@@ -231,7 +231,7 @@
     },
     {
       "path": "crates/dag-ml-core/tests/training_runtime_operation.rs",
-      "sha256": "7f07d6022cce9610c9a8c30f5b065f48d954be4dc3aafb18ea1939d26b4ebe61",
+      "sha256": "bf513a5943f076d2fe88168861af394e7c7fb8c5079d740c3ca0e2986455257c",
       "kind": "base_native_integration_test"
     },
     {
@@ -581,7 +581,7 @@
     },
     {
       "path": "docs/contracts/training_contract_conformance_pack.v1.json",
-      "sha256": "d78d96dfa18563e6a3faf14225ff1d27fff0b6e82d9424e62b49682f5564a4cf",
+      "sha256": "2dcef35ab287b9db65551f102382a6c82e06da8d19bc3f60ee999df63ac1cef0",
       "kind": "base_conformance_pack"
     },
     {
@@ -806,7 +806,7 @@
     },
     {
       "path": "parity/training/generate_training_replay_fixtures.py",
-      "sha256": "d300486f7d41f6748e5fc5d22d9c4c5a813019415ea7e1ab0fef7cf50fb020a6",
+      "sha256": "6274772ed66dc79b358a6b1564ccbc6b927b39d5e7d34f319ce2226bb8949fff",
       "kind": "generator"
     },
     {
@@ -821,7 +821,7 @@
     },
     {
       "path": "parity/training/tests/test_training_replay_contracts.py",
-      "sha256": "740dea7b75eb56701a2e26965106448048e8ae0d76923f255b51e8ad4391074c",
+      "sha256": "ae40a6255078fd65da89b508ffb8a11d949a86c12913e202f7ed31e8ebd2dd96",
       "kind": "test"
     },
     {
@@ -831,7 +831,7 @@
     },
     {
       "path": "scripts/check_so_freshness.py",
-      "sha256": "50a829ed01ffc508f327dc093945d949e719f9e23d4e50dafaccab71cd0a5600",
+      "sha256": "faff13439e701cb7355ea2369d79dc6f284c5446387be00b996861af13a785af",
       "kind": "base_python_extension_freshness_gate"
     },
     {
@@ -866,7 +866,7 @@
     },
     {
       "path": "scripts/validate_training_replay_contracts.py",
-      "sha256": "067b2d966e6e8d9694446c7463e45566b006a9e19c2086fc75b38a516957cde9",
+      "sha256": "7e38090c696072bee152868b233376dac02c928c7bc228b7cb0fcae150523dfb",
       "kind": "production_validator"
     },
     {
@@ -951,5 +951,5 @@
     "d4_replay_legacy_wrapper_rejects_explicit_port",
     "d4_score_set_v2_duplicate_port_aware_key"
   ],
-  "pack_checksum": "9b15cbdc4b063f8dc98735d1bc528e2d70707dcec50fdbcb89ed63e4ca26ea53"
+  "pack_checksum": "17c126577d34058ece3c2e8e4382bacbc1e1d09d4429543f8dddc71434de86ae"
 }
