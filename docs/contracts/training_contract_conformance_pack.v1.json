@@ -216,7 +216,7 @@
     },
     {
       "path": "crates/dag-ml-py/Cargo.lock",
-      "sha256": "f596b118f13bd43b019fc3d77ab7332b76076abae8c2d86008366fc7258c2820",
+      "sha256": "d259ed6136b4c6b7de25951c8f06c0f996d4fce48390e11ef41d0ce17ff363b9",
       "kind": "python_binding_lockfile"
     },
     {
@@ -281,7 +281,7 @@
     },
     {
       "path": "docs/HPO_METHODS_ADAPTER.md",
-      "sha256": "a9a39a4a6b2bd4465d593b18759f0bf67efe99dbabc0fa44eabb6509b4ef70a9",
+      "sha256": "2b22e99c72a5c6b9eece32c5613e2e825677e23161789ea45ae46f517e5e7e17",
       "kind": "hpo_documentation"
     },
     {
@@ -296,7 +296,7 @@
     },
     {
       "path": "docs/contracts/abi_snapshot.v1.json",
-      "sha256": "9e141b7ca439f6fc7c7c89ec0eaabc8d1140f32006c58faeb7d1166a2b2deeaf",
+      "sha256": "63a7568ceaa82c2393cdd0a18eb048abe820d165390f8a1838a03a8b37e550c5",
       "kind": "c_abi_snapshot"
     },
     {
@@ -694,5 +694,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "6dace8787b0b6bd33cd6dffd8bf3995a25d723062cb64b9538c29df2896229b2"
+  "pack_checksum": "cd14d46201709b33d3bf5fe51891a14f64d137a972d393549cf69cde86317462"
 }

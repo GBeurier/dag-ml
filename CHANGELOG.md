@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.43 - 2026-10-29
+
+- Score and select learned classification target domains natively per fold with a
+  comparable macrofold summary, strict candidate-domain checks, and captured
+  refit replay; preserve the stable fixed-domain path.
+- Admit native Methods N4MM format 3 with ABI 2.20 and the published n4m 0.4.1
+  binding; retain historical artifact readers as isolated qualification tools.
+- Require the registry-backed dependency closure and exclude generated native
+  Python extensions from source commits.
+
+
 ## 0.3.42 - 2026-10-20
 
 - Add `nested_selection` (`execute_nested_selection`): nested grouped selection over a declared, finite candidate list for one single-target regression node. The coordinator first builds every fold set: the outer `GroupKFoldSpec` set, and one `GroupKFold` inner set inside each outer training pool. Only then does it call a controller.
