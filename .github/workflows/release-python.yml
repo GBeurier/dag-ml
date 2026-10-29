@@ -4,6 +4,14 @@ on:
   # Manual dispatch builds candidate artifacts only; exact source version is opt-in.
   workflow_dispatch:
     inputs:
+      release_source_tag:
+        description: "Recovery only: immutable stable source tag (empty keeps normal candidate behavior)"
+        type: string
+        default: ""
+      expected_source_sha:
+        description: "Recovery only: exact 40-character source commit; tag must resolve identically"
+        type: string
+        default: ""
       development_candidate:
         description: "Build next-patch .dev0 candidate (false builds exact source version; neither publishes)"
         type: boolean
@@ -22,6 +30,7 @@ permissions:
 env:
   PACKAGE_DIR: crates/dag-ml-py
   PACKAGE_NAME: dag-ml
+  RELEASE_SOURCE_TAG: ${{ inputs.release_source_tag || github.ref_name }}
 
 jobs:
   qualify:
@@ -55,11 +64,29 @@ jobs:
             smoke: true
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.release_source_tag || github.ref }}
+          fetch-depth: 0
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
+      - name: Verify immutable recovery source
+        if: inputs.release_source_tag != ''
+        shell: bash
+        env:
+          RELEASE_SOURCE_TAG: ${{ inputs.release_source_tag }}
+          EXPECTED_SOURCE_SHA: ${{ inputs.expected_source_sha }}
+          DEVELOPMENT_CANDIDATE: ${{ inputs.development_candidate }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_SOURCE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$EXPECTED_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$DEVELOPMENT_CANDIDATE" != "true" ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA"
+          test "$(git rev-parse "$RELEASE_SOURCE_TAG^{commit}")" = "$EXPECTED_SOURCE_SHA"
+          python scripts/verify_local_qualification.py --project dag --receipt compat/local-qualification.json --root .
       - name: Prepare distinct Python development candidate
-        if: github.event_name == 'workflow_dispatch' && inputs.development_candidate
+        if: github.event_name == 'workflow_dispatch' && inputs.development_candidate && inputs.release_source_tag == ''
         run: python scripts/prepare_python_candidate.py
       - uses: PyO3/maturin-action@v1
         with:
@@ -80,7 +107,7 @@ jobs:
           python scripts/smoke_python_bindings.py
       - uses: actions/upload-artifact@v7
         with:
-          name: ${{ github.event_name == 'workflow_dispatch' && 'candidate-wheels' || 'wheels' }}-${{ matrix.label }}
+          name: ${{ github.event_name == 'workflow_dispatch' && inputs.release_source_tag == '' && 'candidate-wheels' || 'wheels' }}-${{ matrix.label }}
           path: dist/*.whl
           if-no-files-found: error
 
@@ -89,11 +116,29 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.release_source_tag || github.ref }}
+          fetch-depth: 0
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
+      - name: Verify immutable recovery source
+        if: inputs.release_source_tag != ''
+        shell: bash
+        env:
+          RELEASE_SOURCE_TAG: ${{ inputs.release_source_tag }}
+          EXPECTED_SOURCE_SHA: ${{ inputs.expected_source_sha }}
+          DEVELOPMENT_CANDIDATE: ${{ inputs.development_candidate }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_SOURCE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$EXPECTED_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$DEVELOPMENT_CANDIDATE" != "true" ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA"
+          test "$(git rev-parse "$RELEASE_SOURCE_TAG^{commit}")" = "$EXPECTED_SOURCE_SHA"
+          python scripts/verify_local_qualification.py --project dag --receipt compat/local-qualification.json --root .
       - name: Prepare distinct Python development candidate
-        if: github.event_name == 'workflow_dispatch' && inputs.development_candidate
+        if: github.event_name == 'workflow_dispatch' && inputs.development_candidate && inputs.release_source_tag == ''
         run: python scripts/prepare_python_candidate.py
       - run: python -m pip install --upgrade maturin twine
       - name: Build source distribution
@@ -102,7 +147,7 @@ jobs:
         run: python -m twine check dist/*
       - uses: actions/upload-artifact@v7
         with:
-          name: ${{ github.event_name == 'workflow_dispatch' && 'candidate-sdist' || 'sdist' }}
+          name: ${{ github.event_name == 'workflow_dispatch' && inputs.release_source_tag == '' && 'candidate-sdist' || 'sdist' }}
           path: dist/*
           if-no-files-found: error
 
@@ -113,7 +158,7 @@ jobs:
       - build-wheels
       - build-sdist
     runs-on: ubuntu-22.04
-    if: ${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-') && github.event_name != 'workflow_dispatch' }}
+    if: ${{ (startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-') && github.event_name != 'workflow_dispatch') || (github.event_name == 'workflow_dispatch' && inputs.release_source_tag != '' && !inputs.development_candidate) }}
     environment:
       name: pypi
       url: https://pypi.org/p/dag-ml
@@ -122,9 +167,27 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.release_source_tag || github.ref }}
+          fetch-depth: 0
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
+      - name: Verify immutable recovery source
+        if: inputs.release_source_tag != ''
+        shell: bash
+        env:
+          RELEASE_SOURCE_TAG: ${{ inputs.release_source_tag }}
+          EXPECTED_SOURCE_SHA: ${{ inputs.expected_source_sha }}
+          DEVELOPMENT_CANDIDATE: ${{ inputs.development_candidate }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_SOURCE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$EXPECTED_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$DEVELOPMENT_CANDIDATE" != "true" ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA"
+          test "$(git rev-parse "$RELEASE_SOURCE_TAG^{commit}")" = "$EXPECTED_SOURCE_SHA"
+          python scripts/verify_local_qualification.py --project dag --receipt compat/local-qualification.json --root .
       - name: Require matching release manifests
         run: python scripts/validate_release_metadata.py --release
       - uses: actions/download-artifact@v8
@@ -140,12 +203,12 @@ jobs:
               print(tomllib.load(handle)["project"]["version"])
           PY
           )
-          tag_version="${GITHUB_REF_NAME#v}"
-          if [[ "${GITHUB_REF_TYPE:-}" != "tag" || "${tag_version}" != "${package_version}" ]]; then
-            echo "::error::Release tag ${GITHUB_REF_NAME} does not match ${PACKAGE_NAME} ${package_version}."
+          tag_version="${RELEASE_SOURCE_TAG#v}"
+          if [[ ! "${RELEASE_SOURCE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ || "${tag_version}" != "${package_version}" ]]; then
+            echo "::error::Release tag ${RELEASE_SOURCE_TAG} does not match ${PACKAGE_NAME} ${package_version}."
             exit 1
           fi
-          echo "Publishing ${PACKAGE_NAME} ${package_version} from ${GITHUB_REF_NAME}."
+          echo "Publishing ${PACKAGE_NAME} ${package_version} from ${RELEASE_SOURCE_TAG}."
       - name: Validate distribution metadata
         run: python scripts/smoke_python_wheel_metadata.py dist/*.whl
       - name: Validate Trusted Publisher release tuple
@@ -178,14 +241,32 @@ jobs:
       - build-wheels
       - build-sdist
     runs-on: ubuntu-22.04
-    if: ${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-') && github.event_name != 'workflow_dispatch' }}
+    if: ${{ (startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-') && github.event_name != 'workflow_dispatch') || (github.event_name == 'workflow_dispatch' && inputs.release_source_tag != '' && !inputs.development_candidate) }}
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.release_source_tag || github.ref }}
+          fetch-depth: 0
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
+      - name: Verify immutable recovery source
+        if: inputs.release_source_tag != ''
+        shell: bash
+        env:
+          RELEASE_SOURCE_TAG: ${{ inputs.release_source_tag }}
+          EXPECTED_SOURCE_SHA: ${{ inputs.expected_source_sha }}
+          DEVELOPMENT_CANDIDATE: ${{ inputs.development_candidate }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_SOURCE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$EXPECTED_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$DEVELOPMENT_CANDIDATE" != "true" ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA"
+          test "$(git rev-parse "$RELEASE_SOURCE_TAG^{commit}")" = "$EXPECTED_SOURCE_SHA"
+          python scripts/verify_local_qualification.py --project dag --receipt compat/local-qualification.json --root .
       - name: Verify local runtime qualification before publication
         run: python scripts/verify_local_qualification.py --project dag --receipt compat/local-qualification.json --root .
       - uses: actions/download-artifact@v8
@@ -194,4 +275,5 @@ jobs:
           merge-multiple: true
       - uses: softprops/action-gh-release@v3
         with:
+          tag_name: ${{ inputs.release_source_tag || github.ref_name }}
           files: dist/*

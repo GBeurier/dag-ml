@@ -3,6 +3,14 @@ name: release-npm
 on:
   workflow_dispatch:
     inputs:
+      release_source_tag:
+        description: "Recovery only: immutable stable source tag (empty keeps normal candidate behavior)"
+        type: string
+        default: ""
+      expected_source_sha:
+        description: "Recovery only: exact 40-character source commit; tag must resolve identically"
+        type: string
+        default: ""
       publish:
         description: "Publish to npm (true) or dry-run only (false)"
         type: boolean
@@ -26,9 +34,27 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.release_source_tag || github.ref }}
+          fetch-depth: 0
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
+      - name: Verify immutable recovery source
+        if: inputs.release_source_tag != ''
+        shell: bash
+        env:
+          RELEASE_SOURCE_TAG: ${{ inputs.release_source_tag }}
+          EXPECTED_SOURCE_SHA: ${{ inputs.expected_source_sha }}
+          DEVELOPMENT_CANDIDATE: false
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_SOURCE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$EXPECTED_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$DEVELOPMENT_CANDIDATE" != "true" ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA"
+          test "$(git rev-parse "$RELEASE_SOURCE_TAG^{commit}")" = "$EXPECTED_SOURCE_SHA"
+          python scripts/verify_local_qualification.py --project dag --receipt compat/local-qualification.json --root .
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -72,33 +98,34 @@ jobs:
         run: node scripts/smoke_wasm_tarball_metadata.mjs target/wasm-web/dag-ml-wasm
 
       - name: Validate tag matches package.json version
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.release_source_tag != ''
+        env:
+          RELEASE_SOURCE_TAG: ${{ inputs.release_source_tag || github.ref_name }}
         working-directory: target/wasm-web/dag-ml-wasm
         run: |
           set -euo pipefail
           pkg_ver=$(node -p "require('./package.json').version")
-          tag_ver="${GITHUB_REF_NAME#v}"
+          tag_ver="${RELEASE_SOURCE_TAG#v}"
           tag_ver="${tag_ver%%-rc*}"
           echo "package.json=$pkg_ver tag=$GITHUB_REF_NAME"
           if [ "$pkg_ver" != "$tag_ver" ]; then
-            echo "ERROR: package.json version ($pkg_ver) != tag (${GITHUB_REF_NAME#v})."
+            echo "ERROR: package.json version ($pkg_ver) != tag (${RELEASE_SOURCE_TAG#v})."
             exit 1
           fi
 
       - name: Decide publish
         id: gate
+        env:
+          RELEASE_SOURCE_TAG: ${{ inputs.release_source_tag || github.ref_name }}
+          RECOVERY_TAG: ${{ inputs.release_source_tag }}
+          REQUEST_PUBLISH: ${{ inputs.publish }}
         run: |
-          if [ "${{ inputs.publish }}" = "true" ] && [[ "${{ github.ref }}" != refs/tags/v* ]]; then
-            echo "ERROR: npm publication requires a release tag."
+          set -euo pipefail
+          if [[ "$REQUEST_PUBLISH" == "true" ]] && [[ ! "$RELEASE_SOURCE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "ERROR: npm publication requires an immutable stable release tag."
             exit 1
           fi
-          if [ "${{ inputs.publish }}" = "true" ] && [[ "${GITHUB_REF_NAME}" == *-* ]]; then
-            echo "ERROR: npm publication requires a stable release tag."
-            exit 1
-          fi
-          if [ "${{ github.event_name }}" = "push" ] && [[ "${GITHUB_REF_NAME}" == v* ]] && [[ "${GITHUB_REF_NAME}" != *-* ]]; then
-            echo "do=true" >> "$GITHUB_OUTPUT"
-          elif [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.publish }}" = "true" ]; then
+          if [[ "${GITHUB_EVENT_NAME}" == "push" && "${GITHUB_REF_TYPE}" == "tag" && "$RELEASE_SOURCE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || [[ "$REQUEST_PUBLISH" == "true" && ( "${GITHUB_REF_TYPE}" == "tag" || -n "$RECOVERY_TAG" ) ]]; then
             echo "do=true" >> "$GITHUB_OUTPUT"
           else
             echo "do=false" >> "$GITHUB_OUTPUT"
