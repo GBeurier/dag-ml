@@ -28,6 +28,11 @@ permissions:
   contents: read
 
 env:
+  # Qualification is bound to Git blob bytes; Windows checkout must not turn
+  # the immutable LF policy/source inputs into a different CRLF working tree.
+  GIT_CONFIG_COUNT: "1"
+  GIT_CONFIG_KEY_0: core.autocrlf
+  GIT_CONFIG_VALUE_0: "false"
   PACKAGE_DIR: crates/dag-ml-py
   PACKAGE_NAME: dag-ml
   RELEASE_SOURCE_TAG: ${{ inputs.release_source_tag || github.ref_name }}
