@@ -86,3 +86,5 @@ else:
 assert native.version() == dag_ml.version() == manifest["python_package_version"] == "0.3.43"
 assert callable(native.configure_methods_runtime)
 print("Source043 facade/native/manifest and unchanged CI training API assertions PASS")
+
+print("N4A_SOURCE_TRAINING_OBSERVATION=" + json.dumps({"native_version": native.version(), "facade_version": dag_ml.version(), "manifest_version": manifest["python_package_version"]}))
