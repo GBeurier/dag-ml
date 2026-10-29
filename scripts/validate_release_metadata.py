@@ -580,6 +580,13 @@ def validate_methods_hpo_docs(repo: Path) -> None:
         archive_core == {"package": "nirs4all", "version": "=0.4.3"},
         "Archive V2 dev bridge must pin the documented registry baseline =0.4.3",
     )
+    current = load_toml(repo / "tools" / "current-core-oracle" / "Cargo.toml")
+    require(current.get("package", {}).get("publish") is False, "current oracle must never be published")
+    require(
+        current.get("dependencies", {}).get("nirs4all_archive_core")
+        == {"package": "nirs4all", "version": "=0.4.6"},
+        "N4MM V3 oracle must pin the documented current reader =0.4.6",
+    )
     active_core_refs = []
     for manifest in sorted(repo.rglob("Cargo.toml")):
         for line in manifest.read_text(encoding="utf-8").splitlines():
@@ -591,11 +598,15 @@ def validate_methods_hpo_docs(repo: Path) -> None:
         active_core_refs
         == [
             (
+                "tools/current-core-oracle/Cargo.toml",
+                'nirs4all_archive_core = { package = "nirs4all", version = "=0.4.6" }',
+            ),
+            (
                 "tools/historical-core-oracle/Cargo.toml",
                 'nirs4all_archive_core = { package = "nirs4all", version = "=0.4.3" }',
             )
         ],
-        "only the exact Archive V2 registry baseline may reference nirs4all in active manifests",
+        "only the exact isolated Archive V2/V3 oracle baselines may reference nirs4all in active manifests",
     )
 
     python_lock = load_toml(repo / "crates" / "dag-ml-py" / "Cargo.lock")

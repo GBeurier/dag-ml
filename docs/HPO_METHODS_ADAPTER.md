@@ -19,11 +19,9 @@ generators. See [structural host HPO](HOST_STRUCTURAL_HPO.md) for the immutable
 catalogue, active parameter axes, checkpoint identities and winner REFIT path.
 
 The `dag-ml-core` crate exposes the opt-in public `methods-optimizer` Cargo
-feature through the candidate dynamic `n4m` 0.4.1 binding (Methods ABI 2.20,
-generic estimator roles and authoritative runtime ABI querying). This binding
-must be published before the new DAG-ML cohort can resolve from registries.
-Local qualification explicitly overrides it with its owner source; it is not
-evidence of a published dependency. Default builds leave
+feature through the published dynamic `n4m` 0.4.1 binding (Methods ABI 2.20,
+generic estimator roles and authoritative runtime ABI querying). Both tracked
+lockfiles resolve the immutable crates.io checksum. Default builds leave
 that feature disabled and refuse HPO before an
 objective can be called, with the typed
 `HpoError::MethodsOptimizerFeatureDisabled`. The integration helper enables
@@ -229,8 +227,7 @@ JSON-deserialized outcome replay in a new process/controller without retaining
 the refit controller's in-memory handles.
 
 The `dag-ml-core/Cargo.toml` manifest offers an opt-in `methods-optimizer`
-feature targeting `n4m` 0.4.1. Local qualification explicitly supplies the
-unpublished owner crate using a Cargo configuration override. The manifest
+feature targeting the published `n4m` 0.4.1. The manifest
 declares the actual API minimum rather than calling a getter absent in 0.4.0.
 Default builds and extracted crates do not link, load,
 or require a Methods checkout. A caller must explicitly configure an absolute
@@ -239,10 +236,11 @@ controller; there is no `PATH`, current-directory, sibling-checkout, or
 legacy fallback.
 
 The local integration helper activates the published feature and that
-compiler-only test selector. It uses the Methods v1.3.7 source commit
-`09495e52bc1314612025f0fd1911b4811eb113e6` (ABI 2.20) to build the explicit
-runtime file. Its historical registry qualification predates N4MM format 3;
-the new cohort requires the candidate 0.4.1 binding described above. The generic
+compiler-only test selector. The current cohort uses the Methods v1.3.9 source
+commit `b246b5029cc62cf0cc369df2611069498f2da183` (ABI 2.20);
+its C++ runtime is byte-identical to the preceding qualified `a286ec65` source.
+The separate historical registry qualification predates N4MM format 3;
+the new cohort requires the published 0.4.1 binding described above. The generic
 estimator tests read `parity/fixtures/estimator_roles_n4me.json` from that
 checkout (`N4M_ESTIMATOR_ROLES_FIXTURE`, defaulting to
 `external/nirs4all-methods`). Build that checkout and invoke
@@ -343,8 +341,8 @@ the older formats; the descriptor and exact ABI minimum 2.20 are mandatory.
 Replay re-inspects the complete bytes through the owner binding, including
 the component-resolution extension. Unknown future formats and a format-3
 payload paired with an older ABI declaration are refused. This qualification
-requires the current owner Rust binding: the registry `n4m` 0.4.0 preflight
-does not read format 3, so a new binding publication is a release prerequisite.
+requires the published `n4m` 0.4.1 binding: the older registry 0.4.0 preflight
+does not read format 3.
 
 
 ### Historical archive oracle process boundary

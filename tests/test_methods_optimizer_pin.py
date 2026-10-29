@@ -12,7 +12,6 @@ except ModuleNotFoundError:  # Python 3.10 in the current workspace.
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "test_methods_optimizer_local.sh"
-METHODS_RUNTIME_SOURCE_SHA = "dcc570b3647f77cf0428dd346078f442ed5cd032"
 
 
 def _probe(library_path: str | None) -> subprocess.CompletedProcess[str]:
@@ -52,7 +51,7 @@ def test_ci_and_local_selector_use_the_published_dynamic_binding() -> None:
         (ROOT / "crates" / "dag-ml-core" / "Cargo.toml").read_text(encoding="utf-8")
     )
     dependency = primary["dependencies"]["n4m"]
-    assert dependency["version"] == "0.4.0"
+    assert dependency["version"] == "0.4.1"
     assert dependency["default-features"] is False
     assert dependency["features"] == ["dynamic"]
     assert "git" not in dependency
@@ -60,8 +59,15 @@ def test_ci_and_local_selector_use_the_published_dynamic_binding() -> None:
     assert "methods-optimizer-local" not in primary["features"]
     assert not (ROOT / "crates" / "dag-ml-core" / "Cargo.toml.methods-local").exists()
 
-    archive_core = primary["dev-dependencies"]["nirs4all_archive_core"]
-    assert archive_core == {"package": "nirs4all", "version": "=0.4.0"}
+    assert "nirs4all_archive_core" not in primary.get("dev-dependencies", {})
+    for oracle, version in [("historical", "0.4.3"), ("current", "0.4.6")]:
+        manifest = tomllib.loads(
+            (ROOT / "tools" / f"{oracle}-core-oracle" / "Cargo.toml").read_text()
+        )
+        assert manifest["package"]["publish"] is False
+        assert manifest["dependencies"]["nirs4all_archive_core"] == {
+            "package": "nirs4all", "version": f"={version}"
+        }
 
     helper = SCRIPT.read_text(encoding="utf-8")
     assert "--features methods-optimizer" in helper
@@ -79,15 +85,16 @@ def test_ci_and_local_selector_use_the_published_dynamic_binding() -> None:
         "registry+https://github.com/rust-lang/crates.io-index"
     )
     assert locked_n4m[0]["checksum"] == (
-        "262224913fd9338e523dea8a55e688abab21eb131422a23fc3f2dfb32a4001f6"
+        "4d036a20611f734738741f0b70e8e0393a7fbf6dcf06bb41051a4eeae6d880b8"
     )
 
     workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    methods_job = workflow.split("  methods-hpo-local:", maxsplit=1)[1].split(
+    methods_job = workflow.split("  methods-build:", maxsplit=1)[1].split(
         "\n  sanitizer:", maxsplit=1
     )[0]
-    assert f"ref: {METHODS_RUNTIME_SOURCE_SHA}" in methods_job
-    assert "N4M_LIBRARY_PATH:" in methods_job
+    assert "cargo clippy --locked" in methods_job
+    assert "--features methods-optimizer --all-targets" in methods_job
+    assert "N4M_LIBRARY_PATH:" not in methods_job
     assert "N4M_METHODS_REPO" not in methods_job
     assert "N4M_BINDING_SHA" not in methods_job
 
@@ -119,6 +126,6 @@ def test_hpo_docs_match_the_published_fail_closed_feature_contract() -> None:
         "There is no sibling manifest or sibling source dependency" in normalized_docs
     )
     assert (
-        '`nirs4all_archive_core = "=0.4.0"` development dependency' in normalized_docs
+        '`nirs4all_archive_core = "=0.4.3"` development dependency' in normalized_docs
     )
     assert "must not be presented as cross-source Core qualification" in normalized_docs
