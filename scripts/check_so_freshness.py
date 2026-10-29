@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Guard against a stale committed extension binary (the tracked ``_dag_ml.abi3.so``).
+"""Guard source imports against a stale native extension.
+
+Ignored local extensions require the native bytes from a locked release wheel
+and Rust input hashes measured before and after its successful build. Legacy
+checkouts with a tracked binary retain the commit-history comparison below.
 
 A real bug shipped when the git-tracked ``crates/dag-ml-py/python/dag_ml/_dag_ml.abi3.so``
 had been built at an old commit while the committed Rust sources kept advancing, so the
@@ -25,6 +29,9 @@ Run ``python3 scripts/check_so_freshness.py --self-test`` to exercise both branc
 from __future__ import annotations
 
 import re
+import hashlib
+import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -53,6 +60,51 @@ RUST_SUFFIX = ".rs"
 TEST_ONLY_RUST_FILENAMES = {"tests.rs"}
 
 NOTICE = "check_so_freshness:"
+
+
+def source_fingerprints(repo: Path) -> dict[str, str]:
+    """Hash the actual compiled Rust inputs, independently of Git timestamps."""
+    return {
+        name: hashlib.sha256((repo / name).read_bytes()).hexdigest()
+        for name in sorted(rust_paths(repo))
+    }
+
+
+def check_untracked_artifact(repo: Path, so_path: Path) -> int:
+    """Require a measured successful wheel build for an ignored local extension."""
+    receipt_path = Path(os.environ.get(
+        "DAG_ML_SOURCE_EXTENSION_RECEIPT", str(repo / "target/python-source-build.json")
+    ))
+    try:
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        current = source_fingerprints(repo)
+        if (
+            receipt.get("schema") != "dag-ml.native-source-build.v1"
+            or receipt.get("exit_code") != 0
+            or not current
+            or receipt.get("source_inputs_before") != current
+            or receipt.get("source_inputs_after") != current
+            or receipt.get("extension_sha256")
+            != hashlib.sha256(so_path.read_bytes()).hexdigest()
+        ):
+            raise ValueError("source or native extension differs from its measured build")
+        wheel = Path(receipt["wheel_path"])
+        if hashlib.sha256(wheel.read_bytes()).hexdigest() != receipt["wheel_sha256"]:
+            raise ValueError("qualified wheel bytes changed")
+        import zipfile
+        with zipfile.ZipFile(wheel) as archive:
+            native = [name for name in archive.namelist() if name.endswith(".so")]
+            if len(native) != 1 or hashlib.sha256(archive.read(native[0])).hexdigest() != receipt["extension_sha256"]:
+                raise ValueError("source extension does not match the qualified wheel")
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        print(
+            f"{NOTICE} STALE — ignored extension has no matching source-bound wheel build: {error}. "
+            "Run scripts/build_python_source_artifact.py; do not commit the binary.",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"{NOTICE} fresh — ignored extension matches its wheel and {len(current)} measured Rust inputs.")
+    return 0
 
 
 def rust_code_tokens(source: str) -> tuple[str, ...]:
@@ -333,6 +385,13 @@ def check(repo: Path) -> int:
     if not is_git_repo(repo):
         print(f"{NOTICE} skip — {repo} is not a git work tree.")
         return 0
+
+    tracked = subprocess.run(
+        ["git", "ls-files", "--error-unmatch", "--", SO_RELATIVE],
+        cwd=repo, capture_output=True, check=False,
+    )
+    if tracked.returncode != 0:
+        return check_untracked_artifact(repo, so_path)
 
     so_ts = last_commit_ts(repo, SO_RELATIVE)
     if so_ts is None:
