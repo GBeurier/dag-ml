@@ -149,7 +149,7 @@ jobs:
       - name: Python adapter dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r scripts/requirements-contracts.txt numpy scikit-learn
+          python -m pip install -r scripts/requirements-contracts.txt numpy scikit-learn "maturin==$MATURIN_VERSION"
       - name: Shared contract
         run: python scripts/validate_contracts.py --require-sibling --sibling-root external/dag-ml-data
       - name: Release metadata
@@ -174,11 +174,13 @@ jobs:
         run: cargo build --workspace --locked
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
-      - name: Committed extension freshness
+      - name: Build measured source extension
+        run: python scripts/build_python_source_artifact.py --out target/source-ci-wheel --python python
+      - name: Source extension freshness
         run: |
           python scripts/check_so_freshness.py --self-test
           python scripts/check_so_freshness.py
-      - name: Smoke committed extension public training APIs
+      - name: Smoke measured source extension public training APIs
         run: |
           PYTHONPATH=crates/dag-ml-py/python python - <<'PY'
           import json
