@@ -1,0 +1,5 @@
+   Compiling dag-ml-py v0.3.43 (/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/crates/dag-ml-py)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.56s
+     Running unittests src/lib.rs (crates/dag-ml-py/target/debug/deps/_dag_ml-c110124020ee3b16)
+Could not find platform dependent libraries <exec_prefix>
+   Doc-tests _dag_ml

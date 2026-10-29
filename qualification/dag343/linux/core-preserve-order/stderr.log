@@ -1,0 +1,11 @@
+   Compiling dag-ml-core v0.3.43 (/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/crates/dag-ml-core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.64s
+     Running unittests src/lib.rs (target/debug/deps/dag_ml_core-fb44400262750010)
+     Running tests/bug_audit_regressions.rs (target/debug/deps/bug_audit_regressions-9e2fcd5a0eea0168)
+     Running tests/bug_reaudit_regressions.rs (target/debug/deps/bug_reaudit_regressions-befbb2d9894c9e1c)
+     Running tests/conformal_w0_golden.rs (target/debug/deps/conformal_w0_golden-afd5a89366b0bfe2)
+     Running tests/host_hpo_parallel_browser_refusal.rs (target/debug/deps/host_hpo_parallel_browser_refusal-c57ae313b2e62b86)
+     Running tests/multi_output_ranked_capture.rs (target/debug/deps/multi_output_ranked_capture-f5d5c6f4ecdeab4a)
+     Running tests/residual_target_contract.rs (target/debug/deps/residual_target_contract-b75f2f228d51c552)
+     Running tests/training_runtime_operation.rs (target/debug/deps/training_runtime_operation-7e3f437a9af375ee)
+   Doc-tests dag_ml_core

@@ -1,0 +1,9 @@
+NATIVE_IDENTITY_OK win32 3.13.9 0.3.43 D:\workspace\nirs4all-release-20261029-quality\dag-ml\qualified-windows-wheel\dag_ml\_dag_ml.pyd
+
+test_facade_forwards_explicit_terminal_selector_and_mock_controller (__main__.TerminalPredictFacadeTests.test_facade_forwards_explicit_terminal_selector_and_mock_controller) ... ok
+test_source_extension_executes_closed_terminal_replay_and_preflights_selector (__main__.TerminalPredictFacadeTests.test_source_extension_executes_closed_terminal_replay_and_preflights_selector) ... ok
+
+----------------------------------------------------------------------
+Ran 2 tests in 0.010s
+
+OK

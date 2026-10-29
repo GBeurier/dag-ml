@@ -1,0 +1,21 @@
+test_native_results_writer_round_trips_its_public_view (__main__.ArchiveV3PythonSurfaceTests.test_native_results_writer_round_trips_its_public_view) ... ok
+test_refit_package_surface_is_native_and_fail_closed (__main__.ArchiveV3PythonSurfaceTests.test_refit_package_surface_is_native_and_fail_closed) ... ok
+test_callback_errors_include_type_and_traceback (__main__.TrainingResultTests.test_callback_errors_include_type_and_traceback) ... ok
+test_callback_interrupts_keep_their_python_exception_type (__main__.TrainingResultTests.test_callback_interrupts_keep_their_python_exception_type) ... ok
+test_facade_keeps_portable_views_after_explicit_detach (__main__.TrainingResultTests.test_facade_keeps_portable_views_after_explicit_detach) ... ok
+test_nonfinite_callback_values_are_rejected_before_becoming_null (__main__.TrainingResultTests.test_nonfinite_callback_values_are_rejected_before_becoming_null) ... ok
+test_public_facade_executes_native_training_success (__main__.TrainingResultTests.test_public_facade_executes_native_training_success) ... ok
+test_public_facade_filters_explicit_multi_prediction_port_outputs (__main__.TrainingResultTests.test_public_facade_filters_explicit_multi_prediction_port_outputs) ... ok
+test_public_facade_replays_attached_training_result_predict (__main__.TrainingResultTests.test_public_facade_replays_attached_training_result_predict) ... ok
+test_public_facade_replays_loaded_predictor_package_explain (__main__.TrainingResultTests.test_public_facade_replays_loaded_predictor_package_explain) ... ok
+test_public_facade_replays_loaded_predictor_package_predict (__main__.TrainingResultTests.test_public_facade_replays_loaded_predictor_package_predict) ... ok
+test_public_facade_serializes_conformal_policy_enums_as_json (__main__.TrainingResultTests.test_public_facade_serializes_conformal_policy_enums_as_json) ... ok
+test_public_facade_signs_training_request (__main__.TrainingResultTests.test_public_facade_signs_training_request) ... ok
+test_public_training_exports_generic_raw_artifacts_and_refuses_bad_payloads (__main__.TrainingResultTests.test_public_training_exports_generic_raw_artifacts_and_refuses_bad_payloads) ... ok
+test_raw_entry_point_rejects_duplicate_envelope_keys (__main__.TrainingResultTests.test_raw_entry_point_rejects_duplicate_envelope_keys) ... ok
+test_reentrant_training_result_access_fails_without_blocking_replay (__main__.TrainingResultTests.test_reentrant_training_result_access_fails_without_blocking_replay) ... ok
+
+----------------------------------------------------------------------
+Ran 16 tests in 0.434s
+
+OK

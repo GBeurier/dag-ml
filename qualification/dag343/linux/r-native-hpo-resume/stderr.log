@@ -1,0 +1,8 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.04s
+     Running unittests src/main.rs (target/debug/deps/dag_ml_cli-80c5cb23243a7a9a)
+     Running tests/cli_contracts.rs (target/debug/deps/cli_contracts-a5d1642f6126d8b0)
+     Running tests/dag001_arrow_replay.rs (target/debug/deps/dag001_arrow_replay-34a326fb04e63717)
+     Running tests/initial_full_refit.rs (target/debug/deps/initial_full_refit-82c8d9de6457da1d)
+     Running tests/octave_hpo_ridge.rs (target/debug/deps/octave_hpo_ridge-9850f11a4b767799)
+     Running tests/r_hpo_ridge.rs (target/debug/deps/r_hpo_ridge-7365d87778dca9b3)
+     Running tests/training_contracts.rs (target/debug/deps/training_contracts-8943e6be86f3e8c7)

@@ -1,0 +1,2 @@
+Source043 facade/native/manifest and unchanged CI training API assertions PASS
+N4A_SOURCE_TRAINING_OBSERVATION={"native_version": "0.3.43", "facade_version": "0.3.43", "manifest_version": "0.3.43"}

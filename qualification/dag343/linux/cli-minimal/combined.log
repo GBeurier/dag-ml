@@ -1,0 +1,4 @@
+valid graph: minimal-coordinator-smoke
+
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.04s
+     Running `target/debug/dag-ml-cli validate-graph examples/minimal_graph.json`

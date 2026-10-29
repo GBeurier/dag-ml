@@ -1,0 +1,39 @@
+check_so_freshness: fresh — crates/dag-ml-py/python/dag_ml/_dag_ml.abi3.so (ct=2000000) is at/after the newest Rust source crates/dag-ml-core/src/lib.rs (ct=1000000); checked 6 Rust path(s).
+check_so_freshness: paired dirty state — 1 compiled Rust input(s) and crates/dag-ml-py/python/dag_ml/_dag_ml.abi3.so are modified; commit-time freshness is inapplicable. Require the public source-tree import smoke before accepting this worktree.
+check_so_freshness: fresh — commits newer than crates/dag-ml-py/python/dag_ml/_dag_ml.abi3.so do not change its compiled inputs; tracked .so ct=1000000, newest Rust ct=2000000; checked 6 Rust path(s).
+check_so_freshness: fresh — crates/dag-ml-py/python/dag_ml/_dag_ml.abi3.so (ct=1000000) is at/after the newest Rust source crates/dag-ml-core/src/lib.rs (ct=1000000); checked 6 Rust path(s).
+check_so_freshness: fresh — commits newer than crates/dag-ml-py/python/dag_ml/_dag_ml.abi3.so do not change its compiled inputs; tracked .so ct=1000000, newest Rust ct=2000000; checked 6 Rust path(s).
+check_so_freshness: self-test passed (fresh -> exit 0, stale -> exit 1).
+
+check_so_freshness: STALE — the committed extension binary is older than its Rust sources.
+  tracked .so : crates/dag-ml-py/python/dag_ml/_dag_ml.abi3.so (last commit ct=1000000, mtime=1793288888)
+  newest Rust : crates/dag-ml-core/src/lib.rs (last commit ct=2000000)
+  Rust files committed after the .so:
+  - crates/dag-ml-core/src/lib.rs
+  Remediation: rebuild + commit the .so via `maturin develop --release` (in crates/dag-ml-py), then `git add` the .so.
+check_so_freshness: STALE — compiled Rust inputs are dirty or untracked while crates/dag-ml-py/python/dag_ml/_dag_ml.abi3.so is unchanged.
+  Dirty Rust inputs:
+  - crates/dag-ml-core/src/lib.rs
+  Remediation: rebuild the tracked extension with `maturin develop --release`, then run a public source-tree import smoke.
+check_so_freshness: STALE — the committed extension binary is older than its Rust sources.
+  tracked .so : crates/dag-ml-py/python/dag_ml/_dag_ml.abi3.so (last commit ct=1000000, mtime=1793288888)
+  newest Rust : Cargo.lock (last commit ct=3000000)
+  Rust files committed after the .so:
+  - Cargo.lock
+  Remediation: rebuild + commit the .so via `maturin develop --release` (in crates/dag-ml-py), then `git add` the .so.
+check_so_freshness: STALE — the committed extension binary is older than its Rust sources.
+  tracked .so : crates/dag-ml-py/python/dag_ml/_dag_ml.abi3.so (last commit ct=1000000, mtime=1793288889)
+  newest Rust : crates/dag-ml-py/Cargo.lock (last commit ct=2000000)
+  Rust files committed after the .so:
+  - crates/dag-ml-py/Cargo.lock
+  Remediation: rebuild + commit the .so via `maturin develop --release` (in crates/dag-ml-py), then `git add` the .so.
+check_so_freshness: STALE — compiled Rust inputs are dirty or untracked while crates/dag-ml-py/python/dag_ml/_dag_ml.abi3.so is unchanged.
+  Dirty Rust inputs:
+  - crates/dag-ml-core/Cargo.toml
+  Remediation: rebuild the tracked extension with `maturin develop --release`, then run a public source-tree import smoke.
+check_so_freshness: STALE — the committed extension binary is older than its Rust sources.
+  tracked .so : crates/dag-ml-py/python/dag_ml/_dag_ml.abi3.so (last commit ct=1000000, mtime=1793288889)
+  newest Rust : crates/dag-ml-core/Cargo.toml (last commit ct=3000000)
+  Rust files committed after the .so:
+  - crates/dag-ml-core/Cargo.toml
+  Remediation: rebuild + commit the .so via `maturin develop --release` (in crates/dag-ml-py), then `git add` the .so.

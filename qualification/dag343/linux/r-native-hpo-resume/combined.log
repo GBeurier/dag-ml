@@ -1,0 +1,45 @@
+
+running 1 test
+test tests::host_hpo_cli_runs_parallel_pruning_and_resumes_native_checkpoint ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 2.83s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.04s
+     Running unittests src/main.rs (target/debug/deps/dag_ml_cli-80c5cb23243a7a9a)
+     Running tests/cli_contracts.rs (target/debug/deps/cli_contracts-a5d1642f6126d8b0)
+     Running tests/dag001_arrow_replay.rs (target/debug/deps/dag001_arrow_replay-34a326fb04e63717)
+     Running tests/initial_full_refit.rs (target/debug/deps/initial_full_refit-82c8d9de6457da1d)
+     Running tests/octave_hpo_ridge.rs (target/debug/deps/octave_hpo_ridge-9850f11a4b767799)
+     Running tests/r_hpo_ridge.rs (target/debug/deps/r_hpo_ridge-7365d87778dca9b3)
+     Running tests/training_contracts.rs (target/debug/deps/training_contracts-8943e6be86f3e8c7)

@@ -1,0 +1,8 @@
+
+../home/delete/.local/share/uv/python/cpython-3.12.12-linux-x86_64-gnu/lib/python3.12/zipfile/__init__.py:1624: UserWarning: Duplicate name: 'dagml/portable_predictor_package.json'
+  return self._open_to_write(zinfo, force_zip64=force_zip64)
+.........
+----------------------------------------------------------------------
+Ran 11 tests in 2.382s
+
+OK

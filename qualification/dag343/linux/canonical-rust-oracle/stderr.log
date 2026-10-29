@@ -1,0 +1,4 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+     Running unittests src/lib.rs (parity/canonical/rust-oracle/target/debug/deps/dagml_canonical_rust_oracle-d8af9c89d7bccda1)
+     Running unittests src/main.rs (parity/canonical/rust-oracle/target/debug/deps/dagml_canonical_rust_oracle-eeb84a602801949a)
+   Doc-tests dagml_canonical_rust_oracle
