@@ -71,7 +71,13 @@ N4MM SHA-256, rather than a fabricated JSON-canonicalization digest. Raw
 SHA-256, size and semantic identity match the closed inventory; this matching
 semantic identifier never substitutes for the raw model payload.
 Writers derive the minimum from the payload capability: historical PLS N4MM is
-2.0+, imported-linear/Ridge N4MM is 2.3+, and pipeline N4MM v2 is 2.5+. An absent minor remains readable
+2.0+, imported-linear/Ridge N4MM is 2.3+, pipeline N4MM v2 is 2.5+, and
+component-resolution PLS N4MM v3 (with or without the bounded pipeline) is
+2.20+. Format 3 requires a content-bound native predictor descriptor and an
+explicit ABI minimum; unknown formats remain refused. Reading format 3 needs
+the current owner binding and a qualified Core reader; the historical Core
+0.4.3 reference process is qualified only on its original format-1/2 cohort.
+An absent minor remains readable
 only for the historical PLS profile; it never defaults a Ridge payload to 2.3.
 
 ## Additive RolePipeline transport

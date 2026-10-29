@@ -6568,6 +6568,7 @@ impl RuntimeController for CapiMockController {
                 metrics: BTreeMap::new(),
                 loss_attestations: Vec::new(),
                 early_stopping_records: Vec::new(),
+                target_domain: None,
             },
         })
     }
@@ -6834,6 +6835,7 @@ mod tests {
                 metrics: BTreeMap::new(),
                 loss_attestations: Vec::new(),
                 early_stopping_records: Vec::new(),
+                target_domain: None,
             },
         };
         if result.validate_for_task(&task).is_err() {
@@ -6959,6 +6961,7 @@ mod tests {
                 metrics: BTreeMap::new(),
                 loss_attestations: task.required_loss_attestations.clone(),
                 early_stopping_records: Vec::new(),
+                target_domain: None,
             },
         };
         if result.validate_for_task(&task).is_err() {
@@ -7261,6 +7264,7 @@ mod tests {
                 metrics: BTreeMap::new(),
                 loss_attestations: Vec::new(),
                 early_stopping_records: Vec::new(),
+                target_domain: None,
             },
         };
         result.validate_for_task(&task).unwrap();

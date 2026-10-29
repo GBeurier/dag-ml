@@ -114,7 +114,7 @@ pub struct NativePredictorDimensionsV1 {
 /// Opaque, Methods-attested description of the preprocessing embedded in N4MM.
 ///
 /// DAG-ML does not decode operator numbers or reproduce their kernels. The
-/// public `n4m` inspector has already reduced the only supported format-2
+/// public `n4m` inspector has already reduced the supported format-2/3
 /// pipeline to this typed contract. Window and polynomial degree are retained
 /// solely so replay can cross-check the signed controller parameters against
 /// the imported native payload.
@@ -255,15 +255,19 @@ impl NativePredictorDescriptorV1 {
                     && required_predict
                     && self.dimensions.n_components > 0
                     && match &self.pipeline {
-                        None => self.format_version == 1 && !has_pipeline_capability,
+                        None => matches!(self.format_version, 1 | 3) && !has_pipeline_capability,
                         Some(pipeline) => {
-                            self.format_version == 2
+                            matches!(self.format_version, 2 | 3)
                                 && has_pipeline_capability
                                 && pipeline.validate().is_ok()
                                 && pipeline.raw_n_features == self.dimensions.n_features
                                 && pipeline.model_n_features == self.dimensions.n_features
                         }
                     }
+                    && (self.format_version != 3
+                        || (self.writer_abi.major == crate::hpo::METHODS_ABI_MAJOR
+                            && self.writer_abi.minor
+                                >= crate::hpo::METHODS_COMPONENT_RESOLUTION_N4MM_MIN_ABI_MINOR))
             }
             NATIVE_PREDICTOR_METHODS_RIDGE_OWNER => {
                 self.storage_algorithm == NATIVE_PREDICTOR_ALGORITHM_IMPORTED_LINEAR
@@ -1324,11 +1328,71 @@ mod native_predictor_descriptor_tests {
         wrong_format.descriptor_fingerprint = wrong_format.compute_fingerprint().unwrap();
         assert!(wrong_format.validate().is_err());
     }
+
+    #[test]
+    fn component_resolution_v3_keeps_pls_pipeline_and_abi_guards() {
+        let mut descriptor = signed_descriptor(
+            NATIVE_PREDICTOR_METHODS_PLS_OWNER,
+            NATIVE_PREDICTOR_ALGORITHM_PLS,
+            NATIVE_PREDICTOR_CAPABILITY_PREDICT | NATIVE_PREDICTOR_CAPABILITY_TRANSFORM,
+            1,
+        );
+        descriptor.format_version = 3;
+        descriptor.writer_abi.minor = crate::hpo::METHODS_COMPONENT_RESOLUTION_N4MM_MIN_ABI_MINOR;
+        descriptor.descriptor_fingerprint = descriptor.compute_fingerprint().unwrap();
+        descriptor.validate().unwrap();
+        let plain = descriptor.clone();
+
+        descriptor.capabilities |= NATIVE_PREDICTOR_CAPABILITY_PIPELINE;
+        descriptor.pipeline = Some(NativePredictorPipelineV1 {
+            pipeline_type: NATIVE_PREDICTOR_PIPELINE_TYPE_SNV_SAVGOL_V1.to_string(),
+            schema_version: 1,
+            operator_count: 2,
+            raw_n_features: 3,
+            model_n_features: 3,
+            fingerprint_algorithm: NATIVE_PREDICTOR_PIPELINE_FINGERPRINT_FNV1A64_V1.to_string(),
+            native_fingerprint: "0123456789abcdef".to_string(),
+            savgol_window: 3,
+            savgol_poly_degree: 2,
+        });
+        descriptor.descriptor_fingerprint = descriptor.compute_fingerprint().unwrap();
+        descriptor.validate().unwrap();
+
+        let mut missing_pipeline = descriptor.clone();
+        missing_pipeline.pipeline = None;
+        let mut missing_capability = descriptor.clone();
+        missing_capability.capabilities &= !NATIVE_PREDICTOR_CAPABILITY_PIPELINE;
+        let mut old_reader = plain.clone();
+        old_reader.writer_abi.minor -= 1;
+        let mut wrong_owner = plain.clone();
+        wrong_owner.owner_controller =
+            ControllerId::new(NATIVE_PREDICTOR_METHODS_RIDGE_OWNER).unwrap();
+        let mut future = plain.clone();
+        future.format_version = 4;
+        let mut wrong_dimensions = descriptor;
+        wrong_dimensions.pipeline.as_mut().unwrap().model_n_features = 4;
+        for mut invalid in [
+            missing_pipeline,
+            missing_capability,
+            old_reader,
+            wrong_owner,
+            future,
+            wrong_dimensions,
+        ] {
+            invalid.descriptor_fingerprint = invalid.compute_fingerprint().unwrap();
+            assert!(invalid.validate().is_err());
+        }
+        let mut tampered = plain;
+        tampered.dimensions.n_features += 1;
+        assert!(tampered.validate().is_err());
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LineageRecord {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_domain: Option<crate::target_domain::TargetDomain>,
     pub record_id: LineageId,
     pub run_id: RunId,
     pub node_id: NodeId,
@@ -1359,6 +1423,7 @@ pub struct LineageRecord {
 
 impl LineageRecord {
     pub fn validate(&self) -> Result<()> {
+        crate::target_domain::validate_domain_lineage(self)?;
         if self.params_fingerprint.trim().is_empty() {
             return Err(DagMlError::RuntimeValidation(format!(
                 "lineage `{}` has empty params fingerprint",

@@ -1165,6 +1165,51 @@ mod tests {
     }
 
     #[test]
+    fn reads_real_zstd_compressed_parquet_without_changing_native_results() {
+        let fixture = Fixture::new();
+        let expected = read_native_results(fixture.path()).expect("fixture must read");
+        let original = fs::File::open(fixture.path().join(PREDICTIONS_FILENAME)).unwrap();
+        let reader =
+            parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(original)
+                .unwrap();
+        let schema = Arc::clone(reader.schema());
+        let batches = reader
+            .build()
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let compressed_path = fixture.path().join("zstd-predictions.parquet");
+        let props = parquet::file::properties::WriterProperties::builder()
+            .set_compression(parquet::basic::Compression::ZSTD(
+                parquet::basic::ZstdLevel::default(),
+            ))
+            .build();
+        let mut writer = ArrowWriter::try_new(
+            fs::File::create(&compressed_path).unwrap(),
+            schema,
+            Some(props),
+        )
+        .unwrap();
+        for batch in batches {
+            writer.write(&batch).unwrap();
+        }
+        writer.close().unwrap();
+        let reader = parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(
+            fs::File::open(&compressed_path).unwrap(),
+        )
+        .unwrap();
+        assert!(reader
+            .metadata()
+            .row_groups()
+            .iter()
+            .flat_map(|group| group.columns())
+            .all(|column| matches!(column.compression(), parquet::basic::Compression::ZSTD(_))));
+        drop(reader);
+        fs::rename(compressed_path, fixture.path().join(PREDICTIONS_FILENAME)).unwrap();
+        assert_eq!(read_native_results(fixture.path()).unwrap(), expected);
+    }
+
+    #[test]
     fn writer_rejects_misaligned_sample_ids_before_writing() {
         let fixture = Fixture::new();
         let source = read_native_results(fixture.path()).expect("fixture must read");

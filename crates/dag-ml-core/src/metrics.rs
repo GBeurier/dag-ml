@@ -280,6 +280,8 @@ pub fn reassemble_merge_targets(
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RegressionMetricReport {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_domain: Option<crate::target_domain::TargetDomain>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grouping_key: Option<crate::policy::AggregationGroupingKey>,
     #[serde(default)]
     pub prediction_id: Option<String>,
@@ -312,6 +314,14 @@ pub struct RegressionMetricReport {
 
 impl RegressionMetricReport {
     pub fn validate(&self) -> Result<()> {
+        if let Some(domain) = &self.target_domain {
+            domain.validate()?;
+            if self.level != PredictionLevel::Sample || self.target_width != 1 {
+                return Err(DagMlError::OofValidation(
+                    "categorical target domain requires mono-y sample score".into(),
+                ));
+            }
+        }
         if let Some(key) = &self.grouping_key {
             key.validate()?;
             if self.level != PredictionLevel::Group {
@@ -802,6 +812,7 @@ fn score_regression_rows(
     }
 
     let report = RegressionMetricReport {
+        target_domain: None,
         grouping_key: None,
         prediction_id: predictions.origin.prediction_id,
         producer_node: predictions.origin.producer_node,
@@ -949,6 +960,7 @@ fn score_masked_regression_rows_with_grouping(
         }
     }
     let report = RegressionMetricReport {
+        target_domain: None,
         grouping_key: None,
         prediction_id: predictions.origin.prediction_id,
         producer_node: predictions.origin.producer_node,
@@ -2209,6 +2221,7 @@ mod tests {
             .iter()
             .zip([1.0, 3.0])
             .map(|(block, rmse)| RegressionMetricReport {
+                target_domain: None,
                 grouping_key: None,
                 prediction_id: None,
                 producer_node: block.producer_node.clone(),
@@ -2948,6 +2961,7 @@ mod tests {
         rmse: f64,
     ) -> RegressionMetricReport {
         RegressionMetricReport {
+            target_domain: None,
             grouping_key: None,
             prediction_id: None,
             producer_node: NodeId::new("model:compat.0").unwrap(),
@@ -2971,6 +2985,7 @@ mod tests {
         rmse: f64,
     ) -> RegressionMetricReport {
         RegressionMetricReport {
+            target_domain: None,
             producer_port: port.map(ToString::to_string),
             ..score_report(partition, fold, rmse)
         }

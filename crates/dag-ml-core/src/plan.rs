@@ -326,6 +326,7 @@ impl ExecutionPlan {
     pub fn validate(&self) -> Result<()> {
         self.graph_plan.graph.validate()?;
         self.campaign.validate()?;
+        crate::target_domain::validate_domain_plan(self)?;
         // Retain the historical parallel-levels compatibility: an empty cached
         // level list is allowed (recomputed on demand), a present one must match.
         if !self.graph_plan.parallel_levels.is_empty()

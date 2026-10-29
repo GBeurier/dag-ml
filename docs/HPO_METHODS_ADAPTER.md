@@ -19,8 +19,11 @@ generators. See [structural host HPO](HOST_STRUCTURAL_HPO.md) for the immutable
 catalogue, active parameter axes, checkpoint identities and winner REFIT path.
 
 The `dag-ml-core` crate exposes the opt-in public `methods-optimizer` Cargo
-feature through the published dynamic `n4m` 0.4.0 binding (Methods ABI 2.17,
-generic estimator roles). Default builds leave
+feature through the candidate dynamic `n4m` 0.4.1 binding (Methods ABI 2.20,
+generic estimator roles and authoritative runtime ABI querying). This binding
+must be published before the new DAG-ML cohort can resolve from registries.
+Local qualification explicitly overrides it with its owner source; it is not
+evidence of a published dependency. Default builds leave
 that feature disabled and refuse HPO before an
 objective can be called, with the typed
 `HpoError::MethodsOptimizerFeatureDisabled`. The integration helper enables
@@ -89,10 +92,22 @@ The tracked root workspace and standalone `dag-ml-py` maturin workspace both
 lock that binding from the registry with its published checksum. A local path
 patch is evidence only, never a release source.
 
-The `nirs4all_archive_core = "=0.4.3"` development dependency is a registry
-baseline used only by the Archive V2 integration tests. It is not the Core
-selected by the release train and must not be presented as cross-source Core
-qualification; that qualification is owned by a separate integration harness.
+The `nirs4all_archive_core = "=0.4.3"` historical oracle dependency lives only
+in the standalone, non-publishable `tools/historical-core-oracle` workspace.
+The bounded process bridge invokes that exact Core's writer, typed/generic
+loaders and member-tampering rejection on trusted generated fixtures. The
+existing byte-preservation and fresh native replay witnesses still execute;
+they fail if the helper has not been built. It never accepts user archive paths.
+Build it with `cargo +1.88.0 build --locked --manifest-path
+tools/historical-core-oracle/Cargo.toml` before native archive conformance tests.
+
+This separation removes obsolete parser/compression dependencies from the
+published DAG runtime graph; it does not repair the immutable historical
+artifacts. Audit the complete legacy graph with `cargo audit --deny warnings
+--file tools/historical-core-oracle/Cargo.lock`; its known findings remain
+visible and the separate manual `historical-oracle-security` workflow fails
+on them. No advisory is ignored. This baseline is not the Core selected by the
+release train; current Core cross-source qualification remains separate.
 
 ## Generic estimator roles
 
@@ -214,9 +229,10 @@ JSON-deserialized outcome replay in a new process/controller without retaining
 the refit controller's in-memory handles.
 
 The `dag-ml-core/Cargo.toml` manifest offers an opt-in `methods-optimizer`
-feature targeting the published dynamic `n4m` 0.4.0 binding. Local
-qualification builds the exact Methods runtime named above without patching
-the release dependency. Default builds and extracted crates do not link, load,
+feature targeting `n4m` 0.4.1. Local qualification explicitly supplies the
+unpublished owner crate using a Cargo configuration override. The manifest
+declares the actual API minimum rather than calling a getter absent in 0.4.0.
+Default builds and extracted crates do not link, load,
 or require a Methods checkout. A caller must explicitly configure an absolute
 `libn4m` file through `MethodsRuntime::configure` before constructing either Methods
 controller; there is no `PATH`, current-directory, sibling-checkout, or
@@ -225,7 +241,8 @@ legacy fallback.
 The local integration helper activates the published feature and that
 compiler-only test selector. It uses the Methods v1.3.7 source commit
 `09495e52bc1314612025f0fd1911b4811eb113e6` (ABI 2.20) to build the explicit
-runtime file, but resolves the Rust binding from crates.io. The generic
+runtime file. Its historical registry qualification predates N4MM format 3;
+the new cohort requires the candidate 0.4.1 binding described above. The generic
 estimator tests read `parity/fixtures/estimator_roles_n4me.json` from that
 checkout (`N4M_ESTIMATOR_ROLES_FIXTURE`, defaulting to
 `external/nirs4all-methods`). Build that checkout and invoke
@@ -318,3 +335,39 @@ Historical Archive V2 members without the additive descriptor stay readable,
 but they pass the same native algorithm/capability inspection at hydration.
 Pipeline N4MM format 2 always requires the descriptor and ABI minimum 2.5;
 signed controller parameters are cross-checked against its typed SG values.
+
+PLS N4MM format 3 records the component resolution and an explicit embedded
+pipeline flag (Methods commit `4ab6cd1f`, ABI 2.20). It accepts only the same
+PLS algorithm, capabilities, dimensions and bounded pipeline attestation as
+the older formats; the descriptor and exact ABI minimum 2.20 are mandatory.
+Replay re-inspects the complete bytes through the owner binding, including
+the component-resolution extension. Unknown future formats and a format-3
+payload paired with an older ABI declaration are refused. This qualification
+requires the current owner Rust binding: the registry `n4m` 0.4.0 preflight
+does not read format 3, so a new binding publication is a release prerequisite.
+
+
+### Historical archive oracle process boundary
+
+The exact `nirs4all_archive_core = "=0.4.3"` development dependency is a registry baseline
+inside the non-publishable, standalone `tools/historical-core-oracle` workspace.
+It must not be presented as cross-source Core qualification. The public runtime
+workspace no longer links that historical dependency graph. The same retained
+Methods/Archive V2 witness still calls the actual Core 0.4.3 writer, typed loader,
+member accessor and generic V2 loader through a bounded JSON subprocess.
+All returned members and reference identities are checked byte-for-byte; no
+archive or scientific computation is reimplemented by the transport.
+
+The helper accepts no paths and only reads the archive it just wrote from the
+trusted generated test fixture in a private temporary directory. JSON transport
+is bounded at 16 MiB and 256 members; runtime execution is bounded at 30 seconds.
+Build with `cargo +1.88.0 build --locked --manifest-path tools/historical-core-oracle/Cargo.toml`
+before the compiler-selected `methods-optimizer-local` runtime tests. A missing
+helper is an error, never a skip. `DAG_ML_HISTORICAL_CORE_ORACLE` can select an
+explicitly built test binary.
+
+The historical helper retains old transitive ZIP dependencies and deprecated
+unsafe-libyaml. Its separate `cargo audit --file tools/historical-core-oracle/Cargo.lock`
+remains an explicit security-debt report; a green public-workspace audit does
+not qualify those historical dependencies as patched or safe for user data.
+These legacy dependencies must never receive uploaded or external archives.

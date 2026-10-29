@@ -417,6 +417,12 @@ pub(crate) fn apply_result_scoring(
                 score_regression_prediction_block(block, targets, SCORE_METRICS)?
             };
             report.variant_id = result.lineage.variant_id.clone();
+            report.target_domain = result.lineage.target_domain.clone();
+            if report.target_domain.is_some() {
+                report.metrics.retain(|name, _| {
+                    matches!(name.as_str(), "accuracy" | "balanced_accuracy" | "f1")
+                });
+            }
             collector.push(report);
             // Retain y_true (tagged with its variant/fold/partition) so the OOF average can be
             // scored later, per-variant.
@@ -462,6 +468,12 @@ pub(crate) fn apply_result_scoring(
             }
             let mut report = score_regression_aggregated_block(block, targets, SCORE_METRICS)?;
             report.variant_id = result.lineage.variant_id.clone();
+            report.target_domain = result.lineage.target_domain.clone();
+            if report.target_domain.is_some() {
+                report.metrics.retain(|name, _| {
+                    matches!(name.as_str(), "accuracy" | "balanced_accuracy" | "f1")
+                });
+            }
             collector.push(report);
         }
     }

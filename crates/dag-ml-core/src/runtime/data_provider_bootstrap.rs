@@ -193,6 +193,7 @@ impl RuntimeController for SourceController {
                 metrics: BTreeMap::new(),
                 loss_attestations: Vec::new(),
                 early_stopping_records: Vec::new(),
+                target_domain: None,
             },
         };
         *captured = Some(materialized);

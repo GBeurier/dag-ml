@@ -1327,6 +1327,7 @@ fn lineage_rejects_duplicate_or_out_of_scope_early_stopping_records() {
         metrics: BTreeMap::new(),
         loss_attestations: Vec::new(),
         early_stopping_records: vec![record.clone()],
+        target_domain: None,
     };
     lineage.validate().unwrap();
 
@@ -1438,6 +1439,7 @@ impl RuntimeController for VariantProbeController {
                 metrics: BTreeMap::new(),
                 loss_attestations: Vec::new(),
                 early_stopping_records: Vec::new(),
+                target_domain: None,
             },
         })
     }
@@ -1523,6 +1525,7 @@ impl RuntimeController for ShapeDataController {
                 metrics: BTreeMap::new(),
                 loss_attestations: Vec::new(),
                 early_stopping_records: Vec::new(),
+                target_domain: None,
             },
         })
     }
@@ -1609,6 +1612,7 @@ impl RuntimeController for DataViewProbeController {
                 metrics: BTreeMap::new(),
                 loss_attestations: Vec::new(),
                 early_stopping_records: Vec::new(),
+                target_domain: None,
             },
         })
     }
@@ -1738,6 +1742,7 @@ impl RuntimeController for MockController {
                 metrics: BTreeMap::new(),
                 loss_attestations: Vec::new(),
                 early_stopping_records: Vec::new(),
+                target_domain: None,
             },
         })
     }
@@ -1973,6 +1978,7 @@ impl RuntimeController for ReplayMockController {
                 metrics: BTreeMap::new(),
                 loss_attestations: Vec::new(),
                 early_stopping_records: Vec::new(),
+                target_domain: None,
             },
         })
     }
@@ -2139,6 +2145,7 @@ impl RuntimeController for OofEdgeController {
                 metrics: BTreeMap::new(),
                 loss_attestations: Vec::new(),
                 early_stopping_records: Vec::new(),
+                target_domain: None,
             },
         })
     }
@@ -2260,6 +2267,7 @@ impl RuntimeController for CaptureOofValuesController {
                 metrics: BTreeMap::new(),
                 loss_attestations: Vec::new(),
                 early_stopping_records: Vec::new(),
+                target_domain: None,
             },
         })
     }
@@ -2368,6 +2376,7 @@ impl RuntimeController for ExpectedRefitOofController {
                 metrics: BTreeMap::new(),
                 loss_attestations: Vec::new(),
                 early_stopping_records: Vec::new(),
+                target_domain: None,
             },
         })
     }
@@ -2495,6 +2504,7 @@ impl RuntimeController for GroupAggregatedOofController {
                 metrics: BTreeMap::new(),
                 loss_attestations: Vec::new(),
                 early_stopping_records: Vec::new(),
+                target_domain: None,
             },
         })
     }
@@ -2793,6 +2803,7 @@ impl RuntimeController for ObservationPredictionRuntimeController {
                 metrics: BTreeMap::new(),
                 loss_attestations: Vec::new(),
                 early_stopping_records: Vec::new(),
+                target_domain: None,
             },
         })
     }
@@ -3957,6 +3968,7 @@ fn stacking_best_selector_uses_validation_score_before_meta_fit() {
         (format!("{second}.oof"), input(second.clone(), 2.0)),
     ]);
     let report = |producer_node, rmse| crate::metrics::RegressionMetricReport {
+        target_domain: None,
         grouping_key: None,
         prediction_id: None,
         producer_node,
@@ -4031,6 +4043,7 @@ fn stacking_fold_candidate_top_k_uses_only_inner_validation_scores() {
         target_names: vec!["y".to_string()],
     };
     let report = |producer_node, fold, rmse| crate::metrics::RegressionMetricReport {
+        target_domain: None,
         grouping_key: None,
         prediction_id: None,
         producer_node,
@@ -4395,6 +4408,7 @@ fn parallel_scheduler_invokes_independent_level_concurrently() {
                     metrics: BTreeMap::new(),
                     loss_attestations: Vec::new(),
                     early_stopping_records: Vec::new(),
+                    target_domain: None,
                 },
             })
         }
@@ -4559,6 +4573,7 @@ fn parallel_campaign_scheduler_stress_matches_sequential_across_variants_and_fol
                     metrics: BTreeMap::new(),
                     loss_attestations: Vec::new(),
                     early_stopping_records: Vec::new(),
+                    target_domain: None,
                 },
             })
         }
@@ -8558,6 +8573,7 @@ fn node_result_consumption_binds_a_successful_read_to_its_native_receipt() {
             metrics: BTreeMap::new(),
             loss_attestations: Vec::new(),
             early_stopping_records: Vec::new(),
+            target_domain: None,
         },
     };
     result.validate_consumed_data_views_for_task(&task).unwrap();
@@ -10055,6 +10071,7 @@ fn node_result_validation_rejects_predictions_outside_validation_view() {
             metrics: BTreeMap::new(),
             loss_attestations: Vec::new(),
             early_stopping_records: Vec::new(),
+            target_domain: None,
         },
     };
 
@@ -10181,6 +10198,7 @@ fn node_result_validation_rejects_aggregated_units_outside_validation_view() {
             metrics: BTreeMap::new(),
             loss_attestations: Vec::new(),
             early_stopping_records: Vec::new(),
+            target_domain: None,
         },
     };
 
@@ -10321,6 +10339,7 @@ fn controller_emitted_aggregated_block_must_match_policy_level() {
         metrics: BTreeMap::new(),
         loss_attestations: Vec::new(),
         early_stopping_records: Vec::new(),
+        target_domain: None,
     };
     let base_result = |level: PredictionLevel, unit: PredictionUnitId| NodeResult {
         schema_version: None,
@@ -13666,6 +13685,7 @@ fn native_scoring_collects_reports_and_builds_score_set() {
             metrics: BTreeMap::new(),
             loss_attestations: Vec::new(),
             early_stopping_records: Vec::new(),
+            target_domain: None,
         },
     };
 
@@ -13776,6 +13796,7 @@ fn auxiliary_prediction_port_matches_primary_cohort_and_does_not_score() {
             metrics: BTreeMap::new(),
             loss_attestations: Vec::new(),
             early_stopping_records: Vec::new(),
+            target_domain: None,
         },
     };
     normalize_result_prediction_ports(&plan, &task, &mut result).unwrap();
@@ -14131,6 +14152,7 @@ impl RuntimeController for VariantScoringController {
                 metrics: BTreeMap::new(),
                 loss_attestations: Vec::new(),
                 early_stopping_records: Vec::new(),
+                target_domain: None,
             },
         })
     }
@@ -16489,6 +16511,7 @@ impl RuntimeController for MultiPortVariantScoringController {
                 metrics: BTreeMap::new(),
                 loss_attestations: Vec::new(),
                 early_stopping_records: Vec::new(),
+                target_domain: None,
             },
         })
     }
@@ -18159,6 +18182,7 @@ impl RuntimeController for BranchScopeRecordingController {
                 metrics: BTreeMap::new(),
                 loss_attestations: Vec::new(),
                 early_stopping_records: Vec::new(),
+                target_domain: None,
             },
         })
     }
@@ -18259,6 +18283,7 @@ impl RuntimeController for OverlapEmittingController {
                 metrics: BTreeMap::new(),
                 loss_attestations: Vec::new(),
                 early_stopping_records: Vec::new(),
+                target_domain: None,
             },
         })
     }
@@ -18904,6 +18929,7 @@ impl RuntimeController for SilentBranchController {
                 metrics: BTreeMap::new(),
                 loss_attestations: Vec::new(),
                 early_stopping_records: Vec::new(),
+                target_domain: None,
             },
         })
     }
@@ -19072,6 +19098,7 @@ impl RuntimeController for ScoringBranchController {
                 metrics: BTreeMap::new(),
                 loss_attestations: Vec::new(),
                 early_stopping_records: Vec::new(),
+                target_domain: None,
             },
         })
     }
@@ -19810,6 +19837,7 @@ impl RuntimeController for FusionBranchController {
                 metrics: BTreeMap::new(),
                 loss_attestations: Vec::new(),
                 early_stopping_records: Vec::new(),
+                target_domain: None,
             },
         })
     }
@@ -20265,6 +20293,7 @@ impl RuntimeController for ProbaBranchController {
                 metrics: BTreeMap::new(),
                 loss_attestations: Vec::new(),
                 early_stopping_records: Vec::new(),
+                target_domain: None,
             },
         })
     }
@@ -20535,6 +20564,7 @@ impl RuntimeController for OffFoldScoringController {
                 metrics: BTreeMap::new(),
                 loss_attestations: Vec::new(),
                 early_stopping_records: Vec::new(),
+                target_domain: None,
             },
         })
     }
@@ -20881,6 +20911,7 @@ impl RuntimeController for OffFoldDuplicationController {
                 metrics: BTreeMap::new(),
                 loss_attestations: Vec::new(),
                 early_stopping_records: Vec::new(),
+                target_domain: None,
             },
         })
     }
@@ -21367,6 +21398,7 @@ impl RuntimeController for DuplicateSampleBranchController {
                 metrics: BTreeMap::new(),
                 loss_attestations: Vec::new(),
                 early_stopping_records: Vec::new(),
+                target_domain: None,
             },
         })
     }
@@ -21517,6 +21549,7 @@ impl RuntimeController for StackingOffFoldController {
                 metrics: BTreeMap::new(),
                 loss_attestations: Vec::new(),
                 early_stopping_records: Vec::new(),
+                target_domain: None,
             },
         })
     }
@@ -21945,6 +21978,7 @@ impl RuntimeController for OperatorScoringController {
                 metrics: BTreeMap::new(),
                 loss_attestations: Vec::new(),
                 early_stopping_records: Vec::new(),
+                target_domain: None,
             },
         })
     }

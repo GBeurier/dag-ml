@@ -8,12 +8,182 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use dag_ml_core::training::PredictionSource;
 use dag_ml_core::*;
-#[cfg(feature = "methods-optimizer-local")]
-use nirs4all_archive_core::{
-    load_archive, load_archive_v2, write_archive_v2, ArchivePayload, ArchiveV2WriteRequest,
-    LoadedArchive,
-};
 use sha2::{Digest, Sha256};
+
+struct FoldDomainController(TrainingController);
+
+impl RuntimeController for FoldDomainController {
+    fn controller_id(&self) -> &ControllerId {
+        self.0.controller_id()
+    }
+    fn invoke(&self, task: &NodeTask) -> Result<NodeResult> {
+        let mut result = self.0.invoke(task)?;
+        let label = if task
+            .fold_id
+            .as_ref()
+            .is_some_and(|fold| fold.as_str() == "fold:1")
+        {
+            1.0
+        } else {
+            0.0
+        };
+        for block in &mut result.predictions {
+            for row in &mut block.values {
+                row[0] = if row[0] == 0.0 { label } else { 1.0 - label };
+            }
+        }
+        for block in &mut result.regression_targets {
+            for row in &mut block.values {
+                row[0] = label;
+            }
+        }
+        let mut fit_sample_ids = task
+            .data_views
+            .values()
+            .filter(|view| {
+                matches!(
+                    view.partition,
+                    DataRequestPartition::FoldTrain | DataRequestPartition::FullTrain
+                )
+            })
+            .filter_map(|view| view.sample_ids.as_ref())
+            .flatten()
+            .cloned()
+            .collect::<Vec<_>>();
+        fit_sample_ids.sort();
+        fit_sample_ids.dedup();
+        let state_json =
+            serde_json::json!({"fixture_domain":task.fold_id,"class_zero_threshold":label})
+                .to_string();
+        result.lineage.target_domain = Some(target_domain::TargetDomain {
+            schema_version: 1,
+            recipe_fingerprint: "a".repeat(64),
+            state_fingerprint: content_hash(&state_json),
+            state_json,
+            fit_sample_ids,
+            class_labels: vec![0.0, 1.0],
+        });
+        Ok(result)
+    }
+}
+
+#[test]
+fn fold_local_domains_native_training_select_and_portable_validation_are_exact() {
+    let mut fixture = fixture(true, false);
+    fixture.request.campaign.shape_plans.clear();
+    fixture.request.graph.metadata.insert(target_domain::TARGET_DOMAIN_POLICY_KEY.into(),serde_json::json!({
+        "schema_version":1,"mode":"fold_local_macro","node_id":"model:base","recipe_fingerprint":"a".repeat(64),"class_labels":[0.0,1.0]
+    }));
+    fixture.request.options.outputs[0].prediction_kind = PredictionKind::ClassLabel;
+    fixture.request.options.outputs[0].class_labels = vec![vec!["0".into(), "1".into()]];
+    fixture.request.options.selection.metric = SelectionMetric {
+        name: "balanced_accuracy".into(),
+        objective: MetricObjective::Maximize,
+    };
+    rebuild(&mut fixture);
+    let state = Arc::new(CallState::default());
+    *state.preferred.lock().unwrap() = Some(fixture.preferred.clone());
+    let mut registry = RuntimeControllerRegistry::new();
+    registry
+        .register(Box::new(TrainingController {
+            id: ControllerId::new("controller:transform.mock").unwrap(),
+            state: state.clone(),
+            emits_predictions: false,
+            emits_artifact: false,
+            prediction_name: "aux".into(),
+        }))
+        .unwrap();
+    registry
+        .register(Box::new(FoldDomainController(TrainingController {
+            id: ControllerId::new("controller:model.mock").unwrap(),
+            state,
+            emits_predictions: true,
+            emits_artifact: true,
+            prediction_name: "protein".into(),
+        })))
+        .unwrap();
+    let provider = provider(&fixture);
+    let mut store = InMemoryArtifactStore::new();
+    let outcome = execute_training(TrainingExecutionInput {
+        request: &fixture.request,
+        outcome_id: "outcome:fold-domains".into(),
+        run_id: RunId::new("run:fold-domains").unwrap(),
+        bundle_id: BundleId::new("bundle:fold-domains").unwrap(),
+        controllers: &registry,
+        data_provider: &provider,
+        relations: &fixture.relations,
+        training_influence: &fixture.influence,
+        artifact_store: &mut store,
+        warnings: Vec::new(),
+        diagnostics: BTreeMap::new(),
+    })
+    .unwrap();
+    assert_eq!(outcome.selected_variant_id, fixture.preferred);
+    assert!(
+        outcome.oof_averages.is_empty()
+            && outcome.variant_oof_averages.is_empty()
+            && outcome.ensemble_averages.is_empty()
+    );
+    let serialized = serde_json::to_string(&outcome).unwrap();
+    TrainingOutcome::from_json(&serialized).unwrap();
+    let mut changed = outcome.clone();
+    let other_domain = changed
+        .score_set
+        .reports
+        .iter_mut()
+        .find(|report| {
+            report.variant_id.as_ref() != Some(&outcome.selected_variant_id)
+                && report.target_domain.is_some()
+        })
+        .unwrap()
+        .target_domain
+        .as_mut()
+        .unwrap();
+    other_domain.state_json = "{\"fixture_domain\":\"different mapping\"}".into();
+    other_domain.state_fingerprint = content_hash(&other_domain.state_json);
+    changed.execution_bundle.scores = Some(changed.score_set.clone());
+    resign_outcome(&mut changed);
+    assert!(changed
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("not comparable"));
+    let mut changed = outcome.clone();
+    let summary = changed
+        .score_set
+        .reports
+        .iter_mut()
+        .find(|report| {
+            report
+                .fold_id
+                .as_ref()
+                .is_some_and(|fold| fold.as_str() == "macro")
+        })
+        .unwrap();
+    summary.metrics.insert("balanced_accuracy".into(), 0.123);
+    changed.execution_bundle.scores = Some(changed.score_set.clone());
+    resign_outcome(&mut changed);
+    assert!(changed
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("macro score"));
+    let mut changed = outcome;
+    let domain = changed
+        .score_set
+        .reports
+        .iter_mut()
+        .find_map(|report| report.target_domain.as_mut())
+        .unwrap();
+    domain.fit_sample_ids = vec![sample("foreign:sample")];
+    changed.execution_bundle.scores = Some(changed.score_set.clone());
+    resign_outcome(&mut changed);
+    assert!(changed
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("domain"));
+}
 
 #[cfg(feature = "methods-optimizer-local")]
 #[path = "../src/stable_json.rs"]
@@ -135,8 +305,8 @@ struct AttestedProvider {
     /// predictions; this provider only supplies the selected validation labels.
     methods_hpo_oof_target_offsets: BTreeMap<i64, f64>,
     /// A real provider-boundary refusal keyed by the scheduler-attested HPO
-    /// variant identity. It is used only after native Median has terminalized
-    /// its pruned candidate; the optimizer itself never fabricates a failure.
+    /// variant identity. It qualifies failed-trial/resume paths without
+    /// relying on obsolete model-rank errors or fabricating optimizer states.
     fail_methods_hpo_trial_id: Option<i64>,
 }
 
@@ -585,6 +755,7 @@ impl RuntimeController for TrainingController {
                 metrics: BTreeMap::new(),
                 loss_attestations: Vec::new(),
                 early_stopping_records: Vec::new(),
+                target_domain: None,
             },
         })
     }
@@ -2875,13 +3046,45 @@ fn native_methods_hpo_refuses_legacy_free_resume_fields() {
 }
 
 #[cfg(feature = "methods-optimizer-local")]
+fn provider_with_declared_hpo_failure(fixture: &Fixture) -> AttestedProvider {
+    let mut data = provider(fixture);
+    // ABI 2.20 represents unresolved PLS components explicitly instead of
+    // rejecting n_components=3 on this two-feature fixture. Retain the intended
+    // failed-trial witness through an actual provider refusal, with unchanged
+    // labels, native predictions and scoring. Do not manufacture score offsets.
+    data.fail_methods_hpo_trial_id = Some(1);
+    data
+}
+
+#[cfg(feature = "methods-optimizer-local")]
+#[test]
+fn native_methods_hpo_v1_equal_scores_remain_refused_before_refit() {
+    let mut fixture = fixture(true, false);
+    add_portable_methods_hpo(&mut fixture);
+    let state = Arc::new(CallState::default());
+    let mut store = InMemoryArtifactStore::new();
+    let error = run(&fixture, state.clone(), &provider(&fixture), &mut store).unwrap_err();
+    assert!(
+        error.to_string().contains("incumbent score is tied"),
+        "{error}"
+    );
+    assert_eq!(state.count(Phase::Refit, "transform:snv"), 0);
+}
+
+#[cfg(feature = "methods-optimizer-local")]
 #[test]
 fn native_methods_hpo_runs_inside_training_and_refits_the_selected_pls_once() {
     let mut fixture = fixture(true, false);
     add_portable_methods_hpo(&mut fixture);
     let state = Arc::new(CallState::default());
     let mut store = InMemoryArtifactStore::new();
-    let outcome = run(&fixture, state.clone(), &provider(&fixture), &mut store).unwrap();
+    let outcome = run(
+        &fixture,
+        state.clone(),
+        &provider_with_declared_hpo_failure(&fixture),
+        &mut store,
+    )
+    .unwrap();
 
     outcome.validate().unwrap();
     assert!(outcome
@@ -2962,7 +3165,7 @@ fn native_methods_hpo_runs_inside_training_and_refits_the_selected_pls_once() {
     assert_eq!(
         resume_state.trial_history_len as usize - resume_state.completed_proposals.len(),
         1,
-        "the invalid native candidate stops after its first transform fold"
+        "the explicitly refused provider candidate stops after its first transform fold"
     );
     // Two transform folds for the completed candidate, one before the failed
     // candidate is rejected, then two selected FIT_CV folds. REFIT remains a
@@ -3004,7 +3207,7 @@ fn native_methods_hpo_training_resume_keeps_selected_rerun_reports_identical() {
     let first = run(
         &first_fixture,
         Arc::new(CallState::default()),
-        &provider(&first_fixture),
+        &provider_with_declared_hpo_failure(&first_fixture),
         &mut first_store,
     )
     .unwrap();
@@ -3037,7 +3240,7 @@ fn native_methods_hpo_training_resume_keeps_selected_rerun_reports_identical() {
     let descriptor = methods_hpo_descriptor_mut(&mut resumed_fixture)
         .as_object_mut()
         .unwrap();
-    descriptor.insert("trials".into(), serde_json::json!(4));
+    descriptor.insert("trials".into(), serde_json::json!(3));
     descriptor.insert(
         "resume_package_json".into(),
         serde_json::to_value(serde_json::to_string(&package).unwrap()).unwrap(),
@@ -3051,7 +3254,7 @@ fn native_methods_hpo_training_resume_keeps_selected_rerun_reports_identical() {
     let resumed = run(
         &resumed_fixture,
         state.clone(),
-        &provider(&resumed_fixture),
+        &provider_with_declared_hpo_failure(&resumed_fixture),
         &mut store,
     )
     .expect("checkpoint resume must preserve selected rerun evidence");
@@ -3121,20 +3324,20 @@ fn native_methods_hpo_training_resume_keeps_selected_rerun_reports_identical() {
         .as_ref()
         .is_some_and(|fold| fold.as_str() == "avg"));
     assert_eq!(selected_terminal_report.level, PredictionLevel::Sample);
-    assert_eq!(resumed_resume_state.trial_history_len, 4);
+    assert_eq!(resumed_resume_state.trial_history_len, 3);
 
     let mut uninterrupted_fixture = fixture(true, false);
     add_portable_methods_hpo(&mut uninterrupted_fixture);
     methods_hpo_descriptor_mut(&mut uninterrupted_fixture)
         .as_object_mut()
         .unwrap()
-        .insert("trials".into(), serde_json::json!(4));
+        .insert("trials".into(), serde_json::json!(3));
     rebuild(&mut uninterrupted_fixture);
     let mut uninterrupted_store = InMemoryArtifactStore::new();
     let uninterrupted = run(
         &uninterrupted_fixture,
         Arc::new(CallState::default()),
-        &provider(&uninterrupted_fixture),
+        &provider_with_declared_hpo_failure(&uninterrupted_fixture),
         &mut uninterrupted_store,
     )
     .unwrap();
@@ -3816,7 +4019,6 @@ fn native_methods_hpo_replay_hydrates_n4mm_from_json_bundle_in_fresh_controller(
     );
     // Core owns only bounded ZIP/inventory storage. Its returned Package V2
     // bytes cross back into DAG-ML for semantic parsing and fresh replay.
-    let core_archive_path = archive_path("crossrepo-methods-package");
     // The registry-only Core 0.3.22 dev baseline has a frozen closed manifest
     // schema from before `abi_min_minor`. Exercise its historical PLS read
     // shape for this transport-only round trip; the exact new writer manifest
@@ -3826,55 +4028,38 @@ fn native_methods_hpo_replay_hydrates_n4mm_from_json_bundle_in_fresh_controller(
         .as_array_mut()
         .expect("Archive V2 N4MM references")
     {
-        reference
-            .as_object_mut()
-            .expect("Archive V2 N4MM reference object")
-            .remove("abi_min_minor");
+        if reference["format_version"] != serde_json::json!(3) {
+            reference
+                .as_object_mut()
+                .expect("Archive V2 N4MM reference object")
+                .remove("abi_min_minor");
+        }
     }
-    let core_reference = write_archive_v2(
-        &core_archive_path,
-        ArchiveV2WriteRequest {
-            manifest: registry_baseline_manifest,
-            payloads: archive
-                .members
-                .iter()
-                .map(|(path, bytes)| ArchivePayload {
-                    path: path.clone(),
-                    bytes: bytes.clone(),
-                })
-                .collect(),
-        },
-    )
-    .expect("Core must store the strict DAG-ML Archive V2 closure as opaque bytes");
-    let loaded_archive =
-        load_archive_v2(&core_archive_path).expect("Core must load its V2 archive");
-    assert_eq!(loaded_archive.reference(), &core_reference);
+    let historical = core_transport_roundtrip(&registry_baseline_manifest, &archive.members);
+    assert_eq!(historical.writer_reference, historical.loaded_reference);
     assert_eq!(
-        loaded_archive.portable_predictor_package().unwrap(),
+        &historical.portable_package,
         archive.members.get(ARCHIVE_V2_PACKAGE_MEMBER).unwrap()
     );
     assert_eq!(
-        loaded_archive.member(ARCHIVE_V2_CACHE_MEMBER).unwrap(),
+        historical.members.get(ARCHIVE_V2_CACHE_MEMBER).unwrap(),
         archive.members.get(ARCHIVE_V2_CACHE_MEMBER).unwrap(),
         "Core must preserve the synthetic empty cache member byte-for-byte"
     );
     let loaded_cache: BundlePredictionCachePayloadSet =
-        serde_json::from_slice(loaded_archive.member(ARCHIVE_V2_CACHE_MEMBER).unwrap()).unwrap();
+        serde_json::from_slice(historical.members.get(ARCHIVE_V2_CACHE_MEMBER).unwrap()).unwrap();
     assert_eq!(loaded_cache, archive_caches);
     loaded_cache
         .validate_against_bundle(&archive_source.execution_bundle)
         .unwrap();
     let loaded_outcome = TrainingOutcome::from_json(
-        std::str::from_utf8(loaded_archive.member(ARCHIVE_V2_OUTCOME_MEMBER).unwrap()).unwrap(),
+        std::str::from_utf8(historical.members.get(ARCHIVE_V2_OUTCOME_MEMBER).unwrap()).unwrap(),
     )
     .unwrap();
     assert!(loaded_outcome.portable_prediction_caches.is_none());
-    assert!(matches!(
-        load_archive(&core_archive_path).unwrap(),
-        LoadedArchive::V2(_)
-    ));
+    assert!(historical.loaded_is_v2);
     let archived_package = PortablePredictorPackage::from_json(
-        std::str::from_utf8(loaded_archive.portable_predictor_package().unwrap()).unwrap(),
+        std::str::from_utf8(&historical.portable_package).unwrap(),
     )
     .expect("DAG-ML must validate Core-returned Package V2 bytes");
     let archived_loaded = archived_package
@@ -3911,18 +4096,7 @@ fn native_methods_hpo_replay_hydrates_n4mm_from_json_bundle_in_fresh_controller(
 
     // A raw member bit flip is rejected by Core before a package parser or a
     // host fallback can receive it.
-    let tampered_path = archive_path("crossrepo-methods-package-tampered");
-    let mut tampered = std::fs::read(&core_archive_path).unwrap();
-    let package_bytes = archive.members.get(ARCHIVE_V2_PACKAGE_MEMBER).unwrap();
-    let offset = tampered
-        .windows(package_bytes.len())
-        .position(|window| window == package_bytes.as_slice())
-        .expect("stored ZIP contains exact Package V2 bytes");
-    tampered[offset] ^= 1;
-    std::fs::write(&tampered_path, tampered).unwrap();
-    assert!(load_archive_v2(&tampered_path).is_err());
-    let _ = std::fs::remove_file(&core_archive_path);
-    let _ = std::fs::remove_file(&tampered_path);
+    assert!(historical.tampered_member_rejected);
     let mut host_sidecar = package.clone();
     host_sidecar.fitted_artifact_mode = FittedArtifactMode::AllowHostSidecar;
     for binding in &mut host_sidecar.artifact_bindings {
@@ -3998,7 +4172,7 @@ fn native_methods_hpo_replay_hydrates_n4mm_from_json_bundle_in_fresh_controller(
 
 #[cfg(feature = "methods-optimizer-local")]
 #[test]
-fn native_methods_pipeline_v2_round_trips_archive_member_into_fresh_predict() {
+fn native_methods_pipeline_round_trips_versioned_archive_member_into_fresh_predict() {
     let mut fixture = fixture(true, false);
     give_methods_hpo_four_train_rows(&mut fixture);
     use_portable_methods_pipeline(&mut fixture);
@@ -4020,10 +4194,10 @@ fn native_methods_pipeline_v2_round_trips_archive_member_into_fresh_predict() {
         .native_predictor_descriptor
         .as_ref()
         .expect("new pipeline publication carries its inspected descriptor");
-    assert_eq!(descriptor.format_version, 2);
+    assert_eq!(descriptor.format_version, 3);
     assert_eq!(
         artifact.abi_min_minor,
-        Some(METHODS_PIPELINE_N4MM_MIN_ABI_MINOR)
+        Some(dag_ml_core::hpo::METHODS_COMPONENT_RESOLUTION_N4MM_MIN_ABI_MINOR)
     );
     let pipeline = descriptor.pipeline.as_ref().unwrap();
     assert_eq!(pipeline.savgol_window, 3);
@@ -4056,7 +4230,7 @@ fn native_methods_pipeline_v2_round_trips_archive_member_into_fresh_predict() {
     }
     assert_eq!(
         archive.manifest["payloads"]["methods"]["n4mm"][0]["format_version"],
-        serde_json::json!(2)
+        serde_json::json!(3)
     );
 
     // Reading the Package member back is the semantic archive boundary: no
@@ -7934,4 +8108,107 @@ fn native_methods_hpo_chained_resume_binds_immediate_parent_without_nested_packa
         }
         parent = Some(parsed);
     }
+}
+
+#[cfg(feature = "methods-optimizer-local")]
+#[derive(serde::Deserialize)]
+struct CoreTransportRoundtrip {
+    tampered_member_rejected: bool,
+    schema_version: u32,
+    oracle_package: String,
+    oracle_version: String,
+    writer_reference: serde_json::Value,
+    loaded_reference: serde_json::Value,
+    loaded_is_v2: bool,
+    members: BTreeMap<String, Vec<u8>>,
+    portable_package: Vec<u8>,
+}
+
+#[cfg(feature = "methods-optimizer-local")]
+fn core_transport_roundtrip(
+    manifest: &serde_json::Value,
+    members: &BTreeMap<String, Vec<u8>>,
+) -> CoreTransportRoundtrip {
+    use std::io::{Read, Write};
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+    let requires_v3 = manifest["payloads"]["methods"]["n4mm"]
+        .as_array()
+        .expect("closed native Methods references")
+        .iter()
+        .any(|reference| reference["format_version"] == serde_json::json!(3));
+    let oracle_variable = if requires_v3 {
+        "DAG_ML_CURRENT_CORE_ORACLE"
+    } else {
+        "DAG_ML_HISTORICAL_CORE_ORACLE"
+    };
+    let binary = std::env::var_os(oracle_variable)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            assert!(!requires_v3,
+                "N4MM v3 requires an explicitly qualified current Core oracle via DAG_ML_CURRENT_CORE_ORACLE; historical Core 0.4.3 cannot read this format");
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+                "../../tools/historical-core-oracle/target/debug/dag-ml-historical-core-oracle",
+            )
+        });
+    let input = serde_json::to_vec(&serde_json::json!({
+        "schema_version": 1, "manifest": manifest,
+        "payloads": members.iter().map(|(path, bytes)| serde_json::json!({"path": path, "bytes": bytes})).collect::<Vec<_>>(),
+    })).unwrap();
+    assert!(
+        input.len() <= 16 * 1024 * 1024,
+        "trusted fixture exceeds oracle transport bound"
+    );
+    let mut child = Command::new(&binary)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .unwrap_or_else(|error| {
+            panic!(
+                "configure/build the explicit Core oracle ({oracle_variable}) first; {}: {error}",
+                binary.display()
+            )
+        });
+    child.stdin.take().unwrap().write_all(&input).unwrap();
+    // Drain concurrently so a bounded response cannot deadlock a pipe before wait.
+    let stdout = child.stdout.take().unwrap();
+    let reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stdout
+            .take(16 * 1024 * 1024 + 1)
+            .read_to_end(&mut bytes)
+            .unwrap();
+        bytes
+    });
+    let started = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if started.elapsed() > Duration::from_secs(30) {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("Core oracle exceeded 30 second execution bound");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert!(status.success(), "selected Core oracle failed");
+    let output = reader.join().unwrap();
+    assert!(
+        output.len() <= 16 * 1024 * 1024,
+        "historical oracle response exceeds transport bound"
+    );
+    let response: CoreTransportRoundtrip = serde_json::from_slice(&output).unwrap();
+    assert_eq!(response.schema_version, 1);
+    assert_eq!(response.oracle_package, "nirs4all");
+    assert_eq!(
+        response.oracle_version,
+        if requires_v3 { "0.4.6" } else { "0.4.3" }
+    );
+    assert_eq!(
+        &response.members, members,
+        "historical Core must preserve every witness member byte-for-byte"
+    );
+    response
 }

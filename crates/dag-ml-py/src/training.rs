@@ -4336,6 +4336,7 @@ mod tests {
                     metrics: BTreeMap::new(),
                     loss_attestations: Vec::new(),
                     early_stopping_records: Vec::new(),
+            target_domain: None,
                 },
             };
             pythonize::pythonize(py, &result)

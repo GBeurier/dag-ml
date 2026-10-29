@@ -41,11 +41,21 @@ examples/
   minimal_graph.json
 ```
 
+## Rust compiler support
+
+The control runtime (including C ABI, Arrow IPC, WASM and validation CLI) retains
+Rust 1.85 support. `dag-ml-results` and the Python binding that embeds it require
+Rust 1.88: Parquet/Arrow 60 preserves ZSTD support with patched zstd 0.14.3 and
+zstd-safe 8.2.0. This is a compiler-floor change, not a prediction/score schema
+change. The entire workspace is checked on Rust 1.88; do not claim all crates
+support 1.85. The historical Core 0.4.3 archive oracle runs in a separate bounded
+test-only process and retains a separate visible legacy security audit.
+
 ## Quick Start
 
 ```bash
 cargo fmt --all --check
-cargo +1.85.0 check --workspace --locked
+cargo +1.85.0 check --workspace --exclude dag-ml-results --locked
 cargo +1.88.0 check --workspace --all-targets --locked
 cargo test --workspace
 cargo test -p dag-ml-wasm
@@ -119,3 +129,5 @@ the remaining adapter backlog is tracked in
 [`LICENSING.md`](LICENSING.md), the full texts under [`LICENSES/`](LICENSES/), third-party
 attributions in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md), and the licensing decision in
 [`docs/adr/ADR-18-licensing.md`](docs/adr/ADR-18-licensing.md).
+
+For fold-fitted categorical targets, see the [fold-local domain contract](docs/FOLD_LOCAL_TARGET_DOMAINS.md): native macrofold selection and captured-domain inference, with cross-domain prediction ensembles refused.

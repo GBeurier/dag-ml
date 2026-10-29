@@ -251,6 +251,7 @@ impl RuntimeController for TrainingController {
                 metrics: BTreeMap::new(),
                 loss_attestations: Vec::new(),
                 early_stopping_records: Vec::new(),
+                target_domain: None,
             },
         })
     }

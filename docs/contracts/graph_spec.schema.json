@@ -32,7 +32,11 @@
       ]
     },
     "metadata": {
-      "type": "object"
+      "type": "object",
+      "properties": {
+        "target_domain_policy": { "$ref": "https://github.com/GBeurier/dag-ml/schemas/target_domain_policy.v1.schema.json" },
+        "target_domain_refit": { "$ref": "https://github.com/GBeurier/dag-ml/schemas/target_domain.v1.schema.json" }
+      }
     }
   },
   "$defs": {

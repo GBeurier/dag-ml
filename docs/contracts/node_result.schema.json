@@ -612,6 +612,7 @@
             "$ref": "https://github.com/GBeurier/dag-ml/schemas/loss_execution_attestation.v1.schema.json"
           }
         },
+        "target_domain": { "anyOf": [{ "$ref": "https://github.com/GBeurier/dag-ml/schemas/target_domain.v1.schema.json" }, { "type": "null" }] },
         "early_stopping_records": {
           "type": "array",
           "description": "Controller-reported stopping outcomes, distinct from persisted metric score sets.",

@@ -86,7 +86,7 @@ jobs:
       - name: Shared contract
         run: python scripts/validate_contracts.py --require-sibling --sibling-root external/dag-ml-data
   msrv:
-    name: MSRV Rust runtime
+    name: MSRV Rust control runtime (1.85)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -97,10 +97,10 @@ jobs:
         with:
           python-version: "3.11"
       - name: Check MSRV
-        run: cargo check --workspace --locked
+        run: cargo check --workspace --exclude dag-ml-results --locked
 
   oracle-targets:
-    name: Rust historical Core oracle targets
+    name: Results, Python and historical oracle (Rust 1.88)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -114,6 +114,10 @@ jobs:
       # Rust 1.88. Keep every target checked without raising the runtime MSRV.
       - name: Check all targets including the historical Core oracle
         run: cargo check --workspace --all-targets --locked
+      - name: Check Results-enabled Python binding on Rust 1.88
+        run: cargo check --manifest-path crates/dag-ml-py/Cargo.toml --locked
+      - name: Build isolated exact Core 0.4.3 archive oracle
+        run: cargo build --locked --manifest-path tools/historical-core-oracle/Cargo.toml
 
   rust:
     name: Rust

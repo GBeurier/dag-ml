@@ -30,11 +30,7 @@ sha2.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 unicode-normalization.workspace = true
-n4m = { version = "0.4.0", default-features = false, features = ["dynamic"], optional = true }
+n4m = { version = "0.4.1", default-features = false, features = ["dynamic"], optional = true }
 
-[dev-dependencies]
-# Test-only bridge: DAG-ML owns the member contracts/replay; Core is invoked
-# solely through its public opaque Archive V2 storage API. This exact registry
-# baseline supports the current published IO/Data contracts. Cross-source
-# qualification still belongs to a separate integration harness.
-nirs4all_archive_core = { package = "nirs4all", version = "=0.4.3" }
+# The exact historical Core 0.4.3 archive oracle runs through the bounded
+# tools/historical-core-oracle subprocess, never linked into this workspace.

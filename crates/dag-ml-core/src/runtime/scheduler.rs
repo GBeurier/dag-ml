@@ -2615,6 +2615,7 @@ impl SequentialScheduler {
                         };
                         normalize_result_prediction_ports(plan, &task, &mut result)?;
                         result.validate_for_task(&task)?;
+                        crate::target_domain::validate_domain_result(&result, &task, plan)?;
                         for prediction in &result.predictions {
                             ctx.prediction_store.append(prediction.clone())?;
                         }
@@ -2815,6 +2816,7 @@ impl SequentialScheduler {
                 record_fit_influence_diagnostic(&task, &mut result);
                 normalize_result_prediction_ports(plan, &task, &mut result)?;
                 result.validate_for_task(&task)?;
+                crate::target_domain::validate_domain_result(&result, &task, plan)?;
                 if resources.direct_sample_prediction_only {
                     validate_direct_sample_prediction_result(&task, &result)?;
                 } else {
@@ -3618,6 +3620,7 @@ impl ParallelScheduler {
                     };
                     normalize_result_prediction_ports(plan, &task, &mut result)?;
                     result.validate_for_task(&task)?;
+                    crate::target_domain::validate_domain_result(&result, &task, plan)?;
                     for prediction in &result.predictions {
                         ctx.prediction_store.append(prediction.clone())?;
                     }
@@ -3951,6 +3954,7 @@ mod hpo_scheduler_tests {
                     metrics: BTreeMap::new(),
                     loss_attestations: Vec::new(),
                     early_stopping_records: Vec::new(),
+                    target_domain: None,
                 },
             })
         }

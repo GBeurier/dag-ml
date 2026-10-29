@@ -4211,6 +4211,79 @@ def validate_training_influence_against_plan(
         )
 
 
+def validate_target_domain(value: Any, label: str) -> dict[str, Any]:
+    domain = require_exact_keys(value, {
+        "schema_version", "recipe_fingerprint", "state_json", "state_fingerprint",
+        "fit_sample_ids", "class_labels",
+    }, set(), label)
+    require(domain["schema_version"] == 1, f"{label} unsupported domain version")
+    for key in ("recipe_fingerprint", "state_fingerprint"):
+        require_sha256(domain[key], f"{label}.{key}")
+        require(domain[key] == domain[key].lower(), f"{label}.{key} must be lowercase")
+    state = domain["state_json"]
+    require(isinstance(state, str) and len(state.encode("utf-8")) <= 1_048_576,
+            f"{label} fitted state must be bounded UTF-8 JSON")
+    parsed = json.loads(state, object_pairs_hook=reject_duplicate_members,
+                        parse_constant=reject_nonstandard_json_constant)
+    require(isinstance(parsed, dict) and not contains_runtime_handle(parsed),
+            f"{label} fitted state must be a handle-free object")
+    validate_strict_json_value(parsed, label)
+    require(hashlib.sha256(state.encode("utf-8")).hexdigest() == domain["state_fingerprint"],
+            f"{label} fitted-state hash mismatch")
+    ids = domain["fit_sample_ids"]
+    require(isinstance(ids, list) and bool(ids) and ids == sorted(set(ids)),
+            f"{label} training identities must be sorted and unique")
+    for sample_id in ids:
+        require_identifier(sample_id, f"{label}.fit_sample_ids")
+    classes = domain["class_labels"]
+    require(isinstance(classes, list) and len(classes) >= 2
+            and all(not isinstance(member, bool) and member == index for index, member in enumerate(classes)),
+            f"{label} requires a fixed ordinal class vocabulary")
+    return domain
+
+
+def validate_target_domain_outcome(outcome: dict[str, Any], label: str) -> None:
+    policy = outcome["effective_plan"]["graph_plan"]["graph"].get("metadata", {}).get("target_domain_policy")
+    if policy is None:
+        require(not any(report.get("target_domain") for report in outcome["score_set"]["reports"])
+                and not any(record.get("target_domain") for record in outcome["lineage"]),
+                f"{label} undeclared target domains")
+        return
+    require_exact_keys(policy, {"schema_version", "mode", "node_id", "recipe_fingerprint", "class_labels"}, set(), label)
+    require(policy["schema_version"] == 1 and policy["mode"] == "fold_local_macro", f"{label} invalid domain policy")
+    plan = outcome["effective_plan"]
+    folds = plan["fold_set"]
+    require(folds and folds.get("partition_mode", "partition") == "partition" and len(folds["folds"]) >= 2,
+            f"{label} domains require partition KFold")
+    require(outcome["refit"]["requested"] and outcome["refit"]["strategy"] == "refit_one",
+            f"{label} domains require refit_one")
+    for key in ("oof_averages", "variant_oof_averages", "ensemble_averages"):
+        require(not outcome.get(key), f"{label} cannot combine predictions across target domains")
+    domains_by_fold = {}
+    for variant in plan["variants"]:
+        reports = [report for report in outcome["score_set"]["reports"]
+                   if report.get("variant_id") == variant["variant_id"] and report["partition"] == "validation"]
+        members = {report["fold_id"]: report for report in reports if report.get("fold_id") != "macro"}
+        macro = [report for report in reports if report.get("fold_id") == "macro"]
+        require(len(reports) == len(folds["folds"]) + 1 and len(macro) == 1
+                and set(members) == {fold["fold_id"] for fold in folds["folds"]},
+                f"{label} exact macro fold coverage required")
+        for fold in folds["folds"]:
+            report = members[fold["fold_id"]]
+            domain = validate_target_domain(report.get("target_domain"), label)
+            previous = domains_by_fold.setdefault(fold["fold_id"], domain)
+            require(previous == domain, f"{label} candidate target domains differ within the same fold")
+            require(report["producer_node"] == policy["node_id"] and report["target_width"] == 1
+                    and report["row_count"] == len(fold["validation_sample_ids"])
+                    and set(domain["fit_sample_ids"]) == set(fold["train_sample_ids"])
+                    and domain["recipe_fingerprint"] == policy["recipe_fingerprint"]
+                    and domain["class_labels"] == policy["class_labels"], f"{label} fold domain scope differs")
+        expected = {metric: sum(members[key]["metrics"][metric] for key in sorted(members)) / len(members)
+                    for metric in ("accuracy", "balanced_accuracy", "f1")}
+        require(macro[0]["metrics"] == expected and not macro[0].get("target_domain"),
+                f"{label} macro must exactly reduce native fold scores")
+
+
 def validate_portable_lineage_record(
     value: Any,
     label: str,
@@ -4237,7 +4310,9 @@ def validate_portable_lineage_record(
         "unsafe_flags",
         "metrics",
     }
-    record = require_exact_keys(value, fields, set(), label)
+    record = require_exact_keys(value, fields, {"target_domain"}, label)
+    if record.get("target_domain") is not None:
+        validate_target_domain(record["target_domain"], f"{label}.target_domain")
     for field in ("record_id", "run_id", "node_id", "controller_id"):
         require_identifier(record[field], f"{label}.{field}")
     require(record["run_id"] == run_id, f"{label}.run_id does not match outcome")
@@ -5856,10 +5931,22 @@ def _norm_selection_decision(source: Any) -> dict:
     )
 
 
+def _norm_target_domain(source: Any) -> dict | None:
+    if source is None:
+        return None
+    return _S(source, [
+        {"name": "schema_version"}, {"name": "recipe_fingerprint"},
+        {"name": "state_json"}, {"name": "state_fingerprint"},
+        {"name": "fit_sample_ids", "transform": _L},
+        {"name": "class_labels", "transform": lambda values: _L(values, _F)},
+    ])
+
+
 def _norm_regression_metric_report(source: Any) -> dict:
     return _S(
         source,
         [
+            {"name": "target_domain", "skip": _skip_none, "transform": _norm_target_domain},
             {"name": "prediction_id", "default": lambda: None},
             {"name": "producer_node"},
             {"name": "variant_id", "skip": _skip_none},
@@ -5911,6 +5998,7 @@ def _norm_lineage_record(source: Any) -> dict:
     return _S(
         source,
         [
+            {"name": "target_domain", "skip": _skip_none, "transform": _norm_target_domain},
             {"name": "record_id"},
             {"name": "run_id"},
             {"name": "node_id"},
@@ -7921,6 +8009,7 @@ def validate_training_outcome(value: Any, label: str) -> dict[str, Any]:
         "class_label": {
             ("accuracy", "maximize"),
             ("balanced_accuracy", "maximize"),
+            ("f1", "maximize"),
         },
     }
     require(
@@ -7934,7 +8023,7 @@ def validate_training_outcome(value: Any, label: str) -> dict[str, Any]:
             report["producer_node"] == selection_binding["node_id"]
             and report["partition"] == "validation"
             and report["level"] == selection_binding["prediction_level"]
-            and report.get("fold_id") == "avg"
+            and report.get("fold_id") == ("macro" if plan["graph_plan"]["graph"].get("metadata", {}).get("target_domain_policy") else "avg")
         ):
             variant_id = report.get("variant_id")
             require_identifier(variant_id, f"{label} selection report variant_id")
@@ -8033,6 +8122,8 @@ def validate_training_outcome(value: Any, label: str) -> dict[str, Any]:
         refit_requested=refit["requested"],
         label=label,
     )
+
+    validate_target_domain_outcome(outcome, label)
 
     caches = outcome["portable_prediction_caches"]
     if caches is not None:

@@ -1275,6 +1275,7 @@ impl TrainingRequest {
             );
         }
         let outputs = self.options.validate(&self.graph)?;
+        crate::target_domain::validate_domain_request(self)?;
         if self
             .graph
             .metadata
@@ -2241,6 +2242,16 @@ impl PortablePredictorPackage {
     }
 
     pub fn validate(&self) -> Result<()> {
+        if self
+            .effective_plan
+            .graph_plan
+            .graph
+            .metadata
+            .contains_key(crate::target_domain::TARGET_DOMAIN_POLICY_KEY)
+        {
+            return contract_error("fold-local target domains currently require attached replay or a verified host archive; portable predictor package replay is not yet qualified".to_string());
+        }
+
         if self.schema_version < MIN_READABLE_PORTABLE_PREDICTOR_PACKAGE_SCHEMA_VERSION
             || self.schema_version > PORTABLE_PREDICTOR_PACKAGE_SCHEMA_VERSION
         {

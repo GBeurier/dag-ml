@@ -1,0 +1,18 @@
+# Test-only process boundary for the immutable historical archive oracle.
+# Its legacy dependency audit is separate and remains visible; never link this
+# workspace into a published DAG-ML runtime or consume untrusted user archives.
+[workspace]
+
+[package]
+name = "dag-ml-historical-core-oracle"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.88"
+publish = false
+license = "CECILL-2.1 OR AGPL-3.0-or-later"
+
+[dependencies]
+nirs4all_archive_core = { package = "nirs4all", version = "=0.4.3" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
