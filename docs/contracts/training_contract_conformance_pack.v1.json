@@ -281,7 +281,7 @@
     },
     {
       "path": "docs/HPO_METHODS_ADAPTER.md",
-      "sha256": "ce1b9b6c17067e08ecf3aabe363ce80f6093024f9576b016682c29c75915bddf",
+      "sha256": "a9a39a4a6b2bd4465d593b18759f0bf67efe99dbabc0fa44eabb6509b4ef70a9",
       "kind": "hpo_documentation"
     },
     {
@@ -606,7 +606,7 @@
     },
     {
       "path": "scripts/test_methods_optimizer_local.sh",
-      "sha256": "bab50baade1b6a5829ed5eba44c9731c65a8bda504fa2ac4e3982d9a99989d7a",
+      "sha256": "6fc25150e583ad467a4c32f65a550c5d7543cfe2a47478657f7d248c251bd338",
       "kind": "native_hpo_integration_helper"
     },
     {
@@ -694,5 +694,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "c6da8889cc302b1a35d7de2e932604cbc209adfc2da9d9c41d5bca4b955d7fe2"
+  "pack_checksum": "6dace8787b0b6bd33cd6dffd8bf3995a25d723062cb64b9538c29df2896229b2"
 }

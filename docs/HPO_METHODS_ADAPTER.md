@@ -358,6 +358,13 @@ member accessor and generic V2 loader through a bounded JSON subprocess.
 All returned members and reference identities are checked byte-for-byte; no
 archive or scientific computation is reimplemented by the transport.
 
+The current format-3 cohort uses the separate
+[`current-core-oracle`](../tools/current-core-oracle/README.md), selected by
+`DAG_ML_CURRENT_CORE_ORACLE`, and requires its Core 0.4.6 receipt. Its archive
+keeps the ABI 2.20 minimum. The historical process is selected only for
+format-1/2 inputs; its previous positive registry qualification remains dated
+separately and is not a claim that Core 0.4.3 can read format 3.
+
 The helper accepts no paths and only reads the archive it just wrote from the
 trusted generated test fixture in a private temporary directory. JSON transport
 is bounded at 16 MiB and 256 members; runtime execution is bounded at 30 seconds.

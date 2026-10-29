@@ -39,8 +39,14 @@ export N4M_LIBRARY_PATH="$library_path"
 export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }--cfg feature=\"methods-optimizer-local\""
 
 cd "$repo_root"
-# The Archive V2 cross-repo test has a dev-only Core dependency which in turn
-# pulls the published dag-ml-core. Select this checkout by manifest path so
-# Cargo never ambiguously targets the registry package.
-cargo clippy --manifest-path "$core_manifest" --features methods-optimizer --all-targets -- -D warnings
-cargo test --manifest-path "$core_manifest" --features methods-optimizer "$@"
+# Candidate dependencies may require an explicit, audited owner-source config
+# before publication. Never silently rewrite package identities or manifests.
+cargo_args=()
+if [[ -n "${DAG_ML_LOCAL_CARGO_CONFIG:-}" ]]; then
+  cargo_args+=(--config "$DAG_ML_LOCAL_CARGO_CONFIG")
+fi
+# Archive readers are separate bounded processes. Format 3 additionally needs
+# DAG_ML_CURRENT_CORE_ORACLE built as tools/current-core-oracle/README.md says;
+# the exact historical 0.4.3 process is never substituted for that reader.
+cargo "${cargo_args[@]}" clippy --manifest-path "$core_manifest" --features methods-optimizer --all-targets -- -D warnings
+cargo "${cargo_args[@]}" test --manifest-path "$core_manifest" --features methods-optimizer "$@"
