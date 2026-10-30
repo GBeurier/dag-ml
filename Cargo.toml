@@ -47,6 +47,6 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter", "json"] }
 # TCV1 fingerprints depend on the frozen Unicode NFC tables. Updating this
 # exact version is a contract change that requires cross-language golden review.
-unicode-normalization = "=0.1.25"
+unicode-normalization = "=0.1.26"
 pyo3 = "0.29"
 wasm-bindgen = "0.2.122"
