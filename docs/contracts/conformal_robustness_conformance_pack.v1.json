@@ -20,7 +20,7 @@
   "artifacts": [
     {
       "path": "docs/contracts/campaign_spec.schema.json",
-      "sha256": "e11dde8ba4042f02ff524ffbcce22f44a86d1c09245a0dd31889a29bc4c43b1c",
+      "sha256": "29bc8915ae98e56712673c37ccb0e3cdd3bf1ee6b9786d64c0ac2a9fc668df39",
       "kind": "schema_dependency"
     },
     {
@@ -75,7 +75,7 @@
     },
     {
       "path": "docs/contracts/execution_plan.schema.json",
-      "sha256": "456673b6d809c3a23445780e459ed4d85e7257ba64aaa629f30206d90c488ce9",
+      "sha256": "f2dedb81f6974d024b8c2bb018705f84c88aa5e195e471f1bfde3e758b490143",
       "kind": "schema_dependency"
     },
     {
@@ -125,7 +125,7 @@
     },
     {
       "path": "docs/contracts/node_task.schema.json",
-      "sha256": "3b1e8b4e807c36153e3c0ef6b7408365121f65a5671f8343aee1217644f74d01",
+      "sha256": "5395123cb27b7b3d0ff053289023ca4ac7eecac7a14f121d0619d95e88bf80cb",
       "kind": "schema_dependency"
     },
     {
@@ -473,5 +473,5 @@
       ]
     }
   ],
-  "pack_checksum": "422b16a61b1e0775ccfc472263a53a828d937239093498644ff95a476514ca9f"
+  "pack_checksum": "5312017864190d9d71397e54a2a32c463c03697b68f511989e29b0162ec885bd"
 }

@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Declare target-missing samples outside the CV universe with `FoldSet.target_missing_sample_ids` (omitted when empty, so existing fold sets keep their bytes and fingerprints). These samples never train in FIT_CV or REFIT, are never validated, scored or used by SELECT, and stay eligible for PREDICT.
+- Add `split_with_target_missing` to the native KFold, StratifiedKFold and GroupKFold splitters, plus `FoldSet::exclude_target_missing` for host-supplied fold sets; the WASM splitters take an optional target-missing id list, and `exclude_target_missing_json` is exported.
+- Refuse unknown ids, all-missing universes, too few observed samples or groups, and folds left without validation or training samples with the structured `validation/target_missing_exclusion` error (code `0x0000_0006`).
+- List the optional `partition_mode`, `train_exclusion` and `target_missing_sample_ids` fold set fields in the `campaign_spec`, `execution_plan` and `node_task` schemas. dag-ml-data 0.2.16 mirrors them; the shared `fold_set_target_missing_resampled.json` fixture pins the fingerprint parity in both repositories.
+
 ## 0.3.43 - 2026-10-29
 
 - Score and select learned classification target domains natively per fold with a

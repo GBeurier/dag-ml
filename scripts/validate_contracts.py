@@ -253,6 +253,9 @@ LOCAL_FEATURE_FUSION_FIXTURE_REL = Path(
 SHARED_FOLD_SET_FIXTURE_REL = Path(
     "examples/fixtures/shared/fold_set_cv_partition.json"
 )
+SHARED_TARGET_MISSING_FOLD_SET_FIXTURE_REL = Path(
+    "examples/fixtures/shared/fold_set_target_missing_resampled.json"
+)
 LOCAL_GRAPH_SPEC_FIXTURE_REL = Path("examples/branch_merge_oof_graph.json")
 LOCAL_PIPELINE_DSL_FIXTURE_REL = Path("examples/pipeline_dsl_nirs4all_compat.json")
 LOCAL_CAMPAIGN_SPEC_FIXTURE_REL = Path("examples/campaign_oof_generation.json")
@@ -604,6 +607,9 @@ PROCESS_ADAPTER_FRAME_SCHEMA_ID = (
 RESEARCH_PROVENANCE_PROFILE_ID = "dag-ml.research_provenance_package.v1"
 SHARED_FOLD_SET_FINGERPRINT = (
     "54d3185d6c628ef0df848828a8d8ae650222a283a78bbd3ab3bc2256f222c05c"
+)
+SHARED_TARGET_MISSING_FOLD_SET_FINGERPRINT = (
+    "316839e75f30271a949f07ccd9068f3152d9c60c3334318d05a4faf7256153ef"
 )
 
 
@@ -4968,6 +4974,12 @@ def _norm_fold_set(source: Any) -> Any:
                 "name": "train_exclusion",
                 "default": lambda: "relations",
                 "skip": lambda value: value == "relations",
+            },
+            {
+                "name": "target_missing_sample_ids",
+                "default": lambda: [],
+                "transform": _L,
+                "skip": lambda value: value == [],
             },
         ],
     )
@@ -11336,6 +11348,7 @@ def validate_fold_set_fixture(fold_set: Any, label: str) -> None:
             set(sample_groups) == sample_set,
             f"{label}.sample_groups must cover every sample when present",
         )
+    partition_mode = validate_fold_set_extensions(fold_set, sample_set, label)
 
     folds = fold_set.get("folds")
     require(isinstance(folds, list) and folds, f"{label}.folds must be non-empty")
@@ -11376,11 +11389,41 @@ def validate_fold_set_fixture(fold_set: Any, label: str) -> None:
         for sample_id in validation:
             validation_counts[sample_id] += 1
     require(len(set(fold_ids)) == len(fold_ids), f"{label}.fold_id contains duplicates")
-    for sample_id, count in validation_counts.items():
-        require(
-            count == 1,
-            f"{label} sample `{sample_id}` appears in validation {count} time(s)",
-        )
+    if partition_mode == "partition":
+        for sample_id, count in validation_counts.items():
+            require(
+                count == 1,
+                f"{label} sample `{sample_id}` appears in validation {count} time(s)",
+            )
+
+
+def validate_fold_set_extensions(fold_set: dict, sample_set: set, label: str) -> str:
+    """Check the optional FoldSet fields shared with dag-ml-data; return the partition mode."""
+    partition_mode = fold_set.get("partition_mode", "partition")
+    require(
+        partition_mode in {"partition", "resampled"},
+        f"{label}.partition_mode must be partition or resampled",
+    )
+    require(
+        fold_set.get("train_exclusion", "relations") in {"relations", "fold_local"},
+        f"{label}.train_exclusion must be relations or fold_local",
+    )
+    target_missing = fold_set.get("target_missing_sample_ids", [])
+    require(
+        isinstance(target_missing, list),
+        f"{label}.target_missing_sample_ids must be an array",
+    )
+    for index, sample_id in enumerate(target_missing):
+        require_identifier(sample_id, f"{label}.target_missing_sample_ids[{index}]")
+    require(
+        len(set(target_missing)) == len(target_missing),
+        f"{label}.target_missing_sample_ids contain duplicates",
+    )
+    require(
+        sample_set.isdisjoint(target_missing),
+        f"{label}.target_missing_sample_ids must stay outside the CV universe",
+    )
+    return partition_mode
 
 
 def canonical_fold_set_fingerprint(fold_set: Any) -> str:
@@ -11394,6 +11437,14 @@ def canonical_fold_set_fingerprint(fold_set: Any) -> str:
             fold.pop("metadata")
     if canonical.get("sample_groups") == {}:
         canonical.pop("sample_groups")
+    if canonical.get("partition_mode") == "partition":
+        canonical.pop("partition_mode")
+    if canonical.get("train_exclusion") == "relations":
+        canonical.pop("train_exclusion")
+    if "target_missing_sample_ids" in canonical:
+        canonical["target_missing_sample_ids"] = sorted(canonical["target_missing_sample_ids"])
+        if not canonical["target_missing_sample_ids"]:
+            canonical.pop("target_missing_sample_ids")
     return canonical_json_sha256(canonical)
 
 
@@ -11896,6 +11947,7 @@ def validate_fold_set(value: Any, label: str) -> None:
     for index, sample_id in enumerate(sample_ids):
         require_identifier(sample_id, f"{label}.sample_ids[{index}]")
     sample_set = set(sample_ids)
+    partition_mode = validate_fold_set_extensions(value, sample_set, label)
     folds = value.get("folds")
     require(isinstance(folds, list) and folds, f"{label}.folds must be non-empty")
     validation_counts = {sample_id: 0 for sample_id in sample_ids}
@@ -11939,11 +11991,12 @@ def validate_fold_set(value: Any, label: str) -> None:
             validation_counts[sample_id] += 1
         metadata = fold.get("metadata", {})
         require(isinstance(metadata, dict), f"{fold_label}.metadata must be an object")
-    for sample_id, count in validation_counts.items():
-        require(
-            count == 1,
-            f"{label} sample `{sample_id}` validation count is {count}, expected 1",
-        )
+    if partition_mode == "partition":
+        for sample_id, count in validation_counts.items():
+            require(
+                count == 1,
+                f"{label} sample `{sample_id}` validation count is {count}, expected 1",
+            )
     sample_groups = value.get("sample_groups", {})
     require(isinstance(sample_groups, dict), f"{label}.sample_groups must be an object")
     for sample_id, group_id in sample_groups.items():
@@ -19250,6 +19303,9 @@ def main(argv: list[str] | None = None) -> int:
             ROOT / LOCAL_FEATURE_FUSION_FIXTURE_REL
         )
         local_fold_set_fixture = load_json(ROOT / SHARED_FOLD_SET_FIXTURE_REL)
+        local_target_missing_fold_set_fixture = load_json(
+            ROOT / SHARED_TARGET_MISSING_FOLD_SET_FIXTURE_REL
+        )
         local_graph_spec_fixture = load_json(ROOT / LOCAL_GRAPH_SPEC_FIXTURE_REL)
         local_pipeline_dsl_fixture = load_json(ROOT / LOCAL_PIPELINE_DSL_FIXTURE_REL)
         local_campaign_spec_fixture = load_json(ROOT / LOCAL_CAMPAIGN_SPEC_FIXTURE_REL)
@@ -19469,6 +19525,14 @@ def main(argv: list[str] | None = None) -> int:
             == SHARED_FOLD_SET_FINGERPRINT,
             "dag-ml shared fold set fingerprint drifted",
         )
+        validate_fold_set_fixture(
+            local_target_missing_fold_set_fixture, "dag-ml shared target-missing"
+        )
+        require(
+            canonical_fold_set_fingerprint(local_target_missing_fold_set_fixture)
+            == SHARED_TARGET_MISSING_FOLD_SET_FINGERPRINT,
+            "dag-ml shared target-missing fold set fingerprint drifted",
+        )
         validate_graph_spec(local_graph_spec_fixture, "dag-ml")
         validate_pipeline_dsl_fixture(local_pipeline_dsl_fixture, "dag-ml")
         validate_campaign_spec(local_campaign_spec_fixture, "dag-ml")
@@ -19568,6 +19632,9 @@ def main(argv: list[str] | None = None) -> int:
             sibling / SIBLING_MODEL_INPUT_SPEC_FIXTURE_REL
         )
         sibling_fold_set_fixture = load_json(sibling / SHARED_FOLD_SET_FIXTURE_REL)
+        sibling_target_missing_fold_set_fixture = load_json(
+            sibling / SHARED_TARGET_MISSING_FOLD_SET_FIXTURE_REL
+        )
         sibling_header = load_text(sibling / SIBLING_C_HEADER_REL)
         validate_schema_artifact(sibling_schema, SIBLING_SCHEMA_ID, "dag-ml-data")
         validate_predict_cohort_envelope_v2_schema(
@@ -19588,6 +19655,9 @@ def main(argv: list[str] | None = None) -> int:
             canonical_fold_set_fingerprint(sibling_fold_set_fixture)
             == SHARED_FOLD_SET_FINGERPRINT,
             "dag-ml-data shared fold set fingerprint drifted",
+        )
+        validate_fold_set_fixture(
+            sibling_target_missing_fold_set_fixture, "dag-ml-data shared target-missing"
         )
         validate_data_provider_header(sibling_header, "dag-ml-data")
         validate_dag_ml_data_tensor_header(sibling_header, "dag-ml-data")
@@ -19649,6 +19719,10 @@ def main(argv: list[str] | None = None) -> int:
             canonical_fold_set_fingerprint(local_fold_set_fixture)
             == canonical_fold_set_fingerprint(sibling_fold_set_fixture),
             "shared fold set canonical fingerprints diverge",
+        )
+        require(
+            local_target_missing_fold_set_fixture == sibling_target_missing_fold_set_fixture,
+            "shared target-missing fold set fixtures diverge",
         )
         require(local_pack == sibling_pack, "shared conformance packs diverge")
         require(

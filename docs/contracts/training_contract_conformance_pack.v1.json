@@ -81,12 +81,12 @@
     },
     {
       "path": "crates/dag-ml-core/src/data.rs",
-      "sha256": "4954abb2899821c27727b7bbee7bae002d39bab40e0ec41805250e76b9138cb1",
+      "sha256": "e60ab5ad0cb8e34481576d5285d65b15c5bd06b4360b13192c909791b124eab3",
       "kind": "typed_contract_dependency"
     },
     {
       "path": "crates/dag-ml-core/src/fold.rs",
-      "sha256": "a1a94c81be7ebab9b081241b4fa017c51d3e75c9832ac63bab0caaf34d5aa4c9",
+      "sha256": "393965eeb050819359d6d8687e120160b4a2b405a9897b892f29acee21ad7354",
       "kind": "typed_contract_dependency"
     },
     {
@@ -121,7 +121,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/oof.rs",
-      "sha256": "79952a820e096b7a9ed8ad6dae6a9a09cb8d0433ba59cba8212e074b04624407",
+      "sha256": "3bd055be96ccfce3291811cdec59765f9929c67c61d42c598e27cecc495d5b80",
       "kind": "typed_cache_dependency"
     },
     {
@@ -131,7 +131,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/plan.rs",
-      "sha256": "22a0345940b796ccb0a70496e732e3fbf1bfbb61ca87f5a068c02cc71bab20cd",
+      "sha256": "c1c8e3abba9af8777dd61a74379308b5d6acbde61af8e9a99bcea68ef7898ba7",
       "kind": "native_plan_validator"
     },
     {
@@ -146,7 +146,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/relation.rs",
-      "sha256": "9f75cbc207e350614e05f9dafc164d460de38922388d25a030f9584e7a1ee615",
+      "sha256": "fbb1ebedc46c48330c967bbf7a0db660e094488075738d4a81933eca352f30d0",
       "kind": "typed_contract_dependency"
     },
     {
@@ -176,7 +176,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/runtime/scheduler.rs",
-      "sha256": "2ae0d020e9dfa36771e282f11f7710e597bb0db92e60372c866846216e1908cb",
+      "sha256": "415437a0b0b79a09999cfe7ef95eebee492f4d04eeb8e66e0eb9ef2cb9f581ce",
       "kind": "native_hpo_scheduler"
     },
     {
@@ -261,7 +261,7 @@
     },
     {
       "path": "crates/dag-ml-wasm/src/lib.rs",
-      "sha256": "e40c68c83c90b084c139f153b40c4e40beda25c733b759959718666b175231f8",
+      "sha256": "be30958f97fc594da5717a3e52f9f8f4fe55cb286eea2830eefcc7dc0b05629c",
       "kind": "wasm_binding"
     },
     {
@@ -291,7 +291,7 @@
     },
     {
       "path": "docs/contracts/README.md",
-      "sha256": "81805fb1a136a0882ffbeee826fea4e4aa9067eb041506e5688e7d7ff48c4fb2",
+      "sha256": "6df0b94d8610e96b39f0b95d8a2e9c26d55333e6c8d67a13ba23daad355d6e47",
       "kind": "contract_index_documentation"
     },
     {
@@ -306,7 +306,7 @@
     },
     {
       "path": "docs/contracts/campaign_spec.schema.json",
-      "sha256": "e11dde8ba4042f02ff524ffbcce22f44a86d1c09245a0dd31889a29bc4c43b1c",
+      "sha256": "29bc8915ae98e56712673c37ccb0e3cdd3bf1ee6b9786d64c0ac2a9fc668df39",
       "kind": "schema_dependency"
     },
     {
@@ -341,7 +341,7 @@
     },
     {
       "path": "docs/contracts/execution_plan.schema.json",
-      "sha256": "456673b6d809c3a23445780e459ed4d85e7257ba64aaa629f30206d90c488ce9",
+      "sha256": "f2dedb81f6974d024b8c2bb018705f84c88aa5e195e471f1bfde3e758b490143",
       "kind": "schema_dependency"
     },
     {
@@ -411,7 +411,7 @@
     },
     {
       "path": "docs/contracts/node_task.schema.json",
-      "sha256": "3b1e8b4e807c36153e3c0ef6b7408365121f65a5671f8343aee1217644f74d01",
+      "sha256": "5395123cb27b7b3d0ff053289023ca4ac7eecac7a14f121d0619d95e88bf80cb",
       "kind": "schema_dependency"
     },
     {
@@ -616,7 +616,7 @@
     },
     {
       "path": "scripts/validate_contracts.py",
-      "sha256": "24ebcdd51e3a80fa845153533b42e7afca49187189ce23f35aaa620d36f2b108",
+      "sha256": "8e6608c5c29ebe185aedb8e54889acd6c7a85e0a9e54fd6e7083530cc53ebb76",
       "kind": "production_validator"
     },
     {
@@ -694,5 +694,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "df7b7f71f795689e25c0177df1c121aaac416971888224e6d01ca6104544ea43"
+  "pack_checksum": "2de59155b8546904d5ee0fc29013a3589336af3a9d21f964834947eeae74e12f"
 }

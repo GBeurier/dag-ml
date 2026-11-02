@@ -36,6 +36,53 @@ pub struct OofLeakageReport {
     pub remediation: String,
 }
 
+/// Why a missing-target exclusion was refused.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TargetMissingRefusal {
+    /// A declared target-missing sample is not part of the candidate sample universe.
+    UnknownSample,
+    /// A target-missing sample is still inside the CV universe (`sample_ids` or a fold).
+    InCvUniverse,
+    /// Every candidate sample is target-missing.
+    NoObservedTargets,
+    /// Fewer target-observed samples (or groups) remain than requested splits.
+    InsufficientObservedTargets,
+    /// A fold has no validation sample once target-missing samples are excluded.
+    EmptyValidationFold,
+    /// A fold has no training sample once target-missing samples are excluded.
+    EmptyTrainFold,
+}
+
+impl TargetMissingRefusal {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::UnknownSample => "unknown_sample",
+            Self::InCvUniverse => "in_cv_universe",
+            Self::NoObservedTargets => "no_observed_targets",
+            Self::InsufficientObservedTargets => "insufficient_observed_targets",
+            Self::EmptyValidationFold => "empty_validation_fold",
+            Self::EmptyTrainFold => "empty_train_fold",
+        }
+    }
+}
+
+/// Structured refusal for missing-target exclusion. Target-missing samples are kept out of every
+/// training cohort and every scored partition; this report names the cohort that would violate it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TargetMissingReport {
+    pub reason: TargetMissingRefusal,
+    pub fold_set_id: Option<String>,
+    pub fold_id: Option<String>,
+    /// Number of samples declared target-missing for the cohort under validation.
+    pub target_missing_count: usize,
+    /// Number of target-observed samples left in the cohort under validation.
+    pub observed_count: usize,
+    /// Offending sample ids, sorted.
+    pub sample_ids: Vec<String>,
+    pub detail: String,
+}
+
 #[derive(Debug, Error)]
 pub enum DagMlError {
     #[error("invalid identifier `{value}`: {reason}")]
@@ -61,6 +108,9 @@ pub enum DagMlError {
 
     #[error("OOF leakage at `{}`: {} violator(s); {}", .0.node_id, .0.violators.len(), .0.remediation)]
     OofLeakage(Box<OofLeakageReport>),
+
+    #[error("target-missing exclusion refused ({}): {}", .0.reason.as_str(), .0.detail)]
+    TargetMissing(Box<TargetMissingReport>),
 
     #[error("serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
@@ -114,6 +164,10 @@ impl DagMlError {
                     .to_string()
             }
             Self::OofLeakage(report) => report.remediation.clone(),
+            Self::TargetMissing(_) => {
+                "Keep target-missing samples out of the CV universe (FoldSet.target_missing_sample_ids) and keep enough target-observed samples for every fold."
+                    .to_string()
+            }
             Self::Serialization(_) => {
                 "Check that the JSON or YAML payload matches the supported dag-ml contract version."
                     .to_string()
@@ -145,6 +199,17 @@ impl DagMlError {
                     json!(report.allow_train_predictions_as_features),
                 );
                 context.insert("violators".to_string(), json!(report.violators));
+            }
+            Self::TargetMissing(report) => {
+                context.insert("reason".to_string(), json!(report.reason));
+                context.insert("fold_set_id".to_string(), json!(report.fold_set_id));
+                context.insert("fold_id".to_string(), json!(report.fold_id));
+                context.insert(
+                    "target_missing_count".to_string(),
+                    json!(report.target_missing_count),
+                );
+                context.insert("observed_count".to_string(), json!(report.observed_count));
+                context.insert("sample_ids".to_string(), json!(report.sample_ids));
             }
             Self::Serialization(error) => {
                 context.insert("detail".to_string(), json!(error.to_string()));
@@ -188,6 +253,7 @@ impl DagMlError {
             Self::RuntimeValidation(_) => ("runtime", "runtime_validation", "error"),
             Self::OofValidation(_) => ("validation", "oof_validation", "error"),
             Self::OofLeakage(_) => ("validation", "oof_leakage", "error"),
+            Self::TargetMissing(_) => ("validation", "target_missing_exclusion", "error"),
             Self::Serialization(_) => ("compatibility", "serialization_error", "error"),
         }
     }
@@ -206,6 +272,7 @@ impl DagMlError {
             Self::CampaignValidation(_) => (0, 3),
             Self::OofValidation(_) => (0, 4),
             Self::OofLeakage(_) => (0, 5),
+            Self::TargetMissing(_) => (0, 6),
             Self::ControllerValidation(_) => (3, 1),
             Self::Planning(_) => (1, 1),
             Self::RuntimeValidation(_) => (1, 2),

@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::campaign::stable_json_fingerprint;
-use crate::error::{DagMlError, Result};
+use crate::error::{DagMlError, Result, TargetMissingRefusal, TargetMissingReport};
 use crate::ids::{FoldId, GroupId, SampleId};
 use crate::rng::SeedContext;
 
@@ -68,6 +68,14 @@ pub struct FoldSet {
     /// sets serialize byte-identically — no fingerprint or fixture churn.
     #[serde(default, skip_serializing_if = "is_train_exclusion_default")]
     pub train_exclusion: FoldTrainExclusion,
+    /// Samples whose target is missing. They are declared OUTSIDE the CV universe: never in
+    /// `sample_ids`, any fold train/validation list or `sample_groups`, so they never train in
+    /// FIT_CV or REFIT (`FullTrain` is `sample_ids`) and never reach OOF scoring or SELECT. They
+    /// stay eligible for PREDICT. Skipped when empty, so existing fold sets serialize
+    /// byte-identically — no fingerprint or fixture churn. A non-empty list changes the
+    /// fingerprint, which records the exclusion (and its count) in plan lineage.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub target_missing_sample_ids: Vec<SampleId>,
 }
 
 impl FoldSet {
@@ -103,6 +111,23 @@ impl FoldSet {
                     )));
                 }
             }
+        }
+        let target_missing = unique_samples(
+            "fold set target_missing_sample_ids",
+            &self.target_missing_sample_ids,
+        )?;
+        let in_universe = target_missing
+            .iter()
+            .filter(|sample_id| universe.contains(*sample_id))
+            .map(|sample_id| (*sample_id).clone())
+            .collect::<BTreeSet<_>>();
+        if !in_universe.is_empty() {
+            return Err(self.target_missing_error(
+                TargetMissingRefusal::InCvUniverse,
+                None,
+                &in_universe,
+                "target-missing samples must not be part of the fold set sample_ids",
+            ));
         }
         let mut fold_ids = BTreeSet::new();
         let mut validation_counts = self
@@ -187,6 +212,124 @@ impl FoldSet {
         Ok(nested)
     }
 
+    /// Remove target-missing samples from this fold set's CV universe.
+    ///
+    /// Each sample in `target_missing` is dropped from `sample_ids`, from every fold's train and
+    /// validation lists and from `sample_groups`, and recorded in `target_missing_sample_ids`.
+    /// Samples already recorded there are accepted (the operation is idempotent). The narrowed
+    /// fold set is refused with a structured [`DagMlError::TargetMissing`] when an id is unknown,
+    /// when no target-observed sample is left, or when a fold loses all of its validation or all
+    /// of its training samples. Splitting the observed universe directly
+    /// (`split_with_target_missing`) keeps folds balanced; this narrowing is for host-supplied
+    /// fold sets.
+    pub fn exclude_target_missing(&self, target_missing: &BTreeSet<SampleId>) -> Result<FoldSet> {
+        self.validate()?;
+        let universe = self.sample_ids.iter().collect::<BTreeSet<_>>();
+        let declared = self
+            .target_missing_sample_ids
+            .iter()
+            .collect::<BTreeSet<_>>();
+        let unknown = target_missing
+            .iter()
+            .filter(|sample_id| !universe.contains(sample_id) && !declared.contains(sample_id))
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        if !unknown.is_empty() {
+            return Err(self.target_missing_error(
+                TargetMissingRefusal::UnknownSample,
+                None,
+                &unknown,
+                "declared target-missing samples are not part of the fold set",
+            ));
+        }
+        let removed = target_missing
+            .iter()
+            .filter(|sample_id| universe.contains(sample_id))
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        if removed.is_empty() {
+            return Ok(self.clone());
+        }
+        let mut narrowed = self.clone();
+        narrowed
+            .sample_ids
+            .retain(|sample_id| !removed.contains(sample_id));
+        narrowed
+            .sample_groups
+            .retain(|sample_id, _| !removed.contains(sample_id));
+        narrowed.target_missing_sample_ids = declared
+            .into_iter()
+            .chain(removed.iter())
+            .cloned()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        if narrowed.sample_ids.is_empty() {
+            return Err(narrowed.target_missing_error(
+                TargetMissingRefusal::NoObservedTargets,
+                None,
+                &removed,
+                "every fold set sample is target-missing",
+            ));
+        }
+        let mut refusal = None;
+        for fold in &mut narrowed.folds {
+            let had_train = !fold.train_sample_ids.is_empty();
+            fold.train_sample_ids
+                .retain(|sample_id| !removed.contains(sample_id));
+            fold.validation_sample_ids
+                .retain(|sample_id| !removed.contains(sample_id));
+            if fold.validation_sample_ids.is_empty() {
+                refusal = Some((
+                    TargetMissingRefusal::EmptyValidationFold,
+                    fold.fold_id.to_string(),
+                    "fold has no validation sample once target-missing samples are excluded",
+                ));
+            } else if had_train && fold.train_sample_ids.is_empty() {
+                refusal = Some((
+                    TargetMissingRefusal::EmptyTrainFold,
+                    fold.fold_id.to_string(),
+                    "fold has no training sample once target-missing samples are excluded",
+                ));
+            }
+            if refusal.is_some() {
+                break;
+            }
+        }
+        if let Some((reason, fold_id, detail)) = refusal {
+            return Err(narrowed.target_missing_error(reason, Some(fold_id), &removed, detail));
+        }
+        narrowed.validate()?;
+        Ok(narrowed)
+    }
+
+    fn target_missing_error(
+        &self,
+        reason: TargetMissingRefusal,
+        fold_id: Option<String>,
+        sample_ids: &BTreeSet<SampleId>,
+        detail: &str,
+    ) -> DagMlError {
+        let declared = self
+            .target_missing_sample_ids
+            .iter()
+            .chain(sample_ids)
+            .collect::<BTreeSet<_>>();
+        let observed_count = self
+            .sample_ids
+            .iter()
+            .filter(|sample_id| !declared.contains(sample_id))
+            .count();
+        target_missing_refusal(
+            &self.id,
+            reason,
+            fold_id,
+            sample_ids,
+            (declared.len(), observed_count),
+            detail,
+        )
+    }
+
     fn validate_group_boundary(
         &self,
         fold: &FoldAssignment,
@@ -218,6 +361,7 @@ pub fn fold_set_fingerprint(fold_set: &FoldSet) -> Result<String> {
     let mut canonical = fold_set.clone();
     canonical.validate()?;
     canonical.sample_ids.sort();
+    canonical.target_missing_sample_ids.sort();
     canonical
         .folds
         .sort_by(|left, right| left.fold_id.cmp(&right.fold_id));
@@ -275,6 +419,28 @@ pub struct KFoldSpec {
 }
 
 impl KFoldSpec {
+    /// Split only the target-observed samples and declare `target_missing` outside the CV
+    /// universe (see [`FoldSet::target_missing_sample_ids`]). Unknown ids, an all-missing
+    /// universe, or fewer observed samples than `n_splits` are refused with a structured
+    /// [`DagMlError::TargetMissing`].
+    pub fn split_with_target_missing(
+        &self,
+        id: impl Into<String>,
+        samples: &[SampleId],
+        target_missing: &BTreeSet<SampleId>,
+    ) -> Result<FoldSet> {
+        let id = id.into();
+        unique_samples("KFold samples", samples)?;
+        let observed = observed_universe(
+            &id,
+            samples.iter(),
+            target_missing,
+            self.n_splits,
+            Clone::clone,
+        )?;
+        declare_target_missing(self.split(id, &observed)?, target_missing)
+    }
+
     pub fn split(&self, id: impl Into<String>, samples: &[SampleId]) -> Result<FoldSet> {
         if self.n_splits < 2 {
             return Err(DagMlError::OofValidation(
@@ -320,6 +486,7 @@ impl KFoldSpec {
             sample_groups: BTreeMap::new(),
             partition_mode: FoldPartitionMode::Partition,
             train_exclusion: FoldTrainExclusion::Relations,
+            target_missing_sample_ids: Vec::new(),
         };
         fold_set.validate()?;
         Ok(fold_set)
@@ -354,6 +521,27 @@ pub struct StratifiedNestedCvSpec {
 }
 
 impl StratifiedKFoldSpec {
+    /// Stratified variant of [`KFoldSpec::split_with_target_missing`]. Target-missing samples
+    /// need no stratum label.
+    pub fn split_with_target_missing(
+        &self,
+        id: impl Into<String>,
+        samples: &[SampleId],
+        strata: &BTreeMap<SampleId, String>,
+        target_missing: &BTreeSet<SampleId>,
+    ) -> Result<FoldSet> {
+        let id = id.into();
+        unique_samples("StratifiedKFold samples", samples)?;
+        let observed = observed_universe(
+            &id,
+            samples.iter(),
+            target_missing,
+            self.n_splits,
+            Clone::clone,
+        )?;
+        declare_target_missing(self.split(id, &observed, strata)?, target_missing)
+    }
+
     pub fn split(
         &self,
         id: impl Into<String>,
@@ -427,6 +615,7 @@ impl StratifiedKFoldSpec {
             sample_groups: BTreeMap::new(),
             partition_mode: FoldPartitionMode::Partition,
             train_exclusion: FoldTrainExclusion::Relations,
+            target_missing_sample_ids: Vec::new(),
         };
         fold_set.validate()?;
         Ok(fold_set)
@@ -439,6 +628,32 @@ pub struct GroupKFoldSpec {
 }
 
 impl GroupKFoldSpec {
+    /// Group-disjoint variant of [`KFoldSpec::split_with_target_missing`]. The observed universe
+    /// must still hold at least `n_splits` distinct groups.
+    pub fn split_with_target_missing(
+        &self,
+        id: impl Into<String>,
+        sample_groups: &BTreeMap<SampleId, GroupId>,
+        target_missing: &BTreeSet<SampleId>,
+    ) -> Result<FoldSet> {
+        let id = id.into();
+        let observed = observed_universe(
+            &id,
+            sample_groups.keys(),
+            target_missing,
+            self.n_splits,
+            |sample_id| sample_groups[sample_id].clone(),
+        )?;
+        let observed_groups = observed
+            .into_iter()
+            .map(|sample_id| {
+                let group_id = sample_groups[&sample_id].clone();
+                (sample_id, group_id)
+            })
+            .collect();
+        declare_target_missing(self.split(id, &observed_groups)?, target_missing)
+    }
+
     pub fn split(
         &self,
         id: impl Into<String>,
@@ -522,6 +737,7 @@ impl GroupKFoldSpec {
             sample_groups: sample_groups.clone(),
             partition_mode: FoldPartitionMode::Partition,
             train_exclusion: FoldTrainExclusion::Relations,
+            target_missing_sample_ids: Vec::new(),
         };
         fold_set.validate()?;
         Ok(fold_set)
@@ -751,6 +967,100 @@ pub fn validate_inner_fold_set_within_outer(inner: &FoldSet, outer: &FoldAssignm
     Ok(())
 }
 
+/// Build the structured refusal. `counts` is `(target_missing_count, observed_count)`.
+fn target_missing_refusal(
+    fold_set_id: &str,
+    reason: TargetMissingRefusal,
+    fold_id: Option<String>,
+    sample_ids: &BTreeSet<SampleId>,
+    counts: (usize, usize),
+    detail: &str,
+) -> DagMlError {
+    let detail = match &fold_id {
+        Some(fold_id) => format!("fold set `{fold_set_id}` fold `{fold_id}`: {detail}"),
+        None => format!("fold set `{fold_set_id}`: {detail}"),
+    };
+    DagMlError::TargetMissing(Box::new(TargetMissingReport {
+        reason,
+        fold_set_id: Some(fold_set_id.to_string()),
+        fold_id,
+        target_missing_count: counts.0,
+        observed_count: counts.1,
+        sample_ids: sample_ids.iter().map(ToString::to_string).collect(),
+        detail,
+    }))
+}
+
+/// Split `candidates` into the target-observed universe a splitter partitions. Every declared
+/// target-missing id must be a candidate, and at least `n_units` observed units (samples, or groups
+/// via `unit_of`) must remain for `n_splits` non-empty folds.
+fn observed_universe<'a, Unit: Ord>(
+    fold_set_id: &str,
+    candidates: impl Iterator<Item = &'a SampleId>,
+    target_missing: &BTreeSet<SampleId>,
+    n_splits: usize,
+    unit_of: impl Fn(&SampleId) -> Unit,
+) -> Result<Vec<SampleId>> {
+    let candidates = candidates.cloned().collect::<BTreeSet<_>>();
+    let unknown = target_missing
+        .difference(&candidates)
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let missing_count = target_missing.len();
+    if !unknown.is_empty() {
+        return Err(target_missing_refusal(
+            fold_set_id,
+            TargetMissingRefusal::UnknownSample,
+            None,
+            &unknown,
+            (
+                missing_count,
+                candidates.len().saturating_sub(missing_count),
+            ),
+            "declared target-missing samples are not split candidates",
+        ));
+    }
+    let observed = candidates
+        .difference(target_missing)
+        .cloned()
+        .collect::<Vec<_>>();
+    if observed.is_empty() {
+        return Err(target_missing_refusal(
+            fold_set_id,
+            TargetMissingRefusal::NoObservedTargets,
+            None,
+            target_missing,
+            (missing_count, 0),
+            "every split candidate is target-missing",
+        ));
+    }
+    let units = observed.iter().map(&unit_of).collect::<BTreeSet<_>>();
+    if !target_missing.is_empty() && units.len() < n_splits {
+        return Err(target_missing_refusal(
+            fold_set_id,
+            TargetMissingRefusal::InsufficientObservedTargets,
+            None,
+            target_missing,
+            (missing_count, observed.len()),
+            &format!(
+                "{} target-observed split unit(s) cannot fill n_splits={n_splits} folds",
+                units.len()
+            ),
+        ));
+    }
+    Ok(observed)
+}
+
+/// Record the declared target-missing ids on a fold set built over the observed universe.
+fn declare_target_missing(
+    mut fold_set: FoldSet,
+    target_missing: &BTreeSet<SampleId>,
+) -> Result<FoldSet> {
+    fold_set.target_missing_sample_ids = target_missing.iter().cloned().collect();
+    fold_set.validate()?;
+    Ok(fold_set)
+}
+
 fn unique_samples<'a>(label: &str, samples: &'a [SampleId]) -> Result<BTreeSet<&'a SampleId>> {
     let mut seen = BTreeSet::new();
     for sample_id in samples {
@@ -784,6 +1094,8 @@ mod tests {
 
     const SHARED_FOLD_SET_FINGERPRINT: &str =
         "54d3185d6c628ef0df848828a8d8ae650222a283a78bbd3ab3bc2256f222c05c";
+    const SHARED_TARGET_MISSING_FOLD_SET_FINGERPRINT: &str =
+        "316839e75f30271a949f07ccd9068f3152d9c60c3334318d05a4faf7256153ef";
 
     fn sid(value: &str) -> SampleId {
         SampleId::new(value).unwrap()
@@ -872,6 +1184,7 @@ mod tests {
             sample_groups: BTreeMap::new(),
             partition_mode: FoldPartitionMode::Partition,
             train_exclusion: FoldTrainExclusion::Relations,
+            target_missing_sample_ids: Vec::new(),
         };
 
         assert!(fold_set.validate().is_err());
@@ -891,6 +1204,7 @@ mod tests {
             sample_groups: BTreeMap::from([(sid("s1"), gid("g1"))]),
             partition_mode: FoldPartitionMode::Partition,
             train_exclusion: FoldTrainExclusion::Relations,
+            target_missing_sample_ids: Vec::new(),
         };
 
         assert!(fold_set.validate().is_err());
@@ -918,6 +1232,7 @@ mod tests {
             sample_groups: BTreeMap::new(),
             partition_mode: FoldPartitionMode::Partition,
             train_exclusion: FoldTrainExclusion::Relations,
+            target_missing_sample_ids: Vec::new(),
         };
         let mut right = left.clone();
         right.sample_ids.reverse();
@@ -947,6 +1262,21 @@ mod tests {
         assert_eq!(
             fold_set_fingerprint(&fold_set).unwrap(),
             SHARED_FOLD_SET_FINGERPRINT
+        );
+    }
+
+    #[test]
+    fn shared_target_missing_fold_set_fixture_fingerprint_is_locked() {
+        // Byte-identical to dag-ml-data's shared fixture: resampled, fold-local and
+        // target-missing fields must hash the same on both sides of the contract.
+        let fixture =
+            include_str!("../tests/fixtures/package/fold_set_target_missing_resampled.json");
+        let fold_set = serde_json::from_str::<FoldSet>(fixture).unwrap();
+        assert_eq!(fold_set.partition_mode, FoldPartitionMode::Resampled);
+        assert_eq!(fold_set.train_exclusion, FoldTrainExclusion::FoldLocal);
+        assert_eq!(
+            fold_set_fingerprint(&fold_set).unwrap(),
+            SHARED_TARGET_MISSING_FOLD_SET_FINGERPRINT
         );
     }
 
@@ -1044,6 +1374,262 @@ mod tests {
         }
         .split("strat", &samples, &strata);
         assert!(err.is_err());
+    }
+
+    fn refusal(error: DagMlError) -> TargetMissingReport {
+        match error {
+            DagMlError::TargetMissing(report) => *report,
+            other => panic!("expected a target-missing refusal, got {other}"),
+        }
+    }
+
+    fn assert_outside_cv(fold_set: &FoldSet, missing: &BTreeSet<SampleId>) {
+        assert!(fold_set.sample_ids.iter().all(|id| !missing.contains(id)));
+        assert!(fold_set
+            .sample_groups
+            .keys()
+            .all(|id| !missing.contains(id)));
+        for fold in &fold_set.folds {
+            assert!(fold
+                .train_sample_ids
+                .iter()
+                .chain(&fold.validation_sample_ids)
+                .all(|id| !missing.contains(id)));
+        }
+        assert_eq!(
+            fold_set.target_missing_sample_ids,
+            missing.iter().cloned().collect::<Vec<_>>()
+        );
+        fold_set.validate().unwrap();
+    }
+
+    #[test]
+    fn splitters_keep_target_missing_samples_out_of_every_fold() {
+        let samples = (0..8).map(|i| sid(&format!("s{i}"))).collect::<Vec<_>>();
+        let missing = BTreeSet::from([sid("s2"), sid("s5")]);
+        let kfold = KFoldSpec {
+            n_splits: 3,
+            shuffle: true,
+            seed: Some(7),
+        };
+        let folds = kfold
+            .split_with_target_missing("outer", &samples, &missing)
+            .unwrap();
+        assert_outside_cv(&folds, &missing);
+        assert_eq!(folds.sample_ids.len(), 6);
+        // The exclusion is part of the fingerprinted contract; an empty
+        // declaration keeps the historical bytes and fingerprint.
+        let unmarked = kfold
+            .split_with_target_missing("outer", &samples, &BTreeSet::new())
+            .unwrap();
+        assert_eq!(unmarked, kfold.split("outer", &samples).unwrap());
+        assert!(!serde_json::to_value(&unmarked)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .contains_key("target_missing_sample_ids"));
+        let mut observed_only = kfold.split("outer", &folds.sample_ids).unwrap();
+        assert_ne!(
+            fold_set_fingerprint(&folds).unwrap(),
+            fold_set_fingerprint(&observed_only).unwrap()
+        );
+        observed_only.target_missing_sample_ids = vec![sid("s5"), sid("s2")];
+        assert_eq!(
+            fold_set_fingerprint(&folds).unwrap(),
+            fold_set_fingerprint(&observed_only).unwrap(),
+            "the declared list is canonicalized"
+        );
+
+        let strata = samples
+            .iter()
+            .filter(|id| !missing.contains(*id))
+            .enumerate()
+            .map(|(i, id)| (id.clone(), if i % 2 == 0 { "A" } else { "B" }.to_string()))
+            .collect::<BTreeMap<_, _>>();
+        let stratified = StratifiedKFoldSpec {
+            n_splits: 2,
+            shuffle: false,
+            seed: None,
+        }
+        .split_with_target_missing("outer", &samples, &strata, &missing)
+        .unwrap();
+        assert_outside_cv(&stratified, &missing);
+
+        let groups = samples
+            .iter()
+            .enumerate()
+            .map(|(i, id)| (id.clone(), gid(&format!("g{}", i / 2))))
+            .collect::<BTreeMap<_, _>>();
+        let grouped = GroupKFoldSpec { n_splits: 3 }
+            .split_with_target_missing("outer", &groups, &missing)
+            .unwrap();
+        assert_outside_cv(&grouped, &missing);
+    }
+
+    #[test]
+    fn splitters_refuse_unknown_all_missing_and_too_few_observed_targets() {
+        let samples = (0..4).map(|i| sid(&format!("s{i}"))).collect::<Vec<_>>();
+        let kfold = KFoldSpec {
+            n_splits: 3,
+            shuffle: false,
+            seed: None,
+        };
+        let unknown = refusal(
+            kfold
+                .split_with_target_missing("outer", &samples, &BTreeSet::from([sid("zz")]))
+                .unwrap_err(),
+        );
+        assert_eq!(unknown.reason, TargetMissingRefusal::UnknownSample);
+        assert_eq!(unknown.sample_ids, vec!["zz".to_string()]);
+
+        let all = samples.iter().cloned().collect::<BTreeSet<_>>();
+        let none_observed = refusal(
+            kfold
+                .split_with_target_missing("outer", &samples, &all)
+                .unwrap_err(),
+        );
+        assert_eq!(
+            none_observed.reason,
+            TargetMissingRefusal::NoObservedTargets
+        );
+        assert_eq!(none_observed.target_missing_count, 4);
+
+        let too_few = refusal(
+            kfold
+                .split_with_target_missing(
+                    "outer",
+                    &samples,
+                    &BTreeSet::from([sid("s0"), sid("s1")]),
+                )
+                .unwrap_err(),
+        );
+        assert_eq!(
+            too_few.reason,
+            TargetMissingRefusal::InsufficientObservedTargets
+        );
+        assert_eq!(
+            (too_few.target_missing_count, too_few.observed_count),
+            (2, 2)
+        );
+
+        // GroupKFold counts observed GROUPS, not samples.
+        let groups = BTreeMap::from([
+            (sid("s0"), gid("g0")),
+            (sid("s1"), gid("g0")),
+            (sid("s2"), gid("g1")),
+            (sid("s3"), gid("g2")),
+        ]);
+        let grouped = refusal(
+            GroupKFoldSpec { n_splits: 3 }
+                .split_with_target_missing("outer", &groups, &BTreeSet::from([sid("s2")]))
+                .unwrap_err(),
+        );
+        assert_eq!(
+            grouped.reason,
+            TargetMissingRefusal::InsufficientObservedTargets
+        );
+    }
+
+    #[test]
+    fn exclude_target_missing_narrows_host_fold_sets_and_refuses_empty_folds() {
+        let samples = (0..6).map(|i| sid(&format!("s{i}"))).collect::<Vec<_>>();
+        // fold0 validates s0,s3; fold1 s1,s4; fold2 s2,s5.
+        let folds = KFoldSpec {
+            n_splits: 3,
+            shuffle: false,
+            seed: None,
+        }
+        .split("outer", &samples)
+        .unwrap();
+        let missing = BTreeSet::from([sid("s2")]);
+        let narrowed = folds.exclude_target_missing(&missing).unwrap();
+        assert_outside_cv(&narrowed, &missing);
+        assert_eq!(narrowed.folds[2].validation_sample_ids, vec![sid("s5")]);
+        assert_eq!(
+            narrowed.exclude_target_missing(&missing).unwrap(),
+            narrowed,
+            "re-declaring an excluded sample is idempotent"
+        );
+
+        let empty_validation = refusal(
+            folds
+                .exclude_target_missing(&BTreeSet::from([sid("s2"), sid("s5")]))
+                .unwrap_err(),
+        );
+        assert_eq!(
+            empty_validation.reason,
+            TargetMissingRefusal::EmptyValidationFold
+        );
+        assert_eq!(empty_validation.fold_id.as_deref(), Some("fold2"));
+        assert_eq!(empty_validation.fold_set_id.as_deref(), Some("outer"));
+        assert_eq!(empty_validation.target_missing_count, 2);
+        assert_eq!(empty_validation.observed_count, 4);
+
+        // A hand-built fold whose only training sample lacks a target.
+        let host = FoldSet {
+            id: "host".to_string(),
+            sample_ids: vec![sid("a"), sid("b"), sid("c")],
+            folds: vec![
+                FoldAssignment {
+                    fold_id: FoldId::new("f0").unwrap(),
+                    train_sample_ids: vec![sid("a")],
+                    validation_sample_ids: vec![sid("b"), sid("c")],
+                    metadata: BTreeMap::new(),
+                },
+                FoldAssignment {
+                    fold_id: FoldId::new("f1").unwrap(),
+                    train_sample_ids: vec![sid("b"), sid("c")],
+                    validation_sample_ids: vec![sid("a")],
+                    metadata: BTreeMap::new(),
+                },
+            ],
+            sample_groups: BTreeMap::new(),
+            partition_mode: FoldPartitionMode::Resampled,
+            train_exclusion: FoldTrainExclusion::Relations,
+            target_missing_sample_ids: Vec::new(),
+        };
+        let train_empty = refusal(
+            host.exclude_target_missing(&BTreeSet::from([sid("a")]))
+                .unwrap_err(),
+        );
+        assert_eq!(train_empty.reason, TargetMissingRefusal::EmptyTrainFold);
+        assert_eq!(train_empty.fold_id.as_deref(), Some("f0"));
+
+        let all = samples.iter().cloned().collect::<BTreeSet<_>>();
+        assert_eq!(
+            refusal(folds.exclude_target_missing(&all).unwrap_err()).reason,
+            TargetMissingRefusal::NoObservedTargets
+        );
+        assert_eq!(
+            refusal(
+                folds
+                    .exclude_target_missing(&BTreeSet::from([sid("zz")]))
+                    .unwrap_err()
+            )
+            .reason,
+            TargetMissingRefusal::UnknownSample
+        );
+    }
+
+    #[test]
+    fn fold_set_refuses_target_missing_samples_inside_cv_universe() {
+        let mut folds = KFoldSpec {
+            n_splits: 2,
+            shuffle: false,
+            seed: None,
+        }
+        .split("outer", &[sid("s0"), sid("s1"), sid("s2")])
+        .unwrap();
+        folds.target_missing_sample_ids = vec![sid("s1")];
+        let error = folds.validate().unwrap_err();
+        let descriptor = error.descriptor();
+        assert_eq!(descriptor.category, "validation");
+        assert_eq!(descriptor.code, "target_missing_exclusion");
+        assert_eq!(descriptor.context["reason"], "in_cv_universe");
+        assert_eq!(error.error_code(), 0x0000_0006);
+        assert_eq!(refusal(error).reason, TargetMissingRefusal::InCvUniverse);
+        folds.target_missing_sample_ids = vec![sid("s9"), sid("s9")];
+        assert!(folds.validate().is_err(), "duplicates are refused");
     }
 
     fn outer_kfold(samples: &[SampleId]) -> FoldSet {
@@ -1148,6 +1734,7 @@ mod tests {
             sample_groups: BTreeMap::new(),
             partition_mode: FoldPartitionMode::Partition,
             train_exclusion: FoldTrainExclusion::Relations,
+            target_missing_sample_ids: Vec::new(),
         };
         inner
             .validate()
@@ -1183,6 +1770,7 @@ mod tests {
             sample_groups: BTreeMap::new(),
             partition_mode: FoldPartitionMode::Partition,
             train_exclusion: FoldTrainExclusion::Relations,
+            target_missing_sample_ids: Vec::new(),
         };
         assert!(validate_inner_fold_set_within_outer(&inner, outer_fold).is_err());
     }
@@ -1338,6 +1926,7 @@ mod tests {
             sample_groups: BTreeMap::new(),
             partition_mode: FoldPartitionMode::Partition,
             train_exclusion: FoldTrainExclusion::Relations,
+            target_missing_sample_ids: Vec::new(),
         };
         assert!(
             partition.validate().is_err(),
@@ -1351,6 +1940,7 @@ mod tests {
             sample_groups: BTreeMap::new(),
             partition_mode: FoldPartitionMode::Resampled,
             train_exclusion: FoldTrainExclusion::Relations,
+            target_missing_sample_ids: Vec::new(),
         };
         resampled.validate().unwrap(); // overlapping / incomplete validation is allowed
 
@@ -1362,6 +1952,7 @@ mod tests {
             sample_groups: BTreeMap::new(),
             partition_mode: FoldPartitionMode::Resampled,
             train_exclusion: FoldTrainExclusion::Relations,
+            target_missing_sample_ids: Vec::new(),
         };
         assert!(
             leaky.validate().is_err(),
@@ -1426,6 +2017,7 @@ mod tests {
             sample_groups: BTreeMap::new(),
             partition_mode: FoldPartitionMode::Partition,
             train_exclusion: FoldTrainExclusion::FoldLocal,
+            target_missing_sample_ids: Vec::new(),
         };
         fold_set.validate().unwrap();
 
