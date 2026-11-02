@@ -52,6 +52,9 @@ pub enum TargetMissingRefusal {
     EmptyValidationFold,
     /// A fold has no training sample once target-missing samples are excluded.
     EmptyTrainFold,
+    /// A controller result emitted training, validation or scoring-target rows for a
+    /// target-missing sample.
+    ScoredResult,
 }
 
 impl TargetMissingRefusal {
@@ -63,6 +66,7 @@ impl TargetMissingRefusal {
             Self::InsufficientObservedTargets => "insufficient_observed_targets",
             Self::EmptyValidationFold => "empty_validation_fold",
             Self::EmptyTrainFold => "empty_train_fold",
+            Self::ScoredResult => "scored_result",
         }
     }
 }

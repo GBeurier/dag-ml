@@ -200,8 +200,9 @@ impl FoldSet {
     }
 
     /// Build `spec`'s nested inner fold set for `outer`, one of this set's folds. The inner set
-    /// inherits this set's groups and `train_exclusion`: its train lists are subsets of `outer`'s
-    /// training rows, so a fold-local exclusion authority carries down to every nested level.
+    /// inherits this set's groups, `train_exclusion` and `target_missing_sample_ids`: its train
+    /// lists are subsets of `outer`'s training rows, so a fold-local exclusion authority and the
+    /// target-missing declaration carry down to every nested level.
     pub fn nested_fold_set(
         &self,
         spec: &NestedCvSpec,
@@ -209,6 +210,11 @@ impl FoldSet {
     ) -> Result<NestedFoldSet> {
         let mut nested = spec.build_nested_fold_set(outer, &self.sample_groups)?;
         nested.inner_fold_set.train_exclusion = self.train_exclusion;
+        nested
+            .inner_fold_set
+            .target_missing_sample_ids
+            .clone_from(&self.target_missing_sample_ids);
+        nested.inner_fold_set.validate()?;
         Ok(nested)
     }
 
@@ -301,6 +307,36 @@ impl FoldSet {
         }
         narrowed.validate()?;
         Ok(narrowed)
+    }
+
+    /// Refuse declared target-missing samples among `scored` ids: rows a controller emitted for a
+    /// training, training-pool or validation partition, or as scoring targets. Only test and final
+    /// predictions may carry target-missing samples.
+    pub fn refuse_scored_target_missing<'a>(
+        &self,
+        scored: impl IntoIterator<Item = &'a SampleId>,
+    ) -> Result<()> {
+        if self.target_missing_sample_ids.is_empty() {
+            return Ok(());
+        }
+        let declared = self
+            .target_missing_sample_ids
+            .iter()
+            .collect::<BTreeSet<_>>();
+        let offending = scored
+            .into_iter()
+            .filter(|sample_id| declared.contains(sample_id))
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        if offending.is_empty() {
+            return Ok(());
+        }
+        Err(self.target_missing_error(
+            TargetMissingRefusal::ScoredResult,
+            None,
+            &offending,
+            "a controller emitted training, validation or scoring-target rows for target-missing samples",
+        ))
     }
 
     fn target_missing_error(
@@ -1013,10 +1049,7 @@ fn observed_universe<'a, Unit: Ord>(
             TargetMissingRefusal::UnknownSample,
             None,
             &unknown,
-            (
-                missing_count,
-                candidates.len().saturating_sub(missing_count),
-            ),
+            (missing_count, candidates.difference(target_missing).count()),
             "declared target-missing samples are not split candidates",
         ));
     }
@@ -1467,6 +1500,32 @@ mod tests {
     }
 
     #[test]
+    fn nested_fold_sets_carry_the_target_missing_declaration() {
+        let samples = (0..9).map(|i| sid(&format!("s{i}"))).collect::<Vec<_>>();
+        let missing = BTreeSet::from([sid("s3")]);
+        let outer = KFoldSpec {
+            n_splits: 3,
+            shuffle: false,
+            seed: None,
+        }
+        .split_with_target_missing("outer", &samples, &missing)
+        .unwrap();
+        let inner_spec = NestedCvSpec::KFold(KFoldSpec {
+            n_splits: 2,
+            shuffle: false,
+            seed: None,
+        });
+        for fold in &outer.folds {
+            let nested = outer.nested_fold_set(&inner_spec, fold).unwrap();
+            assert_eq!(
+                nested.inner_fold_set.target_missing_sample_ids,
+                vec![sid("s3")]
+            );
+            assert_outside_cv(&nested.inner_fold_set, &missing);
+        }
+    }
+
+    #[test]
     fn splitters_refuse_unknown_all_missing_and_too_few_observed_targets() {
         let samples = (0..4).map(|i| sid(&format!("s{i}"))).collect::<Vec<_>>();
         let kfold = KFoldSpec {
@@ -1481,6 +1540,10 @@ mod tests {
         );
         assert_eq!(unknown.reason, TargetMissingRefusal::UnknownSample);
         assert_eq!(unknown.sample_ids, vec!["zz".to_string()]);
+        assert_eq!(
+            unknown.observed_count, 4,
+            "unknown ids are not observed samples"
+        );
 
         let all = samples.iter().cloned().collect::<BTreeSet<_>>();
         let none_observed = refusal(

@@ -2616,6 +2616,7 @@ impl SequentialScheduler {
                         normalize_result_prediction_ports(plan, &task, &mut result)?;
                         result.validate_for_task(&task)?;
                         crate::target_domain::validate_domain_result(&result, &task, plan)?;
+                        result.validate_target_missing(plan.fold_set.as_ref())?;
                         for prediction in &result.predictions {
                             ctx.prediction_store.append(prediction.clone())?;
                         }
@@ -2838,6 +2839,7 @@ impl SequentialScheduler {
                         &input_lineage,
                     )?;
                 }
+                result.validate_target_missing(plan.fold_set.as_ref())?;
                 if let Some(store) = resources.artifact_store.as_deref_mut() {
                     if scope.phase == Phase::Refit {
                         store.capture_refit_artifacts(plan, &task, &result)?;
@@ -3549,6 +3551,7 @@ impl ParallelScheduler {
                             &input_lineage,
                         )?;
                     }
+                    result.validate_target_missing(plan.fold_set.as_ref())?;
                     if let Some(store) = resources.artifact_store.as_deref_mut() {
                         if scope.phase == Phase::Refit {
                             store.capture_refit_artifacts(plan, &prepared_task.task, &result)?;
@@ -3621,6 +3624,7 @@ impl ParallelScheduler {
                     normalize_result_prediction_ports(plan, &task, &mut result)?;
                     result.validate_for_task(&task)?;
                     crate::target_domain::validate_domain_result(&result, &task, plan)?;
+                    result.validate_target_missing(plan.fold_set.as_ref())?;
                     for prediction in &result.predictions {
                         ctx.prediction_store.append(prediction.clone())?;
                     }

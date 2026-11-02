@@ -1235,6 +1235,51 @@ pub struct NodeResult {
 }
 
 impl NodeResult {
+    /// Target-missing samples declared on the plan fold set never train and are never scored:
+    /// a result may carry them only in test or final predictions (PREDICT / inference cohorts).
+    pub fn validate_target_missing(&self, fold_set: Option<&FoldSet>) -> Result<()> {
+        let Some(fold_set) = fold_set else {
+            return Ok(());
+        };
+        let scored = |partition: &PredictionPartition| {
+            matches!(
+                partition,
+                PredictionPartition::Train
+                    | PredictionPartition::TrainPool
+                    | PredictionPartition::Validation
+            )
+        };
+        fn sample_unit(unit: &PredictionUnitId) -> Option<&SampleId> {
+            match unit {
+                PredictionUnitId::Sample(sample_id) => Some(sample_id),
+                _ => None,
+            }
+        }
+        fold_set.refuse_scored_target_missing(
+            self.predictions
+                .iter()
+                .filter(|block| scored(&block.partition))
+                .flat_map(|block| &block.sample_ids)
+                .chain(
+                    self.classification_probabilities
+                        .iter()
+                        .filter(|block| scored(&block.partition))
+                        .flat_map(|block| &block.sample_ids),
+                )
+                .chain(
+                    self.aggregated_predictions
+                        .iter()
+                        .filter(|block| scored(&block.partition))
+                        .flat_map(|block| block.unit_ids.iter().filter_map(sample_unit)),
+                )
+                .chain(
+                    self.regression_targets
+                        .iter()
+                        .flat_map(|block| block.unit_ids.iter().filter_map(sample_unit)),
+                ),
+        )
+    }
+
     /// Require a full, ordered read and model call for every dynamic fit or
     /// prediction view. These are host-reported call-boundary facts, not native
     /// inspection of the estimator's internal consumption.
