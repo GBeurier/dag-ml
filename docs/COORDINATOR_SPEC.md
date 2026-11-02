@@ -398,7 +398,13 @@ target-observed universe (`KFoldSpec`/`StratifiedKFoldSpec`/`GroupKFoldSpec`
 `validation/target_missing_exclusion` error when an id is unknown, when no
 target-observed sample is left, when fewer observed samples (or groups) than
 `n_splits` remain, or when a fold would lose all of its validation or training
-samples. The declaration is made for the target(s) the campaign trains: on a
+samples. The runtime enforces the declaration at result admission: a controller
+result that carries a declared sample in a train, train-pool or validation
+prediction, or as a regression scoring target, is refused (`scored_result`)
+before it is stored or scored. Nested inner fold sets inherit the declaration,
+nested selection accepts it (`NestedSelectionRequest.target_missing_sample_ids`),
+and a plan cannot combine it with an all-observations fit view. The declaration
+is made for the target(s) the campaign trains: on a
 sparse multi-target dataset, a campaign over one target declares only the
 samples missing that target, so a sample missing another target stays in its
 CV universe. Per-target missing cells inside one multi-target regression block
