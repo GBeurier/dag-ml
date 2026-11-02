@@ -73,7 +73,9 @@ pub use controller_registry::*;
 pub use criteria::*;
 pub use data::*;
 pub use dsl::*;
-pub use error::{DagMlError, DagMlErrorDescriptor, Result};
+pub use error::{
+    DagMlError, DagMlErrorDescriptor, Result, TargetMissingRefusal, TargetMissingReport,
+};
 pub use fold::*;
 pub use generation::*;
 pub use graph::*;

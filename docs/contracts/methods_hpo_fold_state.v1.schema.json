@@ -196,6 +196,14 @@
             "fold_local"
           ],
           "default": "relations"
+        },
+        "target_missing_sample_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "https://github.com/GBeurier/dag-ml/schemas/execution_bundle.v2.schema.json#/$defs/identifier"
+          },
+          "default": []
         }
       }
     }

@@ -65,6 +65,11 @@ pub struct NestedSelectionRequest {
     pub candidates: Vec<NestedSelectionCandidate>,
     /// Indivisible identity component of every sample.
     pub sample_groups: BTreeMap<SampleId, GroupId>,
+    /// Samples (keys of `sample_groups`) whose selected target is missing. They are kept outside
+    /// every outer and inner fold (see `FoldSet::target_missing_sample_ids`), so they are never
+    /// fitted, validated or scored.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub target_missing_sample_ids: BTreeSet<SampleId>,
     pub outer: GroupKFoldSpec,
     pub inner: GroupKFoldSpec,
     pub selection_metric: RegressionMetricKind,
@@ -364,9 +369,11 @@ pub fn execute_nested_selection_with_metrics(
     metrics: &dyn NestedSelectionMetrics,
 ) -> Result<NestedSelectionOutcome> {
     request.validate()?;
-    let outer = request
-        .outer
-        .split(format!("{}.outer", request.id), &request.sample_groups)?;
+    let outer = request.outer.split_with_target_missing(
+        format!("{}.outer", request.id),
+        &request.sample_groups,
+        &request.target_missing_sample_ids,
+    )?;
     let inner_spec = NestedCvSpec::GroupKFold(request.inner.clone());
     let metric_name = request.selection_metric.name().to_string();
     let policy = SelectionPolicy {
@@ -465,6 +472,7 @@ pub fn execute_nested_selection_with_metrics(
             sample_groups: outer.sample_groups.clone(),
             partition_mode: FoldPartitionMode::Resampled,
             train_exclusion: outer.train_exclusion,
+            target_missing_sample_ids: outer.target_missing_sample_ids.clone(),
         };
         let scope = format!(
             "outer fold `{}` selected candidate `{}`",
@@ -756,6 +764,7 @@ mod tests {
             sample_groups: (0..30)
                 .map(|i| (sample(i), GroupId::new(format!("group:{}", i / 3)).unwrap()))
                 .collect(),
+            target_missing_sample_ids: BTreeSet::new(),
             outer: GroupKFoldSpec { n_splits: 5 },
             inner: GroupKFoldSpec { n_splits: 3 },
             selection_metric: RegressionMetricKind::Rmse,
@@ -845,6 +854,44 @@ mod tests {
         };
         for id in &fold.validation_sample_ids {
             assert_eq!(prediction(&base, id), prediction(&changed, id));
+        }
+    }
+
+    #[test]
+    fn target_missing_samples_never_reach_nested_fits_or_outer_oof() {
+        let provider = provider(&[]);
+        let runtime = runtime();
+        let registry = derive_host_controller_registry(
+            &methods_estimator_host_controller_specs(&runtime).unwrap(),
+        )
+        .unwrap();
+        let mut controllers = RuntimeControllerRegistry::new();
+        register_methods_estimator_controllers(&mut controllers, runtime).unwrap();
+        let mut request = request();
+        let missing = BTreeSet::from([sample(4), sample(17)]);
+        request.target_missing_sample_ids = missing.clone();
+        let outcome =
+            execute_nested_selection(&request, &registry, &controllers, &provider).unwrap();
+        let declared = missing.iter().cloned().collect::<Vec<_>>();
+        assert_eq!(outcome.outer_fold_set.target_missing_sample_ids, declared);
+        assert_eq!(outcome.oof.len(), 28);
+        assert!(outcome
+            .oof
+            .iter()
+            .all(|row| !missing.contains(&row.sample_id)));
+        for scope in &outcome.scopes {
+            assert_eq!(
+                scope
+                    .inner_fold_set
+                    .inner_fold_set
+                    .target_missing_sample_ids,
+                declared
+            );
+        }
+        let views = provider.views.lock().unwrap();
+        assert!(!views.is_empty());
+        for (_, fit, predict) in views.iter() {
+            assert!(fit.iter().chain(predict).all(|id| !missing.contains(id)));
         }
     }
 

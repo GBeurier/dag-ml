@@ -33,6 +33,7 @@ Every error variant carries a `remediation_hint` — a single sentence telling t
 - `oof_leakage` → "Refit the offending edge with `requires_oof = true` or remove the leakage path; see ADR-05."
 - `envelope_version_unsupported` → "Re-export your bundle with `nirs4all workspace migrate`; see ADR-02."
 - `repetition_leakage` → "Pass `respect_repetition=True` to your splitter; see ADR-05."
+- `target_missing_exclusion` → "Keep target-missing samples out of the CV universe (FoldSet.target_missing_sample_ids) and keep enough target-observed samples for every fold."
 
 ## Consequences
 

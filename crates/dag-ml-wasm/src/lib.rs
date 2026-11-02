@@ -11,7 +11,7 @@
 use serde::de::DeserializeOwned;
 use wasm_bindgen::prelude::*;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use dag_ml_core::{
     build_execution_plan, compile_pipeline_dsl, compile_pipeline_dsl_with_generation,
@@ -158,51 +158,96 @@ pub fn fold_set_fingerprint_json(json: &str) -> Result<String, JsValue> {
     fold_set_fingerprint(&fold_set).map_err(js_core_error)
 }
 
+/// Parse the optional JSON array of target-missing sample ids accepted by the splitters.
+fn target_missing_from_json(json: Option<String>) -> Result<BTreeSet<SampleId>, JsValue> {
+    match json {
+        Some(json) => serde_json::from_str(&json).map_err(js_serde_error),
+        None => Ok(BTreeSet::new()),
+    }
+}
+
 /// Build a K-fold `FoldSet` from a `KFoldSpec` JSON + a JSON array of sample ids.
 /// dag-ml owns the split — the host stops building folds itself.
+///
+/// `target_missing_json` (optional JSON array of sample ids) names samples whose target is
+/// missing: they are kept out of every fold and declared in the returned
+/// `FoldSet.target_missing_sample_ids`, so they never train or get scored but stay eligible for
+/// PREDICT. Too few target-observed samples is refused with a `target_missing_exclusion` error.
 #[wasm_bindgen]
 pub fn kfold_split_json(
     spec_json: &str,
     sample_ids_json: &str,
     id: &str,
+    target_missing_json: Option<String>,
 ) -> Result<String, JsValue> {
     let spec: KFoldSpec = serde_json::from_str(spec_json).map_err(js_serde_error)?;
     let samples: Vec<SampleId> = serde_json::from_str(sample_ids_json).map_err(js_serde_error)?;
-    let fold_set = spec.split(id, &samples).map_err(js_core_error)?;
+    let target_missing = target_missing_from_json(target_missing_json)?;
+    let fold_set = spec
+        .split_with_target_missing(id, &samples, &target_missing)
+        .map_err(js_core_error)?;
     serde_json::to_string(&fold_set).map_err(js_serde_error)
 }
 
 /// Build a native group-disjoint FoldSet from explicit sample -> group identities.
 /// No group inference, clipping, randomization or feature values occur in the binding.
+/// `target_missing_json` behaves as in [`kfold_split_json`].
 #[wasm_bindgen]
 pub fn group_kfold_split_json(
     spec_json: &str,
     sample_groups_json: &str,
     id: &str,
+    target_missing_json: Option<String>,
 ) -> Result<String, JsValue> {
     let spec: GroupKFoldSpec = serde_json::from_str(spec_json).map_err(js_serde_error)?;
     let groups: BTreeMap<SampleId, GroupId> =
         serde_json::from_str(sample_groups_json).map_err(js_serde_error)?;
-    let fold_set = spec.split(id, &groups).map_err(js_core_error)?;
+    let target_missing = target_missing_from_json(target_missing_json)?;
+    let fold_set = spec
+        .split_with_target_missing(id, &groups, &target_missing)
+        .map_err(js_core_error)?;
     serde_json::to_string(&fold_set).map_err(js_serde_error)
 }
 
 /// Build a stratified K-fold `FoldSet`: same OOF-once guarantee as K-fold, but
 /// balanced by a per-sample class label. `strata_json` is a JSON object mapping
 /// sample id → class label (identity-keyed metadata, never feature values).
+/// `target_missing_json` behaves as in [`kfold_split_json`]; those samples need no label.
 #[wasm_bindgen]
 pub fn stratified_kfold_split_json(
     spec_json: &str,
     sample_ids_json: &str,
     strata_json: &str,
     id: &str,
+    target_missing_json: Option<String>,
 ) -> Result<String, JsValue> {
     let spec: StratifiedKFoldSpec = serde_json::from_str(spec_json).map_err(js_serde_error)?;
     let samples: Vec<SampleId> = serde_json::from_str(sample_ids_json).map_err(js_serde_error)?;
     let strata: BTreeMap<SampleId, String> =
         serde_json::from_str(strata_json).map_err(js_serde_error)?;
-    let fold_set = spec.split(id, &samples, &strata).map_err(js_core_error)?;
+    let target_missing = target_missing_from_json(target_missing_json)?;
+    let fold_set = spec
+        .split_with_target_missing(id, &samples, &strata, &target_missing)
+        .map_err(js_core_error)?;
     serde_json::to_string(&fold_set).map_err(js_serde_error)
+}
+
+/// Narrow a host-supplied `FoldSet` by removing target-missing samples (JSON array of ids) from
+/// its universe, folds and groups and declaring them in `target_missing_sample_ids`. A fold that
+/// loses all of its validation or training samples is refused with a `target_missing_exclusion`
+/// error instead of being emitted.
+#[wasm_bindgen]
+pub fn exclude_target_missing_json(
+    fold_set_json: &str,
+    target_missing_json: &str,
+) -> Result<String, JsValue> {
+    let fold_set = parse_and_validate::<FoldSet>(fold_set_json, FoldSet::validate)?;
+    let target_missing: BTreeSet<SampleId> =
+        serde_json::from_str(target_missing_json).map_err(js_serde_error)?;
+    let narrowed = fold_set
+        .exclude_target_missing(&target_missing)
+        .map_err(js_core_error)?;
+    serde_json::to_string(&narrowed).map_err(js_serde_error)
 }
 
 /// Rank candidate variants and return the winner — the SELECT phase for in-browser
@@ -467,6 +512,7 @@ fn contract_manifest() -> serde_json::Value {
             "host_hpo_search_parallel_pruning",
             "host_hpo_checkpoint_recovery",
             "fold_set_fingerprint",
+            "target_missing_exclusion",
             "process_local_implementation_registry",
             "loss_execution_attestation",
             "structured_error_descriptors"
@@ -517,6 +563,7 @@ fn contract_manifest() -> serde_json::Value {
             "kfold_split_json",
             "group_kfold_split_json",
             "stratified_kfold_split_json",
+            "exclude_target_missing_json",
             "select_candidates_json",
             "select_portable_output_json",
             "select_stacking_producers_json",
@@ -877,7 +924,7 @@ mod tests {
             "sample:1": "group:A", "sample:2": "group:A", "sample:3": "group:A",
             "sample:4": "group:B", "sample:5": "group:C", "sample:6": "group:C"
         });
-        let json = group_kfold_split_json("{\"n_splits\":3}", &groups.to_string(), "outer")
+        let json = group_kfold_split_json("{\"n_splits\":3}", &groups.to_string(), "outer", None)
             .expect("native group split");
         let folds: FoldSet = serde_json::from_str(&json).unwrap();
         folds.validate().unwrap();
@@ -904,6 +951,39 @@ mod tests {
             .as_array()
             .unwrap()
             .contains(&serde_json::json!("group_kfold_split_json")));
+    }
+
+    #[test]
+    fn splitters_declare_target_missing_samples_outside_cv() {
+        let ids = r#"["s0","s1","s2","s3","s4","s5"]"#;
+        let missing = Some(r#"["s2"]"#.to_string());
+        let folds: FoldSet = serde_json::from_str(
+            &kfold_split_json(r#"{"n_splits":3,"seed":null}"#, ids, "outer", missing).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            folds.target_missing_sample_ids,
+            vec![SampleId::new("s2").unwrap()]
+        );
+        assert_eq!(folds.sample_ids.len(), 5);
+        let legacy: FoldSet = serde_json::from_str(
+            &kfold_split_json(r#"{"n_splits":3,"seed":null}"#, ids, "outer", None).unwrap(),
+        )
+        .unwrap();
+        let narrowed: FoldSet = serde_json::from_str(
+            &exclude_target_missing_json(&serde_json::to_string(&legacy).unwrap(), r#"["s2"]"#)
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            narrowed.target_missing_sample_ids,
+            folds.target_missing_sample_ids
+        );
+        assert_eq!(narrowed.sample_ids, folds.sample_ids);
+        assert!(contract_manifest()["wasm_exports"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("exclude_target_missing_json")));
     }
 
     #[test]
