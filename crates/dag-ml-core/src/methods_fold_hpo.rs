@@ -78,7 +78,14 @@ fn validate_study_universe(
         || inner.sample_ids.iter().collect::<BTreeSet<_>>() != expected
         || inner.sample_groups != groups
         || inner.train_exclusion != root.train_exclusion
-        || inner.target_missing_sample_ids != root.target_missing_sample_ids
+        || inner
+            .target_missing_sample_ids
+            .iter()
+            .collect::<BTreeSet<_>>()
+            != root
+                .target_missing_sample_ids
+                .iter()
+                .collect::<BTreeSet<_>>()
     {
         return Err(invalid("study universe, groups, exclusion authority, target-missing declaration or partition differs from its training scope"));
     }
@@ -591,6 +598,32 @@ impl MethodsFoldHpoState {
 mod tests {
     use super::*;
     use crate::{KFoldSpec, ObservationId, SampleId, SampleRelation, SampleRelationSet};
+
+    #[test]
+    fn study_universe_requires_the_root_target_missing_declaration_as_a_set() {
+        let ids = (0..7)
+            .map(|i| SampleId::new(format!("sample:{i}")).unwrap())
+            .collect::<Vec<_>>();
+        let (m0, m1) = (ids[5].clone(), ids[6].clone());
+        let mut root = KFoldSpec {
+            n_splits: 2,
+            shuffle: false,
+            seed: None,
+        }
+        .split("scope:root", &ids[..5])
+        .unwrap();
+        root.target_missing_sample_ids = vec![m1.clone(), m0.clone()];
+        let mut study = KFoldSpec {
+            n_splits: 2,
+            shuffle: false,
+            seed: None,
+        }
+        .split("scope:study", &ids[..5])
+        .unwrap();
+        assert!(validate_study_universe(&study, &root, &ids[..5]).is_err());
+        study.target_missing_sample_ids = vec![m0, m1];
+        validate_study_universe(&study, &root, &ids[..5]).unwrap();
+    }
 
     #[test]
     fn scoped_relation_table_preserves_identity_authority_and_refuses_origin_leakage() {

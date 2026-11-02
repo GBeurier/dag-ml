@@ -111,7 +111,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/methods_fold_hpo.rs",
-      "sha256": "72b63b24b04729050271ad3a072807210cf96d791f14639557786555aa378d06",
+      "sha256": "a3867aa087592745a89544d3069cff6a12e23634efeb868ac79179af58744511",
       "kind": "typed_runtime_dependency"
     },
     {
@@ -176,7 +176,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/runtime/scheduler.rs",
-      "sha256": "aecb78cf25c62cb7f4e3ee946bf5e5db1dba3ea4eab275f99e2c133b614aaead",
+      "sha256": "e3fb25817ca0c5cf94da246c685f7e0c7f6e15c0fd5de53ee35afb2f22815285",
       "kind": "native_hpo_scheduler"
     },
     {
@@ -186,7 +186,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/runtime/task.rs",
-      "sha256": "0fa83dd0666d579db08b914ce6ba4ccc000f7de50d589c7964ac80921450ccd6",
+      "sha256": "23d74ff2ff2b92d0cc6f0c229f37c2cfd69163022f570fdf2bbb434a9d8ddb41",
       "kind": "typed_runtime_dependency"
     },
     {
@@ -694,5 +694,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "df0e8034fc7f5dd851d14d27728878e2a922164e1f1dda4523019ed97770e763"
+  "pack_checksum": "338bc8ca624916b39e3cc4c422e4aed793ce415fb11e52463c4b4b9a329f202b"
 }

@@ -1235,10 +1235,37 @@ pub struct NodeResult {
 }
 
 impl NodeResult {
+    /// Whether `partition` trains on or scores its rows (train, train-pool, validation).
+    fn scores_partition(partition: &PredictionPartition) -> bool {
+        matches!(
+            partition,
+            PredictionPartition::Train
+                | PredictionPartition::TrainPool
+                | PredictionPartition::Validation
+        )
+    }
+
+    /// Whether checking this result against a target-missing declaration needs coordinator
+    /// relations: it carries scored observation rows or scored group/target units.
+    pub fn target_missing_needs_relations(&self) -> bool {
+        self.observation_predictions
+            .iter()
+            .any(|block| Self::scores_partition(&block.partition))
+            || self.aggregated_predictions.iter().any(|block| {
+                Self::scores_partition(&block.partition) && block.level != PredictionLevel::Sample
+            })
+            || self
+                .regression_targets
+                .iter()
+                .any(|block| block.level != PredictionLevel::Sample)
+    }
+
     /// Target-missing samples declared on the plan fold set never train and are never scored:
     /// a result may carry them only in test or final predictions (PREDICT / inference cohorts).
-    /// Observation rows and group/target units are resolved through `relations`; a group or
-    /// target unit whose members are all target-missing is refused like a sample row.
+    /// Observation rows and group/target units are resolved through `relations`. A group unit
+    /// resolves through relation `group_id` or the statistical `independent_unit_id` metadata,
+    /// a target unit through `target_id`; a scored unit with no attested member, or whose
+    /// members are all target-missing, is refused.
     pub fn validate_target_missing(
         &self,
         fold_set: &FoldSet,
@@ -1247,14 +1274,7 @@ impl NodeResult {
         if fold_set.target_missing_sample_ids.is_empty() {
             return Ok(());
         }
-        let scored = |partition: &PredictionPartition| {
-            matches!(
-                partition,
-                PredictionPartition::Train
-                    | PredictionPartition::TrainPool
-                    | PredictionPartition::Validation
-            )
-        };
+        let scored = Self::scores_partition;
         let mut units = Vec::new();
         let mut samples = Vec::new();
         for block in self.predictions.iter().filter(|b| scored(&b.partition)) {
@@ -1287,15 +1307,15 @@ impl NodeResult {
             || units
                 .iter()
                 .any(|unit| !matches!(unit, PredictionUnitId::Sample(_)));
-        let relations = match relations {
-            Some(relations) => Some(relations),
+        let records = match relations {
+            Some(relations) => relations.records.as_slice(),
             None if needs_relations => {
                 return Err(DagMlError::RuntimeValidation(format!(
                     "node `{}` emitted observation, group or target rows that cannot be checked against target-missing samples without coordinator relations",
                     self.node_id
                 )));
             }
-            None => None,
+            None => &[],
         };
         let declared = fold_set
             .target_missing_sample_ids
@@ -1307,32 +1327,40 @@ impl NodeResult {
                     samples.push(sample_id.clone());
                     continue;
                 }
-                PredictionUnitId::Group(group_id) => relations
-                    .into_iter()
-                    .flat_map(|r| &r.records)
-                    .filter(|record| record.group_id.as_ref() == Some(group_id))
+                PredictionUnitId::Group(group_id) => records
+                    .iter()
+                    .filter(|record| {
+                        record.group_id.as_ref() == Some(group_id)
+                            || record
+                                .metadata
+                                .get("independent_unit_id")
+                                .and_then(serde_json::Value::as_str)
+                                == Some(group_id.as_str())
+                    })
                     .map(|record| &record.sample_id)
                     .collect::<BTreeSet<_>>(),
-                PredictionUnitId::Target(target_id) => relations
-                    .into_iter()
-                    .flat_map(|r| &r.records)
+                PredictionUnitId::Target(target_id) => records
+                    .iter()
                     .filter(|record| record.target_id.as_ref() == Some(target_id))
                     .map(|record| &record.sample_id)
                     .collect::<BTreeSet<_>>(),
             };
-            if !members.is_empty() && members.iter().all(|id| declared.contains(id)) {
+            if members.is_empty() {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "node `{}` emitted a scored {unit:?} unit without attested relation members while target-missing samples are declared",
+                    self.node_id
+                )));
+            }
+            if members.iter().all(|id| declared.contains(id)) {
                 samples.extend(members.into_iter().cloned());
             }
         }
-        if !observations.is_empty() {
-            samples.extend(
-                relations
-                    .into_iter()
-                    .flat_map(|r| &r.records)
-                    .filter(|record| observations.contains(&record.observation_id))
-                    .map(|record| record.sample_id.clone()),
-            );
-        }
+        samples.extend(
+            records
+                .iter()
+                .filter(|record| observations.contains(&record.observation_id))
+                .map(|record| record.sample_id.clone()),
+        );
         fold_set.refuse_scored_target_missing(&samples)
     }
 

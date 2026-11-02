@@ -3838,16 +3838,7 @@ fn admit_target_missing(
     else {
         return Ok(());
     };
-    let needs_relations = !result.observation_predictions.is_empty()
-        || result
-            .aggregated_predictions
-            .iter()
-            .any(|block| block.level != PredictionLevel::Sample)
-        || result
-            .regression_targets
-            .iter()
-            .any(|block| block.level != PredictionLevel::Sample);
-    let relations = if needs_relations {
+    let relations = if result.target_missing_needs_relations() {
         coordinator_relations_for_node(&task.node_plan, resources)?
     } else {
         None
