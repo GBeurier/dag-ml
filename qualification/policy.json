@@ -314,7 +314,7 @@
           "--manifest-path",
           "crates/dag-ml-py/Cargo.toml",
           "--out",
-          "/home/delete/nirs4all/_audits/2026-10-29-remediation/dag343-qualified-wheels"
+          "/home/delete/nirs4all/_audits/2026-11-02-dag344/dag344-qualified-wheels"
         ]
       },
       "covers_groups": [
@@ -342,37 +342,37 @@
         "source_artifacts": [
           {
             "name": "dag-ml-wheel",
-            "version": "0.3.43",
+            "version": "0.3.44",
             "origin": "Locked release wheel with before/after source build receipt",
-            "artifact_path": "/home/delete/nirs4all/_audits/2026-10-29-remediation/dag343-qualified-wheels/dag_ml-0.3.43-cp311-abi3-manylinux_2_34_x86_64.whl",
-            "bytes": 12934398,
-            "sha256": "1fef060ec700b3601a9f6bf370aac6ded51a3a20211af947f784251df8d83528"
+            "artifact_path": "/home/delete/nirs4all/_audits/2026-11-02-dag344/dag344-qualified-wheels/dag_ml-0.3.44-cp311-abi3-manylinux_2_34_x86_64.whl",
+            "bytes": 12999700,
+            "sha256": "914a2e2de9cca99c91e22ed40e77225de2a3ef56b14c18638fc1b34133fd06b8"
           },
           {
             "name": "dag-ml-python-native",
-            "version": "0.3.43",
+            "version": "0.3.44",
             "origin": "Native bytes extracted from the same measured wheel",
             "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/crates/dag-ml-py/python/dag_ml/_dag_ml.abi3.so",
-            "bytes": 40634384,
-            "sha256": "fc31db48676e1480e96cfa0e48611805721b858b98e9092d372f4f2f66e848a0"
+            "bytes": 40919448,
+            "sha256": "f19204f24f4e21b185622949d6d73918f23ebdf0c15e02d8642126506fd1599c"
           }
         ],
         "dependency_origins": [
           {
             "name": "dag-ml-dependency-lock",
-            "version": "0.3.43",
+            "version": "0.3.44",
             "origin": "Actual immutable registry-backed Cargo lock input",
             "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/crates/dag-ml-py/Cargo.lock",
             "bytes": 31051,
-            "sha256": "d259ed6136b4c6b7de25951c8f06c0f996d4fce48390e11ef41d0ce17ff363b9"
+            "sha256": "f5ac9d44d923ec9c362607ed2b8197d587f7fd97b788e1e74c1d2bc33e80fb5d"
           },
           {
             "name": "dag-ml-py-build-dependency-lock",
-            "version": "0.3.43",
+            "version": "0.3.44",
             "origin": "Tracked owning source observed before and after this direct successful command; source hashes retained in the raw capture",
             "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/crates/dag-ml-py/Cargo.lock",
             "bytes": 31051,
-            "sha256": "d259ed6136b4c6b7de25951c8f06c0f996d4fce48390e11ef41d0ce17ff363b9"
+            "sha256": "f5ac9d44d923ec9c362607ed2b8197d587f7fd97b788e1e74c1d2bc33e80fb5d"
           }
         ]
       },
@@ -536,7 +536,7 @@
         "linux": [
           "python",
           "scripts/smoke_python_wheel_metadata.py",
-          "/home/delete/nirs4all/_audits/2026-10-29-remediation/dag343-qualified-wheels/dag_ml-0.3.43-cp311-abi3-manylinux_2_34_x86_64.whl"
+          "/home/delete/nirs4all/_audits/2026-11-02-dag344/dag344-qualified-wheels/dag_ml-0.3.44-cp311-abi3-manylinux_2_34_x86_64.whl"
         ]
       },
       "covers_groups": [
@@ -566,29 +566,29 @@
         "source_artifacts": [
           {
             "name": "dag-ml-wheel",
-            "version": "0.3.43",
+            "version": "0.3.44",
             "origin": "Locked release wheel with before/after source build receipt",
-            "artifact_path": "/home/delete/nirs4all/_audits/2026-10-29-remediation/dag343-qualified-wheels/dag_ml-0.3.43-cp311-abi3-manylinux_2_34_x86_64.whl",
-            "bytes": 12934398,
-            "sha256": "1fef060ec700b3601a9f6bf370aac6ded51a3a20211af947f784251df8d83528"
+            "artifact_path": "/home/delete/nirs4all/_audits/2026-11-02-dag344/dag344-qualified-wheels/dag_ml-0.3.44-cp311-abi3-manylinux_2_34_x86_64.whl",
+            "bytes": 12999700,
+            "sha256": "914a2e2de9cca99c91e22ed40e77225de2a3ef56b14c18638fc1b34133fd06b8"
           },
           {
             "name": "dag-ml-python-native",
-            "version": "0.3.43",
+            "version": "0.3.44",
             "origin": "Native bytes extracted from the same measured wheel",
             "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/crates/dag-ml-py/python/dag_ml/_dag_ml.abi3.so",
-            "bytes": 40634384,
-            "sha256": "fc31db48676e1480e96cfa0e48611805721b858b98e9092d372f4f2f66e848a0"
+            "bytes": 40919448,
+            "sha256": "f19204f24f4e21b185622949d6d73918f23ebdf0c15e02d8642126506fd1599c"
           }
         ],
         "dependency_origins": [
           {
             "name": "dag-ml-dependency-lock",
-            "version": "0.3.43",
+            "version": "0.3.44",
             "origin": "Actual immutable registry-backed Cargo lock input",
             "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/crates/dag-ml-py/Cargo.lock",
             "bytes": 31051,
-            "sha256": "d259ed6136b4c6b7de25951c8f06c0f996d4fce48390e11ef41d0ce17ff363b9"
+            "sha256": "f5ac9d44d923ec9c362607ed2b8197d587f7fd97b788e1e74c1d2bc33e80fb5d"
           }
         ]
       },
@@ -619,17 +619,17 @@
         {
           "field": "native_version",
           "op": "eq",
-          "value": "0.3.43"
+          "value": "0.3.44"
         },
         {
           "field": "facade_version",
           "op": "eq",
-          "value": "0.3.43"
+          "value": "0.3.44"
         },
         {
           "field": "manifest_version",
           "op": "eq",
-          "value": "0.3.43"
+          "value": "0.3.44"
         }
       ],
       "hosts": [
@@ -653,37 +653,37 @@
         "source_artifacts": [
           {
             "name": "dag-ml-wheel",
-            "version": "0.3.43",
+            "version": "0.3.44",
             "origin": "Locked release wheel with before/after source build receipt",
-            "artifact_path": "/home/delete/nirs4all/_audits/2026-10-29-remediation/dag343-qualified-wheels/dag_ml-0.3.43-cp311-abi3-manylinux_2_34_x86_64.whl",
-            "bytes": 12934398,
-            "sha256": "1fef060ec700b3601a9f6bf370aac6ded51a3a20211af947f784251df8d83528"
+            "artifact_path": "/home/delete/nirs4all/_audits/2026-11-02-dag344/dag344-qualified-wheels/dag_ml-0.3.44-cp311-abi3-manylinux_2_34_x86_64.whl",
+            "bytes": 12999700,
+            "sha256": "914a2e2de9cca99c91e22ed40e77225de2a3ef56b14c18638fc1b34133fd06b8"
           },
           {
             "name": "dag-ml-python-native",
-            "version": "0.3.43",
+            "version": "0.3.44",
             "origin": "Native bytes extracted from the same measured wheel",
             "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/crates/dag-ml-py/python/dag_ml/_dag_ml.abi3.so",
-            "bytes": 40634384,
-            "sha256": "fc31db48676e1480e96cfa0e48611805721b858b98e9092d372f4f2f66e848a0"
+            "bytes": 40919448,
+            "sha256": "f19204f24f4e21b185622949d6d73918f23ebdf0c15e02d8642126506fd1599c"
           }
         ],
         "dependency_origins": [
           {
             "name": "dag-ml-dependency-lock",
-            "version": "0.3.43",
+            "version": "0.3.44",
             "origin": "Actual immutable registry-backed Cargo lock input",
             "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/crates/dag-ml-py/Cargo.lock",
             "bytes": 31051,
-            "sha256": "d259ed6136b4c6b7de25951c8f06c0f996d4fce48390e11ef41d0ce17ff363b9"
+            "sha256": "f5ac9d44d923ec9c362607ed2b8197d587f7fd97b788e1e74c1d2bc33e80fb5d"
           },
           {
             "name": "dag-ml-py-build-dependency-lock",
-            "version": "0.3.43",
+            "version": "0.3.44",
             "origin": "Tracked owning source observed before and after this direct successful command; source hashes retained in the raw capture",
             "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/crates/dag-ml-py/Cargo.lock",
             "bytes": 31051,
-            "sha256": "d259ed6136b4c6b7de25951c8f06c0f996d4fce48390e11ef41d0ce17ff363b9"
+            "sha256": "f5ac9d44d923ec9c362607ed2b8197d587f7fd97b788e1e74c1d2bc33e80fb5d"
           }
         ]
       },
@@ -1228,37 +1228,37 @@
         "source_artifacts": [
           {
             "name": "dag-ml-wheel",
-            "version": "0.3.43",
+            "version": "0.3.44",
             "origin": "Locked release wheel with before/after source build receipt",
-            "artifact_path": "/home/delete/nirs4all/_audits/2026-10-29-remediation/dag343-qualified-wheels/dag_ml-0.3.43-cp311-abi3-manylinux_2_34_x86_64.whl",
-            "bytes": 12934398,
-            "sha256": "1fef060ec700b3601a9f6bf370aac6ded51a3a20211af947f784251df8d83528"
+            "artifact_path": "/home/delete/nirs4all/_audits/2026-11-02-dag344/dag344-qualified-wheels/dag_ml-0.3.44-cp311-abi3-manylinux_2_34_x86_64.whl",
+            "bytes": 12999700,
+            "sha256": "914a2e2de9cca99c91e22ed40e77225de2a3ef56b14c18638fc1b34133fd06b8"
           },
           {
             "name": "dag-ml-python-native",
-            "version": "0.3.43",
+            "version": "0.3.44",
             "origin": "Native bytes extracted from the same measured wheel",
             "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/crates/dag-ml-py/python/dag_ml/_dag_ml.abi3.so",
-            "bytes": 40634384,
-            "sha256": "fc31db48676e1480e96cfa0e48611805721b858b98e9092d372f4f2f66e848a0"
+            "bytes": 40919448,
+            "sha256": "f19204f24f4e21b185622949d6d73918f23ebdf0c15e02d8642126506fd1599c"
           },
           {
             "name": "dag-ml-py-methods-source-build",
-            "version": "0.3.43",
+            "version": "0.3.44",
             "origin": "Tracked owning source observed before and after this direct successful command; source hashes retained in the raw capture",
             "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/crates/dag-ml-py/Cargo.toml",
             "bytes": 1546,
-            "sha256": "d8a6b951862b9f8fa6ef1157841efe1bc09602d64b41723477497bfddf7445b8"
+            "sha256": "4295180f4c93364e0f0618012bb05a12ab19296a2e440b7ef30fdecf41f5fa7c"
           }
         ],
         "dependency_origins": [
           {
             "name": "dag-ml-dependency-lock",
-            "version": "0.3.43",
+            "version": "0.3.44",
             "origin": "Actual immutable registry-backed Cargo lock input",
             "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/crates/dag-ml-py/Cargo.lock",
             "bytes": 31051,
-            "sha256": "d259ed6136b4c6b7de25951c8f06c0f996d4fce48390e11ef41d0ce17ff363b9"
+            "sha256": "f5ac9d44d923ec9c362607ed2b8197d587f7fd97b788e1e74c1d2bc33e80fb5d"
           },
           {
             "name": "methods-native",
@@ -1270,11 +1270,11 @@
           },
           {
             "name": "dag-ml-py-build-dependency-lock",
-            "version": "0.3.43",
+            "version": "0.3.44",
             "origin": "Tracked owning source observed before and after this direct successful command; source hashes retained in the raw capture",
             "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/crates/dag-ml-py/Cargo.lock",
             "bytes": 31051,
-            "sha256": "d259ed6136b4c6b7de25951c8f06c0f996d4fce48390e11ef41d0ce17ff363b9"
+            "sha256": "f5ac9d44d923ec9c362607ed2b8197d587f7fd97b788e1e74c1d2bc33e80fb5d"
           }
         ]
       },
@@ -1485,37 +1485,37 @@
         "source_artifacts": [
           {
             "name": "dag-ml-wheel",
-            "version": "0.3.43",
+            "version": "0.3.44",
             "origin": "Locked release wheel with before/after source build receipt",
-            "artifact_path": "/home/delete/nirs4all/_audits/2026-10-29-remediation/dag343-qualified-wheels/dag_ml-0.3.43-cp311-abi3-manylinux_2_34_x86_64.whl",
-            "bytes": 12934398,
-            "sha256": "1fef060ec700b3601a9f6bf370aac6ded51a3a20211af947f784251df8d83528"
+            "artifact_path": "/home/delete/nirs4all/_audits/2026-11-02-dag344/dag344-qualified-wheels/dag_ml-0.3.44-cp311-abi3-manylinux_2_34_x86_64.whl",
+            "bytes": 12999700,
+            "sha256": "914a2e2de9cca99c91e22ed40e77225de2a3ef56b14c18638fc1b34133fd06b8"
           },
           {
             "name": "dag-ml-python-native",
-            "version": "0.3.43",
+            "version": "0.3.44",
             "origin": "Native bytes extracted from the same measured wheel",
             "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/crates/dag-ml-py/python/dag_ml/_dag_ml.abi3.so",
-            "bytes": 40634384,
-            "sha256": "fc31db48676e1480e96cfa0e48611805721b858b98e9092d372f4f2f66e848a0"
+            "bytes": 40919448,
+            "sha256": "f19204f24f4e21b185622949d6d73918f23ebdf0c15e02d8642126506fd1599c"
           }
         ],
         "dependency_origins": [
           {
             "name": "dag-ml-dependency-lock",
-            "version": "0.3.43",
+            "version": "0.3.44",
             "origin": "Actual immutable registry-backed Cargo lock input",
             "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/crates/dag-ml-py/Cargo.lock",
             "bytes": 31051,
-            "sha256": "d259ed6136b4c6b7de25951c8f06c0f996d4fce48390e11ef41d0ce17ff363b9"
+            "sha256": "f5ac9d44d923ec9c362607ed2b8197d587f7fd97b788e1e74c1d2bc33e80fb5d"
           },
           {
             "name": "dag-ml-py-build-dependency-lock",
-            "version": "0.3.43",
+            "version": "0.3.44",
             "origin": "Tracked owning source observed before and after this direct successful command; source hashes retained in the raw capture",
             "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/crates/dag-ml-py/Cargo.lock",
             "bytes": 31051,
-            "sha256": "d259ed6136b4c6b7de25951c8f06c0f996d4fce48390e11ef41d0ce17ff363b9"
+            "sha256": "f5ac9d44d923ec9c362607ed2b8197d587f7fd97b788e1e74c1d2bc33e80fb5d"
           }
         ]
       },
@@ -1566,29 +1566,29 @@
         "source_artifacts": [
           {
             "name": "dag-ml-wheel",
-            "version": "0.3.43",
+            "version": "0.3.44",
             "origin": "Locked release wheel with before/after source build receipt",
-            "artifact_path": "/home/delete/nirs4all/_audits/2026-10-29-remediation/dag343-qualified-wheels/dag_ml-0.3.43-cp311-abi3-manylinux_2_34_x86_64.whl",
-            "bytes": 12934398,
-            "sha256": "1fef060ec700b3601a9f6bf370aac6ded51a3a20211af947f784251df8d83528"
+            "artifact_path": "/home/delete/nirs4all/_audits/2026-11-02-dag344/dag344-qualified-wheels/dag_ml-0.3.44-cp311-abi3-manylinux_2_34_x86_64.whl",
+            "bytes": 12999700,
+            "sha256": "914a2e2de9cca99c91e22ed40e77225de2a3ef56b14c18638fc1b34133fd06b8"
           },
           {
             "name": "dag-ml-python-native",
-            "version": "0.3.43",
+            "version": "0.3.44",
             "origin": "Native bytes extracted from the same measured wheel",
             "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/crates/dag-ml-py/python/dag_ml/_dag_ml.abi3.so",
-            "bytes": 40634384,
-            "sha256": "fc31db48676e1480e96cfa0e48611805721b858b98e9092d372f4f2f66e848a0"
+            "bytes": 40919448,
+            "sha256": "f19204f24f4e21b185622949d6d73918f23ebdf0c15e02d8642126506fd1599c"
           }
         ],
         "dependency_origins": [
           {
             "name": "dag-ml-dependency-lock",
-            "version": "0.3.43",
+            "version": "0.3.44",
             "origin": "Actual immutable registry-backed Cargo lock input",
             "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/crates/dag-ml-py/Cargo.lock",
             "bytes": 31051,
-            "sha256": "d259ed6136b4c6b7de25951c8f06c0f996d4fce48390e11ef41d0ce17ff363b9"
+            "sha256": "f5ac9d44d923ec9c362607ed2b8197d587f7fd97b788e1e74c1d2bc33e80fb5d"
           },
           {
             "name": "methods-native",
@@ -1600,11 +1600,11 @@
           },
           {
             "name": "dag-ml-py-build-dependency-lock",
-            "version": "0.3.43",
+            "version": "0.3.44",
             "origin": "Tracked owning source observed before and after this direct successful command; source hashes retained in the raw capture",
             "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/crates/dag-ml-py/Cargo.lock",
             "bytes": 31051,
-            "sha256": "d259ed6136b4c6b7de25951c8f06c0f996d4fce48390e11ef41d0ce17ff363b9"
+            "sha256": "f5ac9d44d923ec9c362607ed2b8197d587f7fd97b788e1e74c1d2bc33e80fb5d"
           }
         ]
       },
@@ -1696,7 +1696,7 @@
         "source_artifacts": [
           {
             "name": "dag-ml-core-source-manifest",
-            "version": "0.3.43",
+            "version": "0.3.44",
             "origin": "Exact source manifest compiled by this direct Cargo gate",
             "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/crates/dag-ml-core/Cargo.toml",
             "bytes": 1260,
@@ -1704,7 +1704,7 @@
           },
           {
             "name": "dag-ml-core-packaged-criteria-source",
-            "version": "0.3.43",
+            "version": "0.3.44",
             "origin": "Tracked owning source observed before and after this direct successful command; source hashes retained in the raw capture",
             "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/crates/dag-ml-core/src/criteria.rs",
             "bytes": 71192,
@@ -1712,25 +1712,25 @@
           },
           {
             "name": "dag-ml-packaging-workspace-manifest",
-            "version": "0.3.43",
+            "version": "0.3.44",
             "origin": "Tracked owning source observed before and after this direct successful command; source hashes retained in the raw capture",
             "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/Cargo.toml",
             "bytes": 2063,
-            "sha256": "a4ae552a289a23e35e23c663805b365831783d8d4f0d73dfe8e1a5fa2c82fb5b"
+            "sha256": "b83b11c6141adab9735deaa9fb76679e5bc6eefd973e3a0126fcd122c4a8c127"
           }
         ],
         "dependency_origins": [
           {
             "name": "dag-ml-dependency-lock",
-            "version": "0.3.43",
+            "version": "0.3.44",
             "origin": "Actual immutable registry-backed Cargo lock input",
             "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/Cargo.lock",
             "bytes": 38704,
-            "sha256": "b355c41bea3df34a00abe63de070213e8e03fcaef2b47bc399a767a1402de591"
+            "sha256": "649f1152e7391cc59a82dd4ea3135b8b5f6307ab2591c4d895e6798934fc8a66"
           },
           {
             "name": "dag-ml-core-packaging-dependency-declarations",
-            "version": "0.3.43",
+            "version": "0.3.44",
             "origin": "Tracked owning source observed before and after this direct successful command; source hashes retained in the raw capture",
             "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/crates/dag-ml-core/Cargo.toml",
             "bytes": 1260,
@@ -2080,7 +2080,7 @@
         "source_artifacts": [
           {
             "name": "dag-ml-core-source-manifest",
-            "version": "0.3.43",
+            "version": "0.3.44",
             "origin": "Exact source manifest compiled by this direct Cargo gate",
             "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/crates/dag-ml-core/Cargo.toml",
             "bytes": 1260,
@@ -2088,7 +2088,7 @@
           },
           {
             "name": "dag-ml-core-methods-source-build",
-            "version": "0.3.43",
+            "version": "0.3.44",
             "origin": "Tracked owning source observed before and after this direct successful command; source hashes retained in the raw capture",
             "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/crates/dag-ml-core/Cargo.toml",
             "bytes": 1260,
@@ -2106,19 +2106,19 @@
           },
           {
             "name": "dag-ml-dependency-lock",
-            "version": "0.3.43",
+            "version": "0.3.44",
             "origin": "Actual immutable registry-backed Cargo lock input",
             "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/Cargo.lock",
             "bytes": 38704,
-            "sha256": "b355c41bea3df34a00abe63de070213e8e03fcaef2b47bc399a767a1402de591"
+            "sha256": "649f1152e7391cc59a82dd4ea3135b8b5f6307ab2591c4d895e6798934fc8a66"
           },
           {
             "name": "dag-ml-workspace-dependency-lock",
-            "version": "0.3.43",
+            "version": "0.3.44",
             "origin": "Tracked owning source observed before and after this direct successful command; source hashes retained in the raw capture",
             "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/Cargo.lock",
             "bytes": 38704,
-            "sha256": "b355c41bea3df34a00abe63de070213e8e03fcaef2b47bc399a767a1402de591"
+            "sha256": "649f1152e7391cc59a82dd4ea3135b8b5f6307ab2591c4d895e6798934fc8a66"
           }
         ]
       },
@@ -2176,7 +2176,7 @@
         "source_artifacts": [
           {
             "name": "dag-ml-core-source-manifest",
-            "version": "0.3.43",
+            "version": "0.3.44",
             "origin": "Exact source manifest compiled by this direct Cargo gate",
             "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/crates/dag-ml-core/Cargo.toml",
             "bytes": 1260,
@@ -2184,7 +2184,7 @@
           },
           {
             "name": "dag-ml-cli-methods-source-build",
-            "version": "0.3.43",
+            "version": "0.3.44",
             "origin": "Tracked owning source observed before and after this direct successful command; source hashes retained in the raw capture",
             "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/crates/dag-ml-cli/Cargo.toml",
             "bytes": 604,
@@ -2202,19 +2202,19 @@
           },
           {
             "name": "dag-ml-dependency-lock",
-            "version": "0.3.43",
+            "version": "0.3.44",
             "origin": "Actual immutable registry-backed Cargo lock input",
             "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/Cargo.lock",
             "bytes": 38704,
-            "sha256": "b355c41bea3df34a00abe63de070213e8e03fcaef2b47bc399a767a1402de591"
+            "sha256": "649f1152e7391cc59a82dd4ea3135b8b5f6307ab2591c4d895e6798934fc8a66"
           },
           {
             "name": "dag-ml-workspace-dependency-lock",
-            "version": "0.3.43",
+            "version": "0.3.44",
             "origin": "Tracked owning source observed before and after this direct successful command; source hashes retained in the raw capture",
             "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/Cargo.lock",
             "bytes": 38704,
-            "sha256": "b355c41bea3df34a00abe63de070213e8e03fcaef2b47bc399a767a1402de591"
+            "sha256": "649f1152e7391cc59a82dd4ea3135b8b5f6307ab2591c4d895e6798934fc8a66"
           }
         ]
       },
@@ -2341,8 +2341,8 @@
           "CMD",
           "check",
           "--no-manual",
-          "--output=/home/delete/nirs4all/_audits/2026-10-29-remediation/publication/dag343-final/r-check",
-          "/home/delete/nirs4all/_audits/2026-10-29-remediation/publication/dag343/r-build/dagml_0.3.43.tar.gz"
+          "--output=/home/delete/nirs4all/_audits/2026-11-02-dag344/linux/r-check",
+          "/home/delete/nirs4all/_audits/2026-11-02-dag344/dag344/r-build/dagml_0.3.44.tar.gz"
         ]
       },
       "covers_groups": [
@@ -2381,17 +2381,17 @@
         "source_artifacts": [
           {
             "name": "dagml-r-source-package",
-            "version": "0.3.43",
+            "version": "0.3.44",
             "origin": "R CMD build from exact owned binding source",
-            "artifact_path": "/home/delete/nirs4all/_audits/2026-10-29-remediation/publication/dag343/r-build/dagml_0.3.43.tar.gz",
-            "bytes": 22712,
-            "sha256": "c709ec72274f39a1c816946818a9185bc2e3649d237dc67a19e66068665f4a8a"
+            "artifact_path": "/home/delete/nirs4all/_audits/2026-11-02-dag344/dag344/r-build/dagml_0.3.44.tar.gz",
+            "bytes": 23613,
+            "sha256": "eb50981eb9c8d55143a1e8cc2a90cd889835859016c424bb1ba07853c3dd2697"
           },
           {
             "name": "capture-observer",
             "version": "3",
             "origin": "Actual owned observer executed for this direct before/after capture",
-            "artifact_path": "/home/delete/nirs4all/_audits/2026-10-29-remediation/publication/capture_dag_gate.py",
+            "artifact_path": "/home/delete/nirs4all/_audits/2026-11-02-dag344/capture_dag_gate.py",
             "bytes": 5918,
             "sha256": "be624b201398a8e0831530019d5ad48c3b60214fcd422b78f879be8577d5a4a6"
           }
@@ -2399,19 +2399,19 @@
         "dependency_origins": [
           {
             "name": "dag-ml-workspace-dependency-lock",
-            "version": "0.3.43",
+            "version": "0.3.44",
             "origin": "Actual immutable registry-backed Cargo lock input",
             "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/Cargo.lock",
             "bytes": 38704,
-            "sha256": "b355c41bea3df34a00abe63de070213e8e03fcaef2b47bc399a767a1402de591"
+            "sha256": "649f1152e7391cc59a82dd4ea3135b8b5f6307ab2591c4d895e6798934fc8a66"
           },
           {
             "name": "dag-ml-capi",
-            "version": "0.3.43",
+            "version": "0.3.44",
             "origin": "Actual native C ABI loaded by the checked R binding",
             "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/target/release/libdag_ml_capi.so",
-            "bytes": 23780392,
-            "sha256": "e6b6b6b1bd334412759c49cac30e66a5296a23450c97bf729ef585c64cfba48f"
+            "bytes": 23937568,
+            "sha256": "7bf4f957feea6debbf78dcca8b05e252d557866d12faafd71461c88cdd8c9593"
           }
         ]
       },
@@ -2622,49 +2622,49 @@
         "source_artifacts": [
           {
             "name": "dag-ml-C-ABI",
-            "version": "0.3.43",
+            "version": "0.3.44",
             "origin": "Locked source-built native C ABI invoked by the MEX bridge",
             "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/target/release/libdag_ml_capi.so",
-            "bytes": 23780392,
-            "sha256": "e6b6b6b1bd334412759c49cac30e66a5296a23450c97bf729ef585c64cfba48f"
+            "bytes": 23937568,
+            "sha256": "7bf4f957feea6debbf78dcca8b05e252d557866d12faafd71461c88cdd8c9593"
           },
           {
             "name": "taskTrainingLossBindingNative.mex",
-            "version": "0.3.43",
+            "version": "0.3.44",
             "origin": "Native MEX compiled from the exact owning bridge C source with host compiler",
             "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/bindings/matlab/+dagml/taskTrainingLossBindingNative.mex",
             "bytes": 16072,
-            "sha256": "8b826c428f4c91a0c78dc9c122f03a8be6a373f1045326b42c89aa1c6f833101"
+            "sha256": "261e2706df9ed9017dc5d814cb2a8a1d219c5132bf9ec26a058e145e16948323"
           },
           {
             "name": "executeExecutionPlanPhaseNative.mex",
-            "version": "0.3.43",
+            "version": "0.3.44",
             "origin": "Native MEX compiled from the exact owning bridge C source with host compiler",
             "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/bindings/matlab/+dagml/executeExecutionPlanPhaseNative.mex",
             "bytes": 16448,
-            "sha256": "8d1bcd36137c66841862354b3d0adc7464ef46265d03c29eebc0ac69b337783a"
+            "sha256": "8e30b020709b3720809065d256a1d0a77abda5b25d14c7d4a5469467b18bfb23"
           }
         ],
         "dependency_origins": [
           {
             "name": "dag-ml-dependency-lock",
-            "version": "0.3.43",
+            "version": "0.3.44",
             "origin": "Actual immutable registry-backed Cargo lock input",
             "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/Cargo.lock",
             "bytes": 38704,
-            "sha256": "b355c41bea3df34a00abe63de070213e8e03fcaef2b47bc399a767a1402de591"
+            "sha256": "649f1152e7391cc59a82dd4ea3135b8b5f6307ab2591c4d895e6798934fc8a66"
           },
           {
             "name": "dag-ml-workspace-dependency-lock",
-            "version": "0.3.43",
+            "version": "0.3.44",
             "origin": "Tracked owning source observed before and after this direct successful command; source hashes retained in the raw capture",
             "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/Cargo.lock",
             "bytes": 38704,
-            "sha256": "b355c41bea3df34a00abe63de070213e8e03fcaef2b47bc399a767a1402de591"
+            "sha256": "649f1152e7391cc59a82dd4ea3135b8b5f6307ab2591c4d895e6798934fc8a66"
           },
           {
             "name": "octave-registry-source",
-            "version": "0.3.43",
+            "version": "0.3.44",
             "origin": "Tracked owning source observed before and after this direct successful command; source hashes retained in the raw capture",
             "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/bindings/matlab/tests/local_implementation_registry.m",
             "bytes": 5602,
@@ -2920,7 +2920,7 @@
         "linux": [
           "node",
           "scripts/smoke_wasm_bindings.cjs",
-          "/home/delete/nirs4all/_audits/2026-10-29-remediation/publication/dag343/wasm-node"
+          "/home/delete/nirs4all/_audits/2026-11-02-dag344/dag344/wasm-node"
         ]
       },
       "covers_groups": [
@@ -2935,7 +2935,7 @@
         {
           "field": "native_version",
           "op": "eq",
-          "value": "0.3.43"
+          "value": "0.3.44"
         }
       ],
       "hosts": [
@@ -2965,37 +2965,37 @@
         "source_artifacts": [
           {
             "name": "dag-ml-wasm-native",
-            "version": "0.3.43",
+            "version": "0.3.44",
             "origin": "Source-built release WASM from measured Rust inputs",
-            "artifact_path": "/home/delete/nirs4all/_audits/2026-10-29-remediation/publication/dag343/wasm-node/dag_ml_wasm_bg.wasm",
-            "bytes": 10975312,
-            "sha256": "2e42442d4a8a4e6058200b06311ff45769778ced75b9c02f04c3ee64da944333"
+            "artifact_path": "/home/delete/nirs4all/_audits/2026-11-02-dag344/dag344/wasm-node/dag_ml_wasm_bg.wasm",
+            "bytes": 11034275,
+            "sha256": "22eb61a28d1c92ecc728682b4e311a8c3f0bfe53a3cf71c54c2a16075b22216d"
           },
           {
             "name": "dag-ml-wasm-binding",
-            "version": "0.3.43",
+            "version": "0.3.44",
             "origin": "Matching wasm-bindgen delivery",
-            "artifact_path": "/home/delete/nirs4all/_audits/2026-10-29-remediation/publication/dag343/wasm-node/dag_ml_wasm.js",
-            "bytes": 83665,
-            "sha256": "cce510d2cc3326a1d61618d5c01a63789b11817a0d85e4452c9f70951b9a4e69"
+            "artifact_path": "/home/delete/nirs4all/_audits/2026-11-02-dag344/dag344/wasm-node/dag_ml_wasm.js",
+            "bytes": 86307,
+            "sha256": "ae4fe26c37bf45c7e90a7233e79f1df0b48624af3397abec7b05a67cfe754d58"
           }
         ],
         "dependency_origins": [
           {
             "name": "dag-ml-dependency-lock",
-            "version": "0.3.43",
+            "version": "0.3.44",
             "origin": "Actual immutable registry-backed Cargo lock input",
             "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/Cargo.lock",
             "bytes": 38704,
-            "sha256": "b355c41bea3df34a00abe63de070213e8e03fcaef2b47bc399a767a1402de591"
+            "sha256": "649f1152e7391cc59a82dd4ea3135b8b5f6307ab2591c4d895e6798934fc8a66"
           },
           {
             "name": "dag-ml-workspace-dependency-lock",
-            "version": "0.3.43",
+            "version": "0.3.44",
             "origin": "Tracked owning source observed before and after this direct successful command; source hashes retained in the raw capture",
             "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/Cargo.lock",
             "bytes": 38704,
-            "sha256": "b355c41bea3df34a00abe63de070213e8e03fcaef2b47bc399a767a1402de591"
+            "sha256": "649f1152e7391cc59a82dd4ea3135b8b5f6307ab2591c4d895e6798934fc8a66"
           }
         ]
       },
@@ -3012,7 +3012,7 @@
         "linux": [
           "node",
           "scripts/smoke_wasm_browser_hpo.mjs",
-          "/home/delete/nirs4all/_audits/2026-10-29-remediation/publication/dag343/wasm-web"
+          "/home/delete/nirs4all/_audits/2026-11-02-dag344/dag344/wasm-web"
         ]
       },
       "covers_groups": [
@@ -3027,7 +3027,7 @@
         {
           "field": "native_version",
           "op": "eq",
-          "value": "0.3.43"
+          "value": "0.3.44"
         }
       ],
       "hosts": [
@@ -3057,25 +3057,25 @@
         "source_artifacts": [
           {
             "name": "dag-ml-wasm-runtime",
-            "version": "0.3.43",
+            "version": "0.3.44",
             "origin": "Source-built release WASM from measured Rust inputs",
-            "artifact_path": "/home/delete/nirs4all/_audits/2026-10-29-remediation/publication/dag343/wasm-web/dag_ml_wasm_bg.wasm",
-            "bytes": 10975312,
-            "sha256": "2e42442d4a8a4e6058200b06311ff45769778ced75b9c02f04c3ee64da944333"
+            "artifact_path": "/home/delete/nirs4all/_audits/2026-11-02-dag344/dag344/wasm-web/dag_ml_wasm_bg.wasm",
+            "bytes": 11034275,
+            "sha256": "22eb61a28d1c92ecc728682b4e311a8c3f0bfe53a3cf71c54c2a16075b22216d"
           },
           {
             "name": "dag-ml-wasm-binding",
-            "version": "0.3.43",
+            "version": "0.3.44",
             "origin": "Matching wasm-bindgen delivery",
-            "artifact_path": "/home/delete/nirs4all/_audits/2026-10-29-remediation/publication/dag343/wasm-web/dag_ml_wasm.js",
-            "bytes": 83406,
-            "sha256": "c34d1f1e02de121f1240b4c48e2ebc2c56f4e7abd5361ca30ff8e99cb07cb37e"
+            "artifact_path": "/home/delete/nirs4all/_audits/2026-11-02-dag344/dag344/wasm-web/dag_ml_wasm.js",
+            "bytes": 85988,
+            "sha256": "3ecbe1e0041cf7b663db2d0bc0369e1ce43937a56a581bdaa72c7b303cd4819f"
           },
           {
             "name": "capture-observer",
             "version": "3",
             "origin": "Actual owned observer executed for this direct before/after capture",
-            "artifact_path": "/home/delete/nirs4all/_audits/2026-10-29-remediation/publication/capture_dag_gate.py",
+            "artifact_path": "/home/delete/nirs4all/_audits/2026-11-02-dag344/capture_dag_gate.py",
             "bytes": 5918,
             "sha256": "be624b201398a8e0831530019d5ad48c3b60214fcd422b78f879be8577d5a4a6"
           }
@@ -3083,11 +3083,11 @@
         "dependency_origins": [
           {
             "name": "dag-ml-workspace-dependency-lock",
-            "version": "0.3.43",
+            "version": "0.3.44",
             "origin": "Actual immutable registry-backed Cargo lock input",
             "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/Cargo.lock",
             "bytes": 38704,
-            "sha256": "b355c41bea3df34a00abe63de070213e8e03fcaef2b47bc399a767a1402de591"
+            "sha256": "649f1152e7391cc59a82dd4ea3135b8b5f6307ab2591c4d895e6798934fc8a66"
           },
           {
             "name": "chromium-browser",
@@ -3150,19 +3150,19 @@
         "source_artifacts": [
           {
             "name": "dag-ml-wheel",
-            "version": "0.3.43",
-            "origin": "Native Rust1.88 locked registry build from exact runtime source5d4f7be",
-            "artifact_path": "D:\\workspace\\nirs4all-release-20261029-quality\\wheels\\dag_ml-0.3.43-cp311-abi3-win_amd64.whl",
-            "bytes": 11825712,
-            "sha256": "6eafd77c3dc574335cfebdb845b98d9ebbcfdb758c270b7b6fa42c9474253fdd"
+            "version": "0.3.44",
+            "origin": "Native Rust1.88 locked registry build from exact runtime source 5e63353",
+            "artifact_path": "D:\\workspace\\nirs4all-release-20261029-quality\\wheels-dag344\\dag_ml-0.3.44-cp311-abi3-win_amd64.whl",
+            "bytes": 11798094,
+            "sha256": "47e8fb560bbde603d7cecdd197a7bdfc82612117ad8f3aeb5d75cf337a2a1533"
           },
           {
             "name": "dag-ml-native",
-            "version": "0.3.43",
+            "version": "0.3.44",
             "origin": "Byte-exact extraction of the same source-built wheel",
             "artifact_path": "D:\\workspace\\nirs4all-release-20261029-quality\\dag-ml\\qualified-windows-wheel\\dag_ml\\_dag_ml.pyd",
-            "bytes": 36821504,
-            "sha256": "956ca6be245bdf5620dc9d2f43f15f212a7b6be08b1de4aa55682bc461c6d5f9"
+            "bytes": 36708864,
+            "sha256": "74ed1dbe3e3e82eea9a311163cc20b77edbd35615f55b38b27a5066e35d80a22"
           },
           {
             "name": "capture-observer",
@@ -3238,19 +3238,19 @@
         "source_artifacts": [
           {
             "name": "dag-ml-wheel",
-            "version": "0.3.43",
-            "origin": "Native Rust1.88 locked registry build from exact runtime source5d4f7be",
-            "artifact_path": "D:\\workspace\\nirs4all-release-20261029-quality\\wheels\\dag_ml-0.3.43-cp311-abi3-win_amd64.whl",
-            "bytes": 11825712,
-            "sha256": "6eafd77c3dc574335cfebdb845b98d9ebbcfdb758c270b7b6fa42c9474253fdd"
+            "version": "0.3.44",
+            "origin": "Native Rust1.88 locked registry build from exact runtime source 5e63353",
+            "artifact_path": "D:\\workspace\\nirs4all-release-20261029-quality\\wheels-dag344\\dag_ml-0.3.44-cp311-abi3-win_amd64.whl",
+            "bytes": 11798094,
+            "sha256": "47e8fb560bbde603d7cecdd197a7bdfc82612117ad8f3aeb5d75cf337a2a1533"
           },
           {
             "name": "dag-ml-native",
-            "version": "0.3.43",
+            "version": "0.3.44",
             "origin": "Byte-exact extraction of the same source-built wheel",
             "artifact_path": "D:\\workspace\\nirs4all-release-20261029-quality\\dag-ml\\qualified-windows-wheel\\dag_ml\\_dag_ml.pyd",
-            "bytes": 36821504,
-            "sha256": "956ca6be245bdf5620dc9d2f43f15f212a7b6be08b1de4aa55682bc461c6d5f9"
+            "bytes": 36708864,
+            "sha256": "74ed1dbe3e3e82eea9a311163cc20b77edbd35615f55b38b27a5066e35d80a22"
           },
           {
             "name": "capture-observer",
@@ -3326,19 +3326,19 @@
         "source_artifacts": [
           {
             "name": "dag-ml-wheel",
-            "version": "0.3.43",
-            "origin": "Native Rust1.88 locked registry build from exact runtime source5d4f7be",
-            "artifact_path": "D:\\workspace\\nirs4all-release-20261029-quality\\wheels\\dag_ml-0.3.43-cp311-abi3-win_amd64.whl",
-            "bytes": 11825712,
-            "sha256": "6eafd77c3dc574335cfebdb845b98d9ebbcfdb758c270b7b6fa42c9474253fdd"
+            "version": "0.3.44",
+            "origin": "Native Rust1.88 locked registry build from exact runtime source 5e63353",
+            "artifact_path": "D:\\workspace\\nirs4all-release-20261029-quality\\wheels-dag344\\dag_ml-0.3.44-cp311-abi3-win_amd64.whl",
+            "bytes": 11798094,
+            "sha256": "47e8fb560bbde603d7cecdd197a7bdfc82612117ad8f3aeb5d75cf337a2a1533"
           },
           {
             "name": "dag-ml-native",
-            "version": "0.3.43",
+            "version": "0.3.44",
             "origin": "Byte-exact extraction of the same source-built wheel",
             "artifact_path": "D:\\workspace\\nirs4all-release-20261029-quality\\dag-ml\\qualified-windows-wheel\\dag_ml\\_dag_ml.pyd",
-            "bytes": 36821504,
-            "sha256": "956ca6be245bdf5620dc9d2f43f15f212a7b6be08b1de4aa55682bc461c6d5f9"
+            "bytes": 36708864,
+            "sha256": "74ed1dbe3e3e82eea9a311163cc20b77edbd35615f55b38b27a5066e35d80a22"
           },
           {
             "name": "capture-observer",
@@ -3414,19 +3414,19 @@
         "source_artifacts": [
           {
             "name": "dag-ml-wheel",
-            "version": "0.3.43",
-            "origin": "Native Rust1.88 locked registry build from exact runtime source5d4f7be",
-            "artifact_path": "D:\\workspace\\nirs4all-release-20261029-quality\\wheels\\dag_ml-0.3.43-cp311-abi3-win_amd64.whl",
-            "bytes": 11825712,
-            "sha256": "6eafd77c3dc574335cfebdb845b98d9ebbcfdb758c270b7b6fa42c9474253fdd"
+            "version": "0.3.44",
+            "origin": "Native Rust1.88 locked registry build from exact runtime source 5e63353",
+            "artifact_path": "D:\\workspace\\nirs4all-release-20261029-quality\\wheels-dag344\\dag_ml-0.3.44-cp311-abi3-win_amd64.whl",
+            "bytes": 11798094,
+            "sha256": "47e8fb560bbde603d7cecdd197a7bdfc82612117ad8f3aeb5d75cf337a2a1533"
           },
           {
             "name": "dag-ml-native",
-            "version": "0.3.43",
+            "version": "0.3.44",
             "origin": "Byte-exact extraction of the same source-built wheel",
             "artifact_path": "D:\\workspace\\nirs4all-release-20261029-quality\\dag-ml\\qualified-windows-wheel\\dag_ml\\_dag_ml.pyd",
-            "bytes": 36821504,
-            "sha256": "956ca6be245bdf5620dc9d2f43f15f212a7b6be08b1de4aa55682bc461c6d5f9"
+            "bytes": 36708864,
+            "sha256": "74ed1dbe3e3e82eea9a311163cc20b77edbd35615f55b38b27a5066e35d80a22"
           },
           {
             "name": "capture-observer",

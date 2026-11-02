@@ -1,0 +1,68 @@
+{
+  "mode": "captured",
+  "source_sha": "cde8b0fe2548df338b60fd27643f0763f77b0250",
+  "run_identity": {
+    "id": "error-taxonomy",
+    "host": "linux-wsl",
+    "command": [
+      "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/.venv/bin/python",
+      "scripts/check_error_taxonomy.py"
+    ],
+    "cwd": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml",
+    "environment": {
+      "PATH": "/home/delete/nirs4all/_audits/2026-11-02-dag344/../2026-10-29-remediation/publication/octave-bin:/home/delete/.nvm/versions/node/v24.16.0/bin:/home/delete/miniconda3/bin:/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/.venv/bin:/home/delete/.cargo/bin:/usr/local/bin:/usr/bin:/bin",
+      "LD_LIBRARY_PATH": "/home/delete/.local/share/uv/python/cpython-3.12.12-linux-x86_64-gnu/lib",
+      "PYO3_PYTHON": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/.venv/bin/python",
+      "PYTHONPATH": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/crates/dag-ml-py/python",
+      "DAG_ML_DATA_REPO": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml-data",
+      "OPENBLAS_NUM_THREADS": "1",
+      "OMP_NUM_THREADS": "1",
+      "N4M_LIBRARY_PATH": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/nirs4all-methods/build/dev-release/cpp/src/libn4m.so",
+      "N4M_LIB_PATH": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/nirs4all-methods/build/dev-release/cpp/src/libn4m.so",
+      "PLS4ALL_LIB_PATH": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/nirs4all-methods/build/dev-release/cpp/src/libn4m.so",
+      "N4M_ESTIMATOR_ROLES_FIXTURE": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/nirs4all-methods/parity/fixtures/estimator_roles_n4me.json",
+      "PLS4ALL_PYTHONPATH": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/nirs4all-methods/bindings/python_pls4all/src",
+      "DAG_ML_HISTORICAL_CORE_ORACLE": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/tools/historical-core-oracle/target/debug/dag-ml-historical-core-oracle",
+      "DAG_ML_CURRENT_CORE_ORACLE": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/tools/current-core-oracle/target/debug/dag-ml-current-core-oracle",
+      "DAG_ML_REQUIRE_METHODS_CLI_TEST": "1",
+      "DAG_ML_REQUIRE_N4M_TEST": "1",
+      "DAG_ML_REQUIRE_R_ADAPTER_TEST": "1",
+      "DAGML_REQUIRE_HPO_R": "1",
+      "DAGML_REQUIRE_HPO_MATLAB": "1",
+      "DAGML_REQUIRE_HPO_OCTAVE": "1",
+      "DAGML_NATIVE_LIBRARY": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/target/release/libdag_ml_capi.so",
+      "CC": "/usr/bin/gcc",
+      "CXX": "/usr/bin/g++",
+      "DL_LD": "/usr/bin/g++"
+    },
+    "started_at": "2026-11-02T20:47:56.372489+00:00",
+    "finished_at": "2026-11-02T20:47:56.399389+00:00",
+    "exit_code": 0,
+    "input_fingerprints": {
+      "crates/dag-ml-capi/src/lib.rs": "32d6c1444606f26a088c9b82d604c445cd9461381305d36f97e2851b63468e89",
+      "crates/dag-ml-core/src/error.rs": "6190e5099fc9d545d75e548877840395e067603b4b0a2b4a56044a5c7aa9f910",
+      "crates/dag-ml-py/src/lib.rs": "77307f02fa7d7c3d7347ce690e13aa28ae437021f62f9281a3a9e99e2837058e",
+      "crates/dag-ml-wasm/src/lib.rs": "be30958f97fc594da5717a3e52f9f8f4fe55cb286eea2830eefcc7dc0b05629c",
+      "docs/adr/ADR-11-error-taxonomy.md": "ae455b7aa4015ac0431ae35467d4c10d46576279608cbcc8b4cdd7157787356d",
+      "scripts/check_error_taxonomy.py": "a26205d25d83d50781cad1a53473d0c460deaaf56b669d800c938476d7561602"
+    }
+  },
+  "input_fingerprints": {
+    "crates/dag-ml-capi/src/lib.rs": "32d6c1444606f26a088c9b82d604c445cd9461381305d36f97e2851b63468e89",
+    "crates/dag-ml-core/src/error.rs": "6190e5099fc9d545d75e548877840395e067603b4b0a2b4a56044a5c7aa9f910",
+    "crates/dag-ml-py/src/lib.rs": "77307f02fa7d7c3d7347ce690e13aa28ae437021f62f9281a3a9e99e2837058e",
+    "crates/dag-ml-wasm/src/lib.rs": "be30958f97fc594da5717a3e52f9f8f4fe55cb286eea2830eefcc7dc0b05629c",
+    "docs/adr/ADR-11-error-taxonomy.md": "ae455b7aa4015ac0431ae35467d4c10d46576279608cbcc8b4cdd7157787356d",
+    "scripts/check_error_taxonomy.py": "a26205d25d83d50781cad1a53473d0c460deaaf56b669d800c938476d7561602"
+  },
+  "raw_before": {
+    "path": "qualification/dag344/linux/error-taxonomy/before.json",
+    "bytes": 82411,
+    "sha256": "daeb84c4909cf9cb85d4547515f26f9ef7577a2145d8256209a541da8d2f4626"
+  },
+  "raw_terminal": {
+    "path": "qualification/dag344/linux/error-taxonomy/terminal.json",
+    "bytes": 161912,
+    "sha256": "c6df01e595dae4db3eadc76a4bb3b6200f74788c6699b16edd43cb387fe28ab5"
+  }
+}

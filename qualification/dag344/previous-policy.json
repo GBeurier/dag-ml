@@ -1,0 +1,3465 @@
+{
+  "actual_required_commands": 58,
+  "gates": [
+    {
+      "allowed_skips": [],
+      "commands": {
+        "linux": [
+          "cargo",
+          "metadata",
+          "--offline",
+          "--locked",
+          "--format-version",
+          "1"
+        ]
+      },
+      "covers_groups": [
+        "metadata-root"
+      ],
+      "facts": [],
+      "hosts": [
+        "linux"
+      ],
+      "id": "metadata-root-current-captured-v1",
+      "input_exclusions": [
+        "docs/contracts/training_contract_conformance_pack.v1.json",
+        "docs/contracts/training_replay_contract_conformance_pack.v1.json"
+      ],
+      "input_paths": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/",
+        "examples/",
+        "docs/contracts/"
+      ],
+      "minimum_passed": 0,
+      "requires_provenance": false,
+      "wrapper_paths": {
+        "linux": [
+          "/home/delete/.local/bin/rtk"
+        ]
+      },
+      "executable_paths": {
+        "linux": [
+          "cargo"
+        ]
+      }
+    },
+    {
+      "allowed_skips": [],
+      "commands": {
+        "linux": [
+          "cargo",
+          "metadata",
+          "--offline",
+          "--locked",
+          "--format-version",
+          "1",
+          "--manifest-path",
+          "crates/dag-ml-py/Cargo.toml"
+        ]
+      },
+      "covers_groups": [
+        "metadata-python"
+      ],
+      "facts": [],
+      "hosts": [
+        "linux"
+      ],
+      "id": "metadata-python-current-captured-v1",
+      "input_exclusions": [
+        "docs/contracts/training_contract_conformance_pack.v1.json",
+        "docs/contracts/training_replay_contract_conformance_pack.v1.json"
+      ],
+      "input_paths": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/",
+        "examples/",
+        "docs/contracts/"
+      ],
+      "minimum_passed": 0,
+      "requires_provenance": false,
+      "wrapper_paths": {
+        "linux": [
+          "/home/delete/.local/bin/rtk"
+        ]
+      },
+      "executable_paths": {
+        "linux": [
+          "cargo"
+        ]
+      }
+    },
+    {
+      "allowed_skips": [],
+      "commands": {
+        "linux": [
+          "python",
+          "scripts/validate_release_metadata.py",
+          "--release"
+        ]
+      },
+      "covers_groups": [
+        "release-metadata"
+      ],
+      "executable_paths": {
+        "linux": [
+          "{root}/.venv/bin/python"
+        ]
+      },
+      "facts": [],
+      "hosts": [
+        "linux"
+      ],
+      "id": "release-metadata-current-captured-v1",
+      "input_exclusions": [],
+      "input_paths": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/",
+        "bindings/r/DESCRIPTION",
+        ".github/",
+        "scripts/validate_release_metadata.py",
+        "scripts/validate_abi_snapshot.py",
+        "docs/",
+        "examples/README.md",
+        "CHANGELOG.md",
+        "CODEOWNERS",
+        "CODE_OF_CONDUCT.md",
+        "CONTRIBUTING.md",
+        "SECURITY.md",
+        "qualification/policy.json"
+      ],
+      "minimum_passed": 0,
+      "requires_provenance": false,
+      "wrapper_paths": {
+        "linux": [
+          "/home/delete/.local/bin/rtk"
+        ]
+      }
+    },
+    {
+      "allowed_skips": [],
+      "commands": {
+        "linux": [
+          "python",
+          "scripts/release/check_publish_plan.py"
+        ]
+      },
+      "covers_groups": [
+        "publish-plan"
+      ],
+      "executable_paths": {
+        "linux": [
+          "{root}/.venv/bin/python"
+        ]
+      },
+      "facts": [],
+      "hosts": [
+        "linux"
+      ],
+      "id": "publish-plan-current-captured-v1",
+      "input_exclusions": [
+        "docs/contracts/training_contract_conformance_pack.v1.json",
+        "docs/contracts/training_replay_contract_conformance_pack.v1.json"
+      ],
+      "input_paths": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/",
+        "scripts/release/",
+        "scripts/release/check_publish_plan.py"
+      ],
+      "minimum_passed": 0,
+      "requires_provenance": false,
+      "wrapper_paths": {
+        "linux": [
+          "/home/delete/.local/bin/rtk"
+        ]
+      }
+    },
+    {
+      "allowed_skips": [],
+      "commands": {
+        "linux": [
+          "python",
+          "scripts/validate_abi_snapshot.py"
+        ]
+      },
+      "covers_groups": [
+        "abi"
+      ],
+      "executable_paths": {
+        "linux": [
+          "{root}/.venv/bin/python"
+        ]
+      },
+      "facts": [],
+      "hosts": [
+        "linux"
+      ],
+      "id": "abi-current-captured-v1",
+      "input_exclusions": [
+        "docs/contracts/training_contract_conformance_pack.v1.json",
+        "docs/contracts/training_replay_contract_conformance_pack.v1.json"
+      ],
+      "input_paths": [
+        "crates/dag-ml-capi/include/",
+        "docs/contracts/abi_snapshot.v1.json",
+        "scripts/validate_abi_snapshot.py"
+      ],
+      "minimum_passed": 0,
+      "requires_provenance": false,
+      "wrapper_paths": {
+        "linux": [
+          "/home/delete/.local/bin/rtk"
+        ]
+      }
+    },
+    {
+      "allowed_skips": [],
+      "commands": {
+        "linux": [
+          "cargo",
+          "fmt",
+          "--all",
+          "--check"
+        ]
+      },
+      "covers_groups": [
+        "fmt"
+      ],
+      "facts": [],
+      "hosts": [
+        "linux"
+      ],
+      "id": "fmt-current-captured-v1",
+      "input_exclusions": [
+        "docs/contracts/training_contract_conformance_pack.v1.json",
+        "docs/contracts/training_replay_contract_conformance_pack.v1.json"
+      ],
+      "input_paths": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/",
+        "examples/",
+        "docs/contracts/"
+      ],
+      "minimum_passed": 0,
+      "requires_provenance": false,
+      "wrapper_paths": {
+        "linux": [
+          "/home/delete/.local/bin/rtk"
+        ]
+      },
+      "executable_paths": {
+        "linux": [
+          "cargo"
+        ]
+      }
+    },
+    {
+      "allowed_skips": [],
+      "commands": {
+        "linux": [
+          "git",
+          "diff",
+          "--check"
+        ]
+      },
+      "covers_groups": [
+        "diff"
+      ],
+      "facts": [],
+      "hosts": [
+        "linux"
+      ],
+      "id": "diff-current-captured-v1",
+      "input_exclusions": [],
+      "input_paths": [
+        ".github/",
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/",
+        "bindings/",
+        "docs/",
+        "examples/",
+        "scripts/",
+        "tests/",
+        "parity/",
+        "qualification/policy.json"
+      ],
+      "minimum_passed": 0,
+      "requires_provenance": false,
+      "wrapper_paths": {
+        "linux": [
+          "/home/delete/.local/bin/rtk"
+        ]
+      },
+      "executable_paths": {
+        "linux": [
+          "git"
+        ]
+      }
+    },
+    {
+      "allowed_skips": [],
+      "commands": {
+        "linux": [
+          "maturin",
+          "build",
+          "--release",
+          "--locked",
+          "--manifest-path",
+          "crates/dag-ml-py/Cargo.toml",
+          "--out",
+          "/home/delete/nirs4all/_audits/2026-10-29-remediation/dag343-qualified-wheels"
+        ]
+      },
+      "covers_groups": [
+        "maturin-cached-terminal"
+      ],
+      "facts": [],
+      "hosts": [
+        "linux"
+      ],
+      "id": "maturin-cached-terminal",
+      "input_exclusions": [
+        "docs/contracts/training_contract_conformance_pack.v1.json",
+        "docs/contracts/training_replay_contract_conformance_pack.v1.json"
+      ],
+      "input_paths": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/",
+        "examples/",
+        "docs/contracts/"
+      ],
+      "minimum_passed": 0,
+      "provenance_mode": "original-native-artifact-capture",
+      "provenance_requirements": {
+        "source_artifacts": [
+          {
+            "name": "dag-ml-wheel",
+            "version": "0.3.43",
+            "origin": "Locked release wheel with before/after source build receipt",
+            "artifact_path": "/home/delete/nirs4all/_audits/2026-10-29-remediation/dag343-qualified-wheels/dag_ml-0.3.43-cp311-abi3-manylinux_2_34_x86_64.whl",
+            "bytes": 12934398,
+            "sha256": "1fef060ec700b3601a9f6bf370aac6ded51a3a20211af947f784251df8d83528"
+          },
+          {
+            "name": "dag-ml-python-native",
+            "version": "0.3.43",
+            "origin": "Native bytes extracted from the same measured wheel",
+            "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/crates/dag-ml-py/python/dag_ml/_dag_ml.abi3.so",
+            "bytes": 40634384,
+            "sha256": "fc31db48676e1480e96cfa0e48611805721b858b98e9092d372f4f2f66e848a0"
+          }
+        ],
+        "dependency_origins": [
+          {
+            "name": "dag-ml-dependency-lock",
+            "version": "0.3.43",
+            "origin": "Actual immutable registry-backed Cargo lock input",
+            "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/crates/dag-ml-py/Cargo.lock",
+            "bytes": 31051,
+            "sha256": "d259ed6136b4c6b7de25951c8f06c0f996d4fce48390e11ef41d0ce17ff363b9"
+          },
+          {
+            "name": "dag-ml-py-build-dependency-lock",
+            "version": "0.3.43",
+            "origin": "Tracked owning source observed before and after this direct successful command; source hashes retained in the raw capture",
+            "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/crates/dag-ml-py/Cargo.lock",
+            "bytes": 31051,
+            "sha256": "d259ed6136b4c6b7de25951c8f06c0f996d4fce48390e11ef41d0ce17ff363b9"
+          }
+        ]
+      },
+      "requires_provenance": true,
+      "wrapper_paths": {
+        "linux": [
+          "/home/delete/.local/bin/rtk"
+        ]
+      },
+      "executable_paths": {
+        "linux": [
+          "maturin"
+        ]
+      }
+    },
+    {
+      "allowed_skips": [],
+      "commands": {
+        "linux": [
+          "python",
+          "scripts/validate_contracts.py",
+          "--require-sibling",
+          "--sibling-root",
+          "{root}-data"
+        ]
+      },
+      "covers_groups": [
+        "contracts-after-refresh"
+      ],
+      "executable_paths": {
+        "linux": [
+          "{root}/.venv/bin/python"
+        ]
+      },
+      "facts": [],
+      "hosts": [
+        "linux"
+      ],
+      "id": "contracts-current-captured-v1",
+      "input_exclusions": [
+        "scripts/validate_release_metadata.py",
+        "scripts/verify_local_qualification.py"
+      ],
+      "input_paths": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/",
+        "docs/contracts/",
+        "parity/",
+        "examples/",
+        "scripts/",
+        "bindings/",
+        ".github/workflows/ci.yml",
+        ".github/workflows/training-replay-contracts.yml"
+      ],
+      "minimum_passed": 0,
+      "requires_provenance": false,
+      "wrapper_paths": {
+        "linux": [
+          "/home/delete/.local/bin/rtk"
+        ]
+      }
+    },
+    {
+      "allowed_skips": [],
+      "commands": {
+        "linux": [
+          "python",
+          "scripts/validate_training_replay_contracts.py"
+        ]
+      },
+      "covers_groups": [
+        "replay-contracts"
+      ],
+      "executable_paths": {
+        "linux": [
+          "{root}/.venv/bin/python"
+        ]
+      },
+      "facts": [],
+      "hosts": [
+        "linux"
+      ],
+      "id": "replay-contracts-current-captured-v1",
+      "input_exclusions": [
+        "scripts/validate_release_metadata.py",
+        "scripts/verify_local_qualification.py"
+      ],
+      "input_paths": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/",
+        "docs/contracts/",
+        "parity/",
+        "examples/",
+        "scripts/",
+        "bindings/",
+        ".github/workflows/ci.yml",
+        ".github/workflows/training-replay-contracts.yml"
+      ],
+      "minimum_passed": 0,
+      "requires_provenance": false,
+      "wrapper_paths": {
+        "linux": [
+          "/home/delete/.local/bin/rtk"
+        ]
+      }
+    },
+    {
+      "allowed_skips": [],
+      "commands": {
+        "linux": [
+          "python",
+          "-m",
+          "pytest",
+          "--capture=sys",
+          "-q",
+          "parity/training/tests/test_training_replay_contracts.py"
+        ]
+      },
+      "covers_groups": [
+        "replay-tests"
+      ],
+      "executable_paths": {
+        "linux": [
+          "{root}/.venv/bin/python"
+        ]
+      },
+      "facts": [],
+      "hosts": [
+        "linux"
+      ],
+      "id": "replay-tests-current-captured-v1",
+      "input_exclusions": [
+        "scripts/validate_release_metadata.py",
+        "scripts/verify_local_qualification.py"
+      ],
+      "input_paths": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/",
+        "docs/contracts/",
+        "parity/",
+        "examples/",
+        "scripts/",
+        "bindings/",
+        ".github/workflows/ci.yml",
+        ".github/workflows/training-replay-contracts.yml"
+      ],
+      "minimum_passed": 26,
+      "requires_provenance": false,
+      "wrapper_paths": {
+        "linux": [
+          "/home/delete/.local/bin/rtk"
+        ]
+      }
+    },
+    {
+      "allowed_skips": [],
+      "commands": {
+        "linux": [
+          "python",
+          "scripts/smoke_python_wheel_metadata.py",
+          "/home/delete/nirs4all/_audits/2026-10-29-remediation/dag343-qualified-wheels/dag_ml-0.3.43-cp311-abi3-manylinux_2_34_x86_64.whl"
+        ]
+      },
+      "covers_groups": [
+        "wheel-metadata"
+      ],
+      "executable_paths": {
+        "linux": [
+          "{root}/.venv/bin/python"
+        ]
+      },
+      "facts": [],
+      "hosts": [
+        "linux"
+      ],
+      "id": "wheel-metadata",
+      "input_exclusions": [
+        "docs/contracts/training_contract_conformance_pack.v1.json",
+        "docs/contracts/training_replay_contract_conformance_pack.v1.json"
+      ],
+      "input_paths": [
+        "crates/dag-ml-py/pyproject.toml",
+        "scripts/smoke_python_wheel_metadata.py"
+      ],
+      "minimum_passed": 0,
+      "provenance_mode": "original-native-artifact-capture",
+      "provenance_requirements": {
+        "source_artifacts": [
+          {
+            "name": "dag-ml-wheel",
+            "version": "0.3.43",
+            "origin": "Locked release wheel with before/after source build receipt",
+            "artifact_path": "/home/delete/nirs4all/_audits/2026-10-29-remediation/dag343-qualified-wheels/dag_ml-0.3.43-cp311-abi3-manylinux_2_34_x86_64.whl",
+            "bytes": 12934398,
+            "sha256": "1fef060ec700b3601a9f6bf370aac6ded51a3a20211af947f784251df8d83528"
+          },
+          {
+            "name": "dag-ml-python-native",
+            "version": "0.3.43",
+            "origin": "Native bytes extracted from the same measured wheel",
+            "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/crates/dag-ml-py/python/dag_ml/_dag_ml.abi3.so",
+            "bytes": 40634384,
+            "sha256": "fc31db48676e1480e96cfa0e48611805721b858b98e9092d372f4f2f66e848a0"
+          }
+        ],
+        "dependency_origins": [
+          {
+            "name": "dag-ml-dependency-lock",
+            "version": "0.3.43",
+            "origin": "Actual immutable registry-backed Cargo lock input",
+            "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/crates/dag-ml-py/Cargo.lock",
+            "bytes": 31051,
+            "sha256": "d259ed6136b4c6b7de25951c8f06c0f996d4fce48390e11ef41d0ce17ff363b9"
+          }
+        ]
+      },
+      "requires_provenance": true,
+      "wrapper_paths": {
+        "linux": [
+          "/home/delete/.local/bin/rtk"
+        ]
+      }
+    },
+    {
+      "allowed_skips": [],
+      "commands": {
+        "linux": [
+          "python",
+          "qualification/source_training_smoke.py"
+        ]
+      },
+      "covers_groups": [
+        "source-training-smoke"
+      ],
+      "executable_paths": {
+        "linux": [
+          "{root}/.venv/bin/python"
+        ]
+      },
+      "facts": [
+        {
+          "field": "native_version",
+          "op": "eq",
+          "value": "0.3.43"
+        },
+        {
+          "field": "facade_version",
+          "op": "eq",
+          "value": "0.3.43"
+        },
+        {
+          "field": "manifest_version",
+          "op": "eq",
+          "value": "0.3.43"
+        }
+      ],
+      "hosts": [
+        "linux"
+      ],
+      "id": "source-training-smoke",
+      "input_exclusions": [
+        "docs/contracts/training_contract_conformance_pack.v1.json",
+        "docs/contracts/training_replay_contract_conformance_pack.v1.json"
+      ],
+      "input_paths": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/",
+        "examples/",
+        "docs/contracts/"
+      ],
+      "minimum_passed": 0,
+      "provenance_mode": "original-native-artifact-capture",
+      "provenance_requirements": {
+        "source_artifacts": [
+          {
+            "name": "dag-ml-wheel",
+            "version": "0.3.43",
+            "origin": "Locked release wheel with before/after source build receipt",
+            "artifact_path": "/home/delete/nirs4all/_audits/2026-10-29-remediation/dag343-qualified-wheels/dag_ml-0.3.43-cp311-abi3-manylinux_2_34_x86_64.whl",
+            "bytes": 12934398,
+            "sha256": "1fef060ec700b3601a9f6bf370aac6ded51a3a20211af947f784251df8d83528"
+          },
+          {
+            "name": "dag-ml-python-native",
+            "version": "0.3.43",
+            "origin": "Native bytes extracted from the same measured wheel",
+            "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/crates/dag-ml-py/python/dag_ml/_dag_ml.abi3.so",
+            "bytes": 40634384,
+            "sha256": "fc31db48676e1480e96cfa0e48611805721b858b98e9092d372f4f2f66e848a0"
+          }
+        ],
+        "dependency_origins": [
+          {
+            "name": "dag-ml-dependency-lock",
+            "version": "0.3.43",
+            "origin": "Actual immutable registry-backed Cargo lock input",
+            "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/crates/dag-ml-py/Cargo.lock",
+            "bytes": 31051,
+            "sha256": "d259ed6136b4c6b7de25951c8f06c0f996d4fce48390e11ef41d0ce17ff363b9"
+          },
+          {
+            "name": "dag-ml-py-build-dependency-lock",
+            "version": "0.3.43",
+            "origin": "Tracked owning source observed before and after this direct successful command; source hashes retained in the raw capture",
+            "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/crates/dag-ml-py/Cargo.lock",
+            "bytes": 31051,
+            "sha256": "d259ed6136b4c6b7de25951c8f06c0f996d4fce48390e11ef41d0ce17ff363b9"
+          }
+        ]
+      },
+      "requires_provenance": true,
+      "wrapper_paths": {
+        "linux": [
+          "/home/delete/.local/bin/rtk"
+        ]
+      }
+    },
+    {
+      "allowed_skips": [],
+      "commands": {
+        "linux": [
+          "python",
+          "scripts/check_so_freshness.py",
+          "--self-test"
+        ]
+      },
+      "covers_groups": [
+        "freshness-self"
+      ],
+      "executable_paths": {
+        "linux": [
+          "{root}/.venv/bin/python"
+        ]
+      },
+      "facts": [],
+      "hosts": [
+        "linux"
+      ],
+      "id": "freshness-self",
+      "input_exclusions": [],
+      "input_paths": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/",
+        "scripts/check_so_freshness.py"
+      ],
+      "minimum_passed": 0,
+      "requires_provenance": false,
+      "wrapper_paths": {
+        "linux": [
+          "/home/delete/.local/bin/rtk"
+        ]
+      }
+    },
+    {
+      "allowed_skips": [],
+      "commands": {
+        "linux": [
+          "python",
+          "scripts/check_so_freshness.py"
+        ]
+      },
+      "covers_groups": [
+        "freshness"
+      ],
+      "executable_paths": {
+        "linux": [
+          "{root}/.venv/bin/python"
+        ]
+      },
+      "facts": [],
+      "hosts": [
+        "linux"
+      ],
+      "id": "freshness",
+      "input_exclusions": [],
+      "input_paths": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/",
+        "scripts/check_so_freshness.py"
+      ],
+      "minimum_passed": 0,
+      "requires_provenance": false,
+      "wrapper_paths": {
+        "linux": [
+          "/home/delete/.local/bin/rtk"
+        ]
+      }
+    },
+    {
+      "allowed_skips": [],
+      "commands": {
+        "linux": [
+          "python",
+          "scripts/check_error_taxonomy.py"
+        ]
+      },
+      "covers_groups": [
+        "error-taxonomy"
+      ],
+      "executable_paths": {
+        "linux": [
+          "{root}/.venv/bin/python"
+        ]
+      },
+      "facts": [],
+      "hosts": [
+        "linux"
+      ],
+      "id": "error-taxonomy",
+      "input_exclusions": [],
+      "input_paths": [
+        "scripts/check_error_taxonomy.py",
+        "crates/dag-ml-core/src/error.rs",
+        "crates/dag-ml-py/src/lib.rs",
+        "crates/dag-ml-wasm/src/lib.rs",
+        "crates/dag-ml-capi/src/lib.rs",
+        "docs/adr/ADR-11-error-taxonomy.md"
+      ],
+      "minimum_passed": 0,
+      "requires_provenance": false,
+      "wrapper_paths": {
+        "linux": [
+          "/home/delete/.local/bin/rtk"
+        ]
+      }
+    },
+    {
+      "allowed_skips": [],
+      "commands": {
+        "linux": [
+          "python",
+          "scripts/lint_tracing_fields.py"
+        ]
+      },
+      "covers_groups": [
+        "tracing-privacy"
+      ],
+      "executable_paths": {
+        "linux": [
+          "{root}/.venv/bin/python"
+        ]
+      },
+      "facts": [],
+      "hosts": [
+        "linux"
+      ],
+      "id": "tracing-privacy",
+      "input_exclusions": [
+        "docs/contracts/training_contract_conformance_pack.v1.json",
+        "docs/contracts/training_replay_contract_conformance_pack.v1.json"
+      ],
+      "input_paths": [
+        "crates/",
+        "scripts/lint_tracing_fields.py"
+      ],
+      "minimum_passed": 0,
+      "requires_provenance": false,
+      "wrapper_paths": {
+        "linux": [
+          "/home/delete/.local/bin/rtk"
+        ]
+      }
+    },
+    {
+      "allowed_skips": [],
+      "commands": {
+        "linux": [
+          "python",
+          "scripts/check_deprecations.py"
+        ]
+      },
+      "covers_groups": [
+        "deprecations"
+      ],
+      "executable_paths": {
+        "linux": [
+          "{root}/.venv/bin/python"
+        ]
+      },
+      "facts": [],
+      "hosts": [
+        "linux"
+      ],
+      "id": "deprecations-current-captured-v1",
+      "input_exclusions": [],
+      "input_paths": [
+        "Cargo.toml",
+        "crates/",
+        "scripts/"
+      ],
+      "minimum_passed": 0,
+      "requires_provenance": false,
+      "wrapper_paths": {
+        "linux": [
+          "/home/delete/.local/bin/rtk"
+        ]
+      }
+    },
+    {
+      "allowed_skips": [],
+      "commands": {
+        "linux": [
+          "python",
+          "scripts/check_public_docs.py"
+        ]
+      },
+      "covers_groups": [
+        "public-docs"
+      ],
+      "executable_paths": {
+        "linux": [
+          "{root}/.venv/bin/python"
+        ]
+      },
+      "facts": [],
+      "hosts": [
+        "linux"
+      ],
+      "id": "public-docs",
+      "input_exclusions": [
+        "docs/contracts/training_contract_conformance_pack.v1.json",
+        "docs/contracts/training_replay_contract_conformance_pack.v1.json"
+      ],
+      "input_paths": [
+        "Cargo.toml",
+        "crates/",
+        "docs/",
+        "README.md",
+        "scripts/check_public_docs.py"
+      ],
+      "minimum_passed": 0,
+      "requires_provenance": false,
+      "wrapper_paths": {
+        "linux": [
+          "/home/delete/.local/bin/rtk"
+        ]
+      }
+    },
+    {
+      "allowed_skips": [],
+      "commands": {
+        "linux": [
+          "cargo",
+          "clippy",
+          "--offline",
+          "--locked",
+          "--workspace",
+          "--all-targets",
+          "--",
+          "-D",
+          "warnings"
+        ]
+      },
+      "covers_groups": [
+        "clippy"
+      ],
+      "facts": [],
+      "hosts": [
+        "linux"
+      ],
+      "id": "clippy",
+      "input_exclusions": [
+        "docs/contracts/training_contract_conformance_pack.v1.json",
+        "docs/contracts/training_replay_contract_conformance_pack.v1.json"
+      ],
+      "input_paths": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/",
+        "examples/",
+        "docs/contracts/"
+      ],
+      "minimum_passed": 0,
+      "requires_provenance": false,
+      "wrapper_paths": {
+        "linux": [
+          "/home/delete/.local/bin/rtk"
+        ]
+      },
+      "executable_paths": {
+        "linux": [
+          "cargo"
+        ]
+      }
+    },
+    {
+      "allowed_skips": [
+        "dag-ml-core::oof::tests::oof_join_large_campaign_under_1500ms",
+        "dag-ml-core::plan::tests::build_execution_plan_large_linear_graph_under_1500ms",
+        "dag-ml-results::tests::reads_a_python_produced_results_directory"
+      ],
+      "commands": {
+        "linux": [
+          "cargo",
+          "test",
+          "--offline",
+          "--locked",
+          "--workspace"
+        ]
+      },
+      "covers_groups": [
+        "workspace-tests"
+      ],
+      "facts": [
+        {
+          "field": "reviewed_source_build",
+          "op": "eq",
+          "value": true
+        }
+      ],
+      "hosts": [
+        "linux"
+      ],
+      "id": "workspace-tests",
+      "input_exclusions": [
+        "docs/contracts/training_contract_conformance_pack.v1.json",
+        "docs/contracts/training_replay_contract_conformance_pack.v1.json"
+      ],
+      "input_paths": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/",
+        "examples/",
+        "docs/contracts/"
+      ],
+      "minimum_passed": 1200,
+      "provenance_justification": "Exact scoped source hashes plus original successful locked Cargo build/test logs; native installed artifact checksum is not claimed or required for this source-build gate.",
+      "provenance_mode": "build-from-reviewed-source",
+      "requires_provenance": false,
+      "wrapper_paths": {
+        "linux": [
+          "/home/delete/.local/bin/rtk"
+        ]
+      },
+      "executable_paths": {
+        "linux": [
+          "cargo"
+        ]
+      }
+    },
+    {
+      "allowed_skips": [
+        "dag-ml-core::oof::tests::oof_join_large_campaign_under_1500ms",
+        "dag-ml-core::plan::tests::build_execution_plan_large_linear_graph_under_1500ms"
+      ],
+      "commands": {
+        "linux": [
+          "cargo",
+          "test",
+          "--offline",
+          "--locked",
+          "--manifest-path",
+          "crates/dag-ml-core/Cargo.toml",
+          "--features",
+          "serde_json/preserve_order"
+        ]
+      },
+      "covers_groups": [
+        "core-preserve-order"
+      ],
+      "facts": [
+        {
+          "field": "reviewed_source_build",
+          "op": "eq",
+          "value": true
+        }
+      ],
+      "hosts": [
+        "linux"
+      ],
+      "id": "core-preserve-order",
+      "input_exclusions": [
+        "docs/contracts/training_contract_conformance_pack.v1.json",
+        "docs/contracts/training_replay_contract_conformance_pack.v1.json"
+      ],
+      "input_paths": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/",
+        "examples/",
+        "docs/contracts/"
+      ],
+      "minimum_passed": 916,
+      "provenance_justification": "Exact scoped source hashes plus original successful locked Cargo build/test logs; native installed artifact checksum is not claimed or required for this source-build gate.",
+      "provenance_mode": "build-from-reviewed-source",
+      "requires_provenance": false,
+      "wrapper_paths": {
+        "linux": [
+          "/home/delete/.local/bin/rtk"
+        ]
+      },
+      "executable_paths": {
+        "linux": [
+          "cargo"
+        ]
+      }
+    },
+    {
+      "allowed_skips": [],
+      "commands": {
+        "linux": [
+          "cargo",
+          "test",
+          "--offline",
+          "--locked",
+          "--manifest-path",
+          "crates/dag-ml-py/Cargo.toml"
+        ]
+      },
+      "covers_groups": [
+        "python-default"
+      ],
+      "facts": [
+        {
+          "field": "reviewed_source_build",
+          "op": "eq",
+          "value": true
+        }
+      ],
+      "hosts": [
+        "linux"
+      ],
+      "id": "python-default",
+      "input_exclusions": [
+        "docs/contracts/training_contract_conformance_pack.v1.json",
+        "docs/contracts/training_replay_contract_conformance_pack.v1.json"
+      ],
+      "input_paths": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/",
+        "examples/",
+        "docs/contracts/"
+      ],
+      "minimum_passed": 44,
+      "provenance_justification": "Exact scoped source hashes plus original successful locked Cargo build/test logs; native installed artifact checksum is not claimed or required for this source-build gate.",
+      "provenance_mode": "build-from-reviewed-source",
+      "requires_provenance": false,
+      "wrapper_paths": {
+        "linux": [
+          "/home/delete/.local/bin/rtk"
+        ]
+      },
+      "executable_paths": {
+        "linux": [
+          "cargo"
+        ]
+      }
+    },
+    {
+      "allowed_skips": [],
+      "commands": {
+        "linux": [
+          "cargo",
+          "test",
+          "--offline",
+          "--locked",
+          "--manifest-path",
+          "crates/dag-ml-py/Cargo.toml",
+          "--features",
+          "serde_json/preserve_order"
+        ]
+      },
+      "covers_groups": [
+        "python-preserve-order"
+      ],
+      "facts": [
+        {
+          "field": "reviewed_source_build",
+          "op": "eq",
+          "value": true
+        }
+      ],
+      "hosts": [
+        "linux"
+      ],
+      "id": "python-preserve-order",
+      "input_exclusions": [
+        "docs/contracts/training_contract_conformance_pack.v1.json",
+        "docs/contracts/training_replay_contract_conformance_pack.v1.json"
+      ],
+      "input_paths": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/",
+        "examples/",
+        "docs/contracts/"
+      ],
+      "minimum_passed": 44,
+      "provenance_justification": "Exact scoped source hashes plus original successful locked Cargo build/test logs; native installed artifact checksum is not claimed or required for this source-build gate.",
+      "provenance_mode": "build-from-reviewed-source",
+      "requires_provenance": false,
+      "wrapper_paths": {
+        "linux": [
+          "/home/delete/.local/bin/rtk"
+        ]
+      },
+      "executable_paths": {
+        "linux": [
+          "cargo"
+        ]
+      }
+    },
+    {
+      "allowed_skips": [],
+      "commands": {
+        "linux": [
+          "cargo",
+          "test",
+          "--offline",
+          "--locked",
+          "--manifest-path",
+          "crates/dag-ml-py/Cargo.toml",
+          "--features",
+          "methods-optimizer"
+        ]
+      },
+      "covers_groups": [
+        "python-methods-correct-env"
+      ],
+      "facts": [
+        {
+          "field": "reviewed_source_build",
+          "op": "eq",
+          "value": true
+        }
+      ],
+      "hosts": [
+        "linux"
+      ],
+      "id": "python-methods-correct-env",
+      "input_exclusions": [
+        "docs/contracts/training_contract_conformance_pack.v1.json",
+        "docs/contracts/training_replay_contract_conformance_pack.v1.json"
+      ],
+      "input_paths": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/",
+        "examples/",
+        "docs/contracts/"
+      ],
+      "minimum_passed": 48,
+      "provenance_justification": "Exact scoped source hashes plus original successful locked Cargo build/test logs; native installed artifact checksum is not claimed or required for this source-build gate.",
+      "provenance_mode": "source-build-with-public-native-methods",
+      "provenance_requirements": {
+        "source_artifacts": [
+          {
+            "name": "dag-ml-wheel",
+            "version": "0.3.43",
+            "origin": "Locked release wheel with before/after source build receipt",
+            "artifact_path": "/home/delete/nirs4all/_audits/2026-10-29-remediation/dag343-qualified-wheels/dag_ml-0.3.43-cp311-abi3-manylinux_2_34_x86_64.whl",
+            "bytes": 12934398,
+            "sha256": "1fef060ec700b3601a9f6bf370aac6ded51a3a20211af947f784251df8d83528"
+          },
+          {
+            "name": "dag-ml-python-native",
+            "version": "0.3.43",
+            "origin": "Native bytes extracted from the same measured wheel",
+            "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/crates/dag-ml-py/python/dag_ml/_dag_ml.abi3.so",
+            "bytes": 40634384,
+            "sha256": "fc31db48676e1480e96cfa0e48611805721b858b98e9092d372f4f2f66e848a0"
+          },
+          {
+            "name": "dag-ml-py-methods-source-build",
+            "version": "0.3.43",
+            "origin": "Tracked owning source observed before and after this direct successful command; source hashes retained in the raw capture",
+            "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/crates/dag-ml-py/Cargo.toml",
+            "bytes": 1546,
+            "sha256": "d8a6b951862b9f8fa6ef1157841efe1bc09602d64b41723477497bfddf7445b8"
+          }
+        ],
+        "dependency_origins": [
+          {
+            "name": "dag-ml-dependency-lock",
+            "version": "0.3.43",
+            "origin": "Actual immutable registry-backed Cargo lock input",
+            "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/crates/dag-ml-py/Cargo.lock",
+            "bytes": 31051,
+            "sha256": "d259ed6136b4c6b7de25951c8f06c0f996d4fce48390e11ef41d0ce17ff363b9"
+          },
+          {
+            "name": "methods-native",
+            "version": "1.3.9",
+            "origin": "Explicit native Methods ABI2.20; C++ bytes match published source b246b502",
+            "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/nirs4all-methods/build/dev-release/cpp/src/libn4m.so.2.20.0",
+            "bytes": 5880096,
+            "sha256": "b54bc8e9ee781eb12560445f092d9258b8c8cd2385786892b1e07940ec0ac7cd"
+          },
+          {
+            "name": "dag-ml-py-build-dependency-lock",
+            "version": "0.3.43",
+            "origin": "Tracked owning source observed before and after this direct successful command; source hashes retained in the raw capture",
+            "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/crates/dag-ml-py/Cargo.lock",
+            "bytes": 31051,
+            "sha256": "d259ed6136b4c6b7de25951c8f06c0f996d4fce48390e11ef41d0ce17ff363b9"
+          }
+        ]
+      },
+      "requires_provenance": true,
+      "wrapper_paths": {
+        "linux": [
+          "/home/delete/.local/bin/rtk"
+        ]
+      },
+      "executable_paths": {
+        "linux": [
+          "cargo"
+        ]
+      }
+    },
+    {
+      "allowed_skips": [],
+      "commands": {
+        "linux": [
+          "cargo",
+          "run",
+          "--offline",
+          "--locked",
+          "-p",
+          "dag-ml-cli",
+          "--",
+          "validate-graph",
+          "examples/minimal_graph.json"
+        ]
+      },
+      "covers_groups": [
+        "cli-minimal"
+      ],
+      "facts": [
+        {
+          "field": "reviewed_source_build",
+          "op": "eq",
+          "value": true
+        }
+      ],
+      "hosts": [
+        "linux"
+      ],
+      "id": "cli-minimal",
+      "input_exclusions": [
+        "docs/contracts/training_contract_conformance_pack.v1.json",
+        "docs/contracts/training_replay_contract_conformance_pack.v1.json"
+      ],
+      "input_paths": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/",
+        "examples/",
+        "docs/contracts/"
+      ],
+      "minimum_passed": 0,
+      "provenance_justification": "Exact scoped source hashes plus original successful locked Cargo build/test logs; native installed artifact checksum is not claimed or required for this source-build gate.",
+      "provenance_mode": "build-from-reviewed-source",
+      "requires_provenance": false,
+      "wrapper_paths": {
+        "linux": [
+          "/home/delete/.local/bin/rtk"
+        ]
+      },
+      "executable_paths": {
+        "linux": [
+          "cargo"
+        ]
+      }
+    },
+    {
+      "allowed_skips": [],
+      "commands": {
+        "linux": [
+          "python",
+          "scripts/smoke_cv_refit_replay_output.py",
+          "{root}/target/debug/dag-ml-cli"
+        ]
+      },
+      "covers_groups": [
+        "cli-cv-refit"
+      ],
+      "executable_paths": {
+        "linux": [
+          "{root}/.venv/bin/python"
+        ]
+      },
+      "facts": [
+        {
+          "field": "reviewed_source_build",
+          "op": "eq",
+          "value": true
+        }
+      ],
+      "hosts": [
+        "linux"
+      ],
+      "id": "cli-cv-refit",
+      "input_exclusions": [
+        "docs/contracts/training_contract_conformance_pack.v1.json",
+        "docs/contracts/training_replay_contract_conformance_pack.v1.json"
+      ],
+      "input_paths": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/",
+        "examples/",
+        "docs/contracts/",
+        "scripts/smoke_cv_refit_replay_output.py"
+      ],
+      "minimum_passed": 0,
+      "provenance_justification": "Exact scoped source hashes plus original successful locked Cargo build/test logs; native installed artifact checksum is not claimed or required for this source-build gate.",
+      "provenance_mode": "build-from-reviewed-source",
+      "requires_provenance": false,
+      "wrapper_paths": {
+        "linux": [
+          "/home/delete/.local/bin/rtk"
+        ]
+      }
+    },
+    {
+      "allowed_skips": [],
+      "commands": {
+        "linux": [
+          "python",
+          "scripts/smoke_persisted_bundle_replay.py",
+          "{root}/target/debug/dag-ml-cli"
+        ]
+      },
+      "covers_groups": [
+        "cli-persisted-replay"
+      ],
+      "executable_paths": {
+        "linux": [
+          "{root}/.venv/bin/python"
+        ]
+      },
+      "facts": [
+        {
+          "field": "reviewed_source_build",
+          "op": "eq",
+          "value": true
+        }
+      ],
+      "hosts": [
+        "linux"
+      ],
+      "id": "cli-persisted-replay",
+      "input_exclusions": [
+        "docs/contracts/training_contract_conformance_pack.v1.json",
+        "docs/contracts/training_replay_contract_conformance_pack.v1.json"
+      ],
+      "input_paths": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/",
+        "examples/",
+        "docs/contracts/",
+        "scripts/smoke_persisted_bundle_replay.py"
+      ],
+      "minimum_passed": 0,
+      "provenance_justification": "Exact scoped source hashes plus original successful locked Cargo build/test logs; native installed artifact checksum is not claimed or required for this source-build gate.",
+      "provenance_mode": "build-from-reviewed-source",
+      "requires_provenance": false,
+      "wrapper_paths": {
+        "linux": [
+          "/home/delete/.local/bin/rtk"
+        ]
+      }
+    },
+    {
+      "allowed_skips": [],
+      "commands": {
+        "linux": [
+          "python",
+          "-m",
+          "unittest",
+          "crates/dag-ml-py/tests/test_terminal_predict_facade.py"
+        ]
+      },
+      "covers_groups": [
+        "facade"
+      ],
+      "executable_paths": {
+        "linux": [
+          "{root}/.venv/bin/python"
+        ]
+      },
+      "facts": [],
+      "hosts": [
+        "linux"
+      ],
+      "id": "facade",
+      "input_exclusions": [
+        "docs/contracts/training_contract_conformance_pack.v1.json",
+        "docs/contracts/training_replay_contract_conformance_pack.v1.json"
+      ],
+      "input_paths": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/",
+        "examples/",
+        "docs/contracts/"
+      ],
+      "minimum_passed": 2,
+      "provenance_mode": "original-native-artifact-capture",
+      "provenance_requirements": {
+        "source_artifacts": [
+          {
+            "name": "dag-ml-wheel",
+            "version": "0.3.43",
+            "origin": "Locked release wheel with before/after source build receipt",
+            "artifact_path": "/home/delete/nirs4all/_audits/2026-10-29-remediation/dag343-qualified-wheels/dag_ml-0.3.43-cp311-abi3-manylinux_2_34_x86_64.whl",
+            "bytes": 12934398,
+            "sha256": "1fef060ec700b3601a9f6bf370aac6ded51a3a20211af947f784251df8d83528"
+          },
+          {
+            "name": "dag-ml-python-native",
+            "version": "0.3.43",
+            "origin": "Native bytes extracted from the same measured wheel",
+            "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/crates/dag-ml-py/python/dag_ml/_dag_ml.abi3.so",
+            "bytes": 40634384,
+            "sha256": "fc31db48676e1480e96cfa0e48611805721b858b98e9092d372f4f2f66e848a0"
+          }
+        ],
+        "dependency_origins": [
+          {
+            "name": "dag-ml-dependency-lock",
+            "version": "0.3.43",
+            "origin": "Actual immutable registry-backed Cargo lock input",
+            "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/crates/dag-ml-py/Cargo.lock",
+            "bytes": 31051,
+            "sha256": "d259ed6136b4c6b7de25951c8f06c0f996d4fce48390e11ef41d0ce17ff363b9"
+          },
+          {
+            "name": "dag-ml-py-build-dependency-lock",
+            "version": "0.3.43",
+            "origin": "Tracked owning source observed before and after this direct successful command; source hashes retained in the raw capture",
+            "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/crates/dag-ml-py/Cargo.lock",
+            "bytes": 31051,
+            "sha256": "d259ed6136b4c6b7de25951c8f06c0f996d4fce48390e11ef41d0ce17ff363b9"
+          }
+        ]
+      },
+      "requires_provenance": true,
+      "wrapper_paths": {
+        "linux": [
+          "/home/delete/.local/bin/rtk"
+        ]
+      }
+    },
+    {
+      "allowed_skips": [],
+      "commands": {
+        "linux": [
+          "python",
+          "-m",
+          "unittest",
+          "crates/dag-ml-py/tests/test_methods_terminal_predict_facade.py"
+        ]
+      },
+      "covers_groups": [
+        "methods-facade"
+      ],
+      "executable_paths": {
+        "linux": [
+          "{root}/.venv/bin/python"
+        ]
+      },
+      "facts": [],
+      "hosts": [
+        "linux"
+      ],
+      "id": "methods-facade",
+      "input_exclusions": [
+        "docs/contracts/training_contract_conformance_pack.v1.json",
+        "docs/contracts/training_replay_contract_conformance_pack.v1.json"
+      ],
+      "input_paths": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/",
+        "examples/",
+        "docs/contracts/"
+      ],
+      "minimum_passed": 2,
+      "provenance_mode": "original-native-artifact-capture",
+      "provenance_requirements": {
+        "source_artifacts": [
+          {
+            "name": "dag-ml-wheel",
+            "version": "0.3.43",
+            "origin": "Locked release wheel with before/after source build receipt",
+            "artifact_path": "/home/delete/nirs4all/_audits/2026-10-29-remediation/dag343-qualified-wheels/dag_ml-0.3.43-cp311-abi3-manylinux_2_34_x86_64.whl",
+            "bytes": 12934398,
+            "sha256": "1fef060ec700b3601a9f6bf370aac6ded51a3a20211af947f784251df8d83528"
+          },
+          {
+            "name": "dag-ml-python-native",
+            "version": "0.3.43",
+            "origin": "Native bytes extracted from the same measured wheel",
+            "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/crates/dag-ml-py/python/dag_ml/_dag_ml.abi3.so",
+            "bytes": 40634384,
+            "sha256": "fc31db48676e1480e96cfa0e48611805721b858b98e9092d372f4f2f66e848a0"
+          }
+        ],
+        "dependency_origins": [
+          {
+            "name": "dag-ml-dependency-lock",
+            "version": "0.3.43",
+            "origin": "Actual immutable registry-backed Cargo lock input",
+            "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/crates/dag-ml-py/Cargo.lock",
+            "bytes": 31051,
+            "sha256": "d259ed6136b4c6b7de25951c8f06c0f996d4fce48390e11ef41d0ce17ff363b9"
+          },
+          {
+            "name": "methods-native",
+            "version": "1.3.9",
+            "origin": "Explicit native Methods ABI2.20; C++ bytes match published source b246b502",
+            "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/nirs4all-methods/build/dev-release/cpp/src/libn4m.so.2.20.0",
+            "bytes": 5880096,
+            "sha256": "b54bc8e9ee781eb12560445f092d9258b8c8cd2385786892b1e07940ec0ac7cd"
+          },
+          {
+            "name": "dag-ml-py-build-dependency-lock",
+            "version": "0.3.43",
+            "origin": "Tracked owning source observed before and after this direct successful command; source hashes retained in the raw capture",
+            "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/crates/dag-ml-py/Cargo.lock",
+            "bytes": 31051,
+            "sha256": "d259ed6136b4c6b7de25951c8f06c0f996d4fce48390e11ef41d0ce17ff363b9"
+          }
+        ]
+      },
+      "requires_provenance": true,
+      "wrapper_paths": {
+        "linux": [
+          "/home/delete/.local/bin/rtk"
+        ]
+      }
+    },
+    {
+      "allowed_skips": [],
+      "commands": {
+        "linux": [
+          "cargo",
+          "doc",
+          "--offline",
+          "--locked",
+          "--workspace",
+          "--no-deps"
+        ]
+      },
+      "covers_groups": [
+        "docs"
+      ],
+      "facts": [],
+      "hosts": [
+        "linux"
+      ],
+      "id": "docs",
+      "input_exclusions": [
+        "docs/contracts/training_contract_conformance_pack.v1.json",
+        "docs/contracts/training_replay_contract_conformance_pack.v1.json"
+      ],
+      "input_paths": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/"
+      ],
+      "minimum_passed": 0,
+      "requires_provenance": false,
+      "wrapper_paths": {
+        "linux": [
+          "/home/delete/.local/bin/rtk"
+        ]
+      },
+      "executable_paths": {
+        "linux": [
+          "cargo"
+        ]
+      }
+    },
+    {
+      "allowed_skips": [
+        "dag-ml-core::oof::tests::oof_join_large_campaign_under_1500ms",
+        "dag-ml-core::plan::tests::build_execution_plan_large_linear_graph_under_1500ms"
+      ],
+      "commands": {
+        "linux": [
+          "bash",
+          "scripts/test_core_package_extract.sh"
+        ]
+      },
+      "covers_groups": [
+        "core-package-extract"
+      ],
+      "facts": [
+        {
+          "field": "reviewed_source_build",
+          "op": "eq",
+          "value": true
+        }
+      ],
+      "hosts": [
+        "linux"
+      ],
+      "id": "core-package-extract",
+      "input_exclusions": [],
+      "input_paths": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/dag-ml-core/",
+        "scripts/test_core_package_extract.sh"
+      ],
+      "minimum_passed": 920,
+      "provenance_justification": "Original script packages reviewed source, extracts it, generates its disposable dependency lock, then runs locked all-feature tests with genuine920PASS; trap removes the generated archive, lock and executables. Original resolved-version build logs remain retained; no nonexistent artifact hash is required.",
+      "provenance_mode": "packaged-build-from-reviewed-source",
+      "provenance_requirements": {
+        "source_artifacts": [
+          {
+            "name": "dag-ml-core-source-manifest",
+            "version": "0.3.43",
+            "origin": "Exact source manifest compiled by this direct Cargo gate",
+            "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/crates/dag-ml-core/Cargo.toml",
+            "bytes": 1260,
+            "sha256": "f1065a122048d1c37253381fd9363b2fcf061ba6c0541d2d6b9b8e46bd6a9547"
+          },
+          {
+            "name": "dag-ml-core-packaged-criteria-source",
+            "version": "0.3.43",
+            "origin": "Tracked owning source observed before and after this direct successful command; source hashes retained in the raw capture",
+            "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/crates/dag-ml-core/src/criteria.rs",
+            "bytes": 71192,
+            "sha256": "fe11ed0e1c503078bb20924efbaf3960955c52db8c16d3fb725969b1afe20f14"
+          },
+          {
+            "name": "dag-ml-packaging-workspace-manifest",
+            "version": "0.3.43",
+            "origin": "Tracked owning source observed before and after this direct successful command; source hashes retained in the raw capture",
+            "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/Cargo.toml",
+            "bytes": 2063,
+            "sha256": "a4ae552a289a23e35e23c663805b365831783d8d4f0d73dfe8e1a5fa2c82fb5b"
+          }
+        ],
+        "dependency_origins": [
+          {
+            "name": "dag-ml-dependency-lock",
+            "version": "0.3.43",
+            "origin": "Actual immutable registry-backed Cargo lock input",
+            "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/Cargo.lock",
+            "bytes": 38704,
+            "sha256": "b355c41bea3df34a00abe63de070213e8e03fcaef2b47bc399a767a1402de591"
+          },
+          {
+            "name": "dag-ml-core-packaging-dependency-declarations",
+            "version": "0.3.43",
+            "origin": "Tracked owning source observed before and after this direct successful command; source hashes retained in the raw capture",
+            "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/crates/dag-ml-core/Cargo.toml",
+            "bytes": 1260,
+            "sha256": "f1065a122048d1c37253381fd9363b2fcf061ba6c0541d2d6b9b8e46bd6a9547"
+          }
+        ]
+      },
+      "requires_provenance": true,
+      "wrapper_paths": {
+        "linux": [
+          "/home/delete/.local/bin/rtk"
+        ]
+      },
+      "executable_paths": {
+        "linux": [
+          "bash"
+        ]
+      }
+    },
+    {
+      "allowed_skips": [],
+      "commands": {
+        "linux": [
+          "python",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests",
+          "-p",
+          "test_archive_v1_contract.py"
+        ]
+      },
+      "covers_groups": [
+        "archive-v1-legacy-security"
+      ],
+      "executable_paths": {
+        "linux": [
+          "{root}/.venv/bin/python"
+        ]
+      },
+      "facts": [],
+      "hosts": [
+        "linux"
+      ],
+      "id": "archive-v1-legacy-security",
+      "input_exclusions": [
+        "scripts/validate_release_metadata.py",
+        "tests/test_python_candidate_version.py"
+      ],
+      "input_paths": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/",
+        "tests/",
+        "scripts/",
+        "docs/contracts/",
+        "parity/",
+        "examples/",
+        ".github/workflows/ci.yml",
+        ".github/workflows/training-replay-contracts.yml"
+      ],
+      "minimum_passed": 11,
+      "provenance_justification": "Preserve exact scoped source/declarations/locks, original successful direct commands and compiler/test logs. No checksum of temporary Cargo executables or mock native placeholders is claimed.",
+      "provenance_mode": "build-from-reviewed-source-or-source-contract",
+      "pure_schema_oracle_no_dag_native_call": true,
+      "required_environment": {
+        "NIRS4ALL_LEGACY_REPO": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/nirs4all"
+      },
+      "requires_provenance": false,
+      "wrapper_paths": {
+        "linux": [
+          "/home/delete/.local/bin/rtk"
+        ]
+      }
+    },
+    {
+      "allowed_skips": [],
+      "commands": {
+        "linux": [
+          "python",
+          "-m",
+          "pytest",
+          "--capture=sys",
+          "parity/conformal/tests/test_conformal_robustness_contracts.py",
+          "-q"
+        ]
+      },
+      "covers_groups": [
+        "conformal-robustness-oracle"
+      ],
+      "executable_paths": {
+        "linux": [
+          "{root}/.venv/bin/python"
+        ]
+      },
+      "facts": [],
+      "hosts": [
+        "linux"
+      ],
+      "id": "conformal-robustness-oracle",
+      "input_exclusions": [
+        "scripts/validate_release_metadata.py",
+        "tests/test_python_candidate_version.py"
+      ],
+      "input_paths": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/",
+        "tests/",
+        "scripts/",
+        "docs/contracts/",
+        "parity/",
+        "examples/",
+        ".github/workflows/ci.yml",
+        ".github/workflows/training-replay-contracts.yml"
+      ],
+      "minimum_passed": 56,
+      "provenance_justification": "Preserve exact scoped source/declarations/locks, original successful direct commands and compiler/test logs. No checksum of temporary Cargo executables or mock native placeholders is claimed.",
+      "provenance_mode": "build-from-reviewed-source-or-source-contract",
+      "pure_schema_oracle_no_dag_native_call": true,
+      "requires_provenance": false,
+      "wrapper_paths": {
+        "linux": [
+          "/home/delete/.local/bin/rtk"
+        ]
+      }
+    },
+    {
+      "allowed_skips": [],
+      "commands": {
+        "linux": [
+          "python",
+          "-m",
+          "pytest",
+          "--capture=sys",
+          "parity/training/tests/test_training_contracts.py",
+          "-q"
+        ]
+      },
+      "covers_groups": [
+        "training-contract-oracle"
+      ],
+      "executable_paths": {
+        "linux": [
+          "{root}/.venv/bin/python"
+        ]
+      },
+      "facts": [],
+      "hosts": [
+        "linux"
+      ],
+      "id": "training-contract-oracle",
+      "input_exclusions": [
+        "scripts/validate_release_metadata.py",
+        "tests/test_python_candidate_version.py"
+      ],
+      "input_paths": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/",
+        "tests/",
+        "scripts/",
+        "docs/contracts/",
+        "parity/",
+        "examples/",
+        ".github/workflows/ci.yml",
+        ".github/workflows/training-replay-contracts.yml"
+      ],
+      "minimum_passed": 143,
+      "provenance_justification": "Preserve exact scoped source/declarations/locks, original successful direct commands and compiler/test logs. No checksum of temporary Cargo executables or mock native placeholders is claimed.",
+      "provenance_mode": "build-from-reviewed-source-or-source-contract",
+      "pure_schema_oracle_no_dag_native_call": true,
+      "requires_provenance": false,
+      "wrapper_paths": {
+        "linux": [
+          "/home/delete/.local/bin/rtk"
+        ]
+      }
+    },
+    {
+      "allowed_skips": [],
+      "commands": {
+        "linux": [
+          "python",
+          "-m",
+          "pytest",
+          "--capture=sys",
+          "parity/robustness_rng/tests/test_robustness_rng_contract.py",
+          "-q"
+        ]
+      },
+      "covers_groups": [
+        "robustness-rng-oracle"
+      ],
+      "executable_paths": {
+        "linux": [
+          "{root}/.venv/bin/python"
+        ]
+      },
+      "facts": [],
+      "hosts": [
+        "linux"
+      ],
+      "id": "robustness-rng-oracle",
+      "input_exclusions": [
+        "scripts/validate_release_metadata.py",
+        "tests/test_python_candidate_version.py"
+      ],
+      "input_paths": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/",
+        "tests/",
+        "scripts/",
+        "docs/contracts/",
+        "parity/",
+        "examples/",
+        ".github/workflows/ci.yml",
+        ".github/workflows/training-replay-contracts.yml"
+      ],
+      "minimum_passed": 20,
+      "provenance_justification": "Preserve exact scoped source/declarations/locks, original successful direct commands and compiler/test logs. No checksum of temporary Cargo executables or mock native placeholders is claimed.",
+      "provenance_mode": "build-from-reviewed-source-or-source-contract",
+      "pure_schema_oracle_no_dag_native_call": true,
+      "requires_provenance": false,
+      "wrapper_paths": {
+        "linux": [
+          "/home/delete/.local/bin/rtk"
+        ]
+      }
+    },
+    {
+      "allowed_skips": [],
+      "commands": {
+        "linux": [
+          "cargo",
+          "test",
+          "--offline",
+          "--locked",
+          "--manifest-path",
+          "parity/canonical/rust-oracle/Cargo.toml"
+        ]
+      },
+      "covers_groups": [
+        "canonical-rust-oracle"
+      ],
+      "facts": [],
+      "hosts": [
+        "linux"
+      ],
+      "id": "canonical-rust-oracle",
+      "input_exclusions": [],
+      "input_paths": [
+        "parity/canonical/"
+      ],
+      "minimum_passed": 4,
+      "provenance_justification": "Preserve exact scoped source/declarations/locks, original successful direct commands and compiler/test logs. No checksum of temporary Cargo executables or mock native placeholders is claimed.",
+      "provenance_mode": "build-from-reviewed-source-or-source-contract",
+      "requires_provenance": false,
+      "wrapper_paths": {
+        "linux": [
+          "/home/delete/.local/bin/rtk"
+        ]
+      },
+      "executable_paths": {
+        "linux": [
+          "cargo"
+        ]
+      }
+    },
+    {
+      "allowed_skips": [],
+      "commands": {
+        "linux": [
+          "python",
+          "-m",
+          "pytest",
+          "--capture=sys",
+          "parity/canonical/tests/test_rust_oracle_parity.py",
+          "-q"
+        ]
+      },
+      "covers_groups": [
+        "canonical-cross-language-oracle"
+      ],
+      "executable_paths": {
+        "linux": [
+          "{root}/.venv/bin/python"
+        ]
+      },
+      "facts": [],
+      "hosts": [
+        "linux"
+      ],
+      "id": "canonical-cross-language-oracle",
+      "input_exclusions": [],
+      "input_paths": [
+        "parity/canonical/"
+      ],
+      "minimum_passed": 8,
+      "provenance_justification": "Preserve exact scoped source/declarations/locks, original successful direct commands and compiler/test logs. No checksum of temporary Cargo executables or mock native placeholders is claimed.",
+      "provenance_mode": "build-from-reviewed-source-or-source-contract",
+      "requires_provenance": false,
+      "wrapper_paths": {
+        "linux": [
+          "/home/delete/.local/bin/rtk"
+        ]
+      }
+    },
+    {
+      "allowed_skips": [
+        "dag-ml-core::oof::tests::oof_join_large_campaign_under_1500ms",
+        "dag-ml-core::plan::tests::build_execution_plan_large_linear_graph_under_1500ms"
+      ],
+      "commands": {
+        "linux": [
+          "bash",
+          "scripts/test_methods_optimizer_local.sh"
+        ]
+      },
+      "covers_groups": [
+        "methods-core-hpo-runtime"
+      ],
+      "facts": [],
+      "hosts": [
+        "linux"
+      ],
+      "id": "methods-core-hpo-runtime-fixture-env",
+      "input_exclusions": [
+        "docs/contracts/training_contract_conformance_pack.v1.json",
+        "docs/contracts/training_replay_contract_conformance_pack.v1.json"
+      ],
+      "input_paths": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/",
+        "examples/",
+        "docs/contracts/",
+        "bindings/",
+        "scripts/test_methods_optimizer_local.sh"
+      ],
+      "minimum_passed": 960,
+      "provenance_justification": "Preserve exact scoped source/declarations/locks, original successful direct commands and compiler/test logs. No checksum of temporary Cargo executables or mock native placeholders is claimed.",
+      "provenance_mode": "native-consumed-with-retained-origin",
+      "provenance_requirements": {
+        "source_artifacts": [
+          {
+            "name": "dag-ml-core-source-manifest",
+            "version": "0.3.43",
+            "origin": "Exact source manifest compiled by this direct Cargo gate",
+            "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/crates/dag-ml-core/Cargo.toml",
+            "bytes": 1260,
+            "sha256": "f1065a122048d1c37253381fd9363b2fcf061ba6c0541d2d6b9b8e46bd6a9547"
+          },
+          {
+            "name": "dag-ml-core-methods-source-build",
+            "version": "0.3.43",
+            "origin": "Tracked owning source observed before and after this direct successful command; source hashes retained in the raw capture",
+            "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/crates/dag-ml-core/Cargo.toml",
+            "bytes": 1260,
+            "sha256": "f1065a122048d1c37253381fd9363b2fcf061ba6c0541d2d6b9b8e46bd6a9547"
+          }
+        ],
+        "dependency_origins": [
+          {
+            "name": "methods-native",
+            "version": "1.3.9",
+            "origin": "Explicit native Methods ABI2.20; C++ bytes match published source b246b502",
+            "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/nirs4all-methods/build/dev-release/cpp/src/libn4m.so.2.20.0",
+            "bytes": 5880096,
+            "sha256": "b54bc8e9ee781eb12560445f092d9258b8c8cd2385786892b1e07940ec0ac7cd"
+          },
+          {
+            "name": "dag-ml-dependency-lock",
+            "version": "0.3.43",
+            "origin": "Actual immutable registry-backed Cargo lock input",
+            "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/Cargo.lock",
+            "bytes": 38704,
+            "sha256": "b355c41bea3df34a00abe63de070213e8e03fcaef2b47bc399a767a1402de591"
+          },
+          {
+            "name": "dag-ml-workspace-dependency-lock",
+            "version": "0.3.43",
+            "origin": "Tracked owning source observed before and after this direct successful command; source hashes retained in the raw capture",
+            "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/Cargo.lock",
+            "bytes": 38704,
+            "sha256": "b355c41bea3df34a00abe63de070213e8e03fcaef2b47bc399a767a1402de591"
+          }
+        ]
+      },
+      "requires_provenance": true,
+      "wrapper_paths": {
+        "linux": [
+          "/home/delete/.local/bin/rtk"
+        ]
+      },
+      "executable_paths": {
+        "linux": [
+          "bash"
+        ]
+      }
+    },
+    {
+      "allowed_skips": [],
+      "commands": {
+        "linux": [
+          "cargo",
+          "test",
+          "--offline",
+          "--locked",
+          "-p",
+          "dag-ml-cli",
+          "--test",
+          "initial_full_refit",
+          "cli_replays_portable_methods_pls_payload_in_fresh_process"
+        ]
+      },
+      "covers_groups": [
+        "methods-cli-real-replay"
+      ],
+      "facts": [],
+      "hosts": [
+        "linux"
+      ],
+      "id": "methods-cli-real-replay",
+      "input_exclusions": [
+        "docs/contracts/training_contract_conformance_pack.v1.json",
+        "docs/contracts/training_replay_contract_conformance_pack.v1.json"
+      ],
+      "input_paths": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/",
+        "examples/",
+        "docs/contracts/",
+        "bindings/"
+      ],
+      "minimum_passed": 1,
+      "provenance_justification": "Preserve exact scoped source/declarations/locks, original successful direct commands and compiler/test logs. No checksum of temporary Cargo executables or mock native placeholders is claimed.",
+      "provenance_mode": "native-consumed-with-retained-origin",
+      "provenance_requirements": {
+        "source_artifacts": [
+          {
+            "name": "dag-ml-core-source-manifest",
+            "version": "0.3.43",
+            "origin": "Exact source manifest compiled by this direct Cargo gate",
+            "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/crates/dag-ml-core/Cargo.toml",
+            "bytes": 1260,
+            "sha256": "f1065a122048d1c37253381fd9363b2fcf061ba6c0541d2d6b9b8e46bd6a9547"
+          },
+          {
+            "name": "dag-ml-cli-methods-source-build",
+            "version": "0.3.43",
+            "origin": "Tracked owning source observed before and after this direct successful command; source hashes retained in the raw capture",
+            "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/crates/dag-ml-cli/Cargo.toml",
+            "bytes": 604,
+            "sha256": "0b84a03f53a7dafbfcbeffa6555794355896500011d06f8042a82bb3d0ef1100"
+          }
+        ],
+        "dependency_origins": [
+          {
+            "name": "methods-native",
+            "version": "1.3.9",
+            "origin": "Explicit native Methods ABI2.20; C++ bytes match published source b246b502",
+            "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/nirs4all-methods/build/dev-release/cpp/src/libn4m.so.2.20.0",
+            "bytes": 5880096,
+            "sha256": "b54bc8e9ee781eb12560445f092d9258b8c8cd2385786892b1e07940ec0ac7cd"
+          },
+          {
+            "name": "dag-ml-dependency-lock",
+            "version": "0.3.43",
+            "origin": "Actual immutable registry-backed Cargo lock input",
+            "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/Cargo.lock",
+            "bytes": 38704,
+            "sha256": "b355c41bea3df34a00abe63de070213e8e03fcaef2b47bc399a767a1402de591"
+          },
+          {
+            "name": "dag-ml-workspace-dependency-lock",
+            "version": "0.3.43",
+            "origin": "Tracked owning source observed before and after this direct successful command; source hashes retained in the raw capture",
+            "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/Cargo.lock",
+            "bytes": 38704,
+            "sha256": "b355c41bea3df34a00abe63de070213e8e03fcaef2b47bc399a767a1402de591"
+          }
+        ]
+      },
+      "required_environment": {
+        "DAG_ML_REQUIRE_METHODS_CLI_TEST": "1"
+      },
+      "requires_provenance": true,
+      "wrapper_paths": {
+        "linux": [
+          "/home/delete/.local/bin/rtk"
+        ]
+      },
+      "executable_paths": {
+        "linux": [
+          "cargo"
+        ]
+      }
+    },
+    {
+      "allowed_skips": [],
+      "commands": {
+        "linux": [
+          "cargo",
+          "test",
+          "--offline",
+          "--locked",
+          "-p",
+          "dag-ml-cli",
+          "--test",
+          "cli_contracts",
+          "prospectr_process_controller"
+        ]
+      },
+      "covers_groups": [
+        "r-process-adapters"
+      ],
+      "facts": [],
+      "hosts": [
+        "linux"
+      ],
+      "id": "r-prospectr-adapter",
+      "input_exclusions": [
+        "docs/contracts/training_contract_conformance_pack.v1.json",
+        "docs/contracts/training_replay_contract_conformance_pack.v1.json"
+      ],
+      "input_paths": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/",
+        "examples/",
+        "docs/contracts/",
+        "bindings/"
+      ],
+      "minimum_passed": 6,
+      "provenance_justification": "Preserve exact scoped source/declarations/locks, original successful direct commands and compiler/test logs. No checksum of temporary Cargo executables or mock native placeholders is claimed.",
+      "provenance_mode": "build-from-reviewed-source-or-source-contract",
+      "requires_provenance": false,
+      "wrapper_paths": {
+        "linux": [
+          "/home/delete/.local/bin/rtk"
+        ]
+      },
+      "executable_paths": {
+        "linux": [
+          "cargo"
+        ]
+      }
+    },
+    {
+      "allowed_skips": [],
+      "commands": {
+        "linux": [
+          "cargo",
+          "test",
+          "--offline",
+          "--locked",
+          "-p",
+          "dag-ml-cli",
+          "--test",
+          "cli_contracts",
+          "mdatools_process_controller"
+        ]
+      },
+      "covers_groups": [
+        "r-process-adapters"
+      ],
+      "facts": [],
+      "hosts": [
+        "linux"
+      ],
+      "id": "r-mdatools-adapter",
+      "input_exclusions": [
+        "docs/contracts/training_contract_conformance_pack.v1.json",
+        "docs/contracts/training_replay_contract_conformance_pack.v1.json"
+      ],
+      "input_paths": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/",
+        "examples/",
+        "docs/contracts/",
+        "bindings/"
+      ],
+      "minimum_passed": 6,
+      "provenance_justification": "Preserve exact scoped source/declarations/locks, original successful direct commands and compiler/test logs. No checksum of temporary Cargo executables or mock native placeholders is claimed.",
+      "provenance_mode": "build-from-reviewed-source-or-source-contract",
+      "requires_provenance": false,
+      "wrapper_paths": {
+        "linux": [
+          "/home/delete/.local/bin/rtk"
+        ]
+      },
+      "executable_paths": {
+        "linux": [
+          "cargo"
+        ]
+      }
+    },
+    {
+      "allowed_skips": [],
+      "commands": {
+        "linux": [
+          "R",
+          "CMD",
+          "check",
+          "--no-manual",
+          "--output=/home/delete/nirs4all/_audits/2026-10-29-remediation/publication/dag343-final/r-check",
+          "/home/delete/nirs4all/_audits/2026-10-29-remediation/publication/dag343/r-build/dagml_0.3.43.tar.gz"
+        ]
+      },
+      "covers_groups": [
+        "r-installed-api"
+      ],
+      "executable_paths": {
+        "linux": [
+          "/home/delete/miniconda3/bin/R"
+        ]
+      },
+      "facts": [
+        {
+          "field": "r_check_status",
+          "op": "eq",
+          "value": "OK"
+        },
+        {
+          "field": "r_api_tests",
+          "op": "eq",
+          "value": 5
+        }
+      ],
+      "hosts": [
+        "linux"
+      ],
+      "id": "r-source-package-check",
+      "input_exclusions": [],
+      "input_paths": [
+        "bindings/r/",
+        "scripts/test_r_seed_json.R"
+      ],
+      "minimum_passed": 0,
+      "provenance_justification": "Preserve exact scoped source/declarations/locks, original successful direct commands and compiler/test logs. No checksum of temporary Cargo executables or mock native placeholders is claimed.",
+      "provenance_mode": "native-consumed-with-retained-origin",
+      "provenance_requirements": {
+        "source_artifacts": [
+          {
+            "name": "dagml-r-source-package",
+            "version": "0.3.43",
+            "origin": "R CMD build from exact owned binding source",
+            "artifact_path": "/home/delete/nirs4all/_audits/2026-10-29-remediation/publication/dag343/r-build/dagml_0.3.43.tar.gz",
+            "bytes": 22712,
+            "sha256": "c709ec72274f39a1c816946818a9185bc2e3649d237dc67a19e66068665f4a8a"
+          },
+          {
+            "name": "capture-observer",
+            "version": "3",
+            "origin": "Actual owned observer executed for this direct before/after capture",
+            "artifact_path": "/home/delete/nirs4all/_audits/2026-10-29-remediation/publication/capture_dag_gate.py",
+            "bytes": 5918,
+            "sha256": "be624b201398a8e0831530019d5ad48c3b60214fcd422b78f879be8577d5a4a6"
+          }
+        ],
+        "dependency_origins": [
+          {
+            "name": "dag-ml-workspace-dependency-lock",
+            "version": "0.3.43",
+            "origin": "Actual immutable registry-backed Cargo lock input",
+            "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/Cargo.lock",
+            "bytes": 38704,
+            "sha256": "b355c41bea3df34a00abe63de070213e8e03fcaef2b47bc399a767a1402de591"
+          },
+          {
+            "name": "dag-ml-capi",
+            "version": "0.3.43",
+            "origin": "Actual native C ABI loaded by the checked R binding",
+            "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/target/release/libdag_ml_capi.so",
+            "bytes": 23780392,
+            "sha256": "e6b6b6b1bd334412759c49cac30e66a5296a23450c97bf729ef585c64cfba48f"
+          }
+        ]
+      },
+      "requires_provenance": true,
+      "wrapper_paths": {
+        "linux": [
+          "/home/delete/.local/bin/rtk"
+        ]
+      }
+    },
+    {
+      "allowed_skips": [],
+      "commands": {
+        "linux": [
+          "python",
+          "scripts/test_hpo_language_adapters.py"
+        ]
+      },
+      "covers_groups": [
+        "r-hpo-adapter",
+        "octave-hpo-adapter"
+      ],
+      "executable_paths": {
+        "linux": [
+          "{root}/.venv/bin/python"
+        ]
+      },
+      "facts": [
+        {
+          "field": "required_languages",
+          "op": "eq",
+          "value": [
+            "python",
+            "r",
+            "octave"
+          ]
+        }
+      ],
+      "hosts": [
+        "linux"
+      ],
+      "id": "r-octave-hpo-adapters",
+      "input_exclusions": [
+        "docs/contracts/training_contract_conformance_pack.v1.json",
+        "docs/contracts/training_replay_contract_conformance_pack.v1.json"
+      ],
+      "input_paths": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/",
+        "examples/",
+        "docs/contracts/",
+        "bindings/",
+        "scripts/test_hpo_language_adapters.py"
+      ],
+      "minimum_passed": 3,
+      "provenance_justification": "Preserve exact scoped source/declarations/locks, original successful direct commands and compiler/test logs. No checksum of temporary Cargo executables or mock native placeholders is claimed.",
+      "provenance_mode": "build-from-reviewed-source-or-source-contract",
+      "required_environment": {
+        "DAGML_REQUIRE_HPO_MATLAB": "1",
+        "DAGML_REQUIRE_HPO_OCTAVE": "1",
+        "DAGML_REQUIRE_HPO_R": "1"
+      },
+      "requires_provenance": false,
+      "wrapper_paths": {
+        "linux": [
+          "/home/delete/.local/bin/rtk"
+        ]
+      }
+    },
+    {
+      "allowed_skips": [],
+      "commands": {
+        "linux": [
+          "cargo",
+          "test",
+          "--offline",
+          "--locked",
+          "-p",
+          "dag-ml-cli",
+          "host_hpo_cli_runs_parallel_pruning_and_resumes_native_checkpoint"
+        ]
+      },
+      "covers_groups": [
+        "r-native-hpo-resume"
+      ],
+      "facts": [],
+      "hosts": [
+        "linux"
+      ],
+      "id": "r-native-hpo-resume",
+      "input_exclusions": [
+        "docs/contracts/training_contract_conformance_pack.v1.json",
+        "docs/contracts/training_replay_contract_conformance_pack.v1.json"
+      ],
+      "input_paths": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/",
+        "examples/",
+        "docs/contracts/",
+        "bindings/"
+      ],
+      "minimum_passed": 1,
+      "provenance_justification": "Preserve exact scoped source/declarations/locks, original successful direct commands and compiler/test logs. No checksum of temporary Cargo executables or mock native placeholders is claimed.",
+      "provenance_mode": "build-from-reviewed-source-or-source-contract",
+      "requires_provenance": false,
+      "wrapper_paths": {
+        "linux": [
+          "/home/delete/.local/bin/rtk"
+        ]
+      },
+      "executable_paths": {
+        "linux": [
+          "cargo"
+        ]
+      }
+    },
+    {
+      "allowed_skips": [],
+      "commands": {
+        "linux": [
+          "cargo",
+          "test",
+          "--offline",
+          "--locked",
+          "-p",
+          "dag-ml-cli",
+          "--test",
+          "r_hpo_ridge"
+        ]
+      },
+      "covers_groups": [
+        "r-native-ridge-folds-refit-replay"
+      ],
+      "facts": [],
+      "hosts": [
+        "linux"
+      ],
+      "id": "r-native-ridge-folds-refit-replay",
+      "input_exclusions": [
+        "docs/contracts/training_contract_conformance_pack.v1.json",
+        "docs/contracts/training_replay_contract_conformance_pack.v1.json"
+      ],
+      "input_paths": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/",
+        "examples/",
+        "docs/contracts/",
+        "bindings/"
+      ],
+      "minimum_passed": 1,
+      "provenance_justification": "Preserve exact scoped source/declarations/locks, original successful direct commands and compiler/test logs. No checksum of temporary Cargo executables or mock native placeholders is claimed.",
+      "provenance_mode": "build-from-reviewed-source-or-source-contract",
+      "requires_provenance": false,
+      "wrapper_paths": {
+        "linux": [
+          "/home/delete/.local/bin/rtk"
+        ]
+      },
+      "executable_paths": {
+        "linux": [
+          "cargo"
+        ]
+      }
+    },
+    {
+      "allowed_skips": [],
+      "commands": {
+        "linux": [
+          "octave",
+          "--no-gui",
+          "--quiet",
+          "--eval",
+          "addpath('{root}/bindings/matlab/tests'); local_implementation_registry"
+        ]
+      },
+      "covers_groups": [
+        "octave-native-registry"
+      ],
+      "executable_paths": {
+        "linux": [
+          "/home/delete/nirs4all/_audits/2026-10-29-remediation/publication/octave-bin/octave"
+        ]
+      },
+      "facts": [],
+      "hosts": [
+        "linux"
+      ],
+      "id": "octave-native-registry",
+      "input_exclusions": [
+        "docs/contracts/training_contract_conformance_pack.v1.json",
+        "docs/contracts/training_replay_contract_conformance_pack.v1.json"
+      ],
+      "input_paths": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/",
+        "examples/",
+        "docs/contracts/",
+        "bindings/"
+      ],
+      "minimum_passed": 0,
+      "provenance_justification": "Preserve exact scoped source/declarations/locks, original successful direct commands and compiler/test logs. No checksum of temporary Cargo executables or mock native placeholders is claimed.",
+      "provenance_mode": "native-consumed-with-retained-origin",
+      "provenance_requirements": {
+        "source_artifacts": [
+          {
+            "name": "dag-ml-C-ABI",
+            "version": "0.3.43",
+            "origin": "Locked source-built native C ABI invoked by the MEX bridge",
+            "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/target/release/libdag_ml_capi.so",
+            "bytes": 23780392,
+            "sha256": "e6b6b6b1bd334412759c49cac30e66a5296a23450c97bf729ef585c64cfba48f"
+          },
+          {
+            "name": "taskTrainingLossBindingNative.mex",
+            "version": "0.3.43",
+            "origin": "Native MEX compiled from the exact owning bridge C source with host compiler",
+            "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/bindings/matlab/+dagml/taskTrainingLossBindingNative.mex",
+            "bytes": 16072,
+            "sha256": "8b826c428f4c91a0c78dc9c122f03a8be6a373f1045326b42c89aa1c6f833101"
+          },
+          {
+            "name": "executeExecutionPlanPhaseNative.mex",
+            "version": "0.3.43",
+            "origin": "Native MEX compiled from the exact owning bridge C source with host compiler",
+            "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/bindings/matlab/+dagml/executeExecutionPlanPhaseNative.mex",
+            "bytes": 16448,
+            "sha256": "8d1bcd36137c66841862354b3d0adc7464ef46265d03c29eebc0ac69b337783a"
+          }
+        ],
+        "dependency_origins": [
+          {
+            "name": "dag-ml-dependency-lock",
+            "version": "0.3.43",
+            "origin": "Actual immutable registry-backed Cargo lock input",
+            "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/Cargo.lock",
+            "bytes": 38704,
+            "sha256": "b355c41bea3df34a00abe63de070213e8e03fcaef2b47bc399a767a1402de591"
+          },
+          {
+            "name": "dag-ml-workspace-dependency-lock",
+            "version": "0.3.43",
+            "origin": "Tracked owning source observed before and after this direct successful command; source hashes retained in the raw capture",
+            "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/Cargo.lock",
+            "bytes": 38704,
+            "sha256": "b355c41bea3df34a00abe63de070213e8e03fcaef2b47bc399a767a1402de591"
+          },
+          {
+            "name": "octave-registry-source",
+            "version": "0.3.43",
+            "origin": "Tracked owning source observed before and after this direct successful command; source hashes retained in the raw capture",
+            "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/bindings/matlab/tests/local_implementation_registry.m",
+            "bytes": 5602,
+            "sha256": "259110efc1479508cbcbe0ce43443384090cf986350999c98b4269c73a7e2f32"
+          }
+        ]
+      },
+      "requires_provenance": true,
+      "wrapper_paths": {
+        "linux": [
+          "/home/delete/.local/bin/rtk"
+        ]
+      }
+    },
+    {
+      "allowed_skips": [],
+      "commands": {
+        "linux": [
+          "cargo",
+          "test",
+          "--offline",
+          "--locked",
+          "-p",
+          "dag-ml-cli",
+          "host_hpo_cli_runs_parallel_pruning_and_resumes_native_checkpoint"
+        ]
+      },
+      "covers_groups": [
+        "octave-native-hpo-resume"
+      ],
+      "facts": [],
+      "hosts": [
+        "linux"
+      ],
+      "id": "octave-native-hpo-resume",
+      "input_exclusions": [
+        "docs/contracts/training_contract_conformance_pack.v1.json",
+        "docs/contracts/training_replay_contract_conformance_pack.v1.json"
+      ],
+      "input_paths": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/",
+        "examples/",
+        "docs/contracts/",
+        "bindings/"
+      ],
+      "minimum_passed": 1,
+      "provenance_justification": "Preserve exact scoped source/declarations/locks, original successful direct commands and compiler/test logs. No checksum of temporary Cargo executables or mock native placeholders is claimed.",
+      "provenance_mode": "build-from-reviewed-source-or-source-contract",
+      "requires_provenance": false,
+      "wrapper_paths": {
+        "linux": [
+          "/home/delete/.local/bin/rtk"
+        ]
+      },
+      "executable_paths": {
+        "linux": [
+          "cargo"
+        ]
+      }
+    },
+    {
+      "allowed_skips": [],
+      "commands": {
+        "linux": [
+          "cargo",
+          "test",
+          "--offline",
+          "--locked",
+          "-p",
+          "dag-ml-cli",
+          "--test",
+          "octave_hpo_ridge"
+        ]
+      },
+      "covers_groups": [
+        "octave-ridge-folds-refit-replay"
+      ],
+      "facts": [],
+      "hosts": [
+        "linux"
+      ],
+      "id": "octave-ridge-folds-refit-replay",
+      "input_exclusions": [
+        "docs/contracts/training_contract_conformance_pack.v1.json",
+        "docs/contracts/training_replay_contract_conformance_pack.v1.json"
+      ],
+      "input_paths": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/",
+        "examples/",
+        "docs/contracts/",
+        "bindings/"
+      ],
+      "minimum_passed": 1,
+      "provenance_justification": "Preserve exact scoped source/declarations/locks, original successful direct commands and compiler/test logs. No checksum of temporary Cargo executables or mock native placeholders is claimed.",
+      "provenance_mode": "build-from-reviewed-source-or-source-contract",
+      "requires_provenance": false,
+      "wrapper_paths": {
+        "linux": [
+          "/home/delete/.local/bin/rtk"
+        ]
+      },
+      "executable_paths": {
+        "linux": [
+          "cargo"
+        ]
+      }
+    },
+    {
+      "allowed_skips": [],
+      "commands": {
+        "linux": [
+          "octave",
+          "--no-gui",
+          "--quiet",
+          "--eval",
+          "addpath('{root}/bindings/matlab/tests'); initial_full_refit"
+        ]
+      },
+      "covers_groups": [
+        "octave-initial-refit"
+      ],
+      "executable_paths": {
+        "linux": [
+          "/home/delete/nirs4all/_audits/2026-10-29-remediation/publication/octave-bin/octave"
+        ]
+      },
+      "facts": [],
+      "hosts": [
+        "linux"
+      ],
+      "id": "octave-initial-full-refit",
+      "input_exclusions": [
+        "docs/contracts/training_contract_conformance_pack.v1.json",
+        "docs/contracts/training_replay_contract_conformance_pack.v1.json"
+      ],
+      "input_paths": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/",
+        "examples/",
+        "docs/contracts/",
+        "bindings/"
+      ],
+      "minimum_passed": 0,
+      "provenance_justification": "Preserve exact scoped source/declarations/locks, original successful direct commands and compiler/test logs. No checksum of temporary Cargo executables or mock native placeholders is claimed.",
+      "provenance_mode": "build-from-reviewed-source-or-source-contract",
+      "requires_provenance": false,
+      "wrapper_paths": {
+        "linux": [
+          "/home/delete/.local/bin/rtk"
+        ]
+      }
+    },
+    {
+      "allowed_skips": [],
+      "commands": {
+        "linux": [
+          "octave",
+          "--no-gui",
+          "--quiet",
+          "--eval",
+          "addpath('{root}/bindings/matlab/tests'); cv_refit_predict"
+        ]
+      },
+      "covers_groups": [
+        "octave-cv-refit-predict"
+      ],
+      "executable_paths": {
+        "linux": [
+          "/home/delete/nirs4all/_audits/2026-10-29-remediation/publication/octave-bin/octave"
+        ]
+      },
+      "facts": [],
+      "hosts": [
+        "linux"
+      ],
+      "id": "octave-cv-refit-predict",
+      "input_exclusions": [
+        "docs/contracts/training_contract_conformance_pack.v1.json",
+        "docs/contracts/training_replay_contract_conformance_pack.v1.json"
+      ],
+      "input_paths": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/",
+        "examples/",
+        "docs/contracts/",
+        "bindings/"
+      ],
+      "minimum_passed": 0,
+      "provenance_justification": "Preserve exact scoped source/declarations/locks, original successful direct commands and compiler/test logs. No checksum of temporary Cargo executables or mock native placeholders is claimed.",
+      "provenance_mode": "build-from-reviewed-source-or-source-contract",
+      "requires_provenance": false,
+      "wrapper_paths": {
+        "linux": [
+          "/home/delete/.local/bin/rtk"
+        ]
+      }
+    },
+    {
+      "allowed_skips": [],
+      "commands": {
+        "linux": [
+          "octave",
+          "--no-gui",
+          "--quiet",
+          "--eval",
+          "addpath('{root}/bindings/matlab/tests'); replay_bundle"
+        ]
+      },
+      "covers_groups": [
+        "octave-persisted-replay"
+      ],
+      "executable_paths": {
+        "linux": [
+          "/home/delete/nirs4all/_audits/2026-10-29-remediation/publication/octave-bin/octave"
+        ]
+      },
+      "facts": [],
+      "hosts": [
+        "linux"
+      ],
+      "id": "octave-replay-bundle",
+      "input_exclusions": [
+        "docs/contracts/training_contract_conformance_pack.v1.json",
+        "docs/contracts/training_replay_contract_conformance_pack.v1.json"
+      ],
+      "input_paths": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/",
+        "examples/",
+        "docs/contracts/",
+        "bindings/"
+      ],
+      "minimum_passed": 0,
+      "provenance_justification": "Preserve exact scoped source/declarations/locks, original successful direct commands and compiler/test logs. No checksum of temporary Cargo executables or mock native placeholders is claimed.",
+      "provenance_mode": "build-from-reviewed-source-or-source-contract",
+      "requires_provenance": false,
+      "wrapper_paths": {
+        "linux": [
+          "/home/delete/.local/bin/rtk"
+        ]
+      }
+    },
+    {
+      "allowed_skips": [],
+      "commands": {
+        "linux": [
+          "node",
+          "scripts/smoke_wasm_bindings.cjs",
+          "/home/delete/nirs4all/_audits/2026-10-29-remediation/publication/dag343/wasm-node"
+        ]
+      },
+      "covers_groups": [
+        "wasm-node-runtime"
+      ],
+      "executable_paths": {
+        "linux": [
+          "/home/delete/.nvm/versions/node/v24.16.0/bin/node"
+        ]
+      },
+      "facts": [
+        {
+          "field": "native_version",
+          "op": "eq",
+          "value": "0.3.43"
+        }
+      ],
+      "hosts": [
+        "linux"
+      ],
+      "id": "wasm-node-runtime",
+      "input_exclusions": [
+        "docs/contracts/training_contract_conformance_pack.v1.json",
+        "docs/contracts/training_replay_contract_conformance_pack.v1.json"
+      ],
+      "input_paths": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/",
+        "examples/",
+        "docs/contracts/",
+        "bindings/",
+        "scripts/smoke_wasm_bindings.cjs",
+        "scripts/smoke_wasm_browser_hpo.mjs",
+        "scripts/wasm_exact_integers.cjs",
+        "scripts/wasm_ridge_refit_oracle.mjs"
+      ],
+      "minimum_passed": 0,
+      "provenance_justification": "Preserve exact scoped source/declarations/locks, original successful direct commands and compiler/test logs. No checksum of temporary Cargo executables or mock native placeholders is claimed.",
+      "provenance_mode": "native-consumed-with-retained-origin",
+      "provenance_requirements": {
+        "source_artifacts": [
+          {
+            "name": "dag-ml-wasm-native",
+            "version": "0.3.43",
+            "origin": "Source-built release WASM from measured Rust inputs",
+            "artifact_path": "/home/delete/nirs4all/_audits/2026-10-29-remediation/publication/dag343/wasm-node/dag_ml_wasm_bg.wasm",
+            "bytes": 10975312,
+            "sha256": "2e42442d4a8a4e6058200b06311ff45769778ced75b9c02f04c3ee64da944333"
+          },
+          {
+            "name": "dag-ml-wasm-binding",
+            "version": "0.3.43",
+            "origin": "Matching wasm-bindgen delivery",
+            "artifact_path": "/home/delete/nirs4all/_audits/2026-10-29-remediation/publication/dag343/wasm-node/dag_ml_wasm.js",
+            "bytes": 83665,
+            "sha256": "cce510d2cc3326a1d61618d5c01a63789b11817a0d85e4452c9f70951b9a4e69"
+          }
+        ],
+        "dependency_origins": [
+          {
+            "name": "dag-ml-dependency-lock",
+            "version": "0.3.43",
+            "origin": "Actual immutable registry-backed Cargo lock input",
+            "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/Cargo.lock",
+            "bytes": 38704,
+            "sha256": "b355c41bea3df34a00abe63de070213e8e03fcaef2b47bc399a767a1402de591"
+          },
+          {
+            "name": "dag-ml-workspace-dependency-lock",
+            "version": "0.3.43",
+            "origin": "Tracked owning source observed before and after this direct successful command; source hashes retained in the raw capture",
+            "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/Cargo.lock",
+            "bytes": 38704,
+            "sha256": "b355c41bea3df34a00abe63de070213e8e03fcaef2b47bc399a767a1402de591"
+          }
+        ]
+      },
+      "requires_provenance": true,
+      "wrapper_paths": {
+        "linux": [
+          "/home/delete/.local/bin/rtk"
+        ]
+      }
+    },
+    {
+      "allowed_skips": [],
+      "commands": {
+        "linux": [
+          "node",
+          "scripts/smoke_wasm_browser_hpo.mjs",
+          "/home/delete/nirs4all/_audits/2026-10-29-remediation/publication/dag343/wasm-web"
+        ]
+      },
+      "covers_groups": [
+        "wasm-browser-worker-hpo-resume"
+      ],
+      "executable_paths": {
+        "linux": [
+          "/home/delete/.nvm/versions/node/v24.16.0/bin/node"
+        ]
+      },
+      "facts": [
+        {
+          "field": "native_version",
+          "op": "eq",
+          "value": "0.3.43"
+        }
+      ],
+      "hosts": [
+        "linux"
+      ],
+      "id": "wasm-browser-worker-hpo-resume-linux-tmp",
+      "input_exclusions": [
+        "docs/contracts/training_contract_conformance_pack.v1.json",
+        "docs/contracts/training_replay_contract_conformance_pack.v1.json"
+      ],
+      "input_paths": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/",
+        "examples/",
+        "docs/contracts/",
+        "bindings/",
+        "scripts/smoke_wasm_bindings.cjs",
+        "scripts/smoke_wasm_browser_hpo.mjs",
+        "scripts/wasm_exact_integers.cjs",
+        "scripts/wasm_ridge_refit_oracle.mjs"
+      ],
+      "minimum_passed": 0,
+      "provenance_justification": "Preserve exact scoped source/declarations/locks, original successful direct commands and compiler/test logs. No checksum of temporary Cargo executables or mock native placeholders is claimed.",
+      "provenance_mode": "native-consumed-with-retained-origin",
+      "provenance_requirements": {
+        "source_artifacts": [
+          {
+            "name": "dag-ml-wasm-runtime",
+            "version": "0.3.43",
+            "origin": "Source-built release WASM from measured Rust inputs",
+            "artifact_path": "/home/delete/nirs4all/_audits/2026-10-29-remediation/publication/dag343/wasm-web/dag_ml_wasm_bg.wasm",
+            "bytes": 10975312,
+            "sha256": "2e42442d4a8a4e6058200b06311ff45769778ced75b9c02f04c3ee64da944333"
+          },
+          {
+            "name": "dag-ml-wasm-binding",
+            "version": "0.3.43",
+            "origin": "Matching wasm-bindgen delivery",
+            "artifact_path": "/home/delete/nirs4all/_audits/2026-10-29-remediation/publication/dag343/wasm-web/dag_ml_wasm.js",
+            "bytes": 83406,
+            "sha256": "c34d1f1e02de121f1240b4c48e2ebc2c56f4e7abd5361ca30ff8e99cb07cb37e"
+          },
+          {
+            "name": "capture-observer",
+            "version": "3",
+            "origin": "Actual owned observer executed for this direct before/after capture",
+            "artifact_path": "/home/delete/nirs4all/_audits/2026-10-29-remediation/publication/capture_dag_gate.py",
+            "bytes": 5918,
+            "sha256": "be624b201398a8e0831530019d5ad48c3b60214fcd422b78f879be8577d5a4a6"
+          }
+        ],
+        "dependency_origins": [
+          {
+            "name": "dag-ml-workspace-dependency-lock",
+            "version": "0.3.43",
+            "origin": "Actual immutable registry-backed Cargo lock input",
+            "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/Cargo.lock",
+            "bytes": 38704,
+            "sha256": "b355c41bea3df34a00abe63de070213e8e03fcaef2b47bc399a767a1402de591"
+          },
+          {
+            "name": "chromium-browser",
+            "version": "149.0.7827.55",
+            "origin": "Actual Chromium executable selected by CHROME_BIN for the Web Worker smoke",
+            "artifact_path": "/home/delete/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome",
+            "bytes": 278568152,
+            "sha256": "2d18db9d8608b052b6a552ee00ec1e830f93692e928b65ecc67d693bd33fe801"
+          }
+        ]
+      },
+      "requires_provenance": true,
+      "wrapper_paths": {
+        "linux": [
+          "/home/delete/.local/bin/rtk"
+        ]
+      }
+    },
+    {
+      "allowed_skips": [],
+      "commands": {
+        "windows": [
+          "python",
+          "{root}/qualification/windows_gate_driver_v3.py",
+          "native-identity"
+        ]
+      },
+      "covers_group": "windows-native-python-runtime",
+      "executable_paths": {
+        "windows": [
+          "C:\\Temp\\nirs4all-release-20261029\\methods139\\tools\\Scripts\\python.exe"
+        ]
+      },
+      "facts": [],
+      "hosts": [
+        "windows"
+      ],
+      "id": "native-identity",
+      "input_exclusions": [
+        "crates/dag-ml-py/python/dag_ml/_dag_ml.abi3.so"
+      ],
+      "input_paths": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/dag-ml-core/",
+        "crates/dag-ml-results/",
+        "crates/dag-ml-py/Cargo.toml",
+        "crates/dag-ml-py/Cargo.lock",
+        "crates/dag-ml-py/pyproject.toml",
+        "crates/dag-ml-py/src/",
+        "crates/dag-ml-py/python/",
+        "crates/dag-ml-py/tests/",
+        "parity/conformal/",
+        "examples/",
+        "scripts/smoke_python_bindings.py",
+        "qualification/windows_gate_driver_v3.py"
+      ],
+      "minimum_passed": 0,
+      "provenance_requirements": {
+        "source_artifacts": [
+          {
+            "name": "dag-ml-wheel",
+            "version": "0.3.43",
+            "origin": "Native Rust1.88 locked registry build from exact runtime source5d4f7be",
+            "artifact_path": "D:\\workspace\\nirs4all-release-20261029-quality\\wheels\\dag_ml-0.3.43-cp311-abi3-win_amd64.whl",
+            "bytes": 11825712,
+            "sha256": "6eafd77c3dc574335cfebdb845b98d9ebbcfdb758c270b7b6fa42c9474253fdd"
+          },
+          {
+            "name": "dag-ml-native",
+            "version": "0.3.43",
+            "origin": "Byte-exact extraction of the same source-built wheel",
+            "artifact_path": "D:\\workspace\\nirs4all-release-20261029-quality\\dag-ml\\qualified-windows-wheel\\dag_ml\\_dag_ml.pyd",
+            "bytes": 36821504,
+            "sha256": "956ca6be245bdf5620dc9d2f43f15f212a7b6be08b1de4aa55682bc461c6d5f9"
+          },
+          {
+            "name": "capture-observer",
+            "version": "3",
+            "origin": "Actual owned native Windows observer executing this capture",
+            "artifact_path": "C:\\Temp\\nirs4all-release-20261029\\methods139\\capture_dag_gate_windows.py",
+            "bytes": 6464,
+            "sha256": "7e0cf218086d9df9ab5efe8cfc0cf49f32925cf570e14a00dd88ddd4ac204ca9"
+          }
+        ],
+        "dependency_origins": [
+          {
+            "name": "python313.dll",
+            "version": "3.13.9",
+            "origin": "Actual native Windows Python runtime",
+            "artifact_path": "C:\\Users\\U108-N257\\AppData\\Local\\Programs\\Python\\Python313\\python313.dll",
+            "bytes": 6125912,
+            "sha256": "c9f98606d0d06f4e8ae75ae385021e58b57c90d4fd325c0313c8c42abe1ebf63"
+          },
+          {
+            "name": "python",
+            "version": "3.13.9",
+            "origin": "Actual native Windows Python executable used by the direct gate",
+            "artifact_path": "C:\\Temp\\nirs4all-release-20261029\\methods139\\tools\\Scripts\\python.exe",
+            "bytes": 255320,
+            "sha256": "41b0358d661a6be6c3ab18409016f353a20a236b2322df4639f99f1b9879bf26"
+          }
+        ]
+      },
+      "requires_provenance": true
+    },
+    {
+      "allowed_skips": [],
+      "commands": {
+        "windows": [
+          "python",
+          "{root}/qualification/windows_gate_driver_v3.py",
+          "training-result"
+        ]
+      },
+      "covers_group": "windows-native-python-runtime",
+      "executable_paths": {
+        "windows": [
+          "C:\\Temp\\nirs4all-release-20261029\\methods139\\tools\\Scripts\\python.exe"
+        ]
+      },
+      "facts": [],
+      "hosts": [
+        "windows"
+      ],
+      "id": "training-result",
+      "input_exclusions": [
+        "crates/dag-ml-py/python/dag_ml/_dag_ml.abi3.so"
+      ],
+      "input_paths": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/dag-ml-core/",
+        "crates/dag-ml-results/",
+        "crates/dag-ml-py/Cargo.toml",
+        "crates/dag-ml-py/Cargo.lock",
+        "crates/dag-ml-py/pyproject.toml",
+        "crates/dag-ml-py/src/",
+        "crates/dag-ml-py/python/",
+        "crates/dag-ml-py/tests/",
+        "parity/conformal/",
+        "examples/",
+        "scripts/smoke_python_bindings.py",
+        "qualification/windows_gate_driver_v3.py"
+      ],
+      "minimum_passed": 16,
+      "provenance_requirements": {
+        "source_artifacts": [
+          {
+            "name": "dag-ml-wheel",
+            "version": "0.3.43",
+            "origin": "Native Rust1.88 locked registry build from exact runtime source5d4f7be",
+            "artifact_path": "D:\\workspace\\nirs4all-release-20261029-quality\\wheels\\dag_ml-0.3.43-cp311-abi3-win_amd64.whl",
+            "bytes": 11825712,
+            "sha256": "6eafd77c3dc574335cfebdb845b98d9ebbcfdb758c270b7b6fa42c9474253fdd"
+          },
+          {
+            "name": "dag-ml-native",
+            "version": "0.3.43",
+            "origin": "Byte-exact extraction of the same source-built wheel",
+            "artifact_path": "D:\\workspace\\nirs4all-release-20261029-quality\\dag-ml\\qualified-windows-wheel\\dag_ml\\_dag_ml.pyd",
+            "bytes": 36821504,
+            "sha256": "956ca6be245bdf5620dc9d2f43f15f212a7b6be08b1de4aa55682bc461c6d5f9"
+          },
+          {
+            "name": "capture-observer",
+            "version": "3",
+            "origin": "Actual owned native Windows observer executing this capture",
+            "artifact_path": "C:\\Temp\\nirs4all-release-20261029\\methods139\\capture_dag_gate_windows.py",
+            "bytes": 6464,
+            "sha256": "7e0cf218086d9df9ab5efe8cfc0cf49f32925cf570e14a00dd88ddd4ac204ca9"
+          }
+        ],
+        "dependency_origins": [
+          {
+            "name": "python313.dll",
+            "version": "3.13.9",
+            "origin": "Actual native Windows Python runtime",
+            "artifact_path": "C:\\Users\\U108-N257\\AppData\\Local\\Programs\\Python\\Python313\\python313.dll",
+            "bytes": 6125912,
+            "sha256": "c9f98606d0d06f4e8ae75ae385021e58b57c90d4fd325c0313c8c42abe1ebf63"
+          },
+          {
+            "name": "python",
+            "version": "3.13.9",
+            "origin": "Actual native Windows Python executable used by the direct gate",
+            "artifact_path": "C:\\Temp\\nirs4all-release-20261029\\methods139\\tools\\Scripts\\python.exe",
+            "bytes": 255320,
+            "sha256": "41b0358d661a6be6c3ab18409016f353a20a236b2322df4639f99f1b9879bf26"
+          }
+        ]
+      },
+      "requires_provenance": true
+    },
+    {
+      "allowed_skips": [],
+      "commands": {
+        "windows": [
+          "python",
+          "{root}/qualification/windows_gate_driver_v3.py",
+          "terminal-predict-facade"
+        ]
+      },
+      "covers_group": "windows-native-python-runtime",
+      "executable_paths": {
+        "windows": [
+          "C:\\Temp\\nirs4all-release-20261029\\methods139\\tools\\Scripts\\python.exe"
+        ]
+      },
+      "facts": [],
+      "hosts": [
+        "windows"
+      ],
+      "id": "terminal-predict-facade",
+      "input_exclusions": [
+        "crates/dag-ml-py/python/dag_ml/_dag_ml.abi3.so"
+      ],
+      "input_paths": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/dag-ml-core/",
+        "crates/dag-ml-results/",
+        "crates/dag-ml-py/Cargo.toml",
+        "crates/dag-ml-py/Cargo.lock",
+        "crates/dag-ml-py/pyproject.toml",
+        "crates/dag-ml-py/src/",
+        "crates/dag-ml-py/python/",
+        "crates/dag-ml-py/tests/",
+        "parity/conformal/",
+        "examples/",
+        "scripts/smoke_python_bindings.py",
+        "qualification/windows_gate_driver_v3.py"
+      ],
+      "minimum_passed": 2,
+      "provenance_requirements": {
+        "source_artifacts": [
+          {
+            "name": "dag-ml-wheel",
+            "version": "0.3.43",
+            "origin": "Native Rust1.88 locked registry build from exact runtime source5d4f7be",
+            "artifact_path": "D:\\workspace\\nirs4all-release-20261029-quality\\wheels\\dag_ml-0.3.43-cp311-abi3-win_amd64.whl",
+            "bytes": 11825712,
+            "sha256": "6eafd77c3dc574335cfebdb845b98d9ebbcfdb758c270b7b6fa42c9474253fdd"
+          },
+          {
+            "name": "dag-ml-native",
+            "version": "0.3.43",
+            "origin": "Byte-exact extraction of the same source-built wheel",
+            "artifact_path": "D:\\workspace\\nirs4all-release-20261029-quality\\dag-ml\\qualified-windows-wheel\\dag_ml\\_dag_ml.pyd",
+            "bytes": 36821504,
+            "sha256": "956ca6be245bdf5620dc9d2f43f15f212a7b6be08b1de4aa55682bc461c6d5f9"
+          },
+          {
+            "name": "capture-observer",
+            "version": "3",
+            "origin": "Actual owned native Windows observer executing this capture",
+            "artifact_path": "C:\\Temp\\nirs4all-release-20261029\\methods139\\capture_dag_gate_windows.py",
+            "bytes": 6464,
+            "sha256": "7e0cf218086d9df9ab5efe8cfc0cf49f32925cf570e14a00dd88ddd4ac204ca9"
+          }
+        ],
+        "dependency_origins": [
+          {
+            "name": "python313.dll",
+            "version": "3.13.9",
+            "origin": "Actual native Windows Python runtime",
+            "artifact_path": "C:\\Users\\U108-N257\\AppData\\Local\\Programs\\Python\\Python313\\python313.dll",
+            "bytes": 6125912,
+            "sha256": "c9f98606d0d06f4e8ae75ae385021e58b57c90d4fd325c0313c8c42abe1ebf63"
+          },
+          {
+            "name": "python",
+            "version": "3.13.9",
+            "origin": "Actual native Windows Python executable used by the direct gate",
+            "artifact_path": "C:\\Temp\\nirs4all-release-20261029\\methods139\\tools\\Scripts\\python.exe",
+            "bytes": 255320,
+            "sha256": "41b0358d661a6be6c3ab18409016f353a20a236b2322df4639f99f1b9879bf26"
+          }
+        ]
+      },
+      "requires_provenance": true
+    },
+    {
+      "allowed_skips": [],
+      "commands": {
+        "windows": [
+          "python",
+          "{root}/qualification/windows_gate_driver_v3.py",
+          "installed-wheel-smoke"
+        ]
+      },
+      "covers_group": "windows-native-python-runtime",
+      "executable_paths": {
+        "windows": [
+          "C:\\Temp\\nirs4all-release-20261029\\methods139\\tools\\Scripts\\python.exe"
+        ]
+      },
+      "facts": [],
+      "hosts": [
+        "windows"
+      ],
+      "id": "installed-wheel-smoke",
+      "input_exclusions": [
+        "crates/dag-ml-py/python/dag_ml/_dag_ml.abi3.so"
+      ],
+      "input_paths": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "crates/dag-ml-core/",
+        "crates/dag-ml-results/",
+        "crates/dag-ml-py/Cargo.toml",
+        "crates/dag-ml-py/Cargo.lock",
+        "crates/dag-ml-py/pyproject.toml",
+        "crates/dag-ml-py/src/",
+        "crates/dag-ml-py/python/",
+        "crates/dag-ml-py/tests/",
+        "parity/conformal/",
+        "examples/",
+        "scripts/smoke_python_bindings.py",
+        "qualification/windows_gate_driver_v3.py"
+      ],
+      "minimum_passed": 0,
+      "provenance_requirements": {
+        "source_artifacts": [
+          {
+            "name": "dag-ml-wheel",
+            "version": "0.3.43",
+            "origin": "Native Rust1.88 locked registry build from exact runtime source5d4f7be",
+            "artifact_path": "D:\\workspace\\nirs4all-release-20261029-quality\\wheels\\dag_ml-0.3.43-cp311-abi3-win_amd64.whl",
+            "bytes": 11825712,
+            "sha256": "6eafd77c3dc574335cfebdb845b98d9ebbcfdb758c270b7b6fa42c9474253fdd"
+          },
+          {
+            "name": "dag-ml-native",
+            "version": "0.3.43",
+            "origin": "Byte-exact extraction of the same source-built wheel",
+            "artifact_path": "D:\\workspace\\nirs4all-release-20261029-quality\\dag-ml\\qualified-windows-wheel\\dag_ml\\_dag_ml.pyd",
+            "bytes": 36821504,
+            "sha256": "956ca6be245bdf5620dc9d2f43f15f212a7b6be08b1de4aa55682bc461c6d5f9"
+          },
+          {
+            "name": "capture-observer",
+            "version": "3",
+            "origin": "Actual owned native Windows observer executing this capture",
+            "artifact_path": "C:\\Temp\\nirs4all-release-20261029\\methods139\\capture_dag_gate_windows.py",
+            "bytes": 6464,
+            "sha256": "7e0cf218086d9df9ab5efe8cfc0cf49f32925cf570e14a00dd88ddd4ac204ca9"
+          }
+        ],
+        "dependency_origins": [
+          {
+            "name": "python313.dll",
+            "version": "3.13.9",
+            "origin": "Actual native Windows Python runtime",
+            "artifact_path": "C:\\Users\\U108-N257\\AppData\\Local\\Programs\\Python\\Python313\\python313.dll",
+            "bytes": 6125912,
+            "sha256": "c9f98606d0d06f4e8ae75ae385021e58b57c90d4fd325c0313c8c42abe1ebf63"
+          },
+          {
+            "name": "python",
+            "version": "3.13.9",
+            "origin": "Actual native Windows Python executable used by the direct gate",
+            "artifact_path": "C:\\Temp\\nirs4all-release-20261029\\methods139\\tools\\Scripts\\python.exe",
+            "bytes": 255320,
+            "sha256": "41b0358d661a6be6c3ab18409016f353a20a236b2322df4639f99f1b9879bf26"
+          }
+        ]
+      },
+      "requires_provenance": true
+    }
+  ],
+  "logical_coverage_groups": 55,
+  "project": "dag",
+  "schema": "nirs4all.local-qualification.v1"
+}
