@@ -401,9 +401,12 @@ target-observed sample is left, when fewer observed samples (or groups) than
 samples. The runtime enforces the declaration at result admission: a controller
 result that carries a declared sample in a train, train-pool or validation
 prediction, or as a regression scoring target, is refused (`scored_result`)
-before it is stored or scored. Nested inner fold sets inherit the declaration,
-nested selection accepts it (`NestedSelectionRequest.target_missing_sample_ids`),
-and a plan cannot combine it with an all-observations fit view. The declaration
+before it is stored or scored; observation rows and group/target units are
+resolved through the coordinator relations, and a group or target made only of
+declared samples is refused. Nested inner fold sets and stacking REFIT folds
+inherit the declaration, nested selection accepts it
+(`NestedSelectionRequest.target_missing_sample_ids`), and a fitting node cannot
+combine it with an all-observations fit view. The declaration
 is made for the target(s) the campaign trains: on a
 sparse multi-target dataset, a campaign over one target declares only the
 samples missing that target, so a sample missing another target stays in its

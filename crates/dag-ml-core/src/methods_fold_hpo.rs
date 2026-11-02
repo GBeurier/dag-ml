@@ -78,8 +78,9 @@ fn validate_study_universe(
         || inner.sample_ids.iter().collect::<BTreeSet<_>>() != expected
         || inner.sample_groups != groups
         || inner.train_exclusion != root.train_exclusion
+        || inner.target_missing_sample_ids != root.target_missing_sample_ids
     {
-        return Err(invalid("study universe, groups, exclusion authority or partition differs from its training scope"));
+        return Err(invalid("study universe, groups, exclusion authority, target-missing declaration or partition differs from its training scope"));
     }
     Ok(())
 }

@@ -603,6 +603,10 @@ impl ExecutionPlan {
                 if let Some(binding) = self
                     .node_plans
                     .values()
+                    .filter(|node| {
+                        node.supported_phases.contains(&Phase::FitCv)
+                            || node.supported_phases.contains(&Phase::Refit)
+                    })
                     .flat_map(|node| &node.data_bindings)
                     .find(|binding| {
                         binding.view_policy.fit_partition

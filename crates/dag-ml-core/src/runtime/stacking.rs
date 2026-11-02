@@ -684,7 +684,13 @@ pub(crate) fn nested_stacking_campaign_plan_for_node(
                 validation_sample_ids: Vec::new(),
                 metadata: BTreeMap::new(),
             };
-            let refit = inner_spec.build_inner_fold_set(&full_train, &fold_set.sample_groups)?;
+            let mut refit =
+                inner_spec.build_inner_fold_set(&full_train, &fold_set.sample_groups)?;
+            // The REFIT folds become the scoped plan fold set: keep the declaration that
+            // refuses target-missing rows at result admission.
+            refit
+                .target_missing_sample_ids
+                .clone_from(&fold_set.target_missing_sample_ids);
             let occupied = outer_scopes
                 .iter()
                 .flat_map(|outer| {

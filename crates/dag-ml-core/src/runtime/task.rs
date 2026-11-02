@@ -1237,10 +1237,16 @@ pub struct NodeResult {
 impl NodeResult {
     /// Target-missing samples declared on the plan fold set never train and are never scored:
     /// a result may carry them only in test or final predictions (PREDICT / inference cohorts).
-    pub fn validate_target_missing(&self, fold_set: Option<&FoldSet>) -> Result<()> {
-        let Some(fold_set) = fold_set else {
+    /// Observation rows and group/target units are resolved through `relations`; a group or
+    /// target unit whose members are all target-missing is refused like a sample row.
+    pub fn validate_target_missing(
+        &self,
+        fold_set: &FoldSet,
+        relations: Option<&SampleRelationSet>,
+    ) -> Result<()> {
+        if fold_set.target_missing_sample_ids.is_empty() {
             return Ok(());
-        };
+        }
         let scored = |partition: &PredictionPartition| {
             matches!(
                 partition,
@@ -1249,35 +1255,85 @@ impl NodeResult {
                     | PredictionPartition::Validation
             )
         };
-        fn sample_unit(unit: &PredictionUnitId) -> Option<&SampleId> {
-            match unit {
-                PredictionUnitId::Sample(sample_id) => Some(sample_id),
-                _ => None,
+        let mut units = Vec::new();
+        let mut samples = Vec::new();
+        for block in self.predictions.iter().filter(|b| scored(&b.partition)) {
+            samples.extend(block.sample_ids.iter().cloned());
+        }
+        for block in self
+            .classification_probabilities
+            .iter()
+            .filter(|b| scored(&b.partition))
+        {
+            samples.extend(block.sample_ids.iter().cloned());
+        }
+        for block in self
+            .aggregated_predictions
+            .iter()
+            .filter(|b| scored(&b.partition))
+        {
+            units.extend(block.unit_ids.iter().cloned());
+        }
+        for block in &self.regression_targets {
+            units.extend(block.unit_ids.iter().cloned());
+        }
+        let observations = self
+            .observation_predictions
+            .iter()
+            .filter(|b| scored(&b.partition))
+            .flat_map(|b| &b.observation_ids)
+            .collect::<BTreeSet<_>>();
+        let needs_relations = !observations.is_empty()
+            || units
+                .iter()
+                .any(|unit| !matches!(unit, PredictionUnitId::Sample(_)));
+        let relations = match relations {
+            Some(relations) => Some(relations),
+            None if needs_relations => {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "node `{}` emitted observation, group or target rows that cannot be checked against target-missing samples without coordinator relations",
+                    self.node_id
+                )));
+            }
+            None => None,
+        };
+        let declared = fold_set
+            .target_missing_sample_ids
+            .iter()
+            .collect::<BTreeSet<_>>();
+        for unit in &units {
+            let members = match unit {
+                PredictionUnitId::Sample(sample_id) => {
+                    samples.push(sample_id.clone());
+                    continue;
+                }
+                PredictionUnitId::Group(group_id) => relations
+                    .into_iter()
+                    .flat_map(|r| &r.records)
+                    .filter(|record| record.group_id.as_ref() == Some(group_id))
+                    .map(|record| &record.sample_id)
+                    .collect::<BTreeSet<_>>(),
+                PredictionUnitId::Target(target_id) => relations
+                    .into_iter()
+                    .flat_map(|r| &r.records)
+                    .filter(|record| record.target_id.as_ref() == Some(target_id))
+                    .map(|record| &record.sample_id)
+                    .collect::<BTreeSet<_>>(),
+            };
+            if !members.is_empty() && members.iter().all(|id| declared.contains(id)) {
+                samples.extend(members.into_iter().cloned());
             }
         }
-        fold_set.refuse_scored_target_missing(
-            self.predictions
-                .iter()
-                .filter(|block| scored(&block.partition))
-                .flat_map(|block| &block.sample_ids)
-                .chain(
-                    self.classification_probabilities
-                        .iter()
-                        .filter(|block| scored(&block.partition))
-                        .flat_map(|block| &block.sample_ids),
-                )
-                .chain(
-                    self.aggregated_predictions
-                        .iter()
-                        .filter(|block| scored(&block.partition))
-                        .flat_map(|block| block.unit_ids.iter().filter_map(sample_unit)),
-                )
-                .chain(
-                    self.regression_targets
-                        .iter()
-                        .flat_map(|block| block.unit_ids.iter().filter_map(sample_unit)),
-                ),
-        )
+        if !observations.is_empty() {
+            samples.extend(
+                relations
+                    .into_iter()
+                    .flat_map(|r| &r.records)
+                    .filter(|record| observations.contains(&record.observation_id))
+                    .map(|record| record.sample_id.clone()),
+            );
+        }
+        fold_set.refuse_scored_target_missing(&samples)
     }
 
     /// Require a full, ordered read and model call for every dynamic fit or
