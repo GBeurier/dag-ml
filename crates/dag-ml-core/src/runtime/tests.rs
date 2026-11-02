@@ -18411,10 +18411,28 @@ fn target_missing_rows_in_a_controller_result_are_refused() {
         values: vec![vec![1.0]],
         target_names: vec!["y".to_string()],
     }];
-    assert!(!result.target_missing_needs_relations());
+    assert!(result.target_missing_needs_relations());
     result
         .validate_target_missing(declared, Some(&collided), None)
         .unwrap();
+    assert!(
+        result
+            .validate_target_missing(declared, None, None)
+            .is_err(),
+        "group scoring targets cannot be checked without relations"
+    );
+    // A final (PREDICT) block cannot carry a scoring target for a group made only
+    // of target-missing samples either.
+    let mut final_missing = group_block("G");
+    final_missing.partition = PredictionPartition::Final;
+    result.aggregated_predictions = vec![final_missing];
+    result.regression_targets[0].unit_ids = vec![crate::aggregation::PredictionUnitId::Group(
+        GroupId::new("G").unwrap(),
+    )];
+    assert!(matches!(
+        result.validate_target_missing(declared, Some(&collided), None),
+        Err(DagMlError::TargetMissing(_))
+    ));
     result.regression_targets.clear();
 
     // Unscored (final) group predictions need no relations.
