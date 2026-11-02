@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.44 - 2026-11-02
 
 - Declare target-missing samples outside the CV universe with `FoldSet.target_missing_sample_ids` (omitted when empty, so existing fold sets keep their bytes and fingerprints). These samples never train in FIT_CV or REFIT, are never validated, scored or used by SELECT, and stay eligible for PREDICT.
 - Add `split_with_target_missing` to the native KFold, StratifiedKFold and GroupKFold splitters, plus `FoldSet::exclude_target_missing` for host-supplied fold sets; the WASM splitters take an optional target-missing id list, and `exclude_target_missing_json` is exported.
