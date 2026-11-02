@@ -18353,6 +18353,34 @@ fn target_missing_rows_in_a_controller_result_are_refused() {
         result.validate_target_missing(declared, Some(&relations)),
         Err(DagMlError::TargetMissing(_))
     ));
+
+    // Statistical groups resolve through `independent_unit_id`; unknown units are refused.
+    let mut statistical = SampleRelation::new(
+        ObservationId::new("obs.s2.unit").unwrap(),
+        SampleId::new("s2").unwrap(),
+    );
+    statistical
+        .metadata
+        .insert("independent_unit_id".into(), json!("unit.missing"));
+    let statistical_relations = SampleRelationSet {
+        records: vec![statistical],
+    };
+    result.aggregated_predictions = vec![group_block("unit.missing")];
+    assert!(matches!(
+        result.validate_target_missing(declared, Some(&statistical_relations)),
+        Err(DagMlError::TargetMissing(_))
+    ));
+    result.aggregated_predictions = vec![group_block("unit.unknown")];
+    assert!(result
+        .validate_target_missing(declared, Some(&statistical_relations))
+        .is_err());
+
+    // Unscored (final) group predictions need no relations.
+    let mut final_block = group_block("g.missing");
+    final_block.partition = PredictionPartition::Final;
+    result.aggregated_predictions = vec![final_block];
+    assert!(!result.target_missing_needs_relations());
+    result.validate_target_missing(declared, None).unwrap();
 }
 
 #[test]
