@@ -1238,6 +1238,22 @@ pub(crate) fn data_view_for_partition(
             ids.retain(|sample_id| !excluded_samples.contains(sample_id));
         }
     }
+    // Under a target-missing declaration every training or validation view must name its
+    // samples: an unbounded view would let the provider serve declared samples to a fit.
+    if sample_ids.is_none()
+        && matches!(
+            partition,
+            DataRequestPartition::FoldTrain
+                | DataRequestPartition::FoldValidation
+                | DataRequestPartition::FullTrain
+        )
+        && fold_set.is_some_and(|fold_set| !fold_set.target_missing_sample_ids.is_empty())
+    {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "data binding `{}` on `{}` cannot request an unbounded {:?} view while target-missing samples are declared",
+            binding.input_name, binding.node_id, partition
+        )));
+    }
     if binding.view_policy.require_sample_ids
         && matches!(
             partition,

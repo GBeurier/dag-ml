@@ -1294,9 +1294,14 @@ impl NodeResult {
                 }
             }
             let units = block.unit_ids.iter().collect::<BTreeSet<_>>();
+            // Same pairing rule as native aggregated scoring.
             if block.level != PredictionLevel::Sample
                 && self.aggregated_predictions.iter().any(|prediction| {
                     !scored(&prediction.partition)
+                        && prediction.level == block.level
+                        && (prediction.target_names.is_empty()
+                            || block.target_names.is_empty()
+                            || prediction.target_names == block.target_names)
                         && prediction.unit_ids.iter().collect::<BTreeSet<_>>() == units
                 })
             {
