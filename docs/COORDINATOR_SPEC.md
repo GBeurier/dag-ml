@@ -407,7 +407,8 @@ policy), and a group or target made only of declared samples is refused.
 Group/target-level scoring of test or final predictions is refused while a
 declaration exists (those units resolve through a predict cohort), and an
 external-test (scored) predict cohort may not contain a declared sample. Nested inner fold sets and stacking REFIT folds
-inherit the declaration, nested selection accepts it
+inherit the declaration, training and validation views must name their samples
+while it exists, nested selection accepts it
 (`NestedSelectionRequest.target_missing_sample_ids`), and a fitting node cannot
 combine it with an all-observations fit view. The declaration
 is made for the target(s) the campaign trains: on a

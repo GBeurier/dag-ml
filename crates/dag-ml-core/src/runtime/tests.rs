@@ -18423,6 +18423,12 @@ fn target_missing_rows_in_a_controller_result_are_refused() {
             "{error}"
         );
     }
+    // Targets for another target name never pair with the prediction: no refusal.
+    result.regression_targets[0].target_names = vec!["y1".to_string()];
+    result.aggregated_predictions[0].target_names = vec!["y2".to_string()];
+    result
+        .validate_target_missing(declared, Some(&collided), None)
+        .unwrap();
     result.regression_targets.clear();
 
     // Unscored (final) group predictions need no relations.
@@ -18464,6 +18470,45 @@ fn nested_stacking_scopes_keep_the_target_missing_declaration() {
         .expect("partitioned REFIT OOF");
     assert_eq!(refit.target_missing_sample_ids, declared);
     assert!(!refit.sample_ids.contains(&declared[0]));
+}
+
+#[test]
+fn target_missing_declarations_refuse_unbounded_fit_views() {
+    let fold_set = three_fold_stress_set()
+        .exclude_target_missing(&BTreeSet::from([SampleId::new("s2").unwrap()]))
+        .unwrap();
+    let node_id = NodeId::new("node:model").unwrap();
+    let binding = data_binding(&node_id);
+    let unbounded = PhaseScope {
+        phase: Phase::FitCv,
+        variant_id: None,
+        variant: None,
+        fold_id: None,
+        seed_root: None,
+    };
+    let error = data_view_for_partition(
+        &binding,
+        Some(&fold_set),
+        &unbounded,
+        DataRequestPartition::FoldTrain,
+        None,
+        DataViewRole::Fit,
+        &BTreeSet::new(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("unbounded"), "{error}");
+    // Without a declaration the historical unbounded view is unchanged.
+    data_view_for_partition(
+        &binding,
+        Some(&three_fold_stress_set()),
+        &unbounded,
+        DataRequestPartition::FoldTrain,
+        None,
+        DataViewRole::Fit,
+        &BTreeSet::new(),
+    )
+    .unwrap();
 }
 
 #[test]
