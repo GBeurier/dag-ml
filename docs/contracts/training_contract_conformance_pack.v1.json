@@ -81,7 +81,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/data.rs",
-      "sha256": "e60ab5ad0cb8e34481576d5285d65b15c5bd06b4360b13192c909791b124eab3",
+      "sha256": "a8cb4f5ed2240332680ca2e8dd6649e661880fc8aba7dfbd0410ee05ae18fd0b",
       "kind": "typed_contract_dependency"
     },
     {
@@ -694,5 +694,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "3582339a7c624b7a96de300945bd7156665e919eaf5e4b544f87896527abe334"
+  "pack_checksum": "3fdd35b913b5d63dc33051f9fc5d55e03b7dd4dbbff2eb5684d96446de8ecaaa"
 }
