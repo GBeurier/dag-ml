@@ -459,14 +459,14 @@ dependencies = [
 
 [[package]]
 name = "dag-ml"
-version = "0.3.43"
+version = "0.3.44"
 dependencies = [
  "dag-ml-core",
 ]
 
 [[package]]
 name = "dag-ml-arrow"
-version = "0.3.43"
+version = "0.3.44"
 dependencies = [
  "arrow-array 59.3.1",
  "arrow-ipc 59.3.1",
@@ -479,7 +479,7 @@ dependencies = [
 
 [[package]]
 name = "dag-ml-capi"
-version = "0.3.43"
+version = "0.3.44"
 dependencies = [
  "dag-ml-core",
  "serde",
@@ -489,7 +489,7 @@ dependencies = [
 
 [[package]]
 name = "dag-ml-cli"
-version = "0.3.43"
+version = "0.3.44"
 dependencies = [
  "anyhow",
  "clap",
@@ -504,7 +504,7 @@ dependencies = [
 
 [[package]]
 name = "dag-ml-core"
-version = "0.3.43"
+version = "0.3.44"
 dependencies = [
  "indexmap",
  "n4m",
@@ -520,7 +520,7 @@ dependencies = [
 
 [[package]]
 name = "dag-ml-results"
-version = "0.3.43"
+version = "0.3.44"
 dependencies = [
  "arrow-array 60.1.0",
  "arrow-schema 60.1.0",
@@ -533,7 +533,7 @@ dependencies = [
 
 [[package]]
 name = "dag-ml-wasm"
-version = "0.3.43"
+version = "0.3.44"
 dependencies = [
  "dag-ml-core",
  "js-sys",
