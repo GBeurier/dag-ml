@@ -2616,7 +2616,7 @@ impl SequentialScheduler {
                         normalize_result_prediction_ports(plan, &task, &mut result)?;
                         result.validate_for_task(&task)?;
                         crate::target_domain::validate_domain_result(&result, &task, plan)?;
-                        result.validate_target_missing(plan.fold_set.as_ref())?;
+                        admit_target_missing(plan, &task, &result, &resources)?;
                         for prediction in &result.predictions {
                             ctx.prediction_store.append(prediction.clone())?;
                         }
@@ -2839,7 +2839,7 @@ impl SequentialScheduler {
                         &input_lineage,
                     )?;
                 }
-                result.validate_target_missing(plan.fold_set.as_ref())?;
+                admit_target_missing(plan, &task, &result, &resources)?;
                 if let Some(store) = resources.artifact_store.as_deref_mut() {
                     if scope.phase == Phase::Refit {
                         store.capture_refit_artifacts(plan, &task, &result)?;
@@ -3551,7 +3551,7 @@ impl ParallelScheduler {
                             &input_lineage,
                         )?;
                     }
-                    result.validate_target_missing(plan.fold_set.as_ref())?;
+                    admit_target_missing(plan, &prepared_task.task, &result, &resources)?;
                     if let Some(store) = resources.artifact_store.as_deref_mut() {
                         if scope.phase == Phase::Refit {
                             store.capture_refit_artifacts(plan, &prepared_task.task, &result)?;
@@ -3624,7 +3624,7 @@ impl ParallelScheduler {
                     normalize_result_prediction_ports(plan, &task, &mut result)?;
                     result.validate_for_task(&task)?;
                     crate::target_domain::validate_domain_result(&result, &task, plan)?;
-                    result.validate_target_missing(plan.fold_set.as_ref())?;
+                    admit_target_missing(plan, &task, &result, &resources)?;
                     for prediction in &result.predictions {
                         ctx.prediction_store.append(prediction.clone())?;
                     }
@@ -3822,6 +3822,39 @@ pub(crate) struct PreparedNodeTask {
 
 // This module stays adjacent to the scheduler-owned task preparation it
 // exercises; the remaining helpers below are shared by both schedulers.
+/// Refuse a controller result that trains on or scores a target-missing sample declared on the
+/// plan fold set. Relations are resolved only when the result carries observation, group or
+/// target rows.
+fn admit_target_missing(
+    plan: &ExecutionPlan,
+    task: &NodeTask,
+    result: &NodeResult,
+    resources: &PhaseScopeResources<'_>,
+) -> Result<()> {
+    let Some(fold_set) = plan
+        .fold_set
+        .as_ref()
+        .filter(|fold_set| !fold_set.target_missing_sample_ids.is_empty())
+    else {
+        return Ok(());
+    };
+    let needs_relations = !result.observation_predictions.is_empty()
+        || result
+            .aggregated_predictions
+            .iter()
+            .any(|block| block.level != PredictionLevel::Sample)
+        || result
+            .regression_targets
+            .iter()
+            .any(|block| block.level != PredictionLevel::Sample);
+    let relations = if needs_relations {
+        coordinator_relations_for_node(&task.node_plan, resources)?
+    } else {
+        None
+    };
+    result.validate_target_missing(fold_set, relations.as_ref())
+}
+
 #[cfg(test)]
 #[allow(clippy::items_after_test_module)]
 mod hpo_scheduler_tests {

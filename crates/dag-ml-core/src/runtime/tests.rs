@@ -18294,7 +18294,7 @@ fn target_missing_rows_in_a_controller_result_are_refused() {
             .cloned()
             .expect("the transform node recorded lineage before the refusal"),
     };
-    result.validate_target_missing(Some(declared)).unwrap();
+    result.validate_target_missing(declared, None).unwrap();
     result
         .regression_targets
         .push(crate::metrics::RegressionTargetBlock {
@@ -18305,9 +18305,85 @@ fn target_missing_rows_in_a_controller_result_are_refused() {
             target_names: vec!["y".to_string()],
         });
     assert!(matches!(
-        result.validate_target_missing(Some(declared)),
+        result.validate_target_missing(declared, None),
         Err(DagMlError::TargetMissing(_))
     ));
+
+    // Group units resolve through relations: a group made only of target-missing
+    // samples is refused; a group with an observed member is scored as usual.
+    result.regression_targets.clear();
+    let grouped = |sample: &str, group: &str| {
+        let mut record = SampleRelation::new(
+            ObservationId::new(format!("obs.{sample}")).unwrap(),
+            SampleId::new(sample).unwrap(),
+        );
+        record.group_id = Some(GroupId::new(group).unwrap());
+        record
+    };
+    let relations = SampleRelationSet {
+        records: vec![
+            grouped("s2", "g.missing"),
+            grouped("s1", "g.mixed"),
+            grouped("s2", "g.mixed"),
+        ],
+    };
+    let group_block = |group: &str| crate::aggregation::AggregatedPredictionBlock {
+        prediction_id: None,
+        producer_node: NodeId::new("model:pls").unwrap(),
+        producer_port: None,
+        partition: PredictionPartition::Validation,
+        fold_id: None,
+        level: PredictionLevel::Group,
+        unit_ids: vec![crate::aggregation::PredictionUnitId::Group(
+            GroupId::new(group).unwrap(),
+        )],
+        values: vec![vec![1.0]],
+        target_names: vec!["y".to_string()],
+    };
+    result.aggregated_predictions = vec![group_block("g.mixed")];
+    result
+        .validate_target_missing(declared, Some(&relations))
+        .unwrap();
+    assert!(
+        result.validate_target_missing(declared, None).is_err(),
+        "group rows cannot be checked without relations"
+    );
+    result.aggregated_predictions = vec![group_block("g.missing")];
+    assert!(matches!(
+        result.validate_target_missing(declared, Some(&relations)),
+        Err(DagMlError::TargetMissing(_))
+    ));
+}
+
+#[test]
+fn nested_stacking_scopes_keep_the_target_missing_declaration() {
+    use crate::fold::KFoldSpec;
+    let samples = (1..=12)
+        .map(|index| SampleId::new(format!("s{index}")).unwrap())
+        .collect::<Vec<_>>();
+    let missing = BTreeSet::from([SampleId::new("s5").unwrap()]);
+    let outer = KFoldSpec {
+        n_splits: 3,
+        shuffle: false,
+        seed: Some(7),
+    }
+    .split_with_target_missing("outer", &samples, &missing)
+    .unwrap();
+    let plan = nested_stacking_test_plan(outer, true);
+    let stacking = nested_stacking_campaign_plan(&plan).unwrap().unwrap();
+    let declared = vec![SampleId::new("s5").unwrap()];
+    for scope in &stacking.outer_scopes {
+        assert_eq!(
+            scope.inner.inner_fold_set.target_missing_sample_ids,
+            declared
+        );
+    }
+    let refit = stacking
+        .refit_fold_set
+        .as_ref()
+        .expect("partitioned REFIT OOF");
+    assert_eq!(refit.target_missing_sample_ids, declared);
+    assert!(!refit.sample_ids.contains(&declared[0]));
 }
 
 #[test]
