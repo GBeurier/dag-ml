@@ -1,0 +1,11 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.12s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s
+     Running unittests src/lib.rs (target/debug/deps/dag_ml_core-6ee290603dbe7a9c)
+     Running tests/bug_audit_regressions.rs (target/debug/deps/bug_audit_regressions-553e5c190dd81b92)
+     Running tests/bug_reaudit_regressions.rs (target/debug/deps/bug_reaudit_regressions-337184eee505c3d4)
+     Running tests/conformal_w0_golden.rs (target/debug/deps/conformal_w0_golden-a362946d91c45a64)
+     Running tests/host_hpo_parallel_browser_refusal.rs (target/debug/deps/host_hpo_parallel_browser_refusal-9fe79379bbcb72b4)
+     Running tests/multi_output_ranked_capture.rs (target/debug/deps/multi_output_ranked_capture-bcabaf5faf824add)
+     Running tests/residual_target_contract.rs (target/debug/deps/residual_target_contract-a3522041e4df4f50)
+     Running tests/training_runtime_operation.rs (target/debug/deps/training_runtime_operation-d497b0a08197bda4)
+   Doc-tests dag_ml_core

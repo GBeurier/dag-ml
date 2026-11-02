@@ -1,0 +1,11 @@
+    Blocking waiting for file lock on package cache
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s
+     Running unittests src/lib.rs (target/debug/deps/dag_ml_core-66a792504117e318)
+     Running tests/bug_audit_regressions.rs (target/debug/deps/bug_audit_regressions-15b8ee48bd7e35ca)
+     Running tests/bug_reaudit_regressions.rs (target/debug/deps/bug_reaudit_regressions-f108799bf4a57f8c)
+     Running tests/conformal_w0_golden.rs (target/debug/deps/conformal_w0_golden-3dc8ca5097c25c00)
+     Running tests/host_hpo_parallel_browser_refusal.rs (target/debug/deps/host_hpo_parallel_browser_refusal-57679913ec1c8af1)
+     Running tests/multi_output_ranked_capture.rs (target/debug/deps/multi_output_ranked_capture-e780decfb9e2fc8d)
+     Running tests/residual_target_contract.rs (target/debug/deps/residual_target_contract-92ae0fff1cf3ed63)
+     Running tests/training_runtime_operation.rs (target/debug/deps/training_runtime_operation-c7f78b176a1024f9)
+   Doc-tests dag_ml_core
