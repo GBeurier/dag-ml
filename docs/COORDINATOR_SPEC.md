@@ -403,7 +403,8 @@ result that carries a declared sample in a train, train-pool or validation
 prediction, or as a regression scoring target, is refused (`scored_result`)
 before it is stored or scored; observation rows and group/target units are
 resolved through the coordinator relations (groups follow the active grouping
-policy), and a group or target made only of declared samples is refused. Nested inner fold sets and stacking REFIT folds
+policy), and a group or target made only of declared samples is refused. An
+external-test (scored) predict cohort may not contain a declared sample. Nested inner fold sets and stacking REFIT folds
 inherit the declaration, nested selection accepts it
 (`NestedSelectionRequest.target_missing_sample_ids`), and a fitting node cannot
 combine it with an all-observations fit view. The declaration
