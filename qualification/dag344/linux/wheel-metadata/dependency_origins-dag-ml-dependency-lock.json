@@ -1,0 +1,55 @@
+{
+  "artifact": {
+    "name": "dag-ml-dependency-lock",
+    "version": "0.3.44",
+    "origin": "Actual immutable registry-backed Cargo lock input",
+    "artifact_path": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/crates/dag-ml-py/Cargo.lock",
+    "bytes": 31051,
+    "sha256": "f5ac9d44d923ec9c362607ed2b8197d587f7fd97b788e1e74c1d2bc33e80fb5d"
+  },
+  "run_identity": {
+    "id": "wheel-metadata",
+    "host": "linux-wsl",
+    "command": [
+      "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/.venv/bin/python",
+      "scripts/smoke_python_wheel_metadata.py",
+      "/home/delete/nirs4all/_audits/2026-11-02-dag344/dag344-qualified-wheels/dag_ml-0.3.44-cp311-abi3-manylinux_2_34_x86_64.whl"
+    ],
+    "cwd": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml",
+    "environment": {
+      "PATH": "/home/delete/nirs4all/_audits/2026-11-02-dag344/../2026-10-29-remediation/publication/octave-bin:/home/delete/.nvm/versions/node/v24.16.0/bin:/home/delete/miniconda3/bin:/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/.venv/bin:/home/delete/.cargo/bin:/usr/local/bin:/usr/bin:/bin",
+      "LD_LIBRARY_PATH": "/home/delete/.local/share/uv/python/cpython-3.12.12-linux-x86_64-gnu/lib",
+      "PYO3_PYTHON": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/.venv/bin/python",
+      "PYTHONPATH": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/crates/dag-ml-py/python",
+      "DAG_ML_DATA_REPO": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml-data",
+      "OPENBLAS_NUM_THREADS": "1",
+      "OMP_NUM_THREADS": "1",
+      "N4M_LIBRARY_PATH": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/nirs4all-methods/build/dev-release/cpp/src/libn4m.so",
+      "N4M_LIB_PATH": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/nirs4all-methods/build/dev-release/cpp/src/libn4m.so",
+      "PLS4ALL_LIB_PATH": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/nirs4all-methods/build/dev-release/cpp/src/libn4m.so",
+      "N4M_ESTIMATOR_ROLES_FIXTURE": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/nirs4all-methods/parity/fixtures/estimator_roles_n4me.json",
+      "PLS4ALL_PYTHONPATH": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/nirs4all-methods/bindings/python_pls4all/src",
+      "DAG_ML_HISTORICAL_CORE_ORACLE": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/tools/historical-core-oracle/target/debug/dag-ml-historical-core-oracle",
+      "DAG_ML_CURRENT_CORE_ORACLE": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/tools/current-core-oracle/target/debug/dag-ml-current-core-oracle",
+      "DAG_ML_REQUIRE_METHODS_CLI_TEST": "1",
+      "DAG_ML_REQUIRE_N4M_TEST": "1",
+      "DAG_ML_REQUIRE_R_ADAPTER_TEST": "1",
+      "DAGML_REQUIRE_HPO_R": "1",
+      "DAGML_REQUIRE_HPO_MATLAB": "1",
+      "DAGML_REQUIRE_HPO_OCTAVE": "1",
+      "DAGML_NATIVE_LIBRARY": "/home/delete/nirs4all/_worktrees/2026-10-29-remediation/dag-ml/target/release/libdag_ml_capi.so",
+      "CC": "/usr/bin/gcc",
+      "CXX": "/usr/bin/g++",
+      "DL_LD": "/usr/bin/g++"
+    },
+    "started_at": "2026-11-02T20:47:54.692819+00:00",
+    "finished_at": "2026-11-02T20:47:54.745453+00:00",
+    "exit_code": 0,
+    "input_fingerprints": {
+      "crates/dag-ml-py/pyproject.toml": "862372ba8e6dd05135ef10575c86e9193284c753583b03b4a76e170e22c988fd",
+      "scripts/smoke_python_wheel_metadata.py": "cb3d6abd28771651b4d699e0baa2167a9672826737208efa20d51fe97326a97e"
+    }
+  },
+  "source_sha": "cde8b0fe2548df338b60fd27643f0763f77b0250",
+  "log_sha256": "26df34c05c43a6eb79db57452056a3ba794184ff3323ee8cebbbbdb540c32802"
+}
