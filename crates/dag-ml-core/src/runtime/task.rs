@@ -1254,22 +1254,21 @@ impl NodeResult {
             || self.aggregated_predictions.iter().any(|block| {
                 Self::scores_partition(&block.partition) && block.level != PredictionLevel::Sample
             })
-            || self
-                .regression_targets
-                .iter()
-                .any(|block| block.level != PredictionLevel::Sample)
     }
 
     /// Target-missing samples declared on the plan fold set never train and are never scored:
     /// a result may carry them only in test or final predictions (PREDICT / inference cohorts).
-    /// Observation rows and group/target units are resolved through `relations`. A group unit
-    /// resolves through relation `group_id` or the statistical `independent_unit_id` metadata,
-    /// a target unit through `target_id`; a scored unit with no attested member, or whose
-    /// members are all target-missing, is refused.
+    /// Observation rows and group/target units are resolved through the CV `relations`. A group
+    /// unit resolves through the active `grouping_key` (statistical relation metadata) or else
+    /// relation `group_id`, a target unit through `target_id`. A unit whose members are all
+    /// target-missing is refused; a scored (train/validation) unit without attested members is
+    /// refused too, while a scoring target without CV members (an external-test unit) is not a
+    /// CV unit and stays admissible.
     pub fn validate_target_missing(
         &self,
         fold_set: &FoldSet,
         relations: Option<&SampleRelationSet>,
+        grouping_key: Option<&crate::policy::AggregationGroupingKey>,
     ) -> Result<()> {
         if fold_set.target_missing_sample_ids.is_empty() {
             return Ok(());
@@ -1292,10 +1291,10 @@ impl NodeResult {
             .iter()
             .filter(|b| scored(&b.partition))
         {
-            units.extend(block.unit_ids.iter().cloned());
+            units.extend(block.unit_ids.iter().map(|unit| (unit.clone(), true)));
         }
         for block in &self.regression_targets {
-            units.extend(block.unit_ids.iter().cloned());
+            units.extend(block.unit_ids.iter().map(|unit| (unit.clone(), false)));
         }
         let observations = self
             .observation_predictions
@@ -1306,7 +1305,7 @@ impl NodeResult {
         let needs_relations = !observations.is_empty()
             || units
                 .iter()
-                .any(|unit| !matches!(unit, PredictionUnitId::Sample(_)));
+                .any(|(unit, scored)| *scored && !matches!(unit, PredictionUnitId::Sample(_)));
         let records = match relations {
             Some(relations) => relations.records.as_slice(),
             None if needs_relations => {
@@ -1328,41 +1327,36 @@ impl NodeResult {
                 .map(|record| &record.sample_id)
                 .collect::<BTreeSet<_>>()
         };
-        for unit in &units {
-            // Every resolution a grouping policy may use is checked on its own, so a group id
-            // colliding across `group_id` and `independent_unit_id` cannot mask a group made
-            // only of target-missing samples.
-            let resolutions = match unit {
+        for (unit, scored_unit) in &units {
+            let members = match unit {
                 PredictionUnitId::Sample(sample_id) => {
                     samples.push(sample_id.clone());
                     continue;
                 }
-                PredictionUnitId::Group(group_id) => vec![
-                    members_by(&|record| record.group_id.as_ref() == Some(group_id)),
-                    members_by(&|record| {
-                        record
-                            .metadata
-                            .get("independent_unit_id")
-                            .and_then(serde_json::Value::as_str)
-                            == Some(group_id.as_str())
-                    }),
-                ],
+                PredictionUnitId::Group(group_id) => match grouping_key {
+                    Some(crate::policy::AggregationGroupingKey::RelationMetadata { key }) => {
+                        members_by(&|record| {
+                            record.metadata.get(key).and_then(serde_json::Value::as_str)
+                                == Some(group_id.as_str())
+                        })
+                    }
+                    None => members_by(&|record| record.group_id.as_ref() == Some(group_id)),
+                },
                 PredictionUnitId::Target(target_id) => {
-                    vec![members_by(&|record| {
-                        record.target_id.as_ref() == Some(target_id)
-                    })]
+                    members_by(&|record| record.target_id.as_ref() == Some(target_id))
                 }
             };
-            if resolutions.iter().all(BTreeSet::is_empty) {
-                return Err(DagMlError::RuntimeValidation(format!(
-                    "node `{}` emitted a scored {unit:?} unit without attested relation members while target-missing samples are declared",
-                    self.node_id
-                )));
-            }
-            for members in resolutions {
-                if !members.is_empty() && members.iter().all(|id| declared.contains(id)) {
-                    samples.extend(members.into_iter().cloned());
+            if members.is_empty() {
+                if *scored_unit {
+                    return Err(DagMlError::RuntimeValidation(format!(
+                        "node `{}` emitted a scored {unit:?} unit without attested relation members while target-missing samples are declared",
+                        self.node_id
+                    )));
                 }
+                continue;
+            }
+            if members.iter().all(|id| declared.contains(id)) {
+                samples.extend(members.into_iter().cloned());
             }
         }
         samples.extend(

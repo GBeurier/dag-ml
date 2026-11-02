@@ -45,8 +45,8 @@ PACK_PATH = (
 BASE_PACK_ID = "dag-ml.training-contracts.v1"
 # Derived from the current base pack by generate_fixtures.py.  Keep the replay
 # pack pinned to those bytes/checksum; do not edit a replay artifact hash by hand.
-BASE_PACK_SHA256 = "2a8c6ca1f98c9cb332ec5d48f1d8a0a42bed3d2df6431fab0b1f5798b9029030"
-BASE_PACK_CHECKSUM = "77bd0a18917db0b20238eca1922e4625788b8c30f7730f87044b00088faef19b"
+BASE_PACK_SHA256 = "ecd1c1d33f80caffae389ecc5e3390b617ad1dfe761ba0d106d7e797bcce1abc"
+BASE_PACK_CHECKSUM = "c99d1d800596238116a791d7ddf5ab08d7e2ef2264fc624792fed710cedc9d12"
 serde_json_sha256 = _serde_sha256
 LEGACY_AUTHORITY_SHA256 = {
     "docs/contracts/replay_outcome.schema.json": "c57279e8c76e4e2467af0eca5eb59804a2f7bb97bec6cce9d8b23975f223c36a",

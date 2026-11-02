@@ -3843,7 +3843,19 @@ fn admit_target_missing(
     } else {
         None
     };
-    result.validate_target_missing(fold_set, relations.as_ref())
+    // Same precedence as native aggregation: a campaign grouping key overrides the node's.
+    let grouping_key = plan
+        .campaign
+        .aggregation_policy
+        .grouping_key
+        .as_ref()
+        .or_else(|| {
+            task.node_plan
+                .shape_plan
+                .as_ref()
+                .and_then(|shape| shape.aggregation_policy.grouping_key.as_ref())
+        });
+    result.validate_target_missing(fold_set, relations.as_ref(), grouping_key)
 }
 
 #[cfg(test)]

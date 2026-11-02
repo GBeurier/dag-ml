@@ -18294,7 +18294,9 @@ fn target_missing_rows_in_a_controller_result_are_refused() {
             .cloned()
             .expect("the transform node recorded lineage before the refusal"),
     };
-    result.validate_target_missing(declared, None).unwrap();
+    result
+        .validate_target_missing(declared, None, None)
+        .unwrap();
     result
         .regression_targets
         .push(crate::metrics::RegressionTargetBlock {
@@ -18305,7 +18307,7 @@ fn target_missing_rows_in_a_controller_result_are_refused() {
             target_names: vec!["y".to_string()],
         });
     assert!(matches!(
-        result.validate_target_missing(declared, None),
+        result.validate_target_missing(declared, None, None),
         Err(DagMlError::TargetMissing(_))
     ));
 
@@ -18342,73 +18344,87 @@ fn target_missing_rows_in_a_controller_result_are_refused() {
     };
     result.aggregated_predictions = vec![group_block("g.mixed")];
     result
-        .validate_target_missing(declared, Some(&relations))
+        .validate_target_missing(declared, Some(&relations), None)
         .unwrap();
     assert!(
-        result.validate_target_missing(declared, None).is_err(),
+        result
+            .validate_target_missing(declared, None, None)
+            .is_err(),
         "group rows cannot be checked without relations"
     );
     result.aggregated_predictions = vec![group_block("g.missing")];
     assert!(matches!(
-        result.validate_target_missing(declared, Some(&relations)),
+        result.validate_target_missing(declared, Some(&relations), None),
         Err(DagMlError::TargetMissing(_))
     ));
 
-    // Statistical groups resolve through `independent_unit_id`; unknown units are refused.
-    let mut statistical = SampleRelation::new(
-        ObservationId::new("obs.s2.unit").unwrap(),
-        SampleId::new("s2").unwrap(),
-    );
-    statistical
-        .metadata
-        .insert("independent_unit_id".into(), json!("unit.missing"));
-    let statistical_relations = SampleRelationSet {
-        records: vec![statistical],
+    // Under a statistical grouping key, groups resolve through that relation metadata
+    // only; an unrelated `group_id` with the same name neither masks nor blocks them.
+    let statistical_key = crate::policy::AggregationGroupingKey::RelationMetadata {
+        key: "independent_unit_id".into(),
     };
-    result.aggregated_predictions = vec![group_block("unit.missing")];
-    assert!(matches!(
-        result.validate_target_missing(declared, Some(&statistical_relations)),
-        Err(DagMlError::TargetMissing(_))
-    ));
-    // A group id colliding across `group_id` and `independent_unit_id` cannot mask
-    // a group whose members under one resolution are all target-missing.
-    let mut collision = SampleRelation::new(
-        ObservationId::new("obs.s1.unit").unwrap(),
-        SampleId::new("s1").unwrap(),
-    );
-    collision
-        .metadata
-        .insert("independent_unit_id".into(), json!("g.missing"));
+    let with_unit = |sample: &str, group: &str, unit: &str| {
+        let mut record = grouped(sample, group);
+        record
+            .metadata
+            .insert("independent_unit_id".into(), json!(unit));
+        record
+    };
     let collided = SampleRelationSet {
-        records: vec![grouped("s2", "g.missing"), collision],
+        records: vec![with_unit("s2", "g.other", "G"), grouped("s1", "G")],
     };
-    result.aggregated_predictions = vec![group_block("g.missing")];
+    result.aggregated_predictions = vec![group_block("G")];
     assert!(matches!(
-        result.validate_target_missing(declared, Some(&collided)),
+        result.validate_target_missing(declared, Some(&collided), Some(&statistical_key)),
         Err(DagMlError::TargetMissing(_))
     ));
+    // Ordinary group aggregation resolves `G` through `group_id` alone: `s1` is observed.
+    result
+        .validate_target_missing(declared, Some(&collided), None)
+        .unwrap();
     let collided = SampleRelationSet {
-        records: vec![
-            statistical_relations.records[0].clone(),
-            grouped("s1", "unit.missing"),
-        ],
+        records: vec![grouped("s2", "G"), with_unit("s1", "g.other", "G")],
     };
-    result.aggregated_predictions = vec![group_block("unit.missing")];
     assert!(matches!(
-        result.validate_target_missing(declared, Some(&collided)),
+        result.validate_target_missing(declared, Some(&collided), None),
         Err(DagMlError::TargetMissing(_))
     ));
+    result
+        .validate_target_missing(declared, Some(&collided), Some(&statistical_key))
+        .unwrap();
+
+    // A scored group without attested CV members is refused; a scoring target for a
+    // unit outside the CV relations (an external-test unit) stays admissible.
     result.aggregated_predictions = vec![group_block("unit.unknown")];
     assert!(result
-        .validate_target_missing(declared, Some(&statistical_relations))
+        .validate_target_missing(declared, Some(&collided), None)
         .is_err());
+    let mut test_block = group_block("unit.external");
+    test_block.partition = PredictionPartition::Test;
+    result.aggregated_predictions = vec![test_block];
+    result.regression_targets = vec![crate::metrics::RegressionTargetBlock {
+        validity_masks: None,
+        level: PredictionLevel::Group,
+        unit_ids: vec![crate::aggregation::PredictionUnitId::Group(
+            GroupId::new("unit.external").unwrap(),
+        )],
+        values: vec![vec![1.0]],
+        target_names: vec!["y".to_string()],
+    }];
+    assert!(!result.target_missing_needs_relations());
+    result
+        .validate_target_missing(declared, Some(&collided), None)
+        .unwrap();
+    result.regression_targets.clear();
 
     // Unscored (final) group predictions need no relations.
     let mut final_block = group_block("g.missing");
     final_block.partition = PredictionPartition::Final;
     result.aggregated_predictions = vec![final_block];
     assert!(!result.target_missing_needs_relations());
-    result.validate_target_missing(declared, None).unwrap();
+    result
+        .validate_target_missing(declared, None, None)
+        .unwrap();
 }
 
 #[test]
