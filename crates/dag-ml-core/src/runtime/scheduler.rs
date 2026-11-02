@@ -5431,6 +5431,13 @@ pub(crate) fn collect_input_handles(
             } else {
                 None
             };
+            // Every supplied external-test cohort is scored: it may never carry a declared
+            // target-missing sample, whichever view path materializes it.
+            if let (Some(cohort), Some(fold_set)) =
+                (predict_cohort.as_ref(), plan.fold_set.as_ref())
+            {
+                cohort.refuse_target_missing(fold_set)?;
+            }
             if (generated_views_enabled && matches!(scope.phase, Phase::FitCv | Phase::Refit))
                 || refit_test_view
             {

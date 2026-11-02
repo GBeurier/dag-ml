@@ -1837,11 +1837,8 @@ impl PredictCohort {
         if self.role == PredictCohortRole::Inference {
             return Ok(());
         }
+        self.refuse_target_missing(fold_set)?;
         let cv_ids = fold_set.sample_ids.iter().collect::<BTreeSet<_>>();
-        let target_missing = fold_set
-            .target_missing_sample_ids
-            .iter()
-            .collect::<BTreeSet<_>>();
         for sample_id in self
             .physical_sample_ids
             .iter()
@@ -1852,13 +1849,29 @@ impl PredictCohort {
                     "external_test predict cohort overlaps CV fold sample or origin `{sample_id}`"
                 )));
             }
-            // An external test is scored; a declared target-missing sample is predicted
-            // through an inference cohort instead.
-            if target_missing.contains(sample_id) {
-                return Err(DagMlError::CampaignValidation(format!(
-                    "external_test predict cohort contains target-missing sample or origin `{sample_id}`; predict it through an inference cohort"
-                )));
-            }
+        }
+        Ok(())
+    }
+
+    /// An external-test cohort is scored, so it may not contain a sample (or origin) that
+    /// `fold_set` declares target-missing; an inference cohort predicts those instead.
+    pub fn refuse_target_missing(&self, fold_set: &FoldSet) -> Result<()> {
+        if self.role == PredictCohortRole::Inference {
+            return Ok(());
+        }
+        let target_missing = fold_set
+            .target_missing_sample_ids
+            .iter()
+            .collect::<BTreeSet<_>>();
+        if let Some(sample_id) = self
+            .physical_sample_ids
+            .iter()
+            .chain(self.origin_sample_ids.iter())
+            .find(|sample_id| target_missing.contains(sample_id))
+        {
+            return Err(DagMlError::CampaignValidation(format!(
+                "external_test predict cohort contains target-missing sample or origin `{sample_id}`; predict it through an inference cohort"
+            )));
         }
         Ok(())
     }

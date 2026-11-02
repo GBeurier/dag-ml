@@ -18393,46 +18393,36 @@ fn target_missing_rows_in_a_controller_result_are_refused() {
         .validate_target_missing(declared, Some(&collided), Some(&statistical_key))
         .unwrap();
 
-    // A scored group without attested CV members is refused; a scoring target for a
-    // unit outside the CV relations (an external-test unit) stays admissible.
+    // A scored group without attested CV members is refused.
     result.aggregated_predictions = vec![group_block("unit.unknown")];
     assert!(result
         .validate_target_missing(declared, Some(&collided), None)
         .is_err());
-    let mut test_block = group_block("unit.external");
-    test_block.partition = PredictionPartition::Test;
-    result.aggregated_predictions = vec![test_block];
-    result.regression_targets = vec![crate::metrics::RegressionTargetBlock {
-        validity_masks: None,
-        level: PredictionLevel::Group,
-        unit_ids: vec![crate::aggregation::PredictionUnitId::Group(
-            GroupId::new("unit.external").unwrap(),
-        )],
-        values: vec![vec![1.0]],
-        target_names: vec!["y".to_string()],
-    }];
-    assert!(result.target_missing_needs_relations());
-    result
-        .validate_target_missing(declared, Some(&collided), None)
-        .unwrap();
-    assert!(
-        result
-            .validate_target_missing(declared, None, None)
-            .is_err(),
-        "group scoring targets cannot be checked without relations"
-    );
-    // A final (PREDICT) block cannot carry a scoring target for a group made only
-    // of target-missing samples either.
-    let mut final_missing = group_block("G");
-    final_missing.partition = PredictionPartition::Final;
-    result.aggregated_predictions = vec![final_missing];
-    result.regression_targets[0].unit_ids = vec![crate::aggregation::PredictionUnitId::Group(
-        GroupId::new("G").unwrap(),
-    )];
-    assert!(matches!(
-        result.validate_target_missing(declared, Some(&collided), None),
-        Err(DagMlError::TargetMissing(_))
-    ));
+    // Group-level scoring of test or final predictions resolves through a predict
+    // cohort, not the CV relations, so it is refused under a declaration.
+    for partition in [PredictionPartition::Test, PredictionPartition::Final] {
+        let mut block = group_block("unit.external");
+        block.partition = partition;
+        result.aggregated_predictions = vec![block];
+        result.regression_targets = vec![crate::metrics::RegressionTargetBlock {
+            validity_masks: None,
+            level: PredictionLevel::Group,
+            unit_ids: vec![crate::aggregation::PredictionUnitId::Group(
+                GroupId::new("unit.external").unwrap(),
+            )],
+            values: vec![vec![1.0]],
+            target_names: vec!["y".to_string()],
+        }];
+        assert!(!result.target_missing_needs_relations());
+        let error = result
+            .validate_target_missing(declared, Some(&collided), None)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("group/target-level scoring targets"),
+            "{error}"
+        );
+    }
     result.regression_targets.clear();
 
     // Unscored (final) group predictions need no relations.

@@ -1246,8 +1246,7 @@ impl NodeResult {
     }
 
     /// Whether checking this result against a target-missing declaration needs coordinator
-    /// relations: it carries scored observation rows, scored group/target units or group/target
-    /// scoring targets.
+    /// relations: it carries scored observation rows or scored group/target units.
     pub fn target_missing_needs_relations(&self) -> bool {
         self.observation_predictions
             .iter()
@@ -1255,20 +1254,18 @@ impl NodeResult {
             || self.aggregated_predictions.iter().any(|block| {
                 Self::scores_partition(&block.partition) && block.level != PredictionLevel::Sample
             })
-            || self
-                .regression_targets
-                .iter()
-                .any(|block| block.level != PredictionLevel::Sample)
     }
 
-    /// Target-missing samples declared on the plan fold set never train and are never scored:
-    /// a result may carry them only in test or final predictions (PREDICT / inference cohorts).
-    /// Observation rows and group/target units are resolved through the CV `relations`. A group
-    /// unit resolves through the active `grouping_key` (statistical relation metadata) or else
-    /// relation `group_id`, a target unit through `target_id`. A unit whose members are all
-    /// target-missing is refused; a scored (train/validation) unit without attested members is
-    /// refused too, while a scoring target without CV members (an external-test unit) is not a
-    /// CV unit and stays admissible.
+    /// Target-missing samples declared on the plan fold set never train and are never scored.
+    ///
+    /// Train, train-pool and validation rows may not carry them: sample rows directly,
+    /// observation rows and group/target units through the CV `relations` (groups follow the
+    /// active `grouping_key`, else relation `group_id`). A scored unit without attested members,
+    /// or whose members are all target-missing, is refused. Test and final predictions may carry
+    /// them (PREDICT / inference cohorts) but are never scored for them: a sample-level scoring
+    /// target for a declared sample is refused, and group/target-level scoring of test or final
+    /// predictions is refused while a declaration exists, because those units resolve through a
+    /// predict cohort rather than the CV relations.
     pub fn validate_target_missing(
         &self,
         fold_set: &FoldSet,
@@ -1279,7 +1276,6 @@ impl NodeResult {
             return Ok(());
         }
         let scored = Self::scores_partition;
-        let mut units = Vec::new();
         let mut samples = Vec::new();
         for block in self.predictions.iter().filter(|b| scored(&b.partition)) {
             samples.extend(block.sample_ids.iter().cloned());
@@ -1291,29 +1287,40 @@ impl NodeResult {
         {
             samples.extend(block.sample_ids.iter().cloned());
         }
-        for block in self
+        for block in &self.regression_targets {
+            for unit in &block.unit_ids {
+                if let PredictionUnitId::Sample(sample_id) = unit {
+                    samples.push(sample_id.clone());
+                }
+            }
+            let units = block.unit_ids.iter().collect::<BTreeSet<_>>();
+            if block.level != PredictionLevel::Sample
+                && self.aggregated_predictions.iter().any(|prediction| {
+                    !scored(&prediction.partition)
+                        && prediction.unit_ids.iter().collect::<BTreeSet<_>>() == units
+                })
+            {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "node `{}` emitted group/target-level scoring targets for test or final predictions, which cannot be checked against declared target-missing samples",
+                    self.node_id
+                )));
+            }
+        }
+        let units = self
             .aggregated_predictions
             .iter()
             .filter(|b| scored(&b.partition))
-        {
-            units.extend(block.unit_ids.iter().map(|unit| (unit.clone(), true)));
-        }
-        for block in &self.regression_targets {
-            units.extend(block.unit_ids.iter().map(|unit| (unit.clone(), false)));
-        }
+            .flat_map(|b| &b.unit_ids)
+            .collect::<Vec<_>>();
         let observations = self
             .observation_predictions
             .iter()
             .filter(|b| scored(&b.partition))
             .flat_map(|b| &b.observation_ids)
             .collect::<BTreeSet<_>>();
-        let needs_relations = !observations.is_empty()
-            || units
-                .iter()
-                .any(|(unit, _)| !matches!(unit, PredictionUnitId::Sample(_)));
         let records = match relations {
             Some(relations) => relations.records.as_slice(),
-            None if needs_relations => {
+            None if self.target_missing_needs_relations() => {
                 return Err(DagMlError::RuntimeValidation(format!(
                     "node `{}` emitted observation, group or target rows that cannot be checked against target-missing samples without coordinator relations",
                     self.node_id
@@ -1332,7 +1339,7 @@ impl NodeResult {
                 .map(|record| &record.sample_id)
                 .collect::<BTreeSet<_>>()
         };
-        for (unit, scored_unit) in &units {
+        for unit in units {
             let members = match unit {
                 PredictionUnitId::Sample(sample_id) => {
                     samples.push(sample_id.clone());
@@ -1352,13 +1359,10 @@ impl NodeResult {
                 }
             };
             if members.is_empty() {
-                if *scored_unit {
-                    return Err(DagMlError::RuntimeValidation(format!(
-                        "node `{}` emitted a scored {unit:?} unit without attested relation members while target-missing samples are declared",
-                        self.node_id
-                    )));
-                }
-                continue;
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "node `{}` emitted a scored {unit:?} unit without attested relation members while target-missing samples are declared",
+                    self.node_id
+                )));
             }
             if members.iter().all(|id| declared.contains(id)) {
                 samples.extend(members.into_iter().cloned());
