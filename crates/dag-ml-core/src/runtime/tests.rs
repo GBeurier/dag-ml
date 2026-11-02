@@ -18370,6 +18370,34 @@ fn target_missing_rows_in_a_controller_result_are_refused() {
         result.validate_target_missing(declared, Some(&statistical_relations)),
         Err(DagMlError::TargetMissing(_))
     ));
+    // A group id colliding across `group_id` and `independent_unit_id` cannot mask
+    // a group whose members under one resolution are all target-missing.
+    let mut collision = SampleRelation::new(
+        ObservationId::new("obs.s1.unit").unwrap(),
+        SampleId::new("s1").unwrap(),
+    );
+    collision
+        .metadata
+        .insert("independent_unit_id".into(), json!("g.missing"));
+    let collided = SampleRelationSet {
+        records: vec![grouped("s2", "g.missing"), collision],
+    };
+    result.aggregated_predictions = vec![group_block("g.missing")];
+    assert!(matches!(
+        result.validate_target_missing(declared, Some(&collided)),
+        Err(DagMlError::TargetMissing(_))
+    ));
+    let collided = SampleRelationSet {
+        records: vec![
+            statistical_relations.records[0].clone(),
+            grouped("s1", "unit.missing"),
+        ],
+    };
+    result.aggregated_predictions = vec![group_block("unit.missing")];
+    assert!(matches!(
+        result.validate_target_missing(declared, Some(&collided)),
+        Err(DagMlError::TargetMissing(_))
+    ));
     result.aggregated_predictions = vec![group_block("unit.unknown")];
     assert!(result
         .validate_target_missing(declared, Some(&statistical_relations))
