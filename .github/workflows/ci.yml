@@ -42,7 +42,7 @@ jobs:
           peer_repo="GBeurier/dag-ml-data"
           branch="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
           # Immutable, qualified V1 Data peer (default when no paired branch exists).
-          ref="78719b68c8e9ffd4c2035792574b8da33387d237"
+          ref="eb2ad7835ca85feebf6f626d9f43f61575a1c9a9"
           paired="false"
 
           if git ls-remote --exit-code --heads "https://github.com/${peer_repo}.git" "$branch" >/dev/null 2>&1; then

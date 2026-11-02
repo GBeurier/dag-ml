@@ -83,8 +83,8 @@ except dag_ml.DagMlError as error:
     assert "parameter_patches" in str(error)
 else:
     raise AssertionError("missing required parameter_patches was accepted")
-assert native.version() == dag_ml.version() == manifest["python_package_version"] == "0.3.43"
+assert native.version() == dag_ml.version() == manifest["python_package_version"] == "0.3.44"
 assert callable(native.configure_methods_runtime)
-print("Source043 facade/native/manifest and unchanged CI training API assertions PASS")
+print("Source044 facade/native/manifest and unchanged CI training API assertions PASS")
 
 print("N4A_SOURCE_TRAINING_OBSERVATION=" + json.dumps({"native_version": native.version(), "facade_version": dag_ml.version(), "manifest_version": manifest["python_package_version"]}))

@@ -1,0 +1,87 @@
+"""Observe direct local DAG release commands with source hashes before and after."""
+from __future__ import annotations
+import datetime,hashlib,importlib.util,json,os,platform,re,socket,subprocess,sys,time
+from pathlib import Path
+
+def sha(p):return hashlib.sha256(Path(p).read_bytes()).hexdigest()
+def write(p,v):p.write_text(json.dumps(v,indent=2,allow_nan=False)+'\n')
+def now():return datetime.datetime.now(datetime.timezone.utc).isoformat()
+def artifact(p,name,version,origin):
+ p=Path(p).resolve();return dict(name=name,version=version,origin=origin,artifact_path=str(p),bytes=p.stat().st_size,sha256=sha(p))
+
+def memory_bytes():
+ if os.name!='nt':return os.sysconf('SC_PAGE_SIZE')*os.sysconf('SC_PHYS_PAGES')
+ import ctypes
+ class MemoryStatus(ctypes.Structure):
+  _fields_=[('length',ctypes.c_ulong),('load',ctypes.c_ulong)]+[(n,ctypes.c_ulonglong) for n in ['total','available','page_total','page_available','virtual_total','virtual_available','extended']]
+ status=MemoryStatus();status.length=ctypes.sizeof(status)
+ if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):raise RuntimeError('Cannot measure Windows RAM')
+ return status.total
+
+def main():
+ pause=Path(__file__).parent/'dag343/PAUSE'
+ while pause.exists():time.sleep(0.5)
+ plan=json.loads(Path(sys.argv[1]).read_text());root=Path(plan['cwd']);out=Path(plan['output']);out.mkdir(parents=True,exist_ok=False)
+ files=plan['input_fingerprints'];before={p:sha(root/p) for p in files};assert before==files,'source differs before command'
+ runtime={p:sha(root/p) for p in plan['runtime_inputs']};assert runtime==plan['runtime_inputs'],'runtime differs before command'
+ arts=[artifact(**row) for row in plan.get('artifacts',[])]
+ measured={}
+ if plan.get('observation_command'):
+  measured=json.loads(subprocess.check_output(plan['observation_command'],cwd=root,env={**os.environ,**plan['environment']},text=True))
+ identity={k:plan[k] for k in ['id','host','command','cwd','environment','input_fingerprints']};identity['started_at']=now()
+ write(out/'before.json',dict(run_identity_before=identity,source_sha=plan['source_sha'],runtime_inputs=runtime,scoped_inputs=before,artifacts=arts,observation=measured))
+ env=os.environ.copy();env.update(plan['environment']);tic=time.monotonic()
+ with (out/'stdout.log').open('wb') as so,(out/'stderr.log').open('wb') as se:p=subprocess.run(plan['command'],cwd=root,env=env,stdout=so,stderr=se)
+ identity.update(finished_at=now(),exit_code=p.returncode)
+ after={p:sha(root/p) for p in files};runtime_after={p:sha(root/p) for p in runtime};art_after=[artifact(**row) for row in plan.get('artifacts',[])]
+ stable=before==after and runtime==runtime_after and arts==art_after
+ text=(out/'stdout.log').read_text(errors='replace')+'\n'+(out/'stderr.log').read_text(errors='replace');(out/'combined.log').write_text(text)
+ rust=re.findall(r'test result: (?:ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored;',text)
+ passed=sum(int(x[0]) for x in rust);failed=sum(int(x[1]) for x in rust);ignored=sum(int(x[2]) for x in rust)
+ skips=[]
+ if rust:
+  active=''
+  for line in text.splitlines():
+   if 'Running ' in line and '/deps/' in line:
+    m=re.search(r'/deps/([a-z0-9_]+)-[0-9a-f]+',line)
+    if m:active=m[1].replace('_','-')
+   m=re.match(r'test (.+?) \.\.\. ignored',line)
+   if m:
+    name=m[1];matches=[s for s in plan['allowed_skips'] if s.endswith('::'+name)]
+    skips.append(matches[0] if len(matches)==1 else active+'::'+name)
+  assert ignored==len(skips),f'ignored test identity count mismatch {ignored}/{skips}'
+ else:
+  py=re.search(r'(\d+) passed(?:, (\d+) skipped)?(?:, [^\n]+)? in ',text)
+  unit=re.search(r'Ran (\d+) tests? in ',text)
+  if py:passed=int(py[1]);ignored=int(py[2] or 0)
+  elif unit:passed=int(unit[1])
+  assert ignored==0,'non-Rust skips must be identified explicitly before qualification'
+ facts=dict(measured)
+ if measured:
+  repeated=json.loads(subprocess.check_output(plan['observation_command'],cwd=root,env=env,text=True));assert measured==repeated,'native identity changed'
+ if plan.get('source_build'):
+  built=any('cargo' in v for v in plan['command'][:2]) or bool(re.search(r'Finished .*test.*profile',text))
+  if plan.get('native_build_receipt'):
+   proof=json.loads(Path(plan['native_build_receipt']).read_text())
+   assert proof['exit_code']==0 and proof['source_inputs_before']==proof['source_inputs_after']=={n:sha(root/n) for n in proof['source_inputs_before']}
+   assert all(sha(row['path'])==row['sha256'] for row in proof['artifacts'])
+   built=True
+  facts['reviewed_source_build']=bool(p.returncode==0 and stable and built)
+ if plan['id']=='source-training-smoke':
+  match=re.search(r'N4A_SOURCE_TRAINING_OBSERVATION=(.+)',text);assert match,'missing native source observation';facts.update(json.loads(match[1]))
+ if plan['id'] in ['wasm-node-runtime','wasm-browser-worker-hpo-resume-linux-tmp']:
+  version_matches=re.findall(r'"(?:version|native_version)"\s*:\s*"([0-9.]+)"',text)
+  if version_matches:facts['native_version']=version_matches[-1]
+ if plan['id']=='r-octave-hpo-adapters' and p.returncode==0:
+  if all(re.search(r'test_'+name+r'.*?\.\.\. ok',text) for name in ['python_reference','r_jsonl','matlab_or_octave_jsonl']):facts['required_languages']=['python','r','octave']
+ if plan['id']=='r-source-package-check':
+  if re.search(r'Status:\s*OK',text):facts['r_check_status']='OK'
+  m=re.search(r'N4A_R_API_TESTS=(\d+)',text)
+  if m:facts['r_api_tests']=int(m[1])
+  else:
+   files=re.findall(r'Running [‘\']([^’\']+\.R)[’\']',text)
+   if files:facts['r_api_tests']=len(set(files))
+ result=dict(identity=identity,duration_seconds=time.monotonic()-tic,source_sha=plan['source_sha'],stable_inputs=stable,runtime_inputs_before=runtime,runtime_inputs_after=runtime_after,scoped_inputs_before=before,scoped_inputs_after=after,artifacts_before=arts,artifacts_after=art_after,summary=dict(passed=passed,failed=failed,skipped=len(skips)),skips=skips,facts=facts,host=dict(id=plan['host'],os_family='windows' if os.name=='nt' else 'linux',os=platform.platform(),arch=platform.machine(),hostname=socket.gethostname(),cpu_count=os.cpu_count(),ram_bytes=memory_bytes(),tools={'python':platform.python_version()}))
+ write(out/'terminal.json',result);print(json.dumps({'gate':plan['id'],'exit_code':p.returncode,'passed':passed,'skips':skips,'stable':stable}),flush=True)
+ return p.returncode if p.returncode else (0 if stable else 3)
+if __name__=='__main__':raise SystemExit(main())
