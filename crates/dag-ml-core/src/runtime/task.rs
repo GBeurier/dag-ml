@@ -1246,7 +1246,8 @@ impl NodeResult {
     }
 
     /// Whether checking this result against a target-missing declaration needs coordinator
-    /// relations: it carries scored observation rows or scored group/target units.
+    /// relations: it carries scored observation rows, scored group/target units or group/target
+    /// scoring targets.
     pub fn target_missing_needs_relations(&self) -> bool {
         self.observation_predictions
             .iter()
@@ -1254,6 +1255,10 @@ impl NodeResult {
             || self.aggregated_predictions.iter().any(|block| {
                 Self::scores_partition(&block.partition) && block.level != PredictionLevel::Sample
             })
+            || self
+                .regression_targets
+                .iter()
+                .any(|block| block.level != PredictionLevel::Sample)
     }
 
     /// Target-missing samples declared on the plan fold set never train and are never scored:
@@ -1305,7 +1310,7 @@ impl NodeResult {
         let needs_relations = !observations.is_empty()
             || units
                 .iter()
-                .any(|(unit, scored)| *scored && !matches!(unit, PredictionUnitId::Sample(_)));
+                .any(|(unit, _)| !matches!(unit, PredictionUnitId::Sample(_)));
         let records = match relations {
             Some(relations) => relations.records.as_slice(),
             None if needs_relations => {
