@@ -185,6 +185,13 @@
         "sample_groups": {
           "type": "object",
           "additionalProperties": { "$ref": "#/$defs/identifier" }
+        },
+        "partition_mode": { "enum": ["partition", "resampled"] },
+        "train_exclusion": { "enum": ["relations", "fold_local"] },
+        "target_missing_sample_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/identifier" }
         }
       }
     },

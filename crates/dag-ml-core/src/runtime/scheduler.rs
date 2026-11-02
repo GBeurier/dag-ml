@@ -2616,6 +2616,7 @@ impl SequentialScheduler {
                         normalize_result_prediction_ports(plan, &task, &mut result)?;
                         result.validate_for_task(&task)?;
                         crate::target_domain::validate_domain_result(&result, &task, plan)?;
+                        admit_target_missing(plan, &task, &result, &resources)?;
                         for prediction in &result.predictions {
                             ctx.prediction_store.append(prediction.clone())?;
                         }
@@ -2838,6 +2839,7 @@ impl SequentialScheduler {
                         &input_lineage,
                     )?;
                 }
+                admit_target_missing(plan, &task, &result, &resources)?;
                 if let Some(store) = resources.artifact_store.as_deref_mut() {
                     if scope.phase == Phase::Refit {
                         store.capture_refit_artifacts(plan, &task, &result)?;
@@ -3549,6 +3551,7 @@ impl ParallelScheduler {
                             &input_lineage,
                         )?;
                     }
+                    admit_target_missing(plan, &prepared_task.task, &result, &resources)?;
                     if let Some(store) = resources.artifact_store.as_deref_mut() {
                         if scope.phase == Phase::Refit {
                             store.capture_refit_artifacts(plan, &prepared_task.task, &result)?;
@@ -3621,6 +3624,7 @@ impl ParallelScheduler {
                     normalize_result_prediction_ports(plan, &task, &mut result)?;
                     result.validate_for_task(&task)?;
                     crate::target_domain::validate_domain_result(&result, &task, plan)?;
+                    admit_target_missing(plan, &task, &result, &resources)?;
                     for prediction in &result.predictions {
                         ctx.prediction_store.append(prediction.clone())?;
                     }
@@ -3818,6 +3822,42 @@ pub(crate) struct PreparedNodeTask {
 
 // This module stays adjacent to the scheduler-owned task preparation it
 // exercises; the remaining helpers below are shared by both schedulers.
+/// Refuse a controller result that trains on or scores a target-missing sample declared on the
+/// plan fold set. Relations are resolved only when the result carries observation, group or
+/// target rows.
+fn admit_target_missing(
+    plan: &ExecutionPlan,
+    task: &NodeTask,
+    result: &NodeResult,
+    resources: &PhaseScopeResources<'_>,
+) -> Result<()> {
+    let Some(fold_set) = plan
+        .fold_set
+        .as_ref()
+        .filter(|fold_set| !fold_set.target_missing_sample_ids.is_empty())
+    else {
+        return Ok(());
+    };
+    let relations = if result.target_missing_needs_relations() {
+        coordinator_relations_for_node(&task.node_plan, resources)?
+    } else {
+        None
+    };
+    // Same precedence as native aggregation: a campaign grouping key overrides the node's.
+    let grouping_key = plan
+        .campaign
+        .aggregation_policy
+        .grouping_key
+        .as_ref()
+        .or_else(|| {
+            task.node_plan
+                .shape_plan
+                .as_ref()
+                .and_then(|shape| shape.aggregation_policy.grouping_key.as_ref())
+        });
+    result.validate_target_missing(fold_set, relations.as_ref(), grouping_key)
+}
+
 #[cfg(test)]
 #[allow(clippy::items_after_test_module)]
 mod hpo_scheduler_tests {
@@ -4306,6 +4346,7 @@ mod hpo_scheduler_tests {
             sample_groups: BTreeMap::new(),
             partition_mode: FoldPartitionMode::Partition,
             train_exclusion: FoldTrainExclusion::Relations,
+            target_missing_sample_ids: Vec::new(),
         };
         let mut registry = ControllerRegistry::new();
         registry
@@ -5390,6 +5431,13 @@ pub(crate) fn collect_input_handles(
             } else {
                 None
             };
+            // Every supplied external-test cohort is scored: it may never carry a declared
+            // target-missing sample, whichever view path materializes it.
+            if let (Some(cohort), Some(fold_set)) =
+                (predict_cohort.as_ref(), plan.fold_set.as_ref())
+            {
+                cohort.refuse_target_missing(fold_set)?;
+            }
             if (generated_views_enabled && matches!(scope.phase, Phase::FitCv | Phase::Refit))
                 || refit_test_view
             {

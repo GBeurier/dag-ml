@@ -3001,6 +3001,7 @@ fn observation_prediction_runtime_plan() -> ExecutionPlan {
                 sample_groups: BTreeMap::new(),
                 partition_mode: FoldPartitionMode::Partition,
                 train_exclusion: FoldTrainExclusion::Relations,
+                target_missing_sample_ids: Vec::new(),
             }),
         }),
         generation: Default::default(),
@@ -3132,6 +3133,7 @@ fn live_group_oof_runtime_plan() -> ExecutionPlan {
                 ]),
                 partition_mode: FoldPartitionMode::Partition,
                 train_exclusion: FoldTrainExclusion::Relations,
+                target_missing_sample_ids: Vec::new(),
             }),
         }),
         generation: Default::default(),
@@ -3502,6 +3504,7 @@ fn two_fold_set() -> FoldSet {
         sample_groups: BTreeMap::new(),
         partition_mode: FoldPartitionMode::Partition,
         train_exclusion: FoldTrainExclusion::Relations,
+        target_missing_sample_ids: Vec::new(),
     }
 }
 
@@ -3536,6 +3539,7 @@ fn three_fold_stress_set() -> FoldSet {
         sample_groups: BTreeMap::new(),
         partition_mode: FoldPartitionMode::Partition,
         train_exclusion: FoldTrainExclusion::Relations,
+        target_missing_sample_ids: Vec::new(),
     }
 }
 
@@ -3575,6 +3579,7 @@ fn grouped_repetition_fold_set() -> FoldSet {
         ]),
         partition_mode: FoldPartitionMode::Partition,
         train_exclusion: FoldTrainExclusion::Relations,
+        target_missing_sample_ids: Vec::new(),
     }
 }
 
@@ -6872,6 +6877,7 @@ fn refit_oof_cover_is_partition_mode_aware() {
         sample_groups: BTreeMap::new(),
         partition_mode: FoldPartitionMode::Resampled,
         train_exclusion: FoldTrainExclusion::Relations,
+        target_missing_sample_ids: Vec::new(),
     };
     resampled
         .validate()
@@ -6909,6 +6915,7 @@ fn refit_oof_cover_is_partition_mode_aware() {
     let partition = FoldSet {
         partition_mode: FoldPartitionMode::Partition,
         train_exclusion: FoldTrainExclusion::Relations,
+        target_missing_sample_ids: Vec::new(),
         ..resampled.clone()
     };
     let err = validate_oof_blocks_cover_fold_set(&edge, &partition, &resampled_refs).unwrap_err();
@@ -16550,6 +16557,7 @@ fn one_fold_set() -> FoldSet {
         sample_groups: BTreeMap::new(),
         partition_mode: FoldPartitionMode::Resampled,
         train_exclusion: FoldTrainExclusion::Relations,
+        target_missing_sample_ids: Vec::new(),
     }
 }
 
@@ -17874,6 +17882,664 @@ fn fold_local_mode_does_not_relax_non_fold_train_fit_reads() {
     assert!(!view.include_excluded);
 }
 
+/// Relations s0..s5 (`s2` has a missing target, declared on the fold set by the
+/// host) and an inference cohort that asks to PREDICT `s2`.
+struct TargetMissingRelationProvider {
+    owner: ControllerId,
+    relations: SampleRelationSet,
+    cohort: PredictCohort,
+}
+
+impl TargetMissingRelationProvider {
+    fn new() -> Self {
+        let records = (0..6)
+            .map(|index| {
+                SampleRelation::new(
+                    ObservationId::new(format!("obs.s{index}")).unwrap(),
+                    SampleId::new(format!("s{index}")).unwrap(),
+                )
+            })
+            .collect();
+        let cohort = PredictCohort::from_relations(
+            PredictCohortRole::Inference,
+            SampleRelationSet {
+                records: vec![SampleRelation::new(
+                    ObservationId::new("obs.s2").unwrap(),
+                    SampleId::new("s2").unwrap(),
+                )],
+            },
+            vec!["y".into()],
+            "d".repeat(64),
+            None,
+        )
+        .unwrap();
+        Self {
+            owner: ControllerId::new("controller:data.target_missing").unwrap(),
+            relations: SampleRelationSet { records },
+            cohort,
+        }
+    }
+}
+
+impl RuntimeDataProvider for TargetMissingRelationProvider {
+    fn materialize(&self, _request: &DataMaterializationRequest) -> Result<HandleRef> {
+        Ok(HandleRef {
+            handle: 93,
+            kind: HandleKind::Data,
+            owner_controller: self.owner.clone(),
+        })
+    }
+
+    fn make_view(&self, _request: &DataViewRequest) -> Result<HandleRef> {
+        Ok(HandleRef {
+            handle: 94,
+            kind: HandleKind::DataView,
+            owner_controller: self.owner.clone(),
+        })
+    }
+
+    fn coordinator_relations(
+        &self,
+        _binding: &crate::data::DataBinding,
+    ) -> Result<Option<SampleRelationSet>> {
+        Ok(Some(self.relations.clone()))
+    }
+
+    fn predict_cohort(
+        &self,
+        _binding: &crate::data::DataBinding,
+        phase: Phase,
+    ) -> Result<Option<PredictCohort>> {
+        Ok((phase == Phase::Predict).then(|| self.cohort.clone()))
+    }
+}
+
+/// Records every model task's views and emits validation predictions plus
+/// `y_true` (the sample index) for exactly the validation view it was given.
+/// With `leak`, it also emits a validation block for `leak`, which the runtime
+/// must refuse even when the task carries no data view to check it against.
+struct TargetMissingProbeController {
+    id: ControllerId,
+    observed: Arc<Mutex<Vec<NodeTask>>>,
+    leak: Option<SampleId>,
+}
+
+impl RuntimeController for TargetMissingProbeController {
+    fn controller_id(&self) -> &ControllerId {
+        &self.id
+    }
+
+    fn invoke(&self, task: &NodeTask) -> Result<NodeResult> {
+        self.observed.lock().unwrap().push(task.clone());
+        let mut predictions = Vec::new();
+        let mut regression_targets = Vec::new();
+        if let Some(validation) = validation_view_sample_ids(task) {
+            let sample_ids = validation.into_iter().collect::<Vec<_>>();
+            let y_true = sample_ids
+                .iter()
+                .map(|sample_id| vec![sample_id.as_str()[1..].parse::<f64>().unwrap()])
+                .collect::<Vec<_>>();
+            predictions.push(PredictionBlock {
+                prediction_id: Some(format!("pred:{}", task.node_plan.node_id)),
+                producer_node: task.node_plan.node_id.clone(),
+                producer_port: None,
+                partition: PredictionPartition::Validation,
+                fold_id: task.fold_id.clone(),
+                sample_ids: sample_ids.clone(),
+                values: y_true.iter().map(|row| vec![row[0] + 0.5]).collect(),
+                target_names: vec!["y".to_string()],
+            });
+            regression_targets.push(crate::metrics::RegressionTargetBlock {
+                validity_masks: None,
+                level: PredictionLevel::Sample,
+                unit_ids: sample_ids
+                    .into_iter()
+                    .map(crate::aggregation::PredictionUnitId::Sample)
+                    .collect(),
+                values: y_true,
+                target_names: vec!["y".to_string()],
+            });
+        }
+        if let Some(leak) = &self.leak {
+            predictions.push(PredictionBlock {
+                prediction_id: Some(format!("pred:{}:leak", task.node_plan.node_id)),
+                producer_node: task.node_plan.node_id.clone(),
+                producer_port: None,
+                partition: PredictionPartition::Validation,
+                fold_id: task.fold_id.clone(),
+                sample_ids: vec![leak.clone()],
+                values: vec![vec![0.0]],
+                target_names: vec!["y".to_string()],
+            });
+        }
+        let fold_label = task
+            .fold_id
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_else(|| "nofold".to_string());
+        Ok(NodeResult {
+            schema_version: None,
+            classification_probabilities: Vec::new(),
+            consumed_data_views: BTreeMap::new(),
+            node_id: task.node_plan.node_id.clone(),
+            outputs: BTreeMap::from([(
+                "pred".to_string(),
+                HandleRef {
+                    handle: 95,
+                    kind: HandleKind::Data,
+                    owner_controller: self.id.clone(),
+                },
+            )]),
+            predictions,
+            observation_predictions: Vec::new(),
+            aggregated_predictions: Vec::new(),
+            explanations: Vec::new(),
+            shape_deltas: Vec::new(),
+            artifacts: Vec::new(),
+            artifact_handles: BTreeMap::new(),
+            fit_influence_diagnostics: Vec::new(),
+            regression_targets,
+            lineage: LineageRecord {
+                record_id: LineageId::new(format!(
+                    "lineage:{}:{:?}:{fold_label}:target_missing",
+                    task.node_plan.node_id, task.phase
+                ))
+                .unwrap(),
+                run_id: task.run_id.clone(),
+                node_id: task.node_plan.node_id.clone(),
+                phase: task.phase,
+                controller_id: self.id.clone(),
+                controller_version: task.node_plan.controller_version.clone(),
+                variant_id: task.variant_id.clone(),
+                fold_id: task.fold_id.clone(),
+                branch_path: task.branch_path.clone(),
+                input_lineage: Vec::new(),
+                artifact_refs: Vec::new(),
+                params_fingerprint: task.node_plan.params_fingerprint.clone(),
+                data_model_shape_fingerprint: None,
+                aggregation_policy_fingerprint: None,
+                seed: task.seed,
+                unsafe_flags: BTreeSet::new(),
+                metrics: BTreeMap::new(),
+                loss_attestations: Vec::new(),
+                early_stopping_records: Vec::new(),
+                target_domain: None,
+            },
+        })
+    }
+}
+
+fn target_missing_plan(fold_set: FoldSet) -> ExecutionPlan {
+    let model_id = NodeId::new("model:pls").unwrap();
+    let mut campaign = oof_edge_campaign();
+    campaign.split_invocation.as_mut().unwrap().fold_set = Some(fold_set);
+    campaign.data_bindings = BTreeMap::from([(model_id.clone(), vec![data_binding(&model_id)])]);
+    build_execution_plan(
+        "plan:target.missing",
+        simple_graph(),
+        campaign,
+        &manifests(),
+    )
+    .unwrap()
+}
+
+fn target_missing_views(
+    plan: &ExecutionPlan,
+    provider: &TargetMissingRelationProvider,
+    phase: Phase,
+) -> BTreeMap<String, DataProviderViewSpec> {
+    let model_id = NodeId::new("model:pls").unwrap();
+    let resources = PhaseScopeResources {
+        data_provider: Some(provider),
+        ..Default::default()
+    };
+    collect_input_handles(
+        plan,
+        plan.node_plans.get(&model_id).unwrap(),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &resources,
+        &RunContext::new(RunId::new("run:target.missing").unwrap(), Some(11)),
+        &PhaseScope {
+            phase,
+            variant_id: Some(VariantId::new("variant:base").unwrap()),
+            variant: None,
+            fold_id: None,
+            seed_root: Some(11),
+        },
+    )
+    .unwrap()
+    .data_views
+}
+
+#[test]
+fn target_missing_samples_never_train_validate_or_score_but_stay_predictable() {
+    // three_fold_stress_set: s0..s5; fold:2 validation=[s2,s5]. `s2` has no target.
+    let s2 = SampleId::new("s2").unwrap();
+    let fold_set = three_fold_stress_set()
+        .exclude_target_missing(&BTreeSet::from([s2.clone()]))
+        .unwrap();
+    assert_eq!(fold_set.target_missing_sample_ids, vec![s2.clone()]);
+    let plan = target_missing_plan(fold_set);
+    assert_eq!(
+        plan.fold_set
+            .as_ref()
+            .unwrap()
+            .target_missing_sample_ids
+            .len(),
+        1,
+        "the exclusion and its count are recorded in the plan lineage"
+    );
+    let provider = TargetMissingRelationProvider::new();
+    // The relation authority still lists `s2`; the fold set declares it outside CV.
+    provider
+        .relations
+        .validate_against_fold_set(plan.fold_set.as_ref().unwrap(), &Default::default())
+        .unwrap();
+
+    // FIT_CV: never trained, never validated, never scored.
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    let mut controllers = RuntimeControllerRegistry::new();
+    controllers
+        .register(Box::new(MockController {
+            id: ControllerId::new("controller:transform").unwrap(),
+            handle: 1,
+            emit_prediction: false,
+        }))
+        .unwrap();
+    controllers
+        .register(Box::new(TargetMissingProbeController {
+            id: ControllerId::new("controller:model").unwrap(),
+            observed: observed.clone(),
+            leak: None,
+        }))
+        .unwrap();
+    let mut ctx = RunContext::new(RunId::new("run:target.missing.cv").unwrap(), Some(11));
+    SequentialScheduler
+        .execute_campaign_phase_with_data_provider(
+            &plan,
+            &controllers,
+            &provider,
+            &mut ctx,
+            Phase::FitCv,
+        )
+        .unwrap();
+    let tasks = observed.lock().unwrap();
+    assert_eq!(tasks.len(), 3);
+    let mut validated = BTreeSet::new();
+    for task in tasks.iter() {
+        let train = &task.data_views["data:x"];
+        assert_eq!(train.partition, DataRequestPartition::FoldTrain);
+        assert!(!train.sample_ids.as_ref().unwrap().contains(&s2));
+        let validation = &task.data_views["data:x:validation"];
+        assert!(!validation.sample_ids.as_ref().unwrap().contains(&s2));
+        validated.extend(validation.sample_ids.clone().unwrap());
+    }
+    assert_eq!(
+        validated.iter().map(SampleId::as_str).collect::<Vec<_>>(),
+        ["s0", "s1", "s3", "s4", "s5"]
+    );
+    assert!(ctx
+        .prediction_store
+        .blocks()
+        .iter()
+        .all(|block| !block.sample_ids.contains(&s2)));
+    let scored_rows = ctx
+        .score_collector
+        .iter()
+        .filter(|report| {
+            report.partition == PredictionPartition::Validation
+                && report
+                    .fold_id
+                    .as_ref()
+                    .is_some_and(|fold| fold.as_str().starts_with("fold:"))
+        })
+        .map(|report| report.row_count)
+        .sum::<usize>();
+    assert_eq!(
+        scored_rows, 5,
+        "OOF/SELECT scores cover only target-observed rows"
+    );
+
+    // REFIT: the FullTrain universe is the target-observed fold universe.
+    let refit = target_missing_views(&plan, &provider, Phase::Refit);
+    assert_eq!(refit["data:x"].partition, DataRequestPartition::FullTrain);
+    assert_eq!(view_ids(&refit["data:x"]), ["s0", "s1", "s3", "s4", "s5"]);
+
+    // PREDICT: the target-missing sample remains predictable.
+    let predict = target_missing_views(&plan, &provider, Phase::Predict);
+    assert_eq!(predict["data:x"].partition, DataRequestPartition::Predict);
+    assert_eq!(view_ids(&predict["data:x"]), ["s2"]);
+}
+
+#[test]
+fn target_missing_rows_in_a_controller_result_are_refused() {
+    let s2 = SampleId::new("s2").unwrap();
+    let fold_set = three_fold_stress_set()
+        .exclude_target_missing(&BTreeSet::from([s2.clone()]))
+        .unwrap();
+    // No data binding: the model task carries no validation view, so only the
+    // fold set's declaration can refuse the leaked row.
+    let mut campaign = oof_edge_campaign();
+    campaign.split_invocation.as_mut().unwrap().fold_set = Some(fold_set);
+    campaign.data_bindings = BTreeMap::new();
+    campaign.shape_plans = BTreeMap::new();
+    let plan = build_execution_plan(
+        "plan:target.missing.leak",
+        simple_graph(),
+        campaign,
+        &manifests(),
+    )
+    .unwrap();
+    let mut controllers = RuntimeControllerRegistry::new();
+    controllers
+        .register(Box::new(MockController {
+            id: ControllerId::new("controller:transform").unwrap(),
+            handle: 1,
+            emit_prediction: false,
+        }))
+        .unwrap();
+    controllers
+        .register(Box::new(TargetMissingProbeController {
+            id: ControllerId::new("controller:model").unwrap(),
+            observed: Arc::default(),
+            leak: Some(s2.clone()),
+        }))
+        .unwrap();
+    let mut ctx = RunContext::new(RunId::new("run:target.missing.leak").unwrap(), Some(11));
+    let error = SequentialScheduler
+        .execute_campaign_phase(&plan, &controllers, &mut ctx, Phase::FitCv)
+        .unwrap_err();
+    let DagMlError::TargetMissing(report) = error else {
+        panic!("expected a target-missing refusal, got {error}");
+    };
+    assert_eq!(report.reason, crate::TargetMissingRefusal::ScoredResult);
+    assert_eq!(report.sample_ids, vec!["s2".to_string()]);
+    assert!(ctx
+        .prediction_store
+        .blocks()
+        .iter()
+        .all(|block| !block.sample_ids.contains(&s2)));
+
+    // Scoring targets are refused too, and test/final rows stay admissible.
+    let declared = plan.fold_set.as_ref().unwrap();
+    let mut result = NodeResult {
+        schema_version: None,
+        classification_probabilities: Vec::new(),
+        consumed_data_views: BTreeMap::new(),
+        node_id: NodeId::new("model:pls").unwrap(),
+        outputs: BTreeMap::new(),
+        predictions: vec![PredictionBlock {
+            prediction_id: None,
+            producer_node: NodeId::new("model:pls").unwrap(),
+            producer_port: None,
+            partition: PredictionPartition::Test,
+            fold_id: None,
+            sample_ids: vec![s2.clone()],
+            values: vec![vec![1.0]],
+            target_names: vec!["y".to_string()],
+        }],
+        observation_predictions: Vec::new(),
+        aggregated_predictions: Vec::new(),
+        explanations: Vec::new(),
+        shape_deltas: Vec::new(),
+        artifacts: Vec::new(),
+        artifact_handles: BTreeMap::new(),
+        fit_influence_diagnostics: Vec::new(),
+        regression_targets: Vec::new(),
+        lineage: ctx
+            .lineage
+            .records()
+            .next()
+            .cloned()
+            .expect("the transform node recorded lineage before the refusal"),
+    };
+    result
+        .validate_target_missing(declared, None, None)
+        .unwrap();
+    result
+        .regression_targets
+        .push(crate::metrics::RegressionTargetBlock {
+            validity_masks: None,
+            level: PredictionLevel::Sample,
+            unit_ids: vec![crate::aggregation::PredictionUnitId::Sample(s2)],
+            values: vec![vec![0.0]],
+            target_names: vec!["y".to_string()],
+        });
+    assert!(matches!(
+        result.validate_target_missing(declared, None, None),
+        Err(DagMlError::TargetMissing(_))
+    ));
+
+    // Group units resolve through relations: a group made only of target-missing
+    // samples is refused; a group with an observed member is scored as usual.
+    result.regression_targets.clear();
+    let grouped = |sample: &str, group: &str| {
+        let mut record = SampleRelation::new(
+            ObservationId::new(format!("obs.{sample}")).unwrap(),
+            SampleId::new(sample).unwrap(),
+        );
+        record.group_id = Some(GroupId::new(group).unwrap());
+        record
+    };
+    let relations = SampleRelationSet {
+        records: vec![
+            grouped("s2", "g.missing"),
+            grouped("s1", "g.mixed"),
+            grouped("s2", "g.mixed"),
+        ],
+    };
+    let group_block = |group: &str| crate::aggregation::AggregatedPredictionBlock {
+        prediction_id: None,
+        producer_node: NodeId::new("model:pls").unwrap(),
+        producer_port: None,
+        partition: PredictionPartition::Validation,
+        fold_id: None,
+        level: PredictionLevel::Group,
+        unit_ids: vec![crate::aggregation::PredictionUnitId::Group(
+            GroupId::new(group).unwrap(),
+        )],
+        values: vec![vec![1.0]],
+        target_names: vec!["y".to_string()],
+    };
+    result.aggregated_predictions = vec![group_block("g.mixed")];
+    result
+        .validate_target_missing(declared, Some(&relations), None)
+        .unwrap();
+    assert!(
+        result
+            .validate_target_missing(declared, None, None)
+            .is_err(),
+        "group rows cannot be checked without relations"
+    );
+    result.aggregated_predictions = vec![group_block("g.missing")];
+    assert!(matches!(
+        result.validate_target_missing(declared, Some(&relations), None),
+        Err(DagMlError::TargetMissing(_))
+    ));
+
+    // Under a statistical grouping key, groups resolve through that relation metadata
+    // only; an unrelated `group_id` with the same name neither masks nor blocks them.
+    let statistical_key = crate::policy::AggregationGroupingKey::RelationMetadata {
+        key: "independent_unit_id".into(),
+    };
+    let with_unit = |sample: &str, group: &str, unit: &str| {
+        let mut record = grouped(sample, group);
+        record
+            .metadata
+            .insert("independent_unit_id".into(), json!(unit));
+        record
+    };
+    let collided = SampleRelationSet {
+        records: vec![with_unit("s2", "g.other", "G"), grouped("s1", "G")],
+    };
+    result.aggregated_predictions = vec![group_block("G")];
+    assert!(matches!(
+        result.validate_target_missing(declared, Some(&collided), Some(&statistical_key)),
+        Err(DagMlError::TargetMissing(_))
+    ));
+    // Ordinary group aggregation resolves `G` through `group_id` alone: `s1` is observed.
+    result
+        .validate_target_missing(declared, Some(&collided), None)
+        .unwrap();
+    let collided = SampleRelationSet {
+        records: vec![grouped("s2", "G"), with_unit("s1", "g.other", "G")],
+    };
+    assert!(matches!(
+        result.validate_target_missing(declared, Some(&collided), None),
+        Err(DagMlError::TargetMissing(_))
+    ));
+    result
+        .validate_target_missing(declared, Some(&collided), Some(&statistical_key))
+        .unwrap();
+
+    // A scored group without attested CV members is refused.
+    result.aggregated_predictions = vec![group_block("unit.unknown")];
+    assert!(result
+        .validate_target_missing(declared, Some(&collided), None)
+        .is_err());
+    // Group-level scoring of test or final predictions resolves through a predict
+    // cohort, not the CV relations, so it is refused under a declaration.
+    for partition in [PredictionPartition::Test, PredictionPartition::Final] {
+        let mut block = group_block("unit.external");
+        block.partition = partition;
+        result.aggregated_predictions = vec![block];
+        result.regression_targets = vec![crate::metrics::RegressionTargetBlock {
+            validity_masks: None,
+            level: PredictionLevel::Group,
+            unit_ids: vec![crate::aggregation::PredictionUnitId::Group(
+                GroupId::new("unit.external").unwrap(),
+            )],
+            values: vec![vec![1.0]],
+            target_names: vec!["y".to_string()],
+        }];
+        assert!(!result.target_missing_needs_relations());
+        let error = result
+            .validate_target_missing(declared, Some(&collided), None)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("group/target-level scoring targets"),
+            "{error}"
+        );
+    }
+    // Targets for another target name never pair with the prediction: no refusal.
+    result.regression_targets[0].target_names = vec!["y1".to_string()];
+    result.aggregated_predictions[0].target_names = vec!["y2".to_string()];
+    result
+        .validate_target_missing(declared, Some(&collided), None)
+        .unwrap();
+    result.regression_targets.clear();
+
+    // Unscored (final) group predictions need no relations.
+    let mut final_block = group_block("g.missing");
+    final_block.partition = PredictionPartition::Final;
+    result.aggregated_predictions = vec![final_block];
+    assert!(!result.target_missing_needs_relations());
+    result
+        .validate_target_missing(declared, None, None)
+        .unwrap();
+}
+
+#[test]
+fn nested_stacking_scopes_keep_the_target_missing_declaration() {
+    use crate::fold::KFoldSpec;
+    let samples = (1..=12)
+        .map(|index| SampleId::new(format!("s{index}")).unwrap())
+        .collect::<Vec<_>>();
+    let missing = BTreeSet::from([SampleId::new("s5").unwrap()]);
+    let outer = KFoldSpec {
+        n_splits: 3,
+        shuffle: false,
+        seed: Some(7),
+    }
+    .split_with_target_missing("outer", &samples, &missing)
+    .unwrap();
+    let plan = nested_stacking_test_plan(outer, true);
+    let stacking = nested_stacking_campaign_plan(&plan).unwrap().unwrap();
+    let declared = vec![SampleId::new("s5").unwrap()];
+    for scope in &stacking.outer_scopes {
+        assert_eq!(
+            scope.inner.inner_fold_set.target_missing_sample_ids,
+            declared
+        );
+    }
+    let refit = stacking
+        .refit_fold_set
+        .as_ref()
+        .expect("partitioned REFIT OOF");
+    assert_eq!(refit.target_missing_sample_ids, declared);
+    assert!(!refit.sample_ids.contains(&declared[0]));
+}
+
+#[test]
+fn target_missing_declarations_refuse_unbounded_fit_views() {
+    let fold_set = three_fold_stress_set()
+        .exclude_target_missing(&BTreeSet::from([SampleId::new("s2").unwrap()]))
+        .unwrap();
+    let node_id = NodeId::new("node:model").unwrap();
+    let binding = data_binding(&node_id);
+    let unbounded = PhaseScope {
+        phase: Phase::FitCv,
+        variant_id: None,
+        variant: None,
+        fold_id: None,
+        seed_root: None,
+    };
+    let error = data_view_for_partition(
+        &binding,
+        Some(&fold_set),
+        &unbounded,
+        DataRequestPartition::FoldTrain,
+        None,
+        DataViewRole::Fit,
+        &BTreeSet::new(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("unbounded"), "{error}");
+    // Without a declaration the historical unbounded view is unchanged.
+    data_view_for_partition(
+        &binding,
+        Some(&three_fold_stress_set()),
+        &unbounded,
+        DataRequestPartition::FoldTrain,
+        None,
+        DataViewRole::Fit,
+        &BTreeSet::new(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn target_missing_declarations_refuse_all_observations_fit_views() {
+    let s2 = SampleId::new("s2").unwrap();
+    let fold_set = three_fold_stress_set()
+        .exclude_target_missing(&BTreeSet::from([s2]))
+        .unwrap();
+    let model_id = NodeId::new("model:pls").unwrap();
+    let mut binding = data_binding(&model_id);
+    binding.view_policy.fit_partition = DataRequestPartition::AllObservations;
+    binding
+        .view_policy
+        .unsafe_flags
+        .insert(crate::data::DataViewPolicy::ALLOW_FIT_CV_ALL_OBSERVATIONS_VIEW.to_string());
+    let mut campaign = oof_edge_campaign();
+    campaign.split_invocation.as_mut().unwrap().fold_set = Some(fold_set);
+    campaign.data_bindings = BTreeMap::from([(model_id, vec![binding])]);
+    let error = build_execution_plan(
+        "plan:target.missing.all",
+        simple_graph(),
+        campaign,
+        &manifests(),
+    )
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("all-observations fit view"),
+        "{error}"
+    );
+}
+
 #[test]
 fn exclusion_is_sample_local_across_relation_rows() {
     // (c) A sample with one excluded relation row and one non-excluded row is
@@ -18362,6 +19028,7 @@ fn fanned_out_branches_each_fit_cv_only_their_partition() {
         sample_groups: BTreeMap::new(),
         partition_mode: FoldPartitionMode::Partition,
         train_exclusion: FoldTrainExclusion::Relations,
+        target_missing_sample_ids: Vec::new(),
     };
     let campaign = CampaignSpec {
         inner_cv: None,
@@ -18591,6 +19258,7 @@ fn concat_merge_reassembles_disjoint_branch_oof_into_full_universe() {
         sample_groups: BTreeMap::new(),
         partition_mode: FoldPartitionMode::Partition,
         train_exclusion: FoldTrainExclusion::Relations,
+        target_missing_sample_ids: Vec::new(),
     };
     let campaign = CampaignSpec {
         inner_cv: None,
@@ -18794,6 +19462,7 @@ fn concat_merge_rejects_overlapping_branch_predictions() {
         sample_groups: BTreeMap::new(),
         partition_mode: FoldPartitionMode::Partition,
         train_exclusion: FoldTrainExclusion::Relations,
+        target_missing_sample_ids: Vec::new(),
     };
     let campaign = CampaignSpec {
         inner_cv: None,
@@ -19161,6 +19830,7 @@ fn scoring_merge_plan_and_provider(
         sample_groups: BTreeMap::new(),
         partition_mode: FoldPartitionMode::Partition,
         train_exclusion: FoldTrainExclusion::Relations,
+        target_missing_sample_ids: Vec::new(),
     };
     // A per-variant offset sweep applied to BOTH branch model nodes.
     let generation = if offsets.is_empty() {
@@ -19541,6 +20211,7 @@ fn empty_intersection_plan_and_provider() -> (ExecutionPlan, InMemoryDataProvide
         sample_groups: BTreeMap::new(),
         partition_mode: FoldPartitionMode::Partition,
         train_exclusion: FoldTrainExclusion::Relations,
+        target_missing_sample_ids: Vec::new(),
     };
     let bindings = ["model:site__A", "model:site__B", "model:site__C"]
         .iter()
@@ -19887,6 +20558,7 @@ fn fusion_merge_plan_and_provider(plan_id: &str) -> (ExecutionPlan, InMemoryData
         sample_groups: BTreeMap::new(),
         partition_mode: FoldPartitionMode::Partition,
         train_exclusion: FoldTrainExclusion::Relations,
+        target_missing_sample_ids: Vec::new(),
     };
     let campaign = CampaignSpec {
         inner_cv: None,
@@ -20125,6 +20797,7 @@ fn fusion_proba_mean_merge_averages_and_renormalizes_class_probabilities() {
         sample_groups: BTreeMap::new(),
         partition_mode: FoldPartitionMode::Partition,
         train_exclusion: FoldTrainExclusion::Relations,
+        target_missing_sample_ids: Vec::new(),
     };
     let campaign = CampaignSpec {
         inner_cv: None,
@@ -20352,6 +21025,7 @@ fn refit_merge_plan_and_provider(plan_id: &str) -> (ExecutionPlan, InMemoryDataP
         sample_groups: BTreeMap::new(),
         partition_mode: FoldPartitionMode::Partition,
         train_exclusion: FoldTrainExclusion::Relations,
+        target_missing_sample_ids: Vec::new(),
     };
     let campaign = CampaignSpec {
         inner_cv: None,
@@ -20695,6 +21369,7 @@ fn fusion_merge_averages_and_scores_refit_test_predictions() {
         sample_groups: BTreeMap::new(),
         partition_mode: FoldPartitionMode::Partition,
         train_exclusion: FoldTrainExclusion::Relations,
+        target_missing_sample_ids: Vec::new(),
     };
     let campaign = CampaignSpec {
         inner_cv: None,
@@ -21249,6 +21924,7 @@ fn off_fold_fusion_rejects_within_branch_duplicate_sample() {
         sample_groups: BTreeMap::new(),
         partition_mode: FoldPartitionMode::Partition,
         train_exclusion: FoldTrainExclusion::Relations,
+        target_missing_sample_ids: Vec::new(),
     };
     let campaign = CampaignSpec {
         inner_cv: None,
@@ -21836,6 +22512,7 @@ fn refit_full_train_universe_excludes_held_out_test_partition() {
         sample_groups: BTreeMap::new(),
         partition_mode: FoldPartitionMode::Partition,
         train_exclusion: FoldTrainExclusion::Relations,
+        target_missing_sample_ids: Vec::new(),
     };
     fold_set.validate().unwrap();
 

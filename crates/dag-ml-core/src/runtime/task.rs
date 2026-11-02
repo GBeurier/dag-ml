@@ -1235,6 +1235,153 @@ pub struct NodeResult {
 }
 
 impl NodeResult {
+    /// Whether `partition` trains on or scores its rows (train, train-pool, validation).
+    fn scores_partition(partition: &PredictionPartition) -> bool {
+        matches!(
+            partition,
+            PredictionPartition::Train
+                | PredictionPartition::TrainPool
+                | PredictionPartition::Validation
+        )
+    }
+
+    /// Whether checking this result against a target-missing declaration needs coordinator
+    /// relations: it carries scored observation rows or scored group/target units.
+    pub fn target_missing_needs_relations(&self) -> bool {
+        self.observation_predictions
+            .iter()
+            .any(|block| Self::scores_partition(&block.partition))
+            || self.aggregated_predictions.iter().any(|block| {
+                Self::scores_partition(&block.partition) && block.level != PredictionLevel::Sample
+            })
+    }
+
+    /// Target-missing samples declared on the plan fold set never train and are never scored.
+    ///
+    /// Train, train-pool and validation rows may not carry them: sample rows directly,
+    /// observation rows and group/target units through the CV `relations` (groups follow the
+    /// active `grouping_key`, else relation `group_id`). A scored unit without attested members,
+    /// or whose members are all target-missing, is refused. Test and final predictions may carry
+    /// them (PREDICT / inference cohorts) but are never scored for them: a sample-level scoring
+    /// target for a declared sample is refused, and group/target-level scoring of test or final
+    /// predictions is refused while a declaration exists, because those units resolve through a
+    /// predict cohort rather than the CV relations.
+    pub fn validate_target_missing(
+        &self,
+        fold_set: &FoldSet,
+        relations: Option<&SampleRelationSet>,
+        grouping_key: Option<&crate::policy::AggregationGroupingKey>,
+    ) -> Result<()> {
+        if fold_set.target_missing_sample_ids.is_empty() {
+            return Ok(());
+        }
+        let scored = Self::scores_partition;
+        let mut samples = Vec::new();
+        for block in self.predictions.iter().filter(|b| scored(&b.partition)) {
+            samples.extend(block.sample_ids.iter().cloned());
+        }
+        for block in self
+            .classification_probabilities
+            .iter()
+            .filter(|b| scored(&b.partition))
+        {
+            samples.extend(block.sample_ids.iter().cloned());
+        }
+        for block in &self.regression_targets {
+            for unit in &block.unit_ids {
+                if let PredictionUnitId::Sample(sample_id) = unit {
+                    samples.push(sample_id.clone());
+                }
+            }
+            let units = block.unit_ids.iter().collect::<BTreeSet<_>>();
+            // Same pairing rule as native aggregated scoring.
+            if block.level != PredictionLevel::Sample
+                && self.aggregated_predictions.iter().any(|prediction| {
+                    !scored(&prediction.partition)
+                        && prediction.level == block.level
+                        && (prediction.target_names.is_empty()
+                            || block.target_names.is_empty()
+                            || prediction.target_names == block.target_names)
+                        && prediction.unit_ids.iter().collect::<BTreeSet<_>>() == units
+                })
+            {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "node `{}` emitted group/target-level scoring targets for test or final predictions, which cannot be checked against declared target-missing samples",
+                    self.node_id
+                )));
+            }
+        }
+        let units = self
+            .aggregated_predictions
+            .iter()
+            .filter(|b| scored(&b.partition))
+            .flat_map(|b| &b.unit_ids)
+            .collect::<Vec<_>>();
+        let observations = self
+            .observation_predictions
+            .iter()
+            .filter(|b| scored(&b.partition))
+            .flat_map(|b| &b.observation_ids)
+            .collect::<BTreeSet<_>>();
+        let records = match relations {
+            Some(relations) => relations.records.as_slice(),
+            None if self.target_missing_needs_relations() => {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "node `{}` emitted observation, group or target rows that cannot be checked against target-missing samples without coordinator relations",
+                    self.node_id
+                )));
+            }
+            None => &[],
+        };
+        let declared = fold_set
+            .target_missing_sample_ids
+            .iter()
+            .collect::<BTreeSet<_>>();
+        let members_by = |matches: &dyn Fn(&crate::SampleRelation) -> bool| {
+            records
+                .iter()
+                .filter(|record| matches(record))
+                .map(|record| &record.sample_id)
+                .collect::<BTreeSet<_>>()
+        };
+        for unit in units {
+            let members = match unit {
+                PredictionUnitId::Sample(sample_id) => {
+                    samples.push(sample_id.clone());
+                    continue;
+                }
+                PredictionUnitId::Group(group_id) => match grouping_key {
+                    Some(crate::policy::AggregationGroupingKey::RelationMetadata { key }) => {
+                        members_by(&|record| {
+                            record.metadata.get(key).and_then(serde_json::Value::as_str)
+                                == Some(group_id.as_str())
+                        })
+                    }
+                    None => members_by(&|record| record.group_id.as_ref() == Some(group_id)),
+                },
+                PredictionUnitId::Target(target_id) => {
+                    members_by(&|record| record.target_id.as_ref() == Some(target_id))
+                }
+            };
+            if members.is_empty() {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "node `{}` emitted a scored {unit:?} unit without attested relation members while target-missing samples are declared",
+                    self.node_id
+                )));
+            }
+            if members.iter().all(|id| declared.contains(id)) {
+                samples.extend(members.into_iter().cloned());
+            }
+        }
+        samples.extend(
+            records
+                .iter()
+                .filter(|record| observations.contains(&record.observation_id))
+                .map(|record| record.sample_id.clone()),
+        );
+        fold_set.refuse_scored_target_missing(&samples)
+    }
+
     /// Require a full, ordered read and model call for every dynamic fit or
     /// prediction view. These are host-reported call-boundary facts, not native
     /// inspection of the estimator's internal consumption.

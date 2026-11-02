@@ -382,6 +382,43 @@ default, so existing fold sets and their fingerprints are unchanged:
   samples, no train/validation overlap, group boundaries, OOF completeness) apply
   in both modes.
 
+`FoldSet.target_missing_sample_ids` declares samples whose target is missing
+(for example a non-finite regression value the data provider refuses to serve).
+They sit outside the CV universe: never in `sample_ids`, any fold
+train/validation list or `sample_groups`. They therefore never train in FIT_CV
+or REFIT (`FullTrain` resolves to `sample_ids`), are never validated, and never
+reach OOF scoring or SELECT; they stay eligible for PREDICT through an
+`inference` predict cohort. The list is omitted when empty (unchanged bytes and
+fingerprints); a non-empty list changes the fold set fingerprint, so the
+exclusion and its count are recorded in the plan lineage. Coordinator relations
+may still list these samples. Hosts declare them either by splitting the
+target-observed universe (`KFoldSpec`/`StratifiedKFoldSpec`/`GroupKFoldSpec`
+`split_with_target_missing`) or by narrowing a host-supplied fold set
+(`FoldSet::exclude_target_missing`). Both refuse with the structured
+`validation/target_missing_exclusion` error when an id is unknown, when no
+target-observed sample is left, when fewer observed samples (or groups) than
+`n_splits` remain, or when a fold would lose all of its validation or training
+samples. The runtime enforces the declaration at result admission: a controller
+result that carries a declared sample in a train, train-pool or validation
+prediction, or as a regression scoring target, is refused (`scored_result`)
+before it is stored or scored; observation rows and group/target units are
+resolved through the coordinator relations (groups follow the active grouping
+policy), and a group or target made only of declared samples is refused.
+Group/target-level scoring of test or final predictions is refused while a
+declaration exists (those units resolve through a predict cohort), and an
+external-test (scored) predict cohort may not contain a declared sample. Nested inner fold sets and stacking REFIT folds
+inherit the declaration, training and validation views must name their samples
+while it exists, nested selection accepts it
+(`NestedSelectionRequest.target_missing_sample_ids`), and a fitting node cannot
+combine it with an all-observations fit view. The declaration
+is made for the target(s) the campaign trains: on a
+sparse multi-target dataset, a campaign over one target declares only the
+samples missing that target, so a sample missing another target stays in its
+CV universe. Per-target missing cells inside one multi-target regression block
+are a separate mechanism: `RegressionTargetBlock.validity_masks` excludes masked
+cells from scoring. dag-ml-data mirrors the three optional fold set fields
+(0.2.16 and later) with the same fingerprint.
+
 Native identity splitters such as KFold and GroupKFold may be shipped by the Rust
 core for deterministic cross-language behavior. Feature-dependent splitters such
 as KS/SPXY/sklearn splitters are external controller calls.

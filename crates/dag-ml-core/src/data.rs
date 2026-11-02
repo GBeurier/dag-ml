@@ -1837,6 +1837,7 @@ impl PredictCohort {
         if self.role == PredictCohortRole::Inference {
             return Ok(());
         }
+        self.refuse_target_missing(fold_set)?;
         let cv_ids = fold_set.sample_ids.iter().collect::<BTreeSet<_>>();
         for sample_id in self
             .physical_sample_ids
@@ -1848,6 +1849,29 @@ impl PredictCohort {
                     "external_test predict cohort overlaps CV fold sample or origin `{sample_id}`"
                 )));
             }
+        }
+        Ok(())
+    }
+
+    /// An external-test cohort is scored, so it may not contain a sample (or origin) that
+    /// `fold_set` declares target-missing; an inference cohort predicts those instead.
+    pub fn refuse_target_missing(&self, fold_set: &FoldSet) -> Result<()> {
+        if self.role == PredictCohortRole::Inference {
+            return Ok(());
+        }
+        let target_missing = fold_set
+            .target_missing_sample_ids
+            .iter()
+            .collect::<BTreeSet<_>>();
+        if let Some(sample_id) = self
+            .physical_sample_ids
+            .iter()
+            .chain(self.origin_sample_ids.iter())
+            .find(|sample_id| target_missing.contains(sample_id))
+        {
+            return Err(DagMlError::CampaignValidation(format!(
+                "external_test predict cohort contains target-missing sample or origin `{sample_id}`; predict it through an inference cohort"
+            )));
         }
         Ok(())
     }
@@ -2832,6 +2856,7 @@ mod tests {
             sample_groups: BTreeMap::new(),
             partition_mode: FoldPartitionMode::Partition,
             train_exclusion: FoldTrainExclusion::Relations,
+            target_missing_sample_ids: Vec::new(),
         }
     }
 
@@ -2920,6 +2945,28 @@ mod tests {
             ]
         );
         cohort.validate().unwrap();
+    }
+
+    #[test]
+    fn external_test_predict_cohort_refuses_target_missing_samples() {
+        let cohort = external_test_predict_cohort();
+        let mut fold_set = cv_fold_set(["sample:cv:1", "sample:cv:2"]);
+        fold_set.target_missing_sample_ids = vec![SampleId::new("sample:holdout:2").unwrap()];
+        let error = cohort
+            .validate_against_cv_fold_set(&fold_set)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("target-missing sample"), "{error}");
+        // An inference cohort may still predict it.
+        let inference = PredictCohort::from_relations(
+            PredictCohortRole::Inference,
+            cohort.relations.clone(),
+            vec!["classification:y".to_string()],
+            "c".repeat(64),
+            None,
+        )
+        .unwrap();
+        inference.validate_against_cv_fold_set(&fold_set).unwrap();
     }
 
     #[test]

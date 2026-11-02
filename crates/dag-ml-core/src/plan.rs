@@ -597,6 +597,28 @@ impl ExecutionPlan {
         validate_generation_override_targets(&self.graph_plan.graph, &self.variants)?;
         if let Some(fold_set) = &self.fold_set {
             fold_set.validate()?;
+            // An all-observations fit view is resolved by the provider, not from the fold set,
+            // so it cannot honour the target-missing declaration.
+            if !fold_set.target_missing_sample_ids.is_empty() {
+                if let Some(binding) = self
+                    .node_plans
+                    .values()
+                    .filter(|node| {
+                        node.supported_phases.contains(&Phase::FitCv)
+                            || node.supported_phases.contains(&Phase::Refit)
+                    })
+                    .flat_map(|node| &node.data_bindings)
+                    .find(|binding| {
+                        binding.view_policy.fit_partition
+                            == crate::data::DataRequestPartition::AllObservations
+                    })
+                {
+                    return Err(DagMlError::Planning(format!(
+                        "node `{}` requests an all-observations fit view, which would fit target-missing samples declared on fold set `{}`",
+                        binding.node_id, fold_set.id
+                    )));
+                }
+            }
         }
         if self.variants.is_empty() {
             return Err(DagMlError::Planning(
@@ -3206,6 +3228,7 @@ mod tests {
                     sample_groups: BTreeMap::new(),
                     partition_mode: FoldPartitionMode::Partition,
                     train_exclusion: FoldTrainExclusion::Relations,
+                    target_missing_sample_ids: Vec::new(),
                 }),
             }),
             generation: Default::default(),

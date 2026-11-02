@@ -316,15 +316,23 @@ impl SampleRelationSet {
         policy.validate()?;
 
         let universe = fold_set.sample_ids.iter().collect::<BTreeSet<_>>();
+        // Declared target-missing samples sit outside the CV universe by construction.
+        let target_missing = fold_set
+            .target_missing_sample_ids
+            .iter()
+            .collect::<BTreeSet<_>>();
         for record in &self.records {
-            if !universe.contains(&record.sample_id) {
+            if !universe.contains(&record.sample_id) && !target_missing.contains(&record.sample_id)
+            {
                 return Err(DagMlError::CampaignValidation(format!(
                     "relation `{}` references sample `{}` outside fold set",
                     record.observation_id, record.sample_id
                 )));
             }
             if let Some(origin_sample_id) = &record.origin_sample_id {
-                if !universe.contains(origin_sample_id) {
+                if !universe.contains(origin_sample_id)
+                    && !target_missing.contains(origin_sample_id)
+                {
                     return Err(DagMlError::CampaignValidation(format!(
                         "relation `{}` references origin sample `{}` outside fold set",
                         record.observation_id, origin_sample_id
@@ -650,6 +658,7 @@ mod tests {
             sample_groups: BTreeMap::new(),
             partition_mode: FoldPartitionMode::Partition,
             train_exclusion: FoldTrainExclusion::Relations,
+            target_missing_sample_ids: Vec::new(),
         }
     }
 
