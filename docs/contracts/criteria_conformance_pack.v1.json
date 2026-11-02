@@ -121,7 +121,7 @@
     },
     {
       "path": "crates/dag-ml-wasm/src/lib.rs",
-      "sha256": "e40c68c83c90b084c139f153b40c4e40beda25c733b759959718666b175231f8",
+      "sha256": "be30958f97fc594da5717a3e52f9f8f4fe55cb286eea2830eefcc7dc0b05629c",
       "kind": "javascript_binding"
     },
     {
@@ -136,7 +136,7 @@
     },
     {
       "path": "docs/contracts/campaign_spec.schema.json",
-      "sha256": "e11dde8ba4042f02ff524ffbcce22f44a86d1c09245a0dd31889a29bc4c43b1c",
+      "sha256": "29bc8915ae98e56712673c37ccb0e3cdd3bf1ee6b9786d64c0ac2a9fc668df39",
       "kind": "schema_dependency"
     },
     {
@@ -206,7 +206,7 @@
     },
     {
       "path": "docs/contracts/node_task.schema.json",
-      "sha256": "3b1e8b4e807c36153e3c0ef6b7408365121f65a5671f8343aee1217644f74d01",
+      "sha256": "5395123cb27b7b3d0ff053289023ca4ac7eecac7a14f121d0619d95e88bf80cb",
       "kind": "schema_dependency"
     },
     {
@@ -310,5 +310,5 @@
   "runtime_only_negative_cases": [
     "provider_result_non_finite"
   ],
-  "pack_checksum": "225083f6281faf5abd7bdc9c7bdaea2296e62c8a89b98004eb7e223581bad590"
+  "pack_checksum": "5e601544484d9e5edf99529236cad1120c07b87cb2107be24ee9603e8048420e"
 }

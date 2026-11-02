@@ -341,8 +341,15 @@ their defaults (so default fold sets keep their bytes and fingerprints):
 `partition_mode` (`partition` | `resampled`) and `train_exclusion`
 (`relations` | `fold_local`). `fold_local` makes the fold train lists
 authoritative for FIT_CV instead of subtracting relation-excluded samples; the
-REFIT cohort still drops them. See `docs/COORDINATOR_SPEC.md` (Splitters). The
-JSON schemas above do not yet list these two fields.
+REFIT cohort still drops them. A third optional field,
+`target_missing_sample_ids` (omitted when empty), declares target-missing
+samples outside the CV universe; they never train, validate or score and stay
+eligible for PREDICT. See `docs/COORDINATOR_SPEC.md` (Splitters). The
+`campaign_spec`, `execution_plan` and `node_task` schemas list all three
+optional fields. dag-ml-data (0.2.16 and later) mirrors them with the same
+defaults and fingerprint; the shared
+`examples/fixtures/shared/fold_set_target_missing_resampled.json` fixture pins
+that parity in both repositories.
 
 ## ExecutionPlan v1
 

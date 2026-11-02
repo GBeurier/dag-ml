@@ -465,6 +465,7 @@ pub fn execute_nested_selection_with_metrics(
             sample_groups: outer.sample_groups.clone(),
             partition_mode: FoldPartitionMode::Resampled,
             train_exclusion: outer.train_exclusion,
+            target_missing_sample_ids: outer.target_missing_sample_ids.clone(),
         };
         let scope = format!(
             "outer fold `{}` selected candidate `{}`",

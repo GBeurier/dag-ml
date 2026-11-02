@@ -53,6 +53,7 @@ fn residual_targets_join_by_sample_id_in_foldset_order() {
         sample_groups: BTreeMap::new(),
         partition_mode: FoldPartitionMode::Partition,
         train_exclusion: FoldTrainExclusion::Relations,
+        target_missing_sample_ids: Vec::new(),
     };
     let blocks = [
         prediction(&producer, 0, &[4, 3], &[4.0, 3.0]),
@@ -84,6 +85,7 @@ fn residual_targets_reject_train_predictions_and_fold_identity_mismatch() {
         sample_groups: BTreeMap::new(),
         partition_mode: FoldPartitionMode::Partition,
         train_exclusion: FoldTrainExclusion::Relations,
+        target_missing_sample_ids: Vec::new(),
     };
     let targets = observed(&[(1, 10.0), (2, 20.0)]);
     let mut blocks = [
@@ -117,6 +119,7 @@ fn residual_targets_average_repeated_validation_before_subtraction() {
         sample_groups: BTreeMap::new(),
         partition_mode: FoldPartitionMode::Resampled,
         train_exclusion: FoldTrainExclusion::Relations,
+        target_missing_sample_ids: Vec::new(),
     };
     let blocks = [
         prediction(&producer, 0, &[1, 2], &[1.0, 2.0]),

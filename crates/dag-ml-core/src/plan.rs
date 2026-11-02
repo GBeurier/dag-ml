@@ -3206,6 +3206,7 @@ mod tests {
                     sample_groups: BTreeMap::new(),
                     partition_mode: FoldPartitionMode::Partition,
                     train_exclusion: FoldTrainExclusion::Relations,
+                    target_missing_sample_ids: Vec::new(),
                 }),
             }),
             generation: Default::default(),
