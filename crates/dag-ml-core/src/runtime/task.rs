@@ -1321,38 +1321,48 @@ impl NodeResult {
             .target_missing_sample_ids
             .iter()
             .collect::<BTreeSet<_>>();
+        let members_by = |matches: &dyn Fn(&crate::SampleRelation) -> bool| {
+            records
+                .iter()
+                .filter(|record| matches(record))
+                .map(|record| &record.sample_id)
+                .collect::<BTreeSet<_>>()
+        };
         for unit in &units {
-            let members = match unit {
+            // Every resolution a grouping policy may use is checked on its own, so a group id
+            // colliding across `group_id` and `independent_unit_id` cannot mask a group made
+            // only of target-missing samples.
+            let resolutions = match unit {
                 PredictionUnitId::Sample(sample_id) => {
                     samples.push(sample_id.clone());
                     continue;
                 }
-                PredictionUnitId::Group(group_id) => records
-                    .iter()
-                    .filter(|record| {
-                        record.group_id.as_ref() == Some(group_id)
-                            || record
-                                .metadata
-                                .get("independent_unit_id")
-                                .and_then(serde_json::Value::as_str)
-                                == Some(group_id.as_str())
-                    })
-                    .map(|record| &record.sample_id)
-                    .collect::<BTreeSet<_>>(),
-                PredictionUnitId::Target(target_id) => records
-                    .iter()
-                    .filter(|record| record.target_id.as_ref() == Some(target_id))
-                    .map(|record| &record.sample_id)
-                    .collect::<BTreeSet<_>>(),
+                PredictionUnitId::Group(group_id) => vec![
+                    members_by(&|record| record.group_id.as_ref() == Some(group_id)),
+                    members_by(&|record| {
+                        record
+                            .metadata
+                            .get("independent_unit_id")
+                            .and_then(serde_json::Value::as_str)
+                            == Some(group_id.as_str())
+                    }),
+                ],
+                PredictionUnitId::Target(target_id) => {
+                    vec![members_by(&|record| {
+                        record.target_id.as_ref() == Some(target_id)
+                    })]
+                }
             };
-            if members.is_empty() {
+            if resolutions.iter().all(BTreeSet::is_empty) {
                 return Err(DagMlError::RuntimeValidation(format!(
                     "node `{}` emitted a scored {unit:?} unit without attested relation members while target-missing samples are declared",
                     self.node_id
                 )));
             }
-            if members.iter().all(|id| declared.contains(id)) {
-                samples.extend(members.into_iter().cloned());
+            for members in resolutions {
+                if !members.is_empty() && members.iter().all(|id| declared.contains(id)) {
+                    samples.extend(members.into_iter().cloned());
+                }
             }
         }
         samples.extend(
