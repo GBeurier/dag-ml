@@ -503,3 +503,48 @@ repeats these checks and retains the later replay validation.
 The combined manifest fixture is the exact Core qualification producer manifest
 `nirs4all-core/bindings/rust/nirs4all/tests/parity/fixtures/n4a_v1/combined/manifest.json`,
 SHA-256 `4b2cd88270436433955fc9ba8f4851934c4079f534452cdc0c195d6aa5bafa4d`.
+
+
+## Finite JS RolePipeline v2 semantic readability (2026-11-08)
+
+The existing facet reader also recognizes one existing JS controller profile:
+`methods_role_pipeline`, RAW, `dagml.methods.wasm.regression@1.1.0`, with both
+record and artifact owned by `controller:methods.wasm.regression` and the same
+controller/version in the effective node plan. The strict private wrapper must
+use `dagml.methods.regression.v2`, `controller_version: "1.1.0"` and
+`recipe_profile: "pipeline_steps.v1"`; unknown fields and other versions refuse.
+The existing 1.0.0/v1 profiles retain their current validation and producer rules.
+
+This v2 profile requires `N4mRolePipeline` and a nonempty, explicit
+`node.params.pipeline_steps_v1`. Each step declares exactly one nonempty `class`
+or `methodId`, with optional object parameters and no nested reserved recipe key.
+If `operator.steps` is present, it must equal that base recipe. Only the reserved
+node parameter is removed before the remaining selected parameters overlay the
+last step. The complete saved recipe and effective parameter fingerprint must
+then agree. A 1.1.0 wrapper produced from `operator.steps` alone or `n4m:<id>` is
+unsupported here; the wrapper label does not establish recipe provenance.
+
+The raw wrapper SHA-256, size, URI, strict TCV1, node and parameter identity,
+unique feature/target names and absence of foreign native descriptors remain
+mandatory. The byte validator retains the original package bytes; the existing
+builder may reserialize the owner package while preserving its identity and the
+exact raw wrapper and state bytes. The pinned public synthetic run02 fixture
+retains base PLS component count 2,
+selected count 6, untouched SNV/SG declarations, 28 ordered training IDs and the
+genuine distinct source-table S and canonical-relation C fingerprints.
+
+There must be exactly one nonempty N4ME-marked buffer per declared step, with the
+existing i32 step-count bound. Filter recipes with fewer states remain
+unsupported in this profile. Buffers stay opaque: this check establishes no
+native state validity, width, role association, retention, replay, executability
+or portability. `inspect_facet_model_states` continues to return unverified
+state claims. The shared native caller gains only this declarative coverage;
+its Package3, controller and runtime gates are unchanged. No wire, public API,
+ABI, schema, version or numerical change is introduced.
+
+Qualification is deferred to the three `js_v2`/`genuine_js_v2` integration cases
+in `tests/artifact_facets.rs` and the existing v1/native regressions. Source
+preparation alone is not a successful gate. Native owner facet acceptance is
+required before the Core ignored producer, the measured old3377 refusal and any
+conditional Core WASM relink. The old reader may refuse relations or the codec
+first; that baseline does not isolate S/C from the changed reader coverage.

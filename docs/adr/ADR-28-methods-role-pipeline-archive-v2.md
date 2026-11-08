@@ -69,3 +69,33 @@ RolePipeline MEX. Its plugin is bound to `controller:methods.octave.regression`;
 its native runtime qualification remains pending. See
 [the adapter guide](../OCTAVE_METHODS_ROLE_ADAPTER.md).
 Published package versions and tags remain immutable.
+
+
+## 2026-11-08 clarification: finite JS wrapper-v2 reading
+
+The historical v1 producer and qualification statements above remain unchanged.
+The facet reader now has a bounded semantic branch for the existing WASM
+regression controller 1.1.0 wrapper `dagml.methods.regression.v2`, restricted to
+its explicit `pipeline_steps.v1` node-parameter recipe. This propagates an
+existing producer contract into the owner reader; it adds no execution path,
+codec registry, public API, wire/schema/ABI version or numerical behavior.
+
+Admission requires the exact WASM plugin/controller/version tuple, a strict
+wrapper, `N4mRolePipeline`, and nonempty `node.params.pipeline_steps_v1`.
+`operator.steps`, when supplied, must match the base recipe; remaining selected
+node parameters overlay only the final step after removal of the reserved key.
+The saved recipe and owner fingerprints must agree without rewriting bytes.
+Other 1.1.0 recipe sources, hosts and unknown versions remain unsupported.
+
+The existing equal step/state count and N4ME marker checks are retained for v2.
+The immutable public synthetic run02 capture contains three steps and three
+buffers; it provides no basis to admit filter recipes with fewer states. Opaque
+state validity, widths, roles, retention, replay and portability remain
+unverified. Shared native Package3/controller/runtime gates are unchanged.
+
+The contract README records the finite scope and targeted fixture selectors.
+Root must establish native semantic acceptance before the ignored Core producer
+and old3377 baseline. The old reader's actual first refusal (relations or codec)
+is reported honestly; it cannot isolate the relation-domain correction from the
+reader-coverage change. No new build or runtime success is claimed by this
+source-only clarification.

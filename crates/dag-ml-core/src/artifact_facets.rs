@@ -1987,6 +1987,75 @@ pub(crate) mod role_payload {
         params: serde_json::Map<String, Value>,
     }
 
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct MethodsRolePipelinePayloadV2 {
+        schema: String,
+        controller_version: String,
+        recipe_profile: String,
+        node_id: String,
+        params_fingerprint: String,
+        target_names: Vec<String>,
+        steps: Value,
+        feature_names: Vec<String>,
+        states: Vec<Vec<u8>>,
+    }
+
+    fn is_wasm_pipeline_steps_v2(record: &RefitArtifactRecord) -> bool {
+        record.artifact.plugin.as_deref() == Some("dagml.methods.wasm.regression")
+            && record.artifact.plugin_version.as_deref() == Some("1.1.0")
+            && record.artifact.controller_id.as_str() == "controller:methods.wasm.regression"
+            && record.controller_id.as_str() == "controller:methods.wasm.regression"
+    }
+
+    fn pipeline_steps_v1(value: &Value) -> Result<Vec<MethodsRolePipelineStep>> {
+        let steps = value
+            .as_array()
+            .filter(|steps| !steps.is_empty())
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation("pipeline_steps_v1 needs a nonempty recipe".into())
+            })?;
+        for step in steps {
+            let Some(step) = step.as_object() else {
+                return role_refuse("pipeline_steps_v1 step must be an object");
+            };
+            let nonempty_text = |key| {
+                step.get(key)
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| !value.is_empty())
+            };
+            let has_exclusive_declaration = (nonempty_text("class")
+                && !step.contains_key("methodId"))
+                || (nonempty_text("methodId") && !step.contains_key("class"));
+            if step
+                .keys()
+                .any(|key| !matches!(key.as_str(), "class" | "methodId" | "params"))
+                || !has_exclusive_declaration
+                || step.get("params").is_some_and(|params| {
+                    params
+                        .as_object()
+                        .is_none_or(|params| params.contains_key("pipeline_steps_v1"))
+                })
+            {
+                return role_refuse("pipeline_steps_v1 steps need one nonempty class/methodId and optional params object without the reserved recipe key");
+            }
+        }
+        Ok(serde_json::from_value(value.clone())?)
+    }
+
+    fn decode_wasm_pipeline_steps_v2(bytes: &[u8]) -> Result<MethodsRolePipelinePayloadV2> {
+        let saved: MethodsRolePipelinePayloadV2 = serde_json::from_slice(bytes)?;
+        if saved.schema != "dagml.methods.regression.v2"
+            || saved.controller_version != "1.1.0"
+            || saved.recipe_profile != "pipeline_steps.v1"
+        {
+            return role_refuse(
+                "RolePipeline v2 requires the exact WASM 1.1.0 pipeline_steps.v1 profile",
+            );
+        }
+        Ok(saved)
+    }
+
     pub(crate) fn validate_methods_role_pipeline_recipe(
         record: &RefitArtifactRecord,
         bytes: &[u8],
@@ -2032,6 +2101,39 @@ pub(crate) mod role_payload {
                     "RolePipeline graph operator has no native type".into(),
                 )
             })?;
+        if is_wasm_pipeline_steps_v2(record) {
+            if node.controller_id != record.controller_id
+                || node.controller_version != "1.1.0"
+                || kind != "N4mRolePipeline"
+            {
+                return role_refuse("RolePipeline v2 requires its exact effective WASM 1.1.0 controller and N4mRolePipeline operator");
+            }
+            let base = node.params.get("pipeline_steps_v1").ok_or_else(|| {
+                DagMlError::RuntimeValidation(
+                    "RolePipeline v2 requires explicit node.params.pipeline_steps_v1".into(),
+                )
+            })?;
+            let mut expected = pipeline_steps_v1(base)?;
+            if operator.get("steps").is_some_and(|steps| steps != base) {
+                return role_refuse(
+                    "RolePipeline operator.steps differs from its base pipeline_steps_v1 recipe",
+                );
+            }
+            let last = expected.last_mut().expect("nonempty recipe checked above");
+            last.params.extend(
+                node.params
+                    .iter()
+                    .filter(|(key, _)| key.as_str() != "pipeline_steps_v1")
+                    .map(|(key, value)| (key.clone(), value.clone())),
+            );
+            let saved = decode_wasm_pipeline_steps_v2(bytes)?;
+            if pipeline_steps_v1(&saved.steps)? != expected
+                || record.params_fingerprint != node.params_fingerprint
+            {
+                return role_refuse("RolePipeline saved recipe differs from its effective graph and selected parameters");
+            }
+            return Ok(());
+        }
         let mut expected: Vec<MethodsRolePipelineStep> = if kind == "N4mRolePipeline" {
             serde_json::from_value(operator.get("steps").cloned().ok_or_else(|| {
                 DagMlError::RuntimeValidation("RolePipeline graph operator has no steps".into())
@@ -2071,19 +2173,20 @@ pub(crate) mod role_payload {
     pub(crate) fn validate_role_payload(record: &RefitArtifactRecord, bytes: &[u8]) -> Result<()> {
         let artifact = &record.artifact;
         artifact.validate_portable()?;
+        let wasm_v2 = is_wasm_pipeline_steps_v2(record);
+        let legacy_v1 = matches!(
+            artifact.plugin.as_deref(),
+            Some(
+                "dagml.methods.wasm.regression"
+                    | "dagml.methods.python.regression"
+                    | "dagml.methods.r.regression"
+                    | "dagml.methods.octave.regression"
+                    | "dagml.methods.native.regression"
+            )
+        ) && artifact.plugin_version.as_deref() == Some("1.0.0");
         if artifact.kind != "methods_role_pipeline"
             || artifact.backend != Some(ArtifactBackend::Raw)
-            || !matches!(
-                artifact.plugin.as_deref(),
-                Some(
-                    "dagml.methods.wasm.regression"
-                        | "dagml.methods.python.regression"
-                        | "dagml.methods.r.regression"
-                        | "dagml.methods.octave.regression"
-                        | "dagml.methods.native.regression"
-                )
-            )
-            || artifact.plugin_version.as_deref() != Some("1.0.0")
+            || !(wasm_v2 || legacy_v1)
             || artifact.native_predictor_descriptor.is_some()
             || artifact.native_estimator_descriptor.is_some()
             || bytes.is_empty()
@@ -2129,13 +2232,26 @@ pub(crate) mod role_payload {
                 "RolePipeline payload is outside strict TCV1: {error}"
             ))
         })?;
-        let payload: MethodsRolePipelinePayload = serde_json::from_str(text)?;
+        let payload: MethodsRolePipelinePayload = if wasm_v2 {
+            let saved = decode_wasm_pipeline_steps_v2(bytes)?;
+            MethodsRolePipelinePayload {
+                schema: saved.schema,
+                node_id: saved.node_id,
+                params_fingerprint: saved.params_fingerprint,
+                target_names: saved.target_names,
+                steps: pipeline_steps_v1(&saved.steps)?,
+                feature_names: saved.feature_names,
+                states: saved.states,
+            }
+        } else {
+            serde_json::from_str(text)?
+        };
         let unique_text = |values: &[String]| {
             !values.is_empty()
                 && values.iter().all(|value| !value.is_empty())
                 && values.iter().collect::<BTreeSet<_>>().len() == values.len()
         };
-        if payload.schema != "dagml.methods.regression.v1"
+        if (!wasm_v2 && payload.schema != "dagml.methods.regression.v1")
             || payload.node_id != record.node_id.as_str()
             || payload.params_fingerprint != record.params_fingerprint
             || !unique_text(&payload.target_names)
