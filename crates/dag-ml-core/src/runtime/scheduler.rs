@@ -58,6 +58,7 @@ fn validate_replay_external_test_authority(replay: &BundleReplayExecution<'_>) -
         })?;
         envelope.validate_external_test_training_authority(
             requirement.relation_fingerprint.as_deref(),
+            None,
             replay.plan.fold_set.as_ref(),
         )?;
     }

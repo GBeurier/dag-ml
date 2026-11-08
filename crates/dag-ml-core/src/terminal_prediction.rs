@@ -204,6 +204,29 @@ pub fn validate_terminal_prediction_preflight(
     envelope: &ExternalDataPlanEnvelope,
     selector: &TerminalPredictionSelector,
 ) -> Result<()> {
+    validate_terminal_prediction_selector(plan, envelope, selector)?;
+    for node in plan
+        .node_plans
+        .values()
+        .filter(|node| node.supported_phases.contains(&Phase::Predict))
+    {
+        for binding in &node.data_bindings {
+            envelope.validate_external_test_training_authority(
+                binding.relation_fingerprint.as_deref(),
+                None,
+                plan.fold_set.as_ref(),
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// Selector/shape checks shared after an initial package has proved its S/C pair.
+pub(crate) fn validate_terminal_prediction_selector(
+    plan: &ExecutionPlan,
+    envelope: &ExternalDataPlanEnvelope,
+    selector: &TerminalPredictionSelector,
+) -> Result<()> {
     let _cohort = require_terminal_predict_cohort(envelope)?;
     selector.validate()?;
     plan.validate()?;
@@ -293,18 +316,6 @@ pub fn validate_terminal_prediction_preflight(
             "terminal PREDICT selector `{}.{}` uses unsupported non-sample aggregation",
             selector.node_id, selector.port
         )));
-    }
-    for node in plan
-        .node_plans
-        .values()
-        .filter(|node| node.supported_phases.contains(&Phase::Predict))
-    {
-        for binding in &node.data_bindings {
-            envelope.validate_external_test_training_authority(
-                binding.relation_fingerprint.as_deref(),
-                plan.fold_set.as_ref(),
-            )?;
-        }
     }
     Ok(())
 }

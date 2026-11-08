@@ -53,6 +53,8 @@ struct ControllerState {
     exports: usize,
     hydrates: usize,
     releases: usize,
+    real_dmd: bool,
+    training_orders: Vec<Value>,
 }
 
 unsafe extern "C" fn invoke(
@@ -141,6 +143,20 @@ unsafe extern "C" fn invoke(
         result["predictions"][0]["sample_ids"] = json!(["sample:heldout:1"]);
         result["predictions"][0]["values"] = json!([[7.0]]);
     }
+    if state.real_dmd && task["phase"] == "REFIT" {
+        // Existing mock controller, now echoing the real producer's requested
+        // train order. These constants are not numerical parity evidence.
+        let ids = task["data_views"]
+            .as_object()
+            .unwrap()
+            .values()
+            .find(|view| view["partition"] == "full_train")
+            .unwrap()["sample_ids"]
+            .clone();
+        state.training_orders.push(ids.clone());
+        result["predictions"][0]["sample_ids"] = ids.clone();
+        result["predictions"][0]["values"] = json!(vec![vec![7.0]; ids.as_array().unwrap().len()]);
+    }
     if state.portable && task["phase"] == "REFIT" {
         result["artifacts"][0]["backend"] = json!("raw");
         result["artifacts"][0]["size_bytes"] = json!(3);
@@ -158,14 +174,30 @@ unsafe extern "C" fn invoke(
     DagMlStatusCode::OK
 }
 
-fn run_multi_output_replay(portable: bool) {
-    let fixture = InitialFullRefitPackage::from_json(PACKAGE).unwrap();
+fn run_multi_output_replay(portable: bool, real_dmd: bool) {
+    let mut fixture = InitialFullRefitPackage::from_json(PACKAGE).unwrap();
+    let producer: Value = serde_json::from_str(include_str!(
+        "../../dag-ml-core/tests/fixtures/initial_full_refit/real_dmd_train_relations.json"
+    ))
+    .unwrap();
+    if real_dmd {
+        fixture.training_envelope.relation_fingerprint =
+            Some(producer["source_key"].as_str().unwrap().into());
+        fixture.training_envelope.coordinator_relations =
+            Some(serde_json::from_value(producer["coordinator_relations"].clone()).unwrap());
+        fixture.training_sample_ids =
+            serde_json::from_value(producer["training_sample_ids"].clone()).unwrap();
+    }
     let mut graph = serde_json::to_value(&fixture.effective_plan.graph_plan.graph).unwrap();
     let mut second = graph["nodes"][0].clone();
     second["id"] = json!("model:second");
     graph["nodes"].as_array_mut().unwrap().push(second);
     let graph: GraphSpec = serde_json::from_value(graph).unwrap();
     let mut campaign = serde_json::to_value(&fixture.effective_plan.campaign).unwrap();
+    if real_dmd {
+        campaign["data_bindings"]["model:initial"][0]["relation_fingerprint"] =
+            producer["source_key"].clone();
+    }
     let mut second_binding = campaign["data_bindings"]["model:initial"][0].clone();
     second_binding["node_id"] = json!("model:second");
     campaign["data_bindings"]["model:second"] = json!([second_binding]);
@@ -183,6 +215,7 @@ fn run_multi_output_replay(portable: bool) {
     let ids_json = serde_json::to_vec(&fixture.training_sample_ids).unwrap();
     let mut state = ControllerState {
         portable,
+        real_dmd,
         ..Default::default()
     };
     let binding = DagMlControllerBinding {
@@ -219,6 +252,38 @@ fn run_multi_output_replay(portable: bool) {
     let package_json = serde_json::to_vec(&capture["initial_full_refit_package"]).unwrap();
     let package =
         InitialFullRefitPackage::from_json(std::str::from_utf8(&package_json).unwrap()).unwrap();
+    if real_dmd {
+        package.validate().unwrap();
+        let canonical = package.training_relations.fingerprint().unwrap();
+        assert_eq!(canonical, producer["canonical_key"].as_str().unwrap());
+        assert_ne!(canonical, producer["source_key"].as_str().unwrap());
+        assert_eq!(
+            package.training_envelope.relation_fingerprint.as_deref(),
+            producer["source_key"].as_str()
+        );
+        assert_eq!(package.training_sample_ids, fixture.training_sample_ids);
+        assert_eq!(
+            state.training_orders,
+            vec![producer["training_sample_ids"].clone(); 2]
+        );
+        // A real source-domain mismatch fails before another controller call.
+        let mut bad = fixture.training_envelope.clone();
+        bad.relation_fingerprint = Some("f".repeat(64));
+        let bad_json = serde_json::to_vec(&bad).unwrap();
+        let bad_request = DagMlInitialFullRefitExecuteRequest {
+            envelope_json: view(&bad_json),
+            ..request
+        };
+        let mut rejected = DagMlOwnedBytes::default();
+        let mut rejection = DagMlString::default();
+        let status = unsafe {
+            dagml_initial_full_refit_execute_json(&bad_request, &mut rejected, &mut rejection)
+        };
+        assert_eq!(status, DagMlStatusCode::VALIDATION_ERROR);
+        assert!(rejected.ptr.is_null());
+        assert!(error_message(rejection).contains("fingerprint mismatch"));
+        assert_eq!(state.calls, 2);
+    }
     assert_eq!(package.outputs.len(), 2);
     assert_eq!(package.artifacts.len(), 2);
     assert_eq!(state.calls, 2);
@@ -310,12 +375,17 @@ fn run_multi_output_replay(portable: bool) {
 
 #[test]
 fn c_abi_initial_full_refit_replays_two_independent_outputs() {
-    run_multi_output_replay(false);
+    run_multi_output_replay(false, false);
 }
 
 #[test]
 fn c_abi_initial_full_refit_replays_two_portable_outputs_in_fresh_host() {
-    run_multi_output_replay(true);
+    run_multi_output_replay(true, false);
+}
+
+#[test]
+fn c_abi_real_dmd_source_and_coordinator_identities_round_trip_and_replay() {
+    run_multi_output_replay(true, true);
 }
 
 unsafe extern "C" fn release_bytes(_user_data: *mut c_void, bytes: DagMlOwnedBytes) {

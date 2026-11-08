@@ -262,15 +262,15 @@ fn missing_or_wrong_authority_is_refused_and_non_external_roles_remain_unchanged
     let expected = original.relation_fingerprint.as_deref().unwrap();
     let folds = package.effective_plan.fold_set.as_ref();
     original
-        .validate_external_test_training_authority(Some(expected), folds)
+        .validate_external_test_training_authority(Some(expected), Some(expected), folds)
         .unwrap();
     assert!(original
-        .validate_external_test_training_authority(None, folds)
+        .validate_external_test_training_authority(None, Some(expected), folds)
         .is_err());
     let mut bad = original.clone();
     bad.coordinator_relations = None;
     assert!(bad
-        .validate_external_test_training_authority(Some(expected), folds)
+        .validate_external_test_training_authority(Some(expected), Some(expected), folds)
         .is_err());
     let mut missing_map = envelopes.clone();
     *missing_map.values_mut().next().unwrap() = bad;
@@ -279,7 +279,7 @@ fn missing_or_wrong_authority_is_refused_and_non_external_roles_remain_unchanged
         let mut bad = original.clone();
         bad.relation_fingerprint = fingerprint;
         assert!(bad
-            .validate_external_test_training_authority(Some(expected), folds)
+            .validate_external_test_training_authority(Some(expected), Some(expected), folds)
             .is_err());
         let mut bad_map = envelopes.clone();
         *bad_map.values_mut().next().unwrap() = bad;
@@ -325,7 +325,7 @@ fn external_cohort_cannot_reuse_training_origin_alias() {
     envelope.relation_fingerprint = Some(fingerprint.clone());
     envelope.coordinator_relations = Some(relations);
     let error = envelope
-        .validate_external_test_training_authority(Some(&fingerprint), None)
+        .validate_external_test_training_authority(Some(&fingerprint), Some(&fingerprint), None)
         .unwrap_err();
     assert!(error
         .to_string()
@@ -344,7 +344,7 @@ fn cv_fold_sample_origin_and_target_missing_are_refused() {
     folds.validate().unwrap();
     let mut envelope = original.clone();
     assert!(envelope
-        .validate_external_test_training_authority(Some(expected), Some(&folds))
+        .validate_external_test_training_authority(Some(expected), Some(expected), Some(&folds))
         .unwrap_err()
         .to_string()
         .contains("target-missing"));
@@ -367,7 +367,11 @@ fn cv_fold_sample_origin_and_target_missing_are_refused() {
         envelope.predict_cohort = Some(cohort.clone());
         assert_eq!(
             envelope
-                .validate_external_test_training_authority(Some(expected), Some(&folds))
+                .validate_external_test_training_authority(
+                    Some(expected),
+                    Some(expected),
+                    Some(&folds)
+                )
                 .unwrap_err()
                 .to_string(),
             DagMlError::CampaignValidation(format!(
@@ -577,6 +581,209 @@ fn initial_refit_uses_its_package_training_relations() {
     assert!(error
         .to_string()
         .contains("external_test training relations do not match owner authority"));
+}
+
+// Relation-only snapshot of the real DMD producer, not a host-made S=C packet.
+fn real_dmd_initial_package() -> (InitialFullRefitPackage, serde_json::Value) {
+    let producer: serde_json::Value = serde_json::from_str(include_str!(
+        "fixtures/initial_full_refit/real_dmd_train_relations.json"
+    ))
+    .unwrap();
+    let mut package = InitialFullRefitPackage::from_json(include_str!(
+        "fixtures/initial_full_refit/package.json"
+    ))
+    .unwrap();
+    package.training_relations =
+        serde_json::from_value(producer["coordinator_relations"].clone()).unwrap();
+    package.training_sample_ids =
+        serde_json::from_value(producer["training_sample_ids"].clone()).unwrap();
+    package.training_envelope.coordinator_relations = Some(package.training_relations.clone());
+    package.training_envelope.relation_fingerprint =
+        Some(producer["source_key"].as_str().unwrap().into());
+    let mut campaign = package.effective_plan.campaign.clone();
+    for binding in campaign.data_bindings.values_mut().flatten() {
+        binding.relation_fingerprint = package.training_envelope.relation_fingerprint.clone();
+    }
+    let mut manifests = ControllerRegistry::new();
+    for manifest in package.effective_plan.controller_manifests.values() {
+        manifests.register(manifest.clone()).unwrap();
+    }
+    package.effective_plan = build_execution_plan(
+        "plan:real.dmd.initial",
+        package.effective_plan.graph_plan.graph.clone(),
+        campaign,
+        &manifests,
+    )
+    .unwrap();
+    package.effective_plan_fingerprint =
+        parse_typed_json(&serde_json::to_string(&package.effective_plan).unwrap())
+            .unwrap()
+            .fingerprint()
+            .unwrap();
+    package.variant_id = package.effective_plan.variants[0].variant_id.clone();
+    package.data_identities = package
+        .effective_plan
+        .node_plans
+        .values()
+        .flat_map(|node| &node.data_bindings)
+        .map(|binding| {
+            TrainingDataIdentity::from_binding_envelope(binding, &package.training_envelope)
+                .unwrap()
+        })
+        .collect();
+    package.package_fingerprint = package.compute_fingerprint().unwrap();
+    package.validate().unwrap();
+    (package, producer)
+}
+
+#[test]
+fn real_dmd_initial_package_round_trips_and_replays_with_distinct_domains() {
+    let (package, producer) = real_dmd_initial_package();
+    let canonical = package.training_relations.fingerprint().unwrap();
+    let source = producer["source_key"].as_str().unwrap();
+    assert_eq!(canonical, producer["canonical_key"].as_str().unwrap());
+    assert_ne!(source, canonical);
+    let roundtrip =
+        InitialFullRefitPackage::from_json(&serde_json::to_string(&package).unwrap()).unwrap();
+    assert_eq!(roundtrip, package);
+    let cohort = PredictCohort::from_relations(
+        PredictCohortRole::ExternalTest,
+        unrelated(),
+        vec!["y".into()],
+        "c".repeat(64),
+        Some("d".repeat(64)),
+    )
+    .unwrap();
+    let envelope = package.predict_envelope(cohort).unwrap();
+    let outputs: Vec<_> = package
+        .outputs
+        .iter()
+        .map(|o| o.output_id.clone())
+        .collect();
+    envelope
+        .validate_external_test_training_authority(Some(source), Some(&canonical), None)
+        .unwrap();
+    preflight_initial_full_refit_prediction(&package, &envelope, &outputs).unwrap();
+    let selector = TerminalPredictionSelector::new(
+        package.outputs[0].node_id.clone(),
+        package.outputs[0].port_name.clone(),
+    )
+    .unwrap();
+    // The plan owns S only; it does not invent a canonical key from S.
+    validate_terminal_prediction_preflight(&package.effective_plan, &envelope, &selector).unwrap();
+    let mut bad_source = envelope.clone();
+    bad_source.relation_fingerprint = Some("f".repeat(64));
+    assert!(preflight_initial_full_refit_prediction(&package, &bad_source, &outputs).is_err());
+    assert!(validate_terminal_prediction_preflight(
+        &package.effective_plan,
+        &bad_source,
+        &selector
+    )
+    .is_err());
+    let mut bad_records = envelope.clone();
+    bad_records.coordinator_relations.as_mut().unwrap().records[0]
+        .metadata
+        .insert("changed".into(), serde_json::json!(true));
+    assert!(preflight_initial_full_refit_prediction(&package, &bad_records, &outputs).is_err());
+    for change_identity in [false, true] {
+        let mut forged = package.clone();
+        if change_identity {
+            forged.data_identities[0].relation_fingerprint = "f".repeat(64);
+            forged.data_identities[0].identity_fingerprint =
+                forged.data_identities[0].compute_fingerprint().unwrap();
+        } else {
+            forged.training_relations.records[0]
+                .metadata
+                .insert("changed".into(), serde_json::json!(true));
+        }
+        forged.package_fingerprint = forged.compute_fingerprint().unwrap();
+        assert!(forged.validate().is_err());
+    }
+    let overlap = PredictCohort::from_relations(
+        PredictCohortRole::ExternalTest,
+        package.training_relations.clone(),
+        vec!["y".into()],
+        "c".repeat(64),
+        Some("d".repeat(64)),
+    )
+    .unwrap();
+    assert!(package.predict_envelope(overlap).is_err());
+}
+
+#[test]
+fn real_dmd_initial_refit_refuses_provider_records_identity_and_order_before_callbacks() {
+    struct Provider {
+        records: SampleRelationSet,
+        identity: TrainingDataIdentity,
+        ids: Vec<SampleId>,
+    }
+    impl RuntimeDataProvider for Provider {
+        fn materialize(&self, _: &DataMaterializationRequest) -> Result<HandleRef> {
+            panic!("invalid attestation must be rejected before materialization");
+        }
+        fn make_view(&self, _: &DataViewRequest) -> Result<HandleRef> {
+            panic!("invalid attestation must be rejected before view creation");
+        }
+        fn training_data_identity(&self, _: &DataBinding) -> Result<Option<TrainingDataIdentity>> {
+            Ok(Some(self.identity.clone()))
+        }
+        fn coordinator_relations(&self, _: &DataBinding) -> Result<Option<SampleRelationSet>> {
+            Ok(Some(self.records.clone()))
+        }
+        fn refit_sample_ids(&self, _: &DataBinding) -> Result<Option<Vec<SampleId>>> {
+            Ok(Some(self.ids.clone()))
+        }
+    }
+    let (package, _) = real_dmd_initial_package();
+    for mutation in 0..6 {
+        let mut provider = Provider {
+            records: package.training_relations.clone(),
+            identity: package.data_identities[0].clone(),
+            ids: package.training_sample_ids.clone(),
+        };
+        match mutation {
+            0 => {
+                provider.records.records[0]
+                    .metadata
+                    .insert("changed".into(), serde_json::json!(true));
+            }
+            1 => provider.records.records[0].group_id = Some(GroupId::new("changed").unwrap()),
+            2 => {
+                provider.records.records[0].origin_sample_id =
+                    Some(package.training_sample_ids[0].clone());
+            }
+            3 => provider.records.records[0].excluded = true,
+            4 => {
+                provider.identity.target_content_fingerprint = "f".repeat(64);
+                provider.identity.identity_fingerprint =
+                    provider.identity.compute_fingerprint().unwrap();
+            }
+            _ => provider.ids.swap(0, 1),
+        }
+        let controllers = RuntimeControllerRegistry::new();
+        let error = execute_initial_full_refit(InitialFullRefitExecutionInput {
+            package_id: "package:real.dmd.refused".into(),
+            run_id: RunId::new("run:real.dmd.refused").unwrap(),
+            plan: &package.effective_plan,
+            training_envelope: &package.training_envelope,
+            training_sample_ids: &package.training_sample_ids,
+            controllers: &controllers,
+            data_provider: &provider,
+            root_seed: Some(0),
+            resource_limits: None,
+            scheduler: InitialRefitScheduler::Sequential,
+        })
+        .err()
+        .expect("mismatched native provider attestation must be refused");
+        assert!(
+            error.to_string().contains(match mutation {
+                0..=3 => "provider relations differ",
+                4 => "provider identity does not match",
+                _ => "training order differs",
+            }),
+            "mutation {mutation}: {error}"
+        );
+    }
 }
 
 #[test]

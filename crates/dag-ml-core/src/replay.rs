@@ -2495,6 +2495,7 @@ fn replay_plan_and_bundle_for_current_cohort(
             })?;
             envelope.validate_external_test_training_authority(
                 requirement.relation_fingerprint.as_deref(),
+                None,
                 plan.fold_set.as_ref(),
             )?;
             requirement.relation_fingerprint = envelope.relation_fingerprint.clone();

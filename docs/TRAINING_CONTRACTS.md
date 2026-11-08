@@ -22,6 +22,28 @@ TrainingRequest
   -> TrainingOutcome reference + PortablePredictorPackage
 ```
 
+### Initial full-refit relation identities
+
+The initial full-refit envelope, plan bindings and `TrainingDataIdentity` keep
+the data producer's source relation-table replay key (S) unchanged. The full
+typed `training_relations` carried by `InitialFullRefitPackage` have a separate
+canonical coordinator identity (C), computed by `SampleRelationSet::fingerprint`.
+These domains need not be equal. Both authorities are sealed by the existing
+package fingerprint; no package/envelope field or hash algorithm changes.
+
+Before REFIT callbacks, the provider's complete content identity must match the
+binding/envelope identity, its full relations must exactly match the training
+envelope, and its explicit sample order must match the requested training
+universe. Package validation retains the same source bindings, exact relations,
+schema/plan/content identities, artifact closure and integrity checks.
+
+External-test replay checks the envelope root against the owner's source key.
+Where the owner independently stores training records (the initial package),
+it also checks those records' canonical key, computed once per replay. Other
+terminal/bundle profiles supply no independent canonical key; they never infer
+C from S. Existing fold-universe, physical/origin disjointness and target-missing
+checks remain required. Inference does not gain external-test scoring claims.
+
 No contract contains a Python estimator, process pointer, Rust handle or other
 process-local object. Host objects are resolved separately when an artifact is
 explicitly marked `host_sidecar`.

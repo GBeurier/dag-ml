@@ -1932,6 +1932,7 @@ pub struct ExternalDataPlanEnvelope {
     pub schema_version: u32,
     pub schema_fingerprint: String,
     pub plan_fingerprint: String,
+    /// Source-table replay key; distinct from the canonical coordinator-record identity.
     #[serde(default)]
     pub relation_fingerprint: Option<String>,
     /// Optional additive identity of the concrete feature/input content. Legacy
@@ -1957,7 +1958,8 @@ impl ExternalDataPlanEnvelope {
     /// Inference and V1 envelopes make no such claim.
     pub fn validate_external_test_training_authority(
         &self,
-        training_relation_fingerprint: Option<&str>,
+        source_key: Option<&str>,
+        canonical_key: Option<&str>,
         fold_set: Option<&FoldSet>,
     ) -> Result<()> {
         let Some(cohort) = self
@@ -1967,7 +1969,7 @@ impl ExternalDataPlanEnvelope {
         else {
             return Ok(());
         };
-        let expected = training_relation_fingerprint.ok_or_else(|| {
+        let expected_source = source_key.ok_or_else(|| {
             DagMlError::CampaignValidation(
                 "external_test requires an owner training relation fingerprint".to_string(),
             )
@@ -1977,14 +1979,37 @@ impl ExternalDataPlanEnvelope {
                 "external_test requires owner training relations".to_string(),
             )
         })?;
-        if relations.fingerprint()? != expected
-            || self.relation_fingerprint.as_deref() != Some(expected)
+        // S binds the source replay contract. Only an independently owned record
+        // set can supply C; never infer C from S for a DMD-produced envelope.
+        if self.relation_fingerprint.as_deref() != Some(expected_source)
+            || match canonical_key {
+                Some(expected) => relations.fingerprint()? != expected,
+                None => false,
+            }
         {
             return Err(DagMlError::CampaignValidation(
                 "external_test training relations do not match owner authority".to_string(),
             ));
         }
         if let Some(folds) = fold_set {
+            // Fold membership is an existing owner authority even when this
+            // profile has no independently stored canonical record set.
+            let universe = folds
+                .sample_ids
+                .iter()
+                .chain(folds.target_missing_sample_ids.iter())
+                .collect::<BTreeSet<_>>();
+            if relations.records.iter().any(|record| {
+                !universe.contains(&record.sample_id)
+                    || record
+                        .origin_sample_id
+                        .as_ref()
+                        .is_some_and(|origin| !universe.contains(origin))
+            }) {
+                return Err(DagMlError::CampaignValidation(
+                    "external_test training relations do not match owner authority".to_string(),
+                ));
+            }
             cohort.validate_against_cv_fold_set(folds)?;
         }
         cohort.validate_against_cv_relations(relations)
