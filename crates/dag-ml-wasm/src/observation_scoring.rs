@@ -8,9 +8,9 @@ use super::*;
 
 use dag_ml_core::{
     aggregate_observation_predictions, plan_oof_partition_mode, score_regression_prediction_block,
-    AggregationPolicy, ExplicitPhaseDataProvider, ExternalDataPlanEnvelope,
-    ObservationPredictionBlock, PredictionBlock, RegressionMetricKind, RegressionTargetBlock,
-    SampleRelationSet,
+    score_regression_prediction_block_with_profile, AggregationPolicy, ExplicitPhaseDataProvider,
+    ExternalDataPlanEnvelope, ObservationPredictionBlock, PredictionBlock, RegressionMetricKind,
+    RegressionReportProfile, RegressionTargetBlock, SampleRelationSet,
 };
 
 fn contract<T: DeserializeOwned + serde::Serialize>(json: &str, label: &str) -> CoreResult<T> {
@@ -163,6 +163,37 @@ fn score_regression_prediction_block_json_impl(
     serde_json::to_string(&report).map_err(CoreDagMlError::Serialization)
 }
 
+/// Score known-reference predictions with an explicit versioned owner profile.
+/// `profile_json` is a JSON string, e.g. `"regression_report.population_rmse_ratios.v1"`.
+#[wasm_bindgen]
+pub fn score_regression_prediction_block_with_profile_json(
+    predictions_json: &js_sys::JsString,
+    targets_json: &js_sys::JsString,
+    profile_json: &js_sys::JsString,
+) -> Result<String, JsValue> {
+    let predictions_json = crate::js_text::text_argument(predictions_json, "predictions_json")?;
+    let targets_json = crate::js_text::text_argument(targets_json, "targets_json")?;
+    let profile_json = crate::js_text::text_argument(profile_json, "profile_json")?;
+    score_regression_prediction_block_with_profile_json_impl(
+        &predictions_json,
+        &targets_json,
+        &profile_json,
+    )
+    .map_err(js_core_error)
+}
+
+fn score_regression_prediction_block_with_profile_json_impl(
+    predictions_json: &str,
+    targets_json: &str,
+    profile_json: &str,
+) -> CoreResult<String> {
+    let predictions: PredictionBlock = contract(predictions_json, "sample prediction block")?;
+    let targets: RegressionTargetBlock = contract(targets_json, "regression target block")?;
+    let profile: RegressionReportProfile = contract(profile_json, "regression report profile")?;
+    let report = score_regression_prediction_block_with_profile(&predictions, &targets, profile)?;
+    serde_json::to_string(&report).map_err(CoreDagMlError::Serialization)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -253,4 +284,147 @@ mod tests {
                 .contains(&serde_json::json!(name)));
         }
     }
+
+    #[test]
+    fn profile_scoring_export_preserves_identity_zero_rmse_and_reasons() {
+        let mut predictions = serde_json::json!({
+            "prediction_id":"pred:replay", "producer_node":"model:web.pipeline",
+            "partition":"final", "fold_id":null, "sample_ids":["p1","p0"],
+            "values":[[3.0],[1.0]], "target_names":["y"]
+        });
+        let mut targets = serde_json::json!({
+            "level":"sample", "unit_ids":[{"level":"sample","id":"p0"},{"level":"sample","id":"p1"}],
+            "values":[[0.0],[2.0]], "target_names":["y"]
+        });
+        let profile_json = r#""regression_report.population_rmse_ratios.v1""#;
+        let report: serde_json::Value = serde_json::from_str(
+            &score_regression_prediction_block_with_profile_json_impl(
+                &predictions.to_string(),
+                &targets.to_string(),
+                profile_json,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(report["prediction_id"], "pred:replay");
+        assert_eq!(report["producer_node"], "model:web.pipeline");
+        assert_eq!(report["partition"], "final");
+        assert_eq!(report["row_count"], 2);
+        assert_eq!(
+            report["metric_profile"],
+            "regression_report.population_rmse_ratios.v1"
+        );
+        // Reversed target identities must join by ID, never by row position.
+        assert_eq!(
+            report["metrics"],
+            serde_json::json!({"rmse":1.0,"bias":1.0,"r2":0.0,"rpd":1.0,"rpiq":1.0})
+        );
+        assert!(report.get("undefined_metrics").is_none());
+        predictions["values"] = serde_json::json!([[2.0], [2.0]]);
+        targets["values"] = serde_json::json!([[2.0], [2.0]]);
+        let report: serde_json::Value = serde_json::from_str(
+            &score_regression_prediction_block_with_profile_json_impl(
+                &predictions.to_string(),
+                &targets.to_string(),
+                profile_json,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            report["metrics"],
+            serde_json::json!({"rmse":0.0,"bias":0.0})
+        );
+        assert_eq!(
+            report["undefined_metrics"],
+            serde_json::json!({
+                "r2":"constant_target", "rpd":"zero_rmse", "rpiq":"zero_rmse"
+            })
+        );
+        for invalid_profile in [
+            r#""regression_report.population_rmse_ratios.v2""#,
+            r#"{"profile":"regression_report.population_rmse_ratios.v1"}"#,
+        ] {
+            assert!(score_regression_prediction_block_with_profile_json_impl(
+                &predictions.to_string(),
+                &targets.to_string(),
+                invalid_profile,
+            )
+            .is_err());
+        }
+        assert!(score_regression_prediction_block_with_profile_json_impl(
+            &predictions.to_string(),
+            "[]",
+            profile_json,
+        )
+        .is_err());
+        targets["unit_ids"][0]["id"] = serde_json::json!("missing-reference");
+        assert!(score_regression_prediction_block_with_profile_json_impl(
+            &predictions.to_string(),
+            &targets.to_string(),
+            profile_json,
+        )
+        .is_err());
+        assert!(contract_manifest()["wasm_exports"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!(
+                "score_regression_prediction_block_with_profile_json"
+            )));
+    }
+}
+
+/// Execute a whole ordered Cartesian bank with native FIT_CV + holdout SELECT.
+/// No host candidate loop, REFIT, or synthetic cross-fold average participates.
+#[wasm_bindgen]
+#[allow(clippy::too_many_arguments)]
+pub fn execute_single_holdout_bank_json(
+    execution_plan_json: &js_sys::JsString,
+    trusted_controller_manifests_json: &js_sys::JsString,
+    envelope_json: &js_sys::JsString,
+    request_json: &js_sys::JsString,
+    run_id: &js_sys::JsString,
+    root_seed: &js_sys::JsString,
+    js_invoke: &js_sys::Function,
+) -> Result<String, JsValue> {
+    let plan_json = crate::js_text::text_argument(execution_plan_json, "execution_plan_json")?;
+    let manifests_json = crate::js_text::text_argument(
+        trusted_controller_manifests_json,
+        "trusted_controller_manifests_json",
+    )?;
+    let envelope_json = crate::js_text::text_argument(envelope_json, "envelope_json")?;
+    let request_json = crate::js_text::text_argument(request_json, "request_json")?;
+    let run_id = crate::js_text::text_argument(run_id, "run_id")?;
+    let root_seed = crate::js_text::text_argument(root_seed, "root_seed")?;
+    let seed = root_seed
+        .parse::<u64>()
+        .map_err(|_| JsValue::from_str("root_seed must be an exact decimal u64"))?;
+    let plan = ExecutionPlan::from_json(&plan_json).map_err(js_core_error)?;
+    let trusted = controller_registry_from_json(&manifests_json)?;
+    validate_runtime_controller_manifests(&plan, &trusted).map_err(js_core_error)?;
+    let envelope: ExternalDataPlanEnvelope =
+        contract(&envelope_json, "single holdout data envelope").map_err(js_core_error)?;
+    plan.campaign
+        .validate_data_envelope_relations(&envelope)
+        .map_err(js_core_error)?;
+    let request: dag_ml_core::SingleHoldoutBankRequest =
+        contract(&request_json, "single holdout bank request").map_err(js_core_error)?;
+    let provider = ExplicitPhaseDataProvider::new(
+        ControllerId::new("controller:data.provider").map_err(js_core_error)?,
+        envelope,
+        None,
+    )
+    .map_err(js_core_error)?;
+    let controllers =
+        initial_refit::controllers_for_plan(&plan, js_invoke).map_err(js_core_error)?;
+    let result = dag_ml_core::execute_single_holdout_bank(
+        &plan,
+        &request,
+        &RunId::new(run_id).map_err(js_core_error)?,
+        Some(seed),
+        &controllers,
+        &provider,
+    )
+    .map_err(js_core_error)?;
+    serde_json::to_string(&result).map_err(js_serde_error)
 }

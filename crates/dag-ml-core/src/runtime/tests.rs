@@ -3971,6 +3971,8 @@ fn stacking_best_selector_uses_validation_score_before_meta_fit() {
         (format!("{second}.oof"), input(second.clone(), 2.0)),
     ]);
     let report = |producer_node, rmse| crate::metrics::RegressionMetricReport {
+        metric_profile: None,
+        undefined_metrics: BTreeMap::new(),
         target_domain: None,
         grouping_key: None,
         prediction_id: None,
@@ -4046,6 +4048,8 @@ fn stacking_fold_candidate_top_k_uses_only_inner_validation_scores() {
         target_names: vec!["y".to_string()],
     };
     let report = |producer_node, fold, rmse| crate::metrics::RegressionMetricReport {
+        metric_profile: None,
+        undefined_metrics: BTreeMap::new(),
         target_domain: None,
         grouping_key: None,
         prediction_id: None,
@@ -25052,3 +25056,6 @@ mod independent_unit_contract {
         );
     }
 }
+
+#[path = "single_holdout_tests.rs"]
+mod single_holdout_tests;

@@ -2,6 +2,11 @@
 
 ## 0.4.0 - Unreleased
 
+- Correct the opt-in `regression_report.population_rmse_ratios.v1` diagnostics:
+  omit undefined constant-target R² and zero-RMSE ratios, retaining explicit
+  reasons in optional owner report fields. RMSE selection, legacy report bytes
+  and built-in R² remain unchanged; ScoreSet V1/V2 schemas gain additive fields.
+
 - Breaking: `GroupKFoldSpec::split_with_target_missing` now takes explicit candidate
   `samples` before `sample_groups`; WASM `group_kfold_split_json` likewise takes
   `sample_ids_json` before `sample_groups_json`. Target-missing candidates need no

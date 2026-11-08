@@ -82,6 +82,7 @@ mod oof;
 mod prediction_store;
 mod scheduler;
 mod scoring;
+mod single_holdout;
 mod stacking;
 mod task;
 
@@ -97,6 +98,7 @@ pub use oof::*;
 pub use prediction_store::*;
 pub use scheduler::*;
 pub(crate) use scoring::*;
+pub use single_holdout::*;
 pub(crate) use stacking::*;
 pub use task::*;
 

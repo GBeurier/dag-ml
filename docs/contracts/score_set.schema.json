@@ -31,8 +31,20 @@
         "row_count": { "type": "integer", "minimum": 0 },
         "target_width": { "type": "integer", "minimum": 0 },
         "target_names": { "type": "array", "items": { "type": "string" } },
-        "metrics": { "type": "object", "additionalProperties": { "type": "number" } }
-      }
+        "metrics": { "type": "object", "additionalProperties": { "type": "number" } },
+        "metric_profile": {"enum": [null, "regression_report.population_rmse_ratios.v1"]},
+        "undefined_metrics": {"type": "object", "additionalProperties": false, "properties": {"r2": {"const": "constant_target"}, "rpd": {"const": "zero_rmse"}, "rpiq": {"const": "zero_rmse"}}}
+      },
+      "allOf": [
+        {"if": {"required": ["undefined_metrics"], "properties": {"undefined_metrics": {"minProperties": 1}}}, "then": {"required": ["metric_profile"], "properties": {"metric_profile": {"const": "regression_report.population_rmse_ratios.v1"}}}},
+        {"if": {"required": ["metric_profile"], "properties": {"metric_profile": {"type": "string"}}}, "then": {"properties": {"metrics": {"required": ["rmse"]}}}},
+        {"if": {"required": ["undefined_metrics"], "properties": {"undefined_metrics": {"required": ["r2"]}}}, "then": {"properties": {"metrics": {"not": {"required": ["r2"]}}}}},
+        {"if": {"required": ["undefined_metrics"], "properties": {"undefined_metrics": {"required": ["rpd"]}}}, "then": {"properties": {"metrics": {"not": {"required": ["rpd"]}}}}},
+        {"if": {"required": ["undefined_metrics"], "properties": {"undefined_metrics": {"required": ["rpiq"]}}}, "then": {"properties": {"metrics": {"not": {"required": ["rpiq"]}}}}}
+      ]
     }
-  }
+  },
+  "allOf": [
+    {"if": {"required": ["selection_metric"], "properties": {"selection_metric": {"not": {"enum": [null, "rmse"]}}}}, "then": {"properties": {"reports": {"items": {"properties": {"metric_profile": {"type": "null"}}}}}}}
+  ]
 }

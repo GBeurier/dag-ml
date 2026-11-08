@@ -7274,6 +7274,8 @@ mod tests {
     #[test]
     fn auxiliary_report_levels_do_not_override_selection_target_level() {
         let report = |producer: &str, level| crate::metrics::RegressionMetricReport {
+            metric_profile: None,
+            undefined_metrics: BTreeMap::new(),
             target_domain: None,
             prediction_id: Some(format!("prediction:{producer}")),
             producer_node: NodeId::new(producer).unwrap(),

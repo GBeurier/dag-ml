@@ -1441,3 +1441,93 @@ fn validate_independent_class_predictions(
     }
     Ok(())
 }
+
+/// Explicit holdout report dispatch. Require complete, unambiguous native fold
+/// evidence and exact RMSE identity before exposing a candidate to SELECT.
+pub(super) fn single_holdout_validation_evidence(
+    ctx: &RunContext,
+    target: &NodeId,
+    fold: &FoldAssignment,
+    profile: crate::metrics::RegressionReportProfile,
+) -> Result<(
+    PredictionBlock,
+    RegressionTargetBlock,
+    crate::metrics::PopulationRmseRatiosReport,
+    RegressionMetricReport,
+)> {
+    let fail = || {
+        DagMlError::RuntimeValidation("single holdout requires complete unambiguous validation predictions, targets and native RMSE on its actual fold".into())
+    };
+    let predictions = ctx
+        .prediction_store
+        .blocks()
+        .iter()
+        .filter(|block| {
+            &block.producer_node == target
+                && block.partition == PredictionPartition::Validation
+                && block.fold_id.as_ref() == Some(&fold.fold_id)
+        })
+        .collect::<Vec<_>>();
+    let [block] = predictions.as_slice() else {
+        return Err(fail());
+    };
+    if block.sample_ids.iter().collect::<BTreeSet<_>>()
+        != fold.validation_sample_ids.iter().collect()
+    {
+        return Err(fail());
+    }
+    let records = ctx
+        .regression_target_records
+        .iter()
+        .filter(|record| {
+            &record.producer_node == target
+                && record.producer_port == block.producer_port
+                && record.partition == PredictionPartition::Validation
+                && record.fold_id == block.fold_id
+                && record.variant_id == ctx.variant_id
+        })
+        .collect::<Vec<_>>();
+    let [record] = records.as_slice() else {
+        return Err(fail());
+    };
+    let reports = ctx
+        .score_collector
+        .iter()
+        .filter(|report| {
+            &report.producer_node == target
+                && report.producer_port == block.producer_port
+                && report.partition == PredictionPartition::Validation
+                && report.fold_id == block.fold_id
+                && report.level == PredictionLevel::Sample
+                && report.variant_id == ctx.variant_id
+        })
+        .collect::<Vec<_>>();
+    let [native] = reports.as_slice() else {
+        return Err(fail());
+    };
+    let mut report = crate::metrics::score_regression_prediction_block_with_profile(
+        block,
+        &record.block,
+        profile,
+    )?;
+    let rmse = native
+        .metrics
+        .get("rmse")
+        .filter(|value| value.is_finite())
+        .ok_or_else(fail)?;
+    if rmse.to_bits() != report.metrics["rmse"].to_bits() {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "single holdout RMSE identity differs: native bits {:016x}, report bits {:016x}; no tolerance permitted",
+            rmse.to_bits(), report.metrics["rmse"].to_bits(),
+        )));
+    }
+    report.variant_id = ctx.variant_id.clone();
+    let mut selection_report = (*native).clone();
+    selection_report.metrics.retain(|name, _| name == "rmse");
+    Ok((
+        (*block).clone(),
+        target_block_aligned_to_samples(&block.sample_ids, &record.block),
+        report,
+        selection_report,
+    ))
+}

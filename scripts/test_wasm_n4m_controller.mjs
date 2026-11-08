@@ -171,4 +171,104 @@ try {
   methods.RolePipeline.prototype.fit = originalFit;
   controller.close();
 }
+
+// Reserved recipe-axis dispatch uses a recording controller boundary. The
+// existing real Methods tests above remain unchanged; Root measures PLS parity.
+{
+  const seen = [];
+  let hydrated = 0;
+  const makeModel = steps => {
+    assert(steps.every(step => !Object.hasOwn(step.params ?? {}, "pipeline_steps_v1")));
+    const n = steps.at(-1).params.n_components;
+    return {
+      fit() {},
+      predict(input) { return { data: new Float64Array(input.rows).fill(n), rows: input.rows, cols: 1 }; },
+      exportStates() { return [{ n4me: Uint8Array.of(1) }]; },
+      dispose() {},
+    };
+  };
+  const recordingMethods = { RolePipeline: {
+    fromSteps(steps) { seen.push(structuredClone(steps)); return makeModel(steps); },
+    fromStates(steps) { hydrated++; return makeModel(steps); },
+  } };
+  const recipeOperators = { "model:nir": { type: "N4mRolePipeline" } };
+  const recipeOptions = { ...options, methods: recordingMethods, operators: recipeOperators,
+    controllerVersion: "1.1.0" };
+  const recipes = [
+    [{ class: "n4m:models.pls", params: {} }],
+    [{ methodId: "transforms.snv", params: {} }, { class: "n4m:models.pls", params: {} }],
+  ];
+  const fingerprint = params => options.digest(new TextEncoder().encode(JSON.stringify(params)));
+  const recipeTask = (steps, n) => {
+    const value = structuredClone(task);
+    value.node_plan.controller_version = "1.1.0";
+    value.node_plan.params = { pipeline_steps_v1: structuredClone(steps), n_components: n };
+    value.node_plan.params_fingerprint = fingerprint(value.node_plan.params);
+    return value;
+  };
+  const dynamic = new N4mWasmRegressionController(recipeOptions);
+  const fingerprints = new Set();
+  try {
+    checked(() => {
+      for (const steps of recipes) for (const n of [1, 2]) {
+        const value = recipeTask(steps, n);
+        fingerprints.add(value.node_plan.params_fingerprint);
+        const result = call(dynamic, value);
+        assert.deepEqual(result.predictions[0].values, [[n], [n]]);
+        assert.equal(result.lineage.params_fingerprint, value.node_plan.params_fingerprint);
+        assert.deepEqual(seen.at(-1), steps.map((step, index) => index === steps.length - 1 ?
+          { ...step, params: { ...step.params, n_components: n } } : step));
+      }
+      assert.equal(fingerprints.size, 4);
+    });
+    checked(() => {
+      const value = recipeTask(recipes[0], 1);
+      value.node_plan.params.pipeline_steps_v1 = [];
+      assert.throws(() => call(dynamic, value), /nonempty recipe/);
+      value.node_plan.params.pipeline_steps_v1 = [{ class: "n4m:models.pls", params: [], methodId: "ambiguous" }];
+      assert.throws(() => call(dynamic, value), /Recipe steps/);
+    });
+    checked(() => {
+      const conflicting = new N4mWasmRegressionController({ ...recipeOptions,
+        operators: { "model:nir": { type: "N4mRolePipeline", steps: recipes[1] } } });
+      try { assert.throws(() => call(conflicting, recipeTask(recipes[0], 1)), /recipe disagrees/); }
+      finally { conflicting.close(); }
+      const legacy = new N4mWasmRegressionController({ ...recipeOptions, controllerVersion: "1.0.0" });
+      const value = recipeTask(recipes[0], 1); value.node_plan.controller_version = "1.0.0";
+      try { assert.throws(() => call(legacy, value), /requires.*1.1.0/); }
+      finally { legacy.close(); }
+    });
+    const refit = recipeTask(recipes[1], 2);
+    refit.phase = "REFIT"; refit.fold_id = null;
+    // Deliberately retain an ordered training subset; no all-row refit.
+    refit.data_views = { "data:x": { partition: "full_train", sample_ids: ["s1", "s0"], source_ids: ["nir"] } };
+    const fitted = call(dynamic, refit);
+    const artifact = fitted.artifacts[0];
+    const payload = dynamic.artifactPayload(artifact.id);
+    const request = { controller_id: controllerId, node_id: "model:nir",
+      params_fingerprint: refit.node_plan.params_fingerprint, artifact };
+    const restored = new N4mWasmRegressionController(recipeOptions);
+    try {
+      const handle = restored.hydrate(request, payload);
+      const prediction = recipeTask(recipes[1], 2);
+      prediction.phase = "PREDICT"; prediction.fold_id = null;
+      prediction.data_views = { "data:x": { partition: "predict", sample_ids: ids.slice(2), source_ids: ["nir"] } };
+      prediction.artifact_inputs = { model: request }; prediction.input_handles = { model: handle };
+      checked(() => assert.deepEqual(call(restored, prediction).predictions[0].values, [[2], [2]]));
+      checked(() => {
+        const altered = structuredClone(prediction);
+        // Even a caller reusing a claimed params hash cannot change the recipe.
+        altered.node_plan.params.pipeline_steps_v1 = recipes[0];
+        assert.throws(() => call(restored, altered), /recipe disagrees/);
+        assert.throws(() => restored.hydrate({ ...request, params_fingerprint: "f".repeat(64) }, payload), /binding/);
+      });
+      assert.equal(hydrated, 1);
+      const saved = JSON.parse(new TextDecoder().decode(payload));
+      assert.equal(saved.schema, "dagml.methods.regression.v2");
+      assert.equal(saved.recipe_profile, "pipeline_steps.v1");
+      assert.equal(saved.controller_version, "1.1.0");
+    } finally { restored.close(); }
+  } finally { dynamic.close(); }
+}
+
 console.log("METHODS_CONTROLLER_TESTS_OK", tests, "fits", fitCalls);

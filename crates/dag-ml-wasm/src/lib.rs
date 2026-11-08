@@ -49,7 +49,8 @@ pub use local_implementation::{loss_execution_attestation_json, LocalImplementat
 pub use nested_selection::execute_nested_selection_json;
 pub use observation_scoring::{
     aggregate_observation_predictions_json, execute_execution_plan_phase_with_envelope_json,
-    score_regression_prediction_block_json,
+    execute_single_holdout_bank_json, score_regression_prediction_block_json,
+    score_regression_prediction_block_with_profile_json,
 };
 pub use training::{
     attach_predict_cohort_to_envelope_json, execute_training_json, replay_training_package_json,
@@ -869,8 +870,10 @@ fn contract_manifest() -> serde_json::Value {
             "execute_campaign_phase_json",
             "execute_execution_plan_phase_json",
             "execute_execution_plan_phase_with_envelope_json",
+            "execute_single_holdout_bank_json",
             "aggregate_observation_predictions_json",
             "score_regression_prediction_block_json",
+            "score_regression_prediction_block_with_profile_json",
             "host_hpo_search_json",
             "host_hpo_search_parallel_json",
             "host_hpo_evaluate_worker_fold_json",

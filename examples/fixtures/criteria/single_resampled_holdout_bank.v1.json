@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "profile": "single_resampled_holdout_bank.v1",
+  "report_profile": "regression_report.population_rmse_ratios.v1",
+  "failure_group_dimension": "chain",
+  "target_node": "model:pls"
+}

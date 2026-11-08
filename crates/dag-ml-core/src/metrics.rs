@@ -1,3 +1,6 @@
+mod population_report;
+pub use population_report::*;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
@@ -311,6 +314,12 @@ pub struct RegressionMetricReport {
     #[serde(default)]
     pub target_names: Vec<String>,
     pub metrics: BTreeMap<String, f64>,
+    /// Opt-in reporting definitions; absent on every legacy/default report.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metric_profile: Option<String>,
+    /// Undefined values are omitted from metrics and carry a closed reason code.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub undefined_metrics: BTreeMap<String, String>,
 }
 
 impl RegressionMetricReport {
@@ -365,6 +374,37 @@ impl RegressionMetricReport {
                 )));
             }
         }
+        if let Some(profile) = self.metric_profile.as_deref() {
+            if profile != POPULATION_RMSE_RATIOS_PROFILE {
+                return Err(DagMlError::OofValidation(format!(
+                    "unknown metric profile `{profile}`"
+                )));
+            }
+            if !self.metrics.contains_key("rmse") {
+                return Err(DagMlError::OofValidation(
+                    "profile report requires finite rmse".into(),
+                ));
+            }
+        } else if !self.undefined_metrics.is_empty() {
+            return Err(DagMlError::OofValidation(
+                "undefined metrics require metric_profile".into(),
+            ));
+        }
+        for (metric, reason) in &self.undefined_metrics {
+            if self.metrics.contains_key(metric) {
+                return Err(DagMlError::OofValidation(format!(
+                    "metric `{metric}` is both defined and undefined"
+                )));
+            }
+            if !matches!(
+                (metric.as_str(), reason.as_str()),
+                ("r2", "constant_target") | ("rpd" | "rpiq", "zero_rmse")
+            ) {
+                return Err(DagMlError::OofValidation(format!(
+                    "unknown undefined metric/reason `{metric}` / `{reason}`"
+                )));
+            }
+        }
         Ok(())
     }
 
@@ -413,9 +453,22 @@ impl RegressionMetricReport {
         if let Some(key) = &self.grouping_key {
             metadata.insert("grouping_key".into(), serde_json::to_value(key)?);
         }
+        let mut metrics = self.metrics;
+        if let Some(profile) = self.metric_profile {
+            metadata.insert("metric_profile".into(), serde_json::json!(profile));
+            // This profile is report-only except for RMSE. Neither defined nor
+            // undefined diagnostic values can become selectable objectives.
+            metrics.retain(|metric, _| metric == "rmse");
+        }
+        if !self.undefined_metrics.is_empty() {
+            metadata.insert(
+                "undefined_metrics".into(),
+                serde_json::json!(self.undefined_metrics),
+            );
+        }
         let score = CandidateScore {
             candidate_id: candidate_id.into(),
-            metrics: self.metrics,
+            metrics,
             metadata,
         };
         score.validate()?;
@@ -612,6 +665,18 @@ impl ScoreSet {
         let mut seen: BTreeSet<ScoreReportKey> = BTreeSet::new();
         for report in &self.reports {
             report.validate()?;
+            if let Some(metric) = &self.selection_metric {
+                if let Some(reason) = report.undefined_metrics.get(metric) {
+                    return Err(DagMlError::OofValidation(format!(
+                        "selection metric `{metric}` is undefined: {reason}"
+                    )));
+                }
+                if report.metric_profile.is_some() && metric != "rmse" {
+                    return Err(DagMlError::OofValidation(
+                        "population RMSE ratio profile selects on rmse only".into(),
+                    ));
+                }
+            }
             if self.schema_version == LEGACY_SCORE_SET_SCHEMA_VERSION
                 && report.grouping_key.is_some()
             {
@@ -821,6 +886,8 @@ fn score_regression_rows(
     }
 
     let report = RegressionMetricReport {
+        metric_profile: None,
+        undefined_metrics: BTreeMap::new(),
         target_domain: None,
         grouping_key: None,
         prediction_id: predictions.origin.prediction_id,
@@ -969,6 +1036,8 @@ fn score_masked_regression_rows_with_grouping(
         }
     }
     let report = RegressionMetricReport {
+        metric_profile: None,
+        undefined_metrics: BTreeMap::new(),
         target_domain: None,
         grouping_key: None,
         prediction_id: predictions.origin.prediction_id,
@@ -2334,6 +2403,8 @@ mod tests {
             .iter()
             .zip([1.0, 3.0])
             .map(|(block, rmse)| RegressionMetricReport {
+                metric_profile: None,
+                undefined_metrics: BTreeMap::new(),
                 target_domain: None,
                 grouping_key: None,
                 prediction_id: None,
@@ -3130,6 +3201,8 @@ mod tests {
         rmse: f64,
     ) -> RegressionMetricReport {
         RegressionMetricReport {
+            metric_profile: None,
+            undefined_metrics: BTreeMap::new(),
             target_domain: None,
             grouping_key: None,
             prediction_id: None,
@@ -3154,6 +3227,8 @@ mod tests {
         rmse: f64,
     ) -> RegressionMetricReport {
         RegressionMetricReport {
+            metric_profile: None,
+            undefined_metrics: BTreeMap::new(),
             target_domain: None,
             producer_port: port.map(ToString::to_string),
             ..score_report(partition, fold, rmse)

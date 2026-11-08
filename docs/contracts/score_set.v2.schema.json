@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/GBeurier/dag-ml/schemas/score_set.v2.schema.json",
   "title": "DAG-ML ScoreSet v2",
-  "description": "Port-explicit ScoreSet for collision-free multi-port scoring. All V1 report constraints are preserved; producer_port is the only report-shape addition.",
+  "description": "Port-explicit ScoreSet for collision-free multi-port scoring. All V1 report constraints are preserved; producer_port is the port-identity addition. Optional metric_profile/undefined_metrics carry finite, opt-in report diagnostics without changing legacy report bytes.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "plan_id", "reports"],
@@ -34,6 +34,8 @@
         "target_width": { "type": "integer", "minimum": 0 },
         "target_names": { "type": "array", "items": { "type": "string" } },
         "metrics": { "type": "object", "additionalProperties": { "type": "number" } },
+        "metric_profile": {"enum": [null, "regression_report.population_rmse_ratios.v1"]},
+        "undefined_metrics": {"type": "object", "additionalProperties": false, "properties": {"r2": {"const": "constant_target"}, "rpd": {"const": "zero_rmse"}, "rpiq": {"const": "zero_rmse"}}},
         "grouping_key": {
           "$ref": "#/$defs/aggregation_grouping_key"
         }
@@ -55,7 +57,12 @@
               }
             }
           }
-        }
+        },
+        {"if": {"required": ["undefined_metrics"], "properties": {"undefined_metrics": {"minProperties": 1}}}, "then": {"required": ["metric_profile"], "properties": {"metric_profile": {"const": "regression_report.population_rmse_ratios.v1"}}}},
+        {"if": {"required": ["metric_profile"], "properties": {"metric_profile": {"type": "string"}}}, "then": {"properties": {"metrics": {"required": ["rmse"]}}}},
+        {"if": {"required": ["undefined_metrics"], "properties": {"undefined_metrics": {"required": ["r2"]}}}, "then": {"properties": {"metrics": {"not": {"required": ["r2"]}}}}},
+        {"if": {"required": ["undefined_metrics"], "properties": {"undefined_metrics": {"required": ["rpd"]}}}, "then": {"properties": {"metrics": {"not": {"required": ["rpd"]}}}}},
+        {"if": {"required": ["undefined_metrics"], "properties": {"undefined_metrics": {"required": ["rpiq"]}}}, "then": {"properties": {"metrics": {"not": {"required": ["rpiq"]}}}}}
       ]
     },
     "aggregation_grouping_key": {
@@ -74,5 +81,8 @@
         }
       }
     }
-  }
+  },
+  "allOf": [
+    {"if": {"required": ["selection_metric"], "properties": {"selection_metric": {"not": {"enum": [null, "rmse"]}}}}, "then": {"properties": {"reports": {"items": {"properties": {"metric_profile": {"type": "null"}}}}}}}
+  ]
 }

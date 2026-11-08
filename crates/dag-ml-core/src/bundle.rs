@@ -3718,6 +3718,8 @@ mod tests {
             target_names: vec!["y".to_string()],
         };
         let report = RegressionMetricReport {
+            metric_profile: None,
+            undefined_metrics: BTreeMap::new(),
             target_domain: None,
             grouping_key: None,
             prediction_id: Some("prediction:model:hpo.avg".to_string()),
@@ -4849,6 +4851,8 @@ mod tests {
             plan_id: plan.id.clone(),
             selection_metric: Some("rmse".to_string()),
             reports: vec![crate::metrics::RegressionMetricReport {
+                metric_profile: None,
+                undefined_metrics: BTreeMap::new(),
                 target_domain: None,
                 grouping_key: None,
                 prediction_id: Some("prediction:merge:sites:avg".to_string()),
@@ -5516,6 +5520,8 @@ mod tests {
             plan_id: bundle.plan_id.clone(),
             selection_metric: Some("rmse".to_string()),
             reports: vec![crate::metrics::RegressionMetricReport {
+                metric_profile: None,
+                undefined_metrics: BTreeMap::new(),
                 target_domain: None,
                 grouping_key: None,
                 prediction_id: None,

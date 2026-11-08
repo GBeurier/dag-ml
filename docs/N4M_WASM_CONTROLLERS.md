@@ -167,3 +167,32 @@ generically in the core, even when the native Methods feature is disabled.
 
 The optimizer snapshot uses `dagml.n4m.wasm-hpo.v2` with `committed_json` and `prepared_json` raw checkpoint strings. Persist these strings unchanged and pass `committedJson` to resume. The `committed` and `prepared` getters are inspection views; do not reserialize them for persistence or recovery. Version 1 snapshots are not accepted.
 Pruning dispatchers receive `{kind, task, fold_index}` and must pass the raw `task` member text to the worker exports, for example `strictJson(payload, "task")`, because parsing and re-stringifying changes float tokens and fails candidate validation.
+
+## Versioned recipe parameter
+
+Controller version `1.1.0` adds the `pipeline_steps.v1` recipe profile. Opt in
+with `controllerVersion: "1.1.0"`; the constructor's default remains `1.0.0`.
+An `N4mRolePipeline` node may carry reserved parameter `pipeline_steps_v1`, a
+nonempty array of steps using exactly one nonempty `class` or `methodId` and
+an optional `params` object. The key is consumed before scalar node parameters
+are merged into the last model step, and never reaches Methods. Fixed
+`operator.steps`, if also supplied, must equal the reserved recipe. Other
+operators and controller versions refuse the reserved key. The exported
+`N4M_PIPELINE_STEPS_PARAM`, `N4M_PIPELINE_STEPS_PROFILE` and
+`N4M_PIPELINE_STEPS_CONTROLLER_VERSION` constants and `N4mPipelineStepsV1Params`
+type describe this boundary.
+
+The complete reserved value participates in the existing native node parameter
+fingerprint. The effective steps, after scalar parameters merge, are exported
+in `dagml.methods.regression.v2` payloads with `controller_version: "1.1.0"`
+and `recipe_profile: "pipeline_steps.v1"`. Hydration refuses other versions or
+profiles, checks the node/parameter binding and validates the saved steps;
+PREDICT compares them with the effective planned recipe before prediction.
+Legacy version `1.0.0` keeps its v1 payload contract. There is no implicit payload
+migration or Methods fitted-state format change.
+
+The [single resampled holdout bank](SINGLE_HOLDOUT_BANK.md) uses this parameter
+for chain-recipe × component generation inside one native FIT_CV + SELECT call.
+Its selected graph is refitted through the existing initial-full-refit API on
+KS-train IDs only, preserving Methods' greedy order, then replayed. Numerical
+parity for the named banks remains an integration measurement.
