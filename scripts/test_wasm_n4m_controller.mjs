@@ -110,7 +110,7 @@ try {
     artifact_inputs: { model: { ...request } }, input_handles: { model: handle } };
   checked(() => assert.deepEqual(call(restored, prediction).predictions[0].values, fitted.predictions[0].values));
   checked(() => { const bytes = payload.slice(); bytes[bytes.length - 2] ^= 1; assert.throws(() => restored.hydrate(request, bytes), /fingerprint/); });
-  checked(() => assert.throws(() => restored.hydrate({ ...request, node_id: "model:other" }, payload), /another node/));
+  checked(() => assert.throws(() => restored.hydrate({ ...request, node_id: "model:other" }, payload), /Portable Methods payload belongs to another controller profile, node or parameter binding/));
   checked(() => { const value = structuredClone(prediction); value.node_plan.params_fingerprint = "b".repeat(64); assert.throws(() => call(restored, value), /binding mismatch/); });
   checked(() => { const value = structuredClone(prediction); value.input_handles.model.owner_controller = "other"; assert.throws(() => call(restored, value), /owner/); });
   checked(() => {

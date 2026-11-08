@@ -20,8 +20,8 @@ const entries = [...functions, ...methods].map(entry => ({ ...entry,
     return { name: m[1], optional: !!m[2] || /\bnull\b|\bundefined\b/.test(m[3]), type: m[3], string: /\bstring\b/.test(m[3]) };
   }) : [],
 })).filter(entry => entry.parameters.some(parameter => parameter.string));
-assert.equal(entries.length, 61, 'exported string input count');
-assert.equal(entries.flatMap(entry => entry.parameters.filter(p => p.string)).length, 157, 'string parameter count');
+assert.equal(entries.length, 63, 'exported string input count');
+assert.equal(entries.flatMap(entry => entry.parameters.filter(p => p.string)).length, 166, 'string parameter count');
 assert.equal(entries.flatMap(entry => entry.parameters.filter(p => p.string && p.optional)).length, 6, 'optional string parameter count');
 const cases = [];
 function add(label, run) { cases.push({ label, run }); }
@@ -71,7 +71,7 @@ for (const [name, value] of [['high', '\ud800'], ['low', '\udc00']]) add(`graph.
 let validHashes;
 add('graph.valid-controls', () => { validHashes = ['�', '😀', 'plain', 'e\u0301'].map(fingerprint); assert.equal(new Set(validHashes).size, 4); });
 add('graph.valid-pair', () => assert.equal(fingerprint('\ud83d\ude00'), validHashes[1]));
-const EXPECTED_CASES = 656;
+const EXPECTED_CASES = 692;
 assert.equal(cases.length, EXPECTED_CASES, 'input boundary case count');
 let failed = 0;
 for (const test of cases) { try { await test.run(); } catch (error) { failed++; console.error(`${test.label}: ${String(error?.stack ?? error)}`); } }
