@@ -151,6 +151,214 @@ pub fn admit_portable_pipeline(value: &Value) -> Result<PortableLinearAdmission>
     admit(value, true)
 }
 
+/// Expand the strict portable generator grammar without loading operators.
+/// GenerationSpec owns structural order; each resulting model owns its own
+/// component sweep, which varies innermost even when no structural axes exist.
+pub fn expand_portable_pipeline(value: &Value) -> Result<Vec<Value>> {
+    enum Slot {
+        Literal(Value),
+        Axis(String),
+    }
+
+    fn mapping<'a>(value: &'a Value, path: &str) -> Result<&'a Map<String, Value>> {
+        value
+            .as_object()
+            .filter(|map| map.keys().any(|key| !key.is_empty()))
+            .ok_or_else(|| refuse(path, "portable generator stages must be mappings"))
+    }
+
+    fn axis(value: &Value, path: &str, dimensions: &mut Vec<GenerationDimension>) -> Result<Slot> {
+        let map = mapping(value, path)?;
+        let options = if let Some(options) = map.get("_or_") {
+            if map.len() != 1 {
+                return Err(refuse(path, "portable _or_ must be the only key"));
+            }
+            let options = options
+                .as_array()
+                .filter(|options| !options.is_empty())
+                .ok_or_else(|| refuse(&format!("{path}._or_"), "non-empty step array required"))?;
+            for (index, option) in options.iter().enumerate() {
+                let path = format!("{path}._or_[{index}]");
+                let option = mapping(option, &path)?;
+                if option.contains_key("_or_") || option.contains_key("_cartesian_") {
+                    return Err(refuse(&path, "nested portable generators are unsupported"));
+                }
+            }
+            options.clone()
+        } else {
+            vec![value.clone()]
+        };
+        // Deterministic stages do not consume a GenerationSpec dimension.
+        if options.len() == 1 {
+            return Ok(Slot::Literal(
+                options.into_iter().next().expect("non-empty options"),
+            ));
+        }
+        let name = format!("axis:{:04}", dimensions.len());
+        dimensions.push(GenerationDimension {
+            name: name.clone(),
+            choices: options
+                .into_iter()
+                .enumerate()
+                .map(|(index, value)| GenerationChoice {
+                    label: format!("choice:{index}"),
+                    value,
+                    param_overrides: Vec::new(),
+                    active_subsequence: None,
+                })
+                .collect(),
+        });
+        Ok(Slot::Axis(name))
+    }
+
+    fn with_steps(value: &Value, key: Option<&str>, steps: Vec<Value>) -> Value {
+        match key {
+            Some(key) => {
+                let mut definition = value.clone();
+                definition[key] = Value::Array(steps);
+                definition
+            }
+            None => Value::Array(steps),
+        }
+    }
+
+    let (steps, key) = if let Some(steps) = value.as_array() {
+        (steps, None)
+    } else {
+        let root = value
+            .as_object()
+            .ok_or_else(|| refuse("$", "object or step array required"))?;
+        let key = if root.contains_key("pipeline") {
+            "pipeline"
+        } else {
+            "steps"
+        };
+        let steps = root
+            .get(key)
+            .and_then(Value::as_array)
+            .ok_or_else(|| refuse("$.pipeline", "step array required"))?;
+        (steps, Some(key))
+    };
+    let mut dimensions = Vec::new();
+    let mut slots = Vec::new();
+    for (index, step) in steps.iter().enumerate() {
+        let path = format!("$.pipeline[{index}]");
+        let map = mapping(step, &path)?;
+        if map.contains_key("_or_") {
+            slots.push(axis(step, &path, &mut dimensions)?);
+        } else if let Some(stages) = map.get("_cartesian_") {
+            if map.len() != 1 {
+                return Err(refuse(&path, "portable _cartesian_ must be the only key"));
+            }
+            let stages = stages
+                .as_array()
+                .filter(|stages| !stages.is_empty())
+                .ok_or_else(|| {
+                    refuse(
+                        &format!("{path}._cartesian_"),
+                        "non-empty stage array required",
+                    )
+                })?;
+            for (index, stage) in stages.iter().enumerate() {
+                let path = format!("{path}._cartesian_[{index}]");
+                if mapping(stage, &path)?.contains_key("_cartesian_") {
+                    return Err(refuse(
+                        &path,
+                        "nested portable cartesian generators are unsupported",
+                    ));
+                }
+                slots.push(axis(stage, &path, &mut dimensions)?);
+            }
+        } else {
+            slots.push(Slot::Literal(step.clone()));
+        }
+    }
+    let generation = GenerationSpec {
+        strategy: if dimensions.is_empty() {
+            GenerationStrategy::None
+        } else {
+            GenerationStrategy::Cartesian
+        },
+        dimensions,
+        max_variants: Some(10_000),
+        ..GenerationSpec::default()
+    };
+    let structural = crate::enumerate_variants(&generation, None)
+        .map_err(|error| refuse("$.pipeline", error))?;
+    let mut definitions = Vec::new();
+    for variant in structural {
+        let mut steps = Vec::new();
+        for slot in &slots {
+            match slot {
+                Slot::Literal(value) => steps.push(value.clone()),
+                Slot::Axis(name) => steps.push(variant.choices[name].value.clone()),
+            }
+        }
+        let structural = with_steps(value, key, steps.clone());
+        let admission = admit_portable_pipeline(&structural)?;
+        if admission.splitter.is_some() {
+            let index = steps
+                .iter()
+                .position(|step| {
+                    step.get("class")
+                        .and_then(Value::as_str)
+                        .is_some_and(portable_ks)
+                })
+                .expect("admitted portable splitter");
+            return Err(refuse(
+                &format!("$.pipeline[{index}]"),
+                "portable pipeline variants do not include splitters",
+            ));
+        }
+        let model_index = steps
+            .iter()
+            .rposition(|step| step.get("model").is_some())
+            .expect("admitted terminal model");
+        let ranged = steps[model_index].get("_range_").is_some();
+        let count = if ranged {
+            admission.n_components.len()
+        } else {
+            1
+        };
+        if definitions.len() + count > 10_000 {
+            return Err(refuse(
+                "$.pipeline",
+                "portable generator exceeds 10000 variants including components",
+            ));
+        }
+        if !ranged {
+            definitions.push(structural);
+            continue;
+        }
+        for components in admission.n_components {
+            let mut concrete = steps.clone();
+            // Rebuild instead of swap-removing keys: Core enables preserve_order.
+            let mut step: Map<String, Value> = concrete[model_index]
+                .as_object()
+                .expect("admitted model step")
+                .iter()
+                .filter(|(key, _)| !matches!(key.as_str(), "_range_" | "param"))
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect();
+            let model = step
+                .get_mut("model")
+                .and_then(Value::as_object_mut)
+                .expect("admitted model mapping");
+            let params = model
+                .entry("params")
+                .or_insert_with(|| json!({}))
+                .as_object_mut()
+                .expect("admitted model params");
+            params.insert("n_components".into(), json!(components));
+            concrete[model_index] = Value::Object(step);
+            let definition = with_steps(value, key, concrete);
+            admit_portable_pipeline(&definition)?;
+            definitions.push(definition);
+        }
+    }
+    Ok(definitions)
+}
+
 /// Branches, train augmentation and terminal per-column fit inputs exist only
 /// in the feature graph profile. Without these declared intents MBPLS and
 /// GroupSparsePLS keep their unchanged linear admission.
@@ -1782,6 +1990,224 @@ mod feature_graph_admission_tests {
         assert_eq!(
             compiled.graph.metadata[PORTABLE_GRAPH_RECIPE_PARAM],
             json!(canonical)
+        );
+    }
+}
+
+#[cfg(test)]
+mod expansion_tests {
+    use super::*;
+
+    #[test]
+    fn portable_expansion_matches_frozen_generator_order_with_components_innermost() {
+        // The preprocessing choices and windows are the portable-generators.R recipe.
+        let definition = json!({"name":"cartesian_n4m","description":"preserved",
+            "random_state":7,"pipeline":[
+            {"_comment":{"note":["keep",3,1]}},
+            {"_cartesian_":[
+                {"_or_":[{"class":"n4m.SNV"},{"class":"n4m.SavitzkyGolay","params":{"window_length":5,"polyorder":2}}]},
+                {"_or_":[{"class":"n4m.SNV"},{"class":"n4m.SavitzkyGolay","params":{"window_length":7,"polyorder":2}}]}]},
+            {"model":{"class":"n4m.PLS","params":{"scale":false}},"_range_":[1,2,1],"param":"n_components","name":"terminal"}]});
+        let definitions = expand_portable_pipeline(&definition).unwrap();
+        assert_eq!(definitions.len(), 8);
+        let expected = [
+            ["n4m.SNV", "n4m.SNV"],
+            ["n4m.SNV", "n4m.SavitzkyGolay"],
+            ["n4m.SavitzkyGolay", "n4m.SNV"],
+            ["n4m.SavitzkyGolay", "n4m.SavitzkyGolay"],
+        ];
+        for (index, output) in definitions.iter().enumerate() {
+            assert_eq!(output["name"], definition["name"]);
+            assert_eq!(output["description"], definition["description"]);
+            assert_eq!(output["random_state"], definition["random_state"]);
+            let steps = output["pipeline"].as_array().unwrap();
+            assert_eq!(steps.len(), 4, "cartesian stages are spliced in place");
+            assert_eq!(steps[0], definition["pipeline"][0]);
+            for stage in 0..2 {
+                assert_eq!(steps[stage + 1]["class"], expected[index / 2][stage]);
+                if expected[index / 2][stage] == "n4m.SavitzkyGolay" {
+                    assert_eq!(
+                        steps[stage + 1]["params"]["window_length"],
+                        if stage == 0 { 5 } else { 7 }
+                    );
+                }
+            }
+            assert_eq!(steps[3]["name"], "terminal");
+            assert_eq!(
+                steps[3]["model"]["params"],
+                json!({"scale":false,"n_components":index%2+1})
+            );
+            assert!(steps[3].get("_range_").is_none());
+            assert!(steps[3].get("param").is_none());
+        }
+    }
+
+    #[test]
+    fn portable_expansion_model_or_ranges_are_ragged_per_structural_variant() {
+        let definition = json!({"pipeline":[{"_or_":[
+            {"model":{"class":"n4m.PLS"},"_range_":[1,2,1],"param":"n_components"},
+            {"model":{"class":"n4m.PLS","params":{"scale":false}},"_range_":[4,8,2],"param":"n_components"}
+        ]}]});
+        let definitions = expand_portable_pipeline(&definition).unwrap();
+        assert_eq!(definitions.len(), 5);
+        assert_eq!(
+            definitions
+                .iter()
+                .map(|d| d["pipeline"][0]["model"]["params"]["n_components"]
+                    .as_i64()
+                    .unwrap())
+                .collect::<Vec<_>>(),
+            [1, 2, 4, 6, 8]
+        );
+        for output in &definitions[2..] {
+            assert_eq!(output["pipeline"][0]["model"]["params"]["scale"], false);
+        }
+        let plain = json!({"model":{"class":"n4m.PLS"}});
+        let mixed = json!([{"_or_":[plain,
+            {"model":{"class":"n4m.PLS"},"_range_":[3,4,1],"param":"n_components"}]}]);
+        let definitions = expand_portable_pipeline(&mixed).unwrap();
+        assert_eq!(definitions.len(), 3);
+        assert_eq!(
+            definitions[0],
+            json!([plain]),
+            "no default is injected into a non-ranged model option"
+        );
+        assert_eq!(definitions[1][0]["model"]["params"]["n_components"], 3);
+        assert_eq!(definitions[2][0]["model"]["params"]["n_components"], 4);
+    }
+
+    #[test]
+    fn portable_expansion_zero_axes_still_expands_components_and_echoes_plain_definitions() {
+        let branch = json!({"name":"plain_branch","pipeline":[
+            {"branch":{"z_msc":[{"class":"n4m.MSC"}],"a_snv":[{"class":"n4m.SNV"}]}},
+            {"merge":"features"},{"model":{"class":"n4m.PLS"}}]});
+        assert_eq!(expand_portable_pipeline(&branch).unwrap(), vec![branch]);
+        let plain = json!([{"class":"n4m.SNV"},{"model":{"class":"n4m.PLS"}}]);
+        assert_eq!(expand_portable_pipeline(&plain).unwrap(), vec![plain]);
+        let ranged = json!({"name":"zero_axes","steps":[
+            {"model":{"class":"n4m.PLS"},"_range_":[2,6,2],"param":"n_components"}]});
+        let definitions = expand_portable_pipeline(&ranged).unwrap();
+        assert_eq!(definitions.len(), 3);
+        for (output, components) in definitions.iter().zip([2, 4, 6]) {
+            assert_eq!(output["name"], "zero_axes");
+            assert!(output.get("pipeline").is_none());
+            assert_eq!(
+                output["steps"][0]["model"]["params"]["n_components"],
+                components
+            );
+        }
+        // Plain stages inside cartesian substitute deterministically and splice.
+        let staged = json!([{"_cartesian_":[{"_comment":"kept"},{"class":"n4m.SNV"}]},
+            {"model":{"class":"n4m.PLS"}}]);
+        assert_eq!(
+            expand_portable_pipeline(&staged).unwrap(),
+            vec![json!([{"_comment":"kept"},{"class":"n4m.SNV"},{"model":{"class":"n4m.PLS"}}])]
+        );
+
+        // More than 256 deterministic stages still splice in exact order,
+        // including singleton _or_ choices, then expand the component range.
+        let flat = (0..300)
+            .map(|index| json!({"_comment":index}))
+            .collect::<Vec<_>>();
+        let stages = flat
+            .iter()
+            .enumerate()
+            .map(|(index, step)| {
+                if index % 2 == 0 {
+                    json!({"_or_":[step]})
+                } else {
+                    step.clone()
+                }
+            })
+            .collect::<Vec<_>>();
+        let many_singletons = json!({"name":"singleton_splice","pipeline":[
+            {"_cartesian_":stages},
+            {"model":{"class":"n4m.PLS"},"_range_":[1,2,1],"param":"n_components"}]});
+        let expected = (1..=2)
+            .map(|components| {
+                let mut steps = flat.clone();
+                steps.push(
+                    json!({"model":{"class":"n4m.PLS","params":{"n_components":components}}}),
+                );
+                json!({"name":"singleton_splice","pipeline":steps})
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            expand_portable_pipeline(&many_singletons).unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn portable_expansion_refuses_old_r_grammar_violations_and_splitters_with_paths() {
+        let model = json!({"model":{"class":"n4m.PLS"}});
+        for (definition, path) in [
+            (
+                json!([{"_or_":[{"class":"n4m.SNV"}],"count":1},model]),
+                "$.pipeline[0]",
+            ),
+            (
+                json!([{"_cartesian_":[{"class":"n4m.SNV"}],"pick":1},model]),
+                "$.pipeline[0]",
+            ),
+            (
+                json!([{"_or_":[{"_or_":[{"class":"n4m.SNV"}]}]},model]),
+                "$.pipeline[0]._or_[0]",
+            ),
+            (
+                json!([{"_cartesian_":[{"_cartesian_":[{"class":"n4m.SNV"}]}]},model]),
+                "$.pipeline[0]._cartesian_[0]",
+            ),
+            (json!([{"_or_":[7]},model]), "$.pipeline[0]._or_[0]"),
+            (json!([{"_or_":[{}]},model]), "$.pipeline[0]._or_[0]"),
+            (json!([{"_or_":[]},model]), "$.pipeline[0]._or_"),
+            (
+                json!([{"_or_":[{"class":"n4m.KennardStone"},{"class":"n4m.SNV"}]},model]),
+                "$.pipeline[0]",
+            ),
+            (
+                json!([{ "model":{"class":"n4m.PLS"},"_range_":[1,2,0],"param":"n_components"}]),
+                "$.pipeline[0]",
+            ),
+            (
+                json!([{"class":"not-a-portable-class"},model]),
+                "$.pipeline[0]",
+            ),
+            (
+                json!({"pipeline":[model],"unexpected":true}),
+                "$.unexpected",
+            ),
+        ] {
+            let error = expand_portable_pipeline(&definition)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(path), "{path}: {error}");
+        }
+    }
+
+    #[test]
+    fn portable_expansion_keeps_structural_and_total_component_search_bounds() {
+        let model = json!({"model":{"class":"n4m.PLS"}});
+        let a = vec![json!({"class":"n4m.SNV"}); 101];
+        let b = vec![json!({"class":"n4m.SNV"}); 100];
+        let error =
+            expand_portable_pipeline(&json!([{"_cartesian_":[{"_or_":a},{"_or_":b}]},model]))
+                .unwrap_err()
+                .to_string();
+        assert!(error.contains("$.pipeline"), "{error}");
+        assert!(
+            error.contains("generation product exceeds allocation limit 10000"),
+            "{error}"
+        );
+        let ranged =
+            json!({"model":{"class":"n4m.PLS"},"_range_":[1,5001,1],"param":"n_components"});
+        let error = expand_portable_pipeline(&json!([{"_or_":[ranged,ranged]}]))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("$.pipeline"), "{error}");
+        assert!(
+            error.contains("exceeds 10000 variants including components"),
+            "{error}"
         );
     }
 }
