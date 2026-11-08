@@ -3,6 +3,8 @@
  * stay in DAG-ML; fitting, preprocessing and prediction stay in Methods.
  */
 
+/** @typedef {import("./n4m_controller.d.ts").MethodsRecipeStep} MethodsRecipeStep */
+
 export const N4M_PIPELINE_STEPS_PARAM = "pipeline_steps_v1";
 export const N4M_PIPELINE_STEPS_CONTROLLER_VERSION = "1.1.0";
 export const N4M_PIPELINE_STEPS_PROFILE = "pipeline_steps.v1";
@@ -119,6 +121,7 @@ function sameRecipe(actual, expected) {
 
 /** Construct after await methods.loadModule(). One controller owns its artifacts. */
 export class N4mWasmRegressionController {
+  /** @param {import("./n4m_controller.d.ts").MethodsRegressionControllerOptions} options */
   constructor({ methods, operators, resolveFeatures, resolveTargets, targetNames = ["y"],
     controllerId = "controller:methods.wasm.regression", controllerVersion = "1.0.0", digest = null }) {
     requireCondition(methods?.RolePipeline && typeof resolveFeatures === "function" &&
