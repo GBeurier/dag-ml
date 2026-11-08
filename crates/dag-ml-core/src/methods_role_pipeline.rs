@@ -1,5 +1,5 @@
-//! Native numerical adapter for the closed PLS phase profile. All numerical
-//! operations and RAW-state inspection use the official Methods role API.
+//! Native adapters for the closed PLS profile and generic pipeline_steps_v1.
+//! All numerical operations and RAW-state inspection use the Methods role API.
 use crate::hpo::{MethodsPlsController, MethodsRuntime};
 use crate::methods_phase_controls::*;
 use crate::runtime::*;
@@ -48,11 +48,16 @@ impl Payload {
                     .len()
                     == names.len()
         };
-        if saved.schema != "dagml.methods.regression.v1"
-            || !unique(&saved.target_names)
+        if !matches!(
+            saved.schema.as_str(),
+            "dagml.methods.regression.v1" | "dagml.methods.pipeline_steps.v1"
+        ) || !unique(&saved.target_names)
             || !unique(&saved.feature_names)
-            || !matches!(saved.steps.len(), 1 | 3)
-            || saved.steps.len() != saved.states.len()
+            || (saved.schema == "dagml.methods.regression.v1"
+                && (!matches!(saved.steps.len(), 1 | 3) || saved.steps.len() != saved.states.len()))
+            || saved.steps.is_empty()
+            || saved.states.is_empty()
+            || saved.states.len() > saved.steps.len()
             || saved.states.iter().any(|s| !s.starts_with(b"N4ME"))
             || saved.params_fingerprint.len() != 64
             || !saved
@@ -61,6 +66,10 @@ impl Payload {
                 .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
         {
             return Err(failure("invalid closed RAW wrapper"));
+        }
+        if saved.schema == "dagml.methods.pipeline_steps.v1" {
+            preflight_pipeline_steps(&saved.steps)?;
+            return Ok(saved);
         }
         // Recompute a closed native recipe from saved scalar declarations;
         // native import below separately verifies them against each state.
@@ -108,29 +117,145 @@ impl Payload {
     }
 }
 
+fn exact_json_integer(value: &Value) -> Option<i64> {
+    value.as_i64().or_else(|| {
+        value
+            .as_f64()
+            .filter(|v| {
+                v.is_finite() && v.fract() == 0.0 && *v >= i64::MIN as f64 && *v < (i64::MAX as f64)
+            })
+            .map(|v| v as i64)
+    })
+}
+
 fn native_params(context: &Context, step: &Value) -> Result<Params> {
     let id = step["methodId"]
         .as_str()
         .ok_or_else(|| failure("missing native methodId"))?;
+    let info = n4m::roles::method_info(id).map_err(failure)?;
     let mut params = Params::new(context, id).map_err(failure)?;
     for (key, value) in step["params"]
         .as_object()
         .ok_or_else(|| failure("missing native params"))?
     {
-        let typed = if let Some(v) = value.as_bool() {
-            ParamValue::Bool(v)
-        } else if let Some(v) = value.as_i64() {
-            ParamValue::Int(v)
-        } else if let Some(v) = value.as_f64() {
-            ParamValue::Double(v)
-        } else if let Some(v) = value.as_str() {
-            ParamValue::Enum(v.to_string())
-        } else {
-            return Err(failure("unsupported closed native parameter type"));
+        let field = info
+            .params
+            .iter()
+            .find(|p| p.name == *key)
+            .ok_or_else(|| failure(format!("{id}.params.{key}: unsupported parameter")))?;
+        use n4m::roles::ParamType;
+        let typed = match field.param_type {
+            ParamType::Int => ParamValue::Int(
+                exact_json_integer(value)
+                    .ok_or_else(|| failure(format!("{id}.{key}: integer required")))?,
+            ),
+            ParamType::Double => ParamValue::Double(
+                value
+                    .as_f64()
+                    .filter(|v| v.is_finite())
+                    .ok_or_else(|| failure(format!("{id}.{key}: finite number required")))?,
+            ),
+            ParamType::Bool => ParamValue::Bool(
+                value
+                    .as_bool()
+                    .ok_or_else(|| failure(format!("{id}.{key}: boolean required")))?,
+            ),
+            ParamType::Enum => ParamValue::Enum(
+                value
+                    .as_str()
+                    .ok_or_else(|| failure(format!("{id}.{key}: enum string required")))?
+                    .into(),
+            ),
+            ParamType::IntArray => ParamValue::IntArray(
+                value
+                    .as_array()
+                    .ok_or_else(|| failure(format!("{id}.{key}: array required")))?
+                    .iter()
+                    .map(|v| {
+                        exact_json_integer(v)
+                            .ok_or_else(|| failure(format!("{id}.{key}: integer array required")))
+                    })
+                    .collect::<Result<Vec<_>>>()?,
+            ),
+            ParamType::DoubleArray => ParamValue::DoubleArray(
+                value
+                    .as_array()
+                    .ok_or_else(|| failure(format!("{id}.{key}: array required")))?
+                    .iter()
+                    .map(|v| {
+                        v.as_f64().filter(|v| v.is_finite()).ok_or_else(|| {
+                            failure(format!("{id}.{key}: finite numeric array required"))
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?,
+            ),
         };
         params.set(key, &typed).map_err(failure)?;
     }
+    params.validate(context).map_err(failure)?;
     Ok(params)
+}
+
+/// Base recipe first, then all remaining node parameters on the terminal step.
+/// Same precedence as the existing WASM controller contract, independent of PLS.
+pub fn pipeline_steps_recipe(params: &BTreeMap<String, Value>) -> Result<Vec<Value>> {
+    let mut steps =
+        crate::runtime::effective_pipeline_recipe(&json!({"type":"N4mRolePipeline"}), params)?;
+    for step in &mut steps {
+        let step = step.as_object_mut().expect("owner validated object");
+        if let Some(class) = step.remove("class") {
+            let id = class
+                .as_str()
+                .and_then(|id| id.strip_prefix("n4m:"))
+                .ok_or_else(|| failure("pipeline_steps_v1 class requires n4m:<method id>"))?;
+            step.insert("methodId".into(), json!(id));
+        }
+        step.entry("params").or_insert_with(|| json!({}));
+    }
+    Ok(steps)
+}
+
+/// Validate every candidate through the live Methods manifest before the first fit.
+pub fn preflight_pipeline_steps(steps: &[Value]) -> Result<()> {
+    use n4m::roles::{FitInput, InputRequirement, ROLE_REGRESSOR};
+    if steps.is_empty() {
+        return Err(failure("empty recipe"));
+    }
+    let context = Context::new().map_err(failure)?;
+    for (i, step) in steps.iter().enumerate() {
+        let id = step["methodId"]
+            .as_str()
+            .ok_or_else(|| failure("methodId required"))?;
+        let info = n4m::roles::method_info(id).map_err(failure)?;
+        if i + 1 == steps.len() && info.roles & ROLE_REGRESSOR == 0 {
+            return Err(failure(format!("{id}: terminal role must be regressor")));
+        }
+        if info.roles & n4m::roles::ROLE_SAMPLE_FILTER == 0
+            && (info.capabilities & n4m::roles::CAP_SERIALIZABLE == 0
+                || info.capabilities & n4m::roles::CAP_RETAINS_TRAINING_ROWS != 0)
+        {
+            return Err(failure(format!("{id}: portable pipeline requires serializable state without retained training rows")));
+        }
+        for input in [
+            FitInput::Labels,
+            FitInput::SampleWeight,
+            FitInput::Groups,
+            FitInput::FeatureGroups,
+            FitInput::Blocks,
+            FitInput::Axis,
+            FitInput::TargetDomain,
+            FitInput::FoldIds,
+        ] {
+            if info.input(input) == InputRequirement::Required {
+                return Err(failure(format!(
+                    "{id}: unsupported required fit input {input:?}"
+                )));
+            }
+        }
+        native_params(&context, step)?;
+    }
+    // Native RolePipeline validates intermediate transformer/selector/filter roles.
+    pipeline(&context, steps, &[]).map(|_| ())
 }
 
 fn pipeline(context: &Context, steps: &[Value], names: &[String]) -> Result<RolePipeline> {
@@ -145,7 +270,9 @@ fn pipeline(context: &Context, steps: &[Value], names: &[String]) -> Result<Role
         .collect::<Vec<_>>();
     let mut model = RolePipeline::new(context, &declarations).map_err(failure)?;
     let names = names.iter().map(String::as_str).collect::<Vec<_>>();
-    model.set_feature_names(context, &names).map_err(failure)?;
+    if !names.is_empty() {
+        model.set_feature_names(context, &names).map_err(failure)?;
+    }
     Ok(model)
 }
 
@@ -160,6 +287,13 @@ pub fn inspect_methods_role_pipeline_params(
     let mut model = pipeline(&context, &saved.steps, &saved.feature_names)?;
     let states = saved.states.iter().map(Vec::as_slice).collect::<Vec<_>>();
     model.import_states(&context, &states).map_err(failure)?;
+    if saved.schema == "dagml.methods.pipeline_steps.v1" {
+        // Native import checks role/state/recorded-parameter contracts, including
+        // train-only filters which have no state_index. Do not zip states to steps.
+        return Ok(
+            json!({"schema":saved.schema,"steps":saved.steps,"feature_names":saved.feature_names,"target_names":saved.target_names}),
+        );
+    }
     let mut inspected = Vec::new();
     for (step, state) in saved.steps.iter().zip(&saved.states) {
         let estimator = Estimator::from_n4me(&context, state).map_err(failure)?;
@@ -207,6 +341,7 @@ pub struct MethodsNativeRegressionController {
     id: ControllerId,
     runtime: MethodsRuntime,
     next: AtomicU64,
+    pipeline_steps_v1: bool,
     exported: Mutex<BTreeMap<ArtifactId, Vec<u8>>>,
     hydrated: Mutex<BTreeMap<u64, Vec<u8>>>,
 }
@@ -216,9 +351,31 @@ impl MethodsNativeRegressionController {
             id: ControllerId::new(METHODS_NATIVE_REGRESSION_CONTROLLER)
                 .expect("constant controller"),
             runtime,
+            pipeline_steps_v1: false,
             next: AtomicU64::new(0),
             exported: Mutex::new(BTreeMap::new()),
             hydrated: Mutex::new(BTreeMap::new()),
+        }
+    }
+    /// Native implementation of the existing pipeline_steps_v1 / 1.1.0 contract.
+    pub fn pipeline_steps_v1(runtime: MethodsRuntime) -> Self {
+        let mut controller = Self::new(runtime);
+        controller.id = ControllerId::new(crate::PORTABLE_STEPS_CONTROLLER).expect("constant ID");
+        controller.pipeline_steps_v1 = true;
+        controller
+    }
+    fn version(&self) -> &'static str {
+        if self.pipeline_steps_v1 {
+            crate::PORTABLE_STEPS_VERSION
+        } else {
+            METHODS_NATIVE_REGRESSION_VERSION
+        }
+    }
+    fn payload_schema(&self) -> &'static str {
+        if self.pipeline_steps_v1 {
+            "dagml.methods.pipeline_steps.v1"
+        } else {
+            "dagml.methods.regression.v1"
         }
     }
     fn handle(&self, kind: HandleKind) -> HandleRef {
@@ -238,7 +395,7 @@ impl MethodsNativeRegressionController {
         names: Vec<String>,
     ) -> Result<(ArtifactRef, HandleRef)> {
         let saved = Payload {
-            schema: "dagml.methods.regression.v1".into(),
+            schema: self.payload_schema().into(),
             node_id: task.node_plan.node_id.to_string(),
             params_fingerprint: task.node_plan.params_fingerprint.clone(),
             target_names: data.target_names.clone(),
@@ -274,7 +431,7 @@ impl MethodsNativeRegressionController {
             content_fingerprint: Some(raw),
             size_bytes: Some(bytes.len() as u64),
             plugin: Some(METHODS_NATIVE_REGRESSION_PLUGIN.into()),
-            plugin_version: Some(METHODS_NATIVE_REGRESSION_VERSION.into()),
+            plugin_version: Some(self.version().into()),
             abi_major: None,
             abi_min_minor: None,
             native_predictor_descriptor: None,
@@ -301,13 +458,19 @@ impl RuntimeController for MethodsNativeRegressionController {
         provider: &dyn RuntimeDataProvider,
     ) -> Result<NodeResult> {
         if task.node_plan.controller_id != self.id
-            || task.node_plan.controller_version != METHODS_NATIVE_REGRESSION_VERSION
+            || task.node_plan.controller_version != self.version()
             || task.node_plan.kind != crate::graph::NodeKind::Model
         {
             return Err(failure("task controller identity mismatch"));
         }
-        let parsed = NativePlsRoleParams::from_params(&task.node_plan.params)?;
-        let steps = parsed.recipe(task.phase);
+        let steps = if self.pipeline_steps_v1 {
+            pipeline_steps_recipe(&task.node_plan.params)?
+        } else {
+            NativePlsRoleParams::from_params(&task.node_plan.params)?.recipe(task.phase)
+        };
+        if self.pipeline_steps_v1 {
+            preflight_pipeline_steps(&steps)?;
+        }
         let request = MethodsPlsController::request(task, provider, "x")?;
         provider.preflight_methods_pls(&request)?;
         let data = provider.methods_pls_data(&request)?;
@@ -364,7 +527,8 @@ impl RuntimeController for MethodsNativeRegressionController {
                     .remove(&handle.handle)
                     .ok_or_else(|| failure("missing invocation-local hydrated bytes"))?;
                 let saved = Payload::read(&bytes)?;
-                if saved.node_id != task.node_plan.node_id.as_str()
+                if saved.schema != self.payload_schema()
+                    || saved.node_id != task.node_plan.node_id.as_str()
                     || saved.params_fingerprint != task.node_plan.params_fingerprint
                     || saved.steps != steps
                     || saved.feature_names != names
@@ -569,7 +733,7 @@ impl RuntimeController for MethodsNativeRegressionController {
             || a.kind != "methods_role_pipeline"
             || a.backend != Some(ArtifactBackend::Raw)
             || a.plugin.as_deref() != Some(METHODS_NATIVE_REGRESSION_PLUGIN)
-            || a.plugin_version.as_deref() != Some(METHODS_NATIVE_REGRESSION_VERSION)
+            || a.plugin_version.as_deref() != Some(self.version())
             || a.abi_major.is_some()
             || a.abi_min_minor.is_some()
             || a.native_predictor_descriptor.is_some()
@@ -581,7 +745,8 @@ impl RuntimeController for MethodsNativeRegressionController {
             return Err(failure("RAW identity/hash/relative path mismatch"));
         }
         let saved = Payload::read(payload)?;
-        if saved.node_id != request.node_id.as_str()
+        if saved.schema != self.payload_schema()
+            || saved.node_id != request.node_id.as_str()
             || saved.params_fingerprint != request.params_fingerprint
         {
             return Err(failure("RAW node/parameter binding mismatch"));
@@ -743,6 +908,66 @@ mod tests {
         .is_err());
     }
     #[test]
+    fn generic_ridge_pipeline_states_replay_without_fit_and_refuse_changed_alpha() {
+        let rt = runtime();
+        let context = Context::new().unwrap();
+        let steps = vec![
+            json!({"methodId":"preprocessing.scatter.msc","params":{}}),
+            json!({"methodId":"models.regularized.ridge","params":{"alpha":0.5}}),
+        ];
+        preflight_pipeline_steps(&steps).unwrap();
+        let names = (0..4).map(|i| format!("feature:{i}")).collect::<Vec<_>>();
+        let x = (0..20)
+            .flat_map(|r| {
+                (0..4).map(move |c| {
+                    1.0 + 0.3 * r as f64 + (c * c + 1) as f64 * (1.0 + 0.02 * (r % 3) as f64)
+                })
+            })
+            .collect::<Vec<_>>();
+        let y = (0..20)
+            .map(|r| 0.2 * r as f64 + (r % 3) as f64)
+            .collect::<Vec<_>>();
+        let mut fitted = pipeline(&context, &steps, &names).unwrap();
+        fitted
+            .fit(
+                &context,
+                &FitInputs::new(MatrixRef::row_major(&x, 20, 4).unwrap())
+                    .y(MatrixRef::row_major(&y, 20, 1).unwrap()),
+            )
+            .unwrap();
+        let expected = fitted
+            .predict(&context, MatrixRef::row_major(&x, 20, 4).unwrap(), None)
+            .unwrap()
+            .data;
+        let mut saved = Payload {
+            schema: "dagml.methods.pipeline_steps.v1".into(),
+            node_id: "model:ridge".into(),
+            params_fingerprint: "a".repeat(64),
+            target_names: vec!["y".into()],
+            steps,
+            feature_names: names,
+            states: fitted.export_states(&context, false).unwrap(),
+        };
+        inspect_methods_role_pipeline_params(&serde_json::to_vec(&saved).unwrap(), &rt).unwrap();
+        let mut restored = pipeline(&context, &saved.steps, &saved.feature_names).unwrap();
+        restored
+            .import_states(
+                &context,
+                &saved.states.iter().map(Vec::as_slice).collect::<Vec<_>>(),
+            )
+            .unwrap();
+        let actual = restored
+            .predict(&context, MatrixRef::row_major(&x, 20, 4).unwrap(), None)
+            .unwrap()
+            .data;
+        assert_eq!(actual, expected);
+        saved.steps[1]["params"]["alpha"] = json!(0.75);
+        assert!(
+            inspect_methods_role_pipeline_params(&serde_json::to_vec(&saved).unwrap(), &rt)
+                .is_err()
+        );
+    }
+    #[test]
     fn hydration_hash_recipe_rejection_and_idempotent_release_preserve_lifecycle() {
         let rt = runtime();
         let controller = MethodsNativeRegressionController::new(rt);
@@ -790,5 +1015,34 @@ mod tests {
             .hydrate_artifact_payload(&request, &bytes)
             .is_err());
         assert!(controller.hydrated.lock().unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod pipeline_steps_contract_tests {
+    use super::*;
+    #[test]
+    fn terminal_overlays_preserve_base_transform_and_model_flags() {
+        let params = BTreeMap::from([
+            (
+                "pipeline_steps_v1".into(),
+                json!([{"class":"n4m:preprocessing.scatter.snv","params":{"with_std":false}},{"methodId":"models.pls.pls_regression","params":{"n_components":5,"scale_x":false,"scale_y":false}}]),
+            ),
+            ("n_components".into(), json!(2)),
+        ]);
+        let recipe = pipeline_steps_recipe(&params).unwrap();
+        assert_eq!(recipe[0]["methodId"], "preprocessing.scatter.snv");
+        assert_eq!(recipe[0]["params"]["with_std"], false);
+        assert_eq!(recipe[1]["params"]["n_components"], 2);
+        assert_eq!(recipe[1]["params"]["scale_x"], false);
+        assert!(recipe[1]["params"].get("pipeline_steps_v1").is_none());
+    }
+    #[test]
+    fn reserved_recipe_structure_fails_without_loading_methods() {
+        let params = BTreeMap::from([(
+            "pipeline_steps_v1".into(),
+            json!([{"methodId":"models.pls.pls_regression","params":{"pipeline_steps_v1":[]}}]),
+        )]);
+        assert!(pipeline_steps_recipe(&params).is_err());
     }
 }
