@@ -145,14 +145,28 @@ pub fn admit_portable_pipeline(value: &Value) -> Result<PortableLinearAdmission>
             .or_else(|| value.get("steps"))
             .and_then(Value::as_array)
     });
-    if steps.is_some_and(|steps| {
-        steps
-            .iter()
-            .any(|step| step.get("branch").is_some() || step.get("merge").is_some())
-    }) {
+    if steps.is_some_and(|steps| steps.iter().any(feature_graph_intent)) {
         return admit_portable_feature_graph(value);
     }
     admit(value, true)
+}
+
+/// Branches, train augmentation and terminal per-column fit inputs exist only
+/// in the feature graph profile. Without these declared intents MBPLS and
+/// GroupSparsePLS keep their unchanged linear admission.
+fn feature_graph_intent(step: &Value) -> bool {
+    if step.get("branch").is_some()
+        || step.get("merge").is_some()
+        || step.get("train_augmentation").is_some()
+    {
+        return true;
+    }
+    let model = &step["model"];
+    match model["class"].as_str() {
+        Some("n4m.MBPLS") => model["params"].get("block_sizes").is_some(),
+        Some("n4m.GroupSparsePLS") => model["params"].get("group_assignment").is_some(),
+        _ => false,
+    }
 }
 
 fn admit(value: &Value, classification_allowed: bool) -> Result<PortableLinearAdmission> {
@@ -809,10 +823,135 @@ fn feature_branch_name(name: &str, path: &str) -> Result<()> {
     Ok(())
 }
 
+/// Largest integer the R wire (binary64) carries exactly.
+const EXACT_INTEGER_MAX: i64 = (1 << 53) - 1;
+
+/// An exact JSON integer in `minimum..=maximum`; an integral binary64 (R's
+/// double `7`) is the same integer. Strings and fractions are refused.
+fn exact_integer(value: &Value, minimum: i64, maximum: i64) -> Option<i64> {
+    let n = value.as_i64().or_else(|| {
+        value
+            .as_f64()
+            .filter(|v| v.fract() == 0.0 && v.abs() <= EXACT_INTEGER_MAX as f64)
+            .map(|v| v as i64)
+    })?;
+    (minimum..=maximum).contains(&n).then_some(n)
+}
+
+/// Closed R wire node, kept unresolved: naming its Methods procedure and
+/// parameters requires the live manifest, which only a run loads.
+fn train_augmentation(node: &Value, path: &str) -> Result<Value> {
+    let node = object(node, path)?;
+    keys(&node, &["class", "params"], path)?;
+    if node.get("class").and_then(Value::as_str) != Some("n4m.NativeXAugmentation") {
+        return Err(refuse(
+            &format!("{path}.class"),
+            "n4m.NativeXAugmentation required",
+        ));
+    }
+    let params_path = format!("{path}.params");
+    let params = object(node.get("params").unwrap_or(&Value::Null), &params_path)?;
+    keys(&params, &["kind", "values", "seed"], &params_path)?;
+    let kind = params
+        .get("kind")
+        .and_then(Value::as_str)
+        .filter(|kind| {
+            !kind.is_empty()
+                && kind
+                    .bytes()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_')
+        })
+        .ok_or_else(|| {
+            refuse(
+                &format!("{params_path}.kind"),
+                "nonempty [a-z0-9_] augmentation kind required",
+            )
+        })?;
+    let values = params
+        .get("values")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            refuse(
+                &format!("{params_path}.values"),
+                "positional array of finite numbers required",
+            )
+        })?;
+    for (i, value) in values.iter().enumerate() {
+        if !value.is_number() || !value.as_f64().is_some_and(f64::is_finite) {
+            return Err(refuse(
+                &format!("{params_path}.values[{i}]"),
+                "finite number required",
+            ));
+        }
+    }
+    let seed = params
+        .get("seed")
+        .and_then(|seed| exact_integer(seed, 0, EXACT_INTEGER_MAX))
+        .ok_or_else(|| {
+            refuse(
+                &format!("{params_path}.seed"),
+                "exact integer in 0..2^53-1 required",
+            )
+        })?;
+    Ok(
+        json!({"train_augmentation":{"class":"n4m.NativeXAugmentation",
+        "params":{"kind":kind,"values":values,"seed":seed}}}),
+    )
+}
+
+/// Lowers the terminal MBPLS `block_sizes` / GroupSparsePLS
+/// `group_assignment` alias into the reserved fit-input carrier. Methods alone
+/// checks widths and applicability on the actual terminal matrix.
+fn terminal_fit_inputs(step: &mut Value, path: &str) -> Result<Option<Value>> {
+    let Some(model) = step.get_mut("model").and_then(Value::as_object_mut) else {
+        return Ok(None);
+    };
+    let (alias, key, minimum) = match model.get("class").and_then(Value::as_str) {
+        Some("n4m.MBPLS") => ("block_sizes", "blocks", 1),
+        Some("n4m.GroupSparsePLS") => ("group_assignment", "feature_groups", 0),
+        _ => return Ok(None),
+    };
+    let Some(params) = model.get_mut("params").and_then(Value::as_object_mut) else {
+        return Ok(None);
+    };
+    if key == "feature_groups" && params.contains_key("groups") {
+        return Err(refuse(
+            &format!("{path}.model.params.groups"),
+            "sample groups are not feature groups; declare group_assignment",
+        ));
+    }
+    let Some(declared) = params.remove(alias) else {
+        return Ok(None);
+    };
+    let alias_path = format!("{path}.model.params.{alias}");
+    let values = declared
+        .as_array()
+        .filter(|values| values.len() >= 2)
+        .ok_or_else(|| {
+            refuse(
+                &alias_path,
+                "positional array of at least two exact integers required",
+            )
+        })?
+        .iter()
+        .enumerate()
+        .map(|(i, value)| {
+            exact_integer(value, minimum, EXACT_INTEGER_MAX).ok_or_else(|| {
+                refuse(
+                    &format!("{alias_path}[{i}]"),
+                    format!("exact integer >= {minimum} required"),
+                )
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(Some(json!({ key: values })))
+}
+
 /// Pure grammar/topology admission. All class/parameter lowering is delegated
 /// once to the same linear admission, never to a second alias table.
 pub fn admit_portable_feature_graph(value: &Value) -> Result<PortableLinearAdmission> {
     enum Slot {
+        Augment(Value),
         Native(usize),
         Branch(Vec<(String, Vec<usize>)>),
         Merge,
@@ -843,6 +982,8 @@ pub fn admit_portable_feature_graph(value: &Value) -> Result<PortableLinearAdmis
     let mut native_count = 0;
     let mut index = 0;
     let mut branches_seen = false;
+    let mut augmentation_paths = Vec::new();
+    let mut fit_inputs = None;
     while index < steps.len() {
         let value = &steps[index];
         let path = format!("$.pipeline[{index}]");
@@ -851,6 +992,21 @@ pub fn admit_portable_feature_graph(value: &Value) -> Result<PortableLinearAdmis
             .keys()
             .all(|k| matches!(k.as_str(), "_comment" | "comment"))
         {
+            index += 1;
+            continue;
+        }
+        if let Some(node) = step.get("train_augmentation") {
+            keys(&step, &["train_augmentation"], &path)?;
+            let path = format!("{path}.train_augmentation");
+            // Kennard-Stone may appear anywhere; it is not a slot.
+            if slots.iter().any(|slot| !matches!(slot, Slot::Augment(_))) {
+                return Err(refuse(
+                    &path,
+                    "train augmentation must precede every preprocessing step and the model",
+                ));
+            }
+            slots.push(Slot::Augment(train_augmentation(node, &path)?));
+            augmentation_paths.push(path);
             index += 1;
             continue;
         }
@@ -951,7 +1107,11 @@ pub fn admit_portable_feature_graph(value: &Value) -> Result<PortableLinearAdmis
         }
         // Common grammar admission and live pre-fit role admission refuse unsupported intent.
         let class = step.get("class").and_then(Value::as_str);
-        flat.push(value.clone());
+        let mut value = value.clone();
+        if let Some(carrier) = terminal_fit_inputs(&mut value, &path)? {
+            fit_inputs = Some((format!("{path}.model.params"), carrier));
+        }
+        flat.push(value);
         paths.push(path);
         if !class.is_some_and(portable_ks) {
             slots.push(Slot::Native(native_count));
@@ -959,8 +1119,22 @@ pub fn admit_portable_feature_graph(value: &Value) -> Result<PortableLinearAdmis
         }
         index += 1;
     }
-    if !branches_seen {
+    if !branches_seen && augmentation_paths.is_empty() && fit_inputs.is_none() {
         return Err(refuse("$.pipeline", "feature graph requires a branch"));
+    }
+    if branches_seen {
+        if let Some(path) = augmentation_paths.first() {
+            return Err(refuse(
+                path,
+                "train augmentation + feature_branch remains a declared residual profile",
+            ));
+        }
+        if let Some((path, _)) = &fit_inputs {
+            return Err(refuse(
+                path,
+                "extra fit inputs + feature_branch remain a declared residual profile",
+            ));
+        }
     }
     let native_paths = flat
         .iter()
@@ -992,16 +1166,21 @@ pub fn admit_portable_feature_graph(value: &Value) -> Result<PortableLinearAdmis
     if admitted.profile == PORTABLE_CLASSIFICATION_PROFILE {
         return Err(refuse(
             "$.pipeline",
-            "feature_branch + classification remains a declared residual profile",
+            if branches_seen {
+                "feature_branch + classification remains a declared residual profile"
+            } else {
+                "train augmentation + classification remains a declared residual profile"
+            },
         ));
     }
-    let lowered = admitted.recipe.clone();
+    let mut lowered = admitted.recipe.clone();
     for (step, path) in lowered.iter().zip(&native_paths) {
         // These are controller policy/routing keys, not native estimator
         // parameters. In particular, never overwrite a declared method_id.
         // Selector.method_id was already consumed by the common alias lowering.
         for key in [
             crate::METHODS_ESTIMATOR_METHOD_PARAM,
+            crate::METHODS_ESTIMATOR_FIT_INPUTS_PARAM,
             "unsafe_flags",
             "native_target_index",
         ] {
@@ -1013,9 +1192,35 @@ pub fn admit_portable_feature_graph(value: &Value) -> Result<PortableLinearAdmis
             }
         }
     }
+    if !augmentation_paths.is_empty() {
+        if let Some((_, path)) = lowered.iter().zip(&native_paths).find(|(step, _)| {
+            step["methodId"]
+                .as_str()
+                .is_some_and(|id| id.starts_with("selection."))
+        }) {
+            return Err(refuse(
+                path,
+                "train augmentation + feature selector remains a declared residual profile",
+            ));
+        }
+    }
+    if let Some((_, carrier)) = &fit_inputs {
+        // The carrier is fixed across candidates and part of every identity.
+        let terminal = lowered
+            .last_mut()
+            .ok_or_else(|| refuse("$.pipeline", "one terminal regressor required"))?;
+        terminal["params"][crate::METHODS_ESTIMATOR_FIT_INPUTS_PARAM] = carrier.clone();
+        for candidate in &mut admitted.candidates {
+            candidate.insert(
+                crate::METHODS_ESTIMATOR_FIT_INPUTS_PARAM.into(),
+                carrier.clone(),
+            );
+        }
+    }
     let mut topology = Vec::new();
     for slot in slots {
         match slot {
+            Slot::Augment(entry) => topology.push(entry),
             Slot::Native(i) => topology.push(lowered.get(i).cloned().ok_or_else(|| refuse("$.pipeline", "native topology lowering disagrees with admission"))?),
             Slot::Merge => topology.push(json!({"merge":"features"})),
             Slot::Branch(branches) => topology.push(json!({"branch":branches.into_iter().map(|(id, indices)| {
@@ -1094,6 +1299,29 @@ pub fn compile_portable_feature_graph(
             external = false;
         } else if step.get("merge").is_some() {
             continue;
+        } else if step.get("train_augmentation").is_some() {
+            if step.get("methodId").is_none() {
+                return Err(refuse(
+                    &format!("recipe[{i}].train_augmentation"),
+                    "unresolved; the run resolves it against the live Methods manifest before compile",
+                ));
+            }
+            let node = format!("portable:step:{count}");
+            count += 1;
+            if external {
+                let mut b = binding.clone();
+                b.node_id = NodeId::new(&node)?;
+                bindings.push(b);
+            }
+            let mut op = native(step, &node, "augmentation")?;
+            // Fit rows only (fold-train in FIT_CV, all rows in the training
+            // REFIT); rows are never added and other rows pass unchanged.
+            op["shape"] = json!({
+                "fit_rows": if fold_set.is_some() { "fold_train" } else { "full_train" },
+                "augmentation_policy": {"sample_scope":"none","feature_scope":"train_only"}
+            });
+            steps.push(op);
+            external = false;
         } else {
             let terminal = i + 1 == admission.recipe.len();
             let node = if terminal {
@@ -1120,6 +1348,15 @@ pub fn compile_portable_feature_graph(
         .recipe
         .last()
         .ok_or_else(|| refuse("recipe", "terminal model required"))?;
+    // Canonical identity keeps the declared, unresolved augmentation entries.
+    let canonical = admission
+        .recipe
+        .iter()
+        .map(|step| match step.get("train_augmentation") {
+            Some(declared) => json!({"train_augmentation":declared}),
+            None => step.clone(),
+        })
+        .collect::<Vec<_>>();
     let dimensions = json!([
         {"name":"chain","choices":[{"label":"chain:0","value":0,"param_overrides":[{"node_id":target,"params":{"method_id":model["methodId"]}}]}]},
         {"name":"model_parameters","choices":admission.candidates.iter().enumerate().map(|(i,p)|json!({"label":format!("candidate:{i}"),"value":i,"param_overrides":[{"node_id":target,"params":p}]})).collect::<Vec<_>>()}
@@ -1128,7 +1365,7 @@ pub fn compile_portable_feature_graph(
     let spec: PipelineDslSpec = serde_json::from_value(
         json!({"id":"portable:feature_graph","campaign_id":"portable:campaign","root_seed":admission.root_seed,
         "input":{"name":"x","representation":"tabular_numeric"},"generation_strategy":"cartesian","max_variants":admission.candidates.len(),"generation_dimensions":dimensions,
-        "leakage_policy":policy,"data_bindings":bindings,"metadata":{(PORTABLE_GRAPH_RECIPE_PARAM):admission.recipe},
+        "leakage_policy":policy,"data_bindings":bindings,"metadata":{(PORTABLE_GRAPH_RECIPE_PARAM):canonical},
         "split_invocation":fold_set.map(|fold|json!({"id":"portable:ks","controller_id":null,"params":{},"fold_set":fold,"leakage_policy":policy})),"steps":steps}),
     )?;
     let mut compiled =
@@ -1253,5 +1490,267 @@ mod feature_graph_admission_tests {
                 .to_string();
             assert!(error.contains(path), "{error}");
         }
+    }
+
+    fn augmentation(kind: &str, values: Value, seed: Value) -> Value {
+        json!({"train_augmentation":{"class":"n4m.NativeXAugmentation",
+            "params":{"kind":kind,"values":values,"seed":seed}}})
+    }
+
+    #[test]
+    fn train_augmentation_and_fit_inputs_derive_the_graph_profile_unresolved() {
+        let admitted = admit_portable_pipeline(&json!([
+            {"class":"n4m.KennardStone","params":{"test_size":0.25}},
+            augmentation("spline_x_perturb", json!([3, 0.05, -0.1, 0.1]), json!(7.0)),
+            augmentation("gaussian_noise", json!([0.01]), json!(9007199254740991_u64)),
+            {"class":"n4m.SNV"},
+            {"model":{"class":"n4m.PLS","params":{"scale":false}},"_range_":[1,3,1],"param":"n_components"}
+        ]))
+        .unwrap();
+        assert_eq!(admitted.profile, PORTABLE_FEATURE_PROFILE);
+        assert_eq!(admitted.owner_profile, "feature_graph.v1");
+        assert_eq!(admitted.mode, "single_holdout");
+        // Pure plan: declared kind, values and exact integer seed; no lookup.
+        assert_eq!(
+            admitted.recipe[0],
+            augmentation("spline_x_perturb", json!([3, 0.05, -0.1, 0.1]), json!(7))
+        );
+        assert!(admitted.recipe[0]["train_augmentation"]["params"]["seed"].is_u64());
+        assert!(admitted.recipe[0].get("methodId").is_none());
+        assert_eq!(
+            admitted.recipe[1]["train_augmentation"]["params"]["seed"],
+            json!(9007199254740991_u64)
+        );
+        assert_eq!(admitted.recipe[2]["methodId"], "preprocessing.scatter.snv");
+        assert_eq!(admitted.preprocessing, admitted.recipe[..3].to_vec());
+        assert_eq!(admitted.candidates.len(), 3);
+        assert!(admitted
+            .candidates
+            .iter()
+            .all(|c| !c.contains_key(crate::METHODS_ESTIMATOR_FIT_INPUTS_PARAM)));
+
+        let mbpls = admit_portable_pipeline(&json!([{"model":{"class":"n4m.MBPLS",
+            "params":{"block_sizes":[10.0, 18]}},"_range_":[1,2,1],"param":"n_components"}]))
+        .unwrap();
+        assert_eq!(mbpls.profile, PORTABLE_FEATURE_PROFILE);
+        assert_eq!(mbpls.recipe[0]["methodId"], "models.multiblock.mb_pls");
+        assert_eq!(
+            mbpls.recipe[0]["params"]["fit_inputs_v1"],
+            json!({"blocks":[10, 18]})
+        );
+        assert!(mbpls.recipe[0]["params"].get("block_sizes").is_none());
+        for (candidate, n) in mbpls.candidates.iter().zip(1..) {
+            assert_eq!(candidate["n_components"], json!(n));
+            assert_eq!(candidate["fit_inputs_v1"], json!({"blocks":[10, 18]}));
+        }
+        let group = admit_portable_pipeline(
+            &json!([{"class":"n4m.SNV"},{"model":{"class":"n4m.GroupSparsePLS",
+            "params":{"group_assignment":[0, 0, 1, 1],"group_lambda":0.2,"n_components":2}}}]),
+        )
+        .unwrap();
+        assert_eq!(group.profile, PORTABLE_FEATURE_PROFILE);
+        assert_eq!(group.mode, "training");
+        assert_eq!(
+            group.candidates[0]["fit_inputs_v1"],
+            json!({"feature_groups":[0, 0, 1, 1]})
+        );
+        assert_eq!(group.candidates[0]["group_lambda"], json!(0.2));
+        // Without the aliases both entry points keep the linear admission.
+        let plain = json!([{"model":{"class":"n4m.MBPLS","params":{"n_components":2}}}]);
+        assert_eq!(
+            admit_portable_pipeline(&plain).unwrap(),
+            admit_portable_linear(&plain).unwrap()
+        );
+        assert_eq!(
+            admit_portable_pipeline(&plain).unwrap().profile,
+            PORTABLE_LINEAR_PROFILE
+        );
+    }
+
+    #[test]
+    fn augmentation_and_fit_input_refusals_are_pure_and_by_path() {
+        let pls = json!({"model":{"class":"n4m.PLS"}});
+        let gaussian = augmentation("gaussian_noise", json!([0.01]), json!(1));
+        let mbpls = |params: Value| json!([{"model":{"class":"n4m.MBPLS","params":params}}]);
+        let group =
+            |params: Value| json!([{"model":{"class":"n4m.GroupSparsePLS","params":params}}]);
+        for (definition, expected) in [
+            (
+                json!([{"class":"n4m.SNV"}, gaussian, pls]),
+                "$.pipeline[1].train_augmentation: train augmentation must precede",
+            ),
+            (
+                json!([gaussian, {"branch":[[{"class":"n4m.SNV"}],[{"class":"n4m.MSC"}]]},{"merge":"features"}, pls]),
+                "$.pipeline[0].train_augmentation: train augmentation + feature_branch",
+            ),
+            (
+                json!([gaussian, {"class":"n4m.Selector","params":{"method":"spa_select","n_components":4}}, pls]),
+                "$.pipeline[1]: train augmentation + feature selector",
+            ),
+            (
+                json!([gaussian, {"model":{"class":"n4m.SparsePLSDA"}}]),
+                "train augmentation + classification",
+            ),
+            (
+                json!([
+                    augmentation("gaussian_noise", json!([0.01]), json!(9007199254740992_u64)),
+                    pls
+                ]),
+                "$.pipeline[0].train_augmentation.params.seed",
+            ),
+            (
+                json!([
+                    augmentation("gaussian_noise", json!([0.01]), json!(1.5)),
+                    pls
+                ]),
+                "$.pipeline[0].train_augmentation.params.seed",
+            ),
+            (
+                json!([
+                    augmentation("gaussian_noise", json!([0.01]), json!(-1)),
+                    pls
+                ]),
+                "$.pipeline[0].train_augmentation.params.seed",
+            ),
+            (
+                json!([
+                    augmentation("gaussian_noise", json!([0.01]), json!("7")),
+                    pls
+                ]),
+                "$.pipeline[0].train_augmentation.params.seed",
+            ),
+            (
+                json!([
+                    augmentation("gaussian_noise", json!(["0.01"]), json!(1)),
+                    pls
+                ]),
+                "$.pipeline[0].train_augmentation.params.values[0]",
+            ),
+            (
+                json!([augmentation("gaussian_noise", json!(0.01), json!(1)), pls]),
+                "$.pipeline[0].train_augmentation.params.values",
+            ),
+            (
+                json!([augmentation("Gaussian-noise", json!([0.01]), json!(1)), pls]),
+                "$.pipeline[0].train_augmentation.params.kind",
+            ),
+            (
+                json!([{"train_augmentation":{"class":"n4m.Other","params":{}}}, pls]),
+                "$.pipeline[0].train_augmentation.class",
+            ),
+            (
+                json!([{"train_augmentation":{"class":"n4m.NativeXAugmentation",
+                    "params":{"kind":"gaussian_noise","values":[0.01],"seed":1,"apply_to":"all"}}}, pls]),
+                "$.pipeline[0].train_augmentation.params.apply_to",
+            ),
+            (
+                json!([{"train_augmentation":gaussian["train_augmentation"],"name":"x"}, pls]),
+                "$.pipeline[0].name",
+            ),
+            (
+                mbpls(json!({"block_sizes":[28]})),
+                "$.pipeline[0].model.params.block_sizes: positional array",
+            ),
+            (
+                mbpls(json!({"block_sizes":{"a":10,"b":18}})),
+                "$.pipeline[0].model.params.block_sizes: positional array",
+            ),
+            (
+                mbpls(json!({"block_sizes":[0, 28]})),
+                "$.pipeline[0].model.params.block_sizes[0]",
+            ),
+            (
+                mbpls(json!({"block_sizes":[10, 18],"fit_inputs_v1":{"blocks":[10, 18]}})),
+                "fit_inputs_v1: reserved native controller parameter",
+            ),
+            (
+                group(json!({"group_assignment":[0, 1.5]})),
+                "$.pipeline[0].model.params.group_assignment[1]",
+            ),
+            (
+                group(json!({"group_assignment":[0, -1]})),
+                "$.pipeline[0].model.params.group_assignment[1]",
+            ),
+            (
+                group(json!({"group_assignment":[0, 1],"groups":[0, 1]})),
+                "$.pipeline[0].model.params.groups",
+            ),
+            (
+                json!([{"branch":[[{"class":"n4m.SNV"}],[{"class":"n4m.MSC"}]]},{"merge":"features"},
+                    {"model":{"class":"n4m.MBPLS","params":{"block_sizes":[10, 18]}}}]),
+                "$.pipeline[2].model.params: extra fit inputs + feature_branch",
+            ),
+        ] {
+            let error = admit_portable_pipeline(&definition)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(expected), "{expected}: {error}");
+        }
+    }
+
+    #[test]
+    fn resolved_augmentation_compiles_train_only_nodes_and_keeps_canonical_identity() {
+        let manifest = json!({"abi":"2.14.0","methods":[
+            {"method_id":"augmentation.noise.gaussian_noise","roles":["augmenter"],"node_kinds":["augmentation"]},
+            {"method_id":"preprocessing.scatter.snv","roles":["transformer"],"node_kinds":["transform"]},
+            {"method_id":"models.pls.pls_regression","roles":["regressor"],"node_kinds":["model"]}]})
+        .to_string();
+        let mut registry = ControllerRegistry::new();
+        for spec in crate::n4m_host_controller_specs(&manifest).unwrap() {
+            let manifest = spec.derive().unwrap();
+            if manifest.controller_id.as_str() != crate::METHODS_FEATURE_JOIN_CONTROLLER {
+                registry.register(manifest).unwrap();
+            }
+        }
+        let hash = "0".repeat(64);
+        let binding: DataBinding = serde_json::from_value(json!({"node_id":"model:portable","input_name":"x",
+            "request_id":"test:opaque","schema_fingerprint":hash,"plan_fingerprint":hash,"relation_fingerprint":hash,
+            "output_representation":"tabular_numeric","source_ids":["x"],"require_relations":true}))
+        .unwrap();
+        let mut admission = admit_portable_pipeline(&json!([
+            augmentation("gaussian_noise", json!([0.01]), json!(7)),
+            {"class":"n4m.SNV"},
+            {"model":{"class":"n4m.PLS"},"_range_":[1,2,1],"param":"n_components"}
+        ]))
+        .unwrap();
+        let canonical = admission.recipe.clone();
+        let error = compile_portable_feature_graph(&admission, binding.clone(), None, &registry)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("recipe[0].train_augmentation: unresolved"),
+            "{error}"
+        );
+        // The shape of the run-time resolution in methods_estimator.
+        admission.recipe[0]["methodId"] = json!("augmentation.noise.gaussian_noise");
+        admission.recipe[0]["params"] = json!({"sigma":0.01,"seed":7});
+        let compiled =
+            compile_portable_feature_graph(&admission, binding, None, &registry).unwrap();
+        let node = compiled
+            .graph
+            .nodes
+            .iter()
+            .find(|node| node.kind == crate::NodeKind::Augmentation)
+            .unwrap();
+        assert_eq!(
+            node.params["method_id"],
+            "augmentation.noise.gaussian_noise"
+        );
+        assert_eq!(node.params["sigma"], 0.01);
+        assert_eq!(node.params["seed"], 7);
+        let shape = &compiled.shape_plans[&node.id];
+        assert_eq!(shape.fit_rows, crate::FitBoundary::FullTrain);
+        assert_eq!(
+            shape.augmentation_policy.sample_scope,
+            crate::AugmentationScope::None
+        );
+        assert_eq!(
+            shape.augmentation_policy.feature_scope,
+            crate::AugmentationScope::TrainOnly
+        );
+        assert_eq!(
+            compiled.graph.metadata[PORTABLE_GRAPH_RECIPE_PARAM],
+            json!(canonical)
+        );
     }
 }

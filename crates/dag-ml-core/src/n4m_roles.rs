@@ -22,6 +22,10 @@ use crate::graph::{NodeKind, PortCardinality, PortKind, PortSpec};
 pub const N4M_OPERATOR_REF_PREFIX: &str = "n4m:";
 /// Reserved node parameter naming the native method.
 pub const METHODS_ESTIMATOR_METHOD_PARAM: &str = "method_id";
+/// Reserved, fingerprinted model-node parameter carrying declared per-column
+/// fit inputs (`{"blocks": [...]}` or `{"feature_groups": [...]}`). It is never
+/// an ordinary native parameter; Methods validates widths at the actual fit.
+pub const METHODS_ESTIMATOR_FIT_INPUTS_PARAM: &str = "fit_inputs_v1";
 /// Data-only native feature join; available to pure compilation as well.
 pub const METHODS_FEATURE_JOIN_CONTROLLER: &str = "controller:n4m.feature_join";
 
@@ -98,8 +102,10 @@ pub const N4M_GRAPH_ROLES: [N4mRole; 7] = [
     N4mRole::Augmenter,
 ];
 
-/// Roles executed natively. Splitters and augmenters are derived as
-/// controller specs but have no native execution path yet.
+/// Roles executed natively by the estimator controllers. Splitters are
+/// derived as controller specs but have no native execution path; train-only
+/// augmenter procedures are registered separately by the methods estimator
+/// registration (see `register_methods_estimator_controllers`).
 pub const METHODS_ESTIMATOR_EXECUTABLE_ROLES: [N4mRole; 5] = [
     N4mRole::Transformer,
     N4mRole::Selector,
