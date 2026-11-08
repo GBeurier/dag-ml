@@ -754,7 +754,11 @@ fn real_dmd_initial_refit_refuses_provider_records_identity_and_order_before_cal
             }
             3 => provider.records.records[0].excluded = true,
             4 => {
-                provider.identity.target_content_fingerprint = "f".repeat(64);
+                provider.identity.target_content_fingerprint = "a".repeat(64);
+                assert_ne!(
+                    provider.identity.target_content_fingerprint,
+                    package.data_identities[0].target_content_fingerprint
+                );
                 provider.identity.identity_fingerprint =
                     provider.identity.compute_fingerprint().unwrap();
             }
