@@ -155,7 +155,7 @@
     },
     {
       "path": "docs/contracts/score_set.schema.json",
-      "sha256": "2cb47c04ee441bc98757fcc8c70866ee01543facda1f9de68512e9a196924504",
+      "sha256": "3ee02c8671df43babcb2d2c557638ae356daaf9ab5d8d1c030bfba79a3bdf79a",
       "kind": "schema_dependency"
     },
     {
@@ -473,5 +473,5 @@
       ]
     }
   ],
-  "pack_checksum": "5312017864190d9d71397e54a2a32c463c03697b68f511989e29b0162ec885bd"
+  "pack_checksum": "68f5afaabe36e8a476c0ca863715bb75fe9655cc7f13e5bce9e6d023424f3bb8"
 }
