@@ -1,10 +1,16 @@
-//! Admission for the declared linear portable profile. No buffers or operators run here.
+//! Admission for the declared linear portable profiles. No buffers or operators run here.
 use super::*;
 use serde_json::{json, Map, Value};
 
 pub const PORTABLE_LINEAR_PROFILE: &str = "portable_linear_regression.v1";
 pub const PORTABLE_STEPS_CONTROLLER: &str = "controller:methods.native.pipeline_steps";
 pub const PORTABLE_STEPS_VERSION: &str = "1.1.0";
+/// Declared `n4m.SparsePLSDA` terminal: accuracy over integral class ids.
+pub const PORTABLE_CLASSIFICATION_PROFILE: &str = "portable_linear_classification.v1";
+pub const PORTABLE_CLASSIFIER_CONTROLLER: &str =
+    "controller:methods.native.pipeline_steps_classifier";
+pub const PORTABLE_CLASSIFIER_VERSION: &str = "1.0.0";
+const SPARSE_PLS_DA: &str = "models.sparse.sparse_pls_da";
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PortableLinearAdmission {
@@ -124,8 +130,32 @@ fn method(class: &str) -> Option<&str> {
     })
 }
 
-/// Complete no-fit admission, shared by preview, Rust execution, exports and sessions.
+/// Complete no-fit regression admission, shared by preview, Rust execution,
+/// exports and sessions. A declared SparsePLSDA terminal stays unsupported here.
 pub fn admit_portable_linear(value: &Value) -> Result<PortableLinearAdmission> {
+    admit(value, false)
+}
+
+/// Owner admission for the portable commands: the profile is derived from the
+/// declared terminal model (`n4m.SparsePLSDA` selects classification).
+pub fn admit_portable_pipeline(value: &Value) -> Result<PortableLinearAdmission> {
+    let steps = value.as_array().or_else(|| {
+        value
+            .get("pipeline")
+            .or_else(|| value.get("steps"))
+            .and_then(Value::as_array)
+    });
+    if steps.is_some_and(|steps| {
+        steps
+            .iter()
+            .any(|step| step.get("branch").is_some() || step.get("merge").is_some())
+    }) {
+        return admit_portable_feature_graph(value);
+    }
+    admit(value, true)
+}
+
+fn admit(value: &Value, classification_allowed: bool) -> Result<PortableLinearAdmission> {
     let root = if value.is_array() {
         json!({"pipeline":value})
     } else {
@@ -151,6 +181,7 @@ pub fn admit_portable_linear(value: &Value) -> Result<PortableLinearAdmission> {
     let mut candidates = Vec::new();
     let mut components = Vec::new();
     let mut model_seen = false;
+    let mut classification = false;
     for (index, value) in steps.iter().enumerate() {
         let path = format!("$.pipeline[{index}]");
         if value.is_object()
@@ -226,7 +257,15 @@ pub fn admit_portable_linear(value: &Value) -> Result<PortableLinearAdmission> {
             splitter = Some(json!({"type":"KennardStone","params":{"test_size":size}}));
             continue;
         }
-        let mut id = if class == "n4m.Selector" {
+        let mut id = if terminal
+            && classification_allowed
+            && matches!(
+                class,
+                "n4m.SparsePLSDA" | "pls4all.sklearn.SparsePLSDAClassifier"
+            ) {
+            classification = true;
+            SPARSE_PLS_DA.to_string()
+        } else if class == "n4m.Selector" {
             keys(
                 &params,
                 &["method", "method_id", "n_components", "method_params"],
@@ -477,6 +516,23 @@ pub fn admit_portable_linear(value: &Value) -> Result<PortableLinearAdmission> {
                 defaults(&mut params, json!({"n_components":2}));
             }
             "models.regularized.ridge" => defaults(&mut params, json!({"alpha":1.0})),
+            id if classification && id == SPARSE_PLS_DA => {
+                keys(
+                    &params,
+                    &["n_components", "sparsity_lambda"],
+                    &format!("{path}.model.params"),
+                )?;
+                defaults(
+                    &mut params,
+                    json!({"n_components":2,"sparsity_lambda":0.05}),
+                );
+                let lambda_path = format!("{path}.model.params.sparsity_lambda");
+                let lambda = number(&params["sparsity_lambda"], &lambda_path)?;
+                if lambda < 0.0 {
+                    return Err(refuse(&lambda_path, "finite non-negative number required"));
+                }
+                params["sparsity_lambda"] = json!(lambda);
+            }
             _ => {}
         }
         if terminal {
@@ -553,7 +609,12 @@ pub fn admit_portable_linear(value: &Value) -> Result<PortableLinearAdmission> {
     };
     Ok(PortableLinearAdmission {
         schema_version: 1,
-        profile: PORTABLE_LINEAR_PROFILE.into(),
+        profile: if classification {
+            PORTABLE_CLASSIFICATION_PROFILE
+        } else {
+            PORTABLE_LINEAR_PROFILE
+        }
+        .into(),
         owner_profile: "pipeline_steps.v1".into(),
         mode: if splitter.is_some() {
             "single_holdout"
@@ -583,6 +644,9 @@ pub fn compile_portable_linear(
     fold_set: Option<crate::FoldSet>,
     registry: &ControllerRegistry,
 ) -> Result<CompiledPipelineDsl> {
+    if admission.profile == PORTABLE_FEATURE_PROFILE {
+        return compile_portable_feature_graph(admission, binding, fold_set, registry);
+    }
     let target = binding.node_id.clone();
     let dimensions = json!([
         {"name":"chain","choices":[{"label":"chain:0","value":0,"param_overrides":[{"node_id":target,"params":{"pipeline_steps_v1":admission.recipe}}]}]},
@@ -640,5 +704,554 @@ mod portable_tests {
         assert!(!admitted.candidates[0].contains_key("solver"));
         definition["pipeline"][0]["model"]["params"]["solver"] = json!("nipals");
         assert!(admit_portable_linear(&definition).is_err());
+    }
+    #[test]
+    fn sparse_pls_da_derives_classification_and_keeps_linear_admission_unchanged() {
+        let definition = json!({"name":"cls","pipeline":[{"class":"n4m.SNV","params":{"with_std":false}},
+            {"model":{"class":"n4m.SparsePLSDA","params":{"sparsity_lambda":0.1}},"_range_":[1,3,1],"param":"n_components"}]});
+        let admitted = admit_portable_pipeline(&definition).unwrap();
+        assert_eq!(admitted.profile, PORTABLE_CLASSIFICATION_PROFILE);
+        assert_eq!(admitted.owner_profile, "pipeline_steps.v1");
+        assert_eq!(admitted.recipe[1]["methodId"], SPARSE_PLS_DA);
+        assert_eq!(admitted.recipe[0]["params"]["with_std"], false);
+        assert_eq!(admitted.n_components, vec![1, 2, 3]);
+        for (candidate, n) in admitted.candidates.iter().zip(1..) {
+            assert_eq!(candidate.len(), 2);
+            assert_eq!(candidate["n_components"], json!(n));
+            assert_eq!(candidate["sparsity_lambda"], json!(0.1));
+        }
+        let default = admit_portable_pipeline(
+            &json!({"pipeline":[{"model":{"class":"pls4all.sklearn.SparsePLSDAClassifier"}}]}),
+        )
+        .unwrap();
+        assert_eq!(default.candidates[0]["n_components"], json!(2));
+        assert_eq!(default.candidates[0]["sparsity_lambda"], json!(0.05));
+        assert_eq!(default.evaluation["scope"], "training");
+        // The regression entry point keeps refusing the declared classifier.
+        let error = admit_portable_linear(&definition).unwrap_err().to_string();
+        assert!(
+            error.contains("unsupported profile/operator n4m.SparsePLSDA"),
+            "{error}"
+        );
+        // A regression document is admitted identically by both entry points.
+        let regression = json!({"pipeline":[{"class":"n4m.KennardStone"},{"class":"n4m.SNV"},
+            {"model":{"class":"n4m.PLS","params":{"scale":false}},"_range_":[1,2,1],"param":"n_components"}]});
+        assert_eq!(
+            admit_portable_pipeline(&regression).unwrap(),
+            admit_portable_linear(&regression).unwrap()
+        );
+    }
+    #[test]
+    fn sparse_pls_da_refuses_unsupported_parameters_only() {
+        for (definition, expected) in [
+            (
+                json!({"pipeline":[{"model":{"class":"n4m.SparsePLSDA","params":{"scale":true}}}]}),
+                "$.pipeline[0].model.params.scale",
+            ),
+            (
+                json!({"pipeline":[{"model":{"class":"n4m.SparsePLSDA","params":{"sparsity_lambda":-0.5}}}]}),
+                "$.pipeline[0].model.params.sparsity_lambda",
+            ),
+            (
+                json!({"pipeline":[{"class":"n4m.SparsePLSDA"},{"model":{"class":"n4m.PLS"}}]}),
+                "unsupported profile/operator n4m.SparsePLSDA",
+            ),
+        ] {
+            let error = admit_portable_pipeline(&definition)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(expected), "{expected}: {error}");
+        }
+    }
+    #[test]
+    fn selector_and_generic_native_steps_stay_admitted_before_the_classifier() {
+        // Width is the Methods classifier's admission on its actual terminal
+        // input; the owner neither whitelists transforms nor infers widths.
+        let admitted = admit_portable_pipeline(&json!({"pipeline":[{"class":"n4m.SNV"},
+            {"class":"n4m.Selector","params":{"method":"spa_select","n_components":4}},
+            {"class":"n4m:preprocessing.scatter.msc"},
+            {"model":{"class":"n4m.SparsePLSDA"},"_range_":[1,6,1],"param":"n_components"}]}))
+        .unwrap();
+        assert_eq!(admitted.profile, PORTABLE_CLASSIFICATION_PROFILE);
+        assert_eq!(admitted.recipe[1]["methodId"], "selection.spa");
+        assert_eq!(admitted.recipe[2]["methodId"], "preprocessing.scatter.msc");
+        assert_eq!(admitted.candidates.len(), 6);
+        assert_eq!(admitted.candidates[5]["n_components"], json!(6));
+    }
+}
+
+/// Regression topology profile; linear/classifier contracts remain separate.
+pub const PORTABLE_FEATURE_PROFILE: &str = "portable_feature_regression.v1";
+pub const PORTABLE_GRAPH_RECIPE_PARAM: &str = "portable_graph_recipe_v1";
+
+fn portable_ks(class: &str) -> bool {
+    matches!(
+        class,
+        "n4m.KennardStone"
+            | "splitters.kennard_stone"
+            | "nirs4all.operators.splitters.KennardStoneSplitter"
+            | "nirs4all.operators.splitters.splitters.KennardStoneSplitter"
+    )
+}
+
+fn feature_branch_name(name: &str, path: &str) -> Result<()> {
+    let mut chars = name.bytes();
+    if matches!(name, "parallel" | "n_jobs")
+        || !chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+        || !chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'.' | b'-'))
+    {
+        return Err(refuse(
+            path,
+            "branch name must match ^[A-Za-z][A-Za-z0-9_.-]*$; parallel/n_jobs are reserved",
+        ));
+    }
+    validate_branch_id(name)?;
+    Ok(())
+}
+
+/// Pure grammar/topology admission. All class/parameter lowering is delegated
+/// once to the same linear admission, never to a second alias table.
+pub fn admit_portable_feature_graph(value: &Value) -> Result<PortableLinearAdmission> {
+    enum Slot {
+        Native(usize),
+        Branch(Vec<(String, Vec<usize>)>),
+        Merge,
+    }
+    let root_value = if value.is_array() {
+        json!({"pipeline":value})
+    } else {
+        value.clone()
+    };
+    let mut root = object(&root_value, "$")?;
+    keys(
+        &root,
+        &["pipeline", "steps", "name", "description", "random_state"],
+        "$",
+    )?;
+    if root.contains_key("pipeline") && root.contains_key("steps") {
+        return Err(refuse("$", "ambiguous pipeline and steps"));
+    }
+    let steps = root
+        .get("pipeline")
+        .or_else(|| root.get("steps"))
+        .and_then(Value::as_array)
+        .ok_or_else(|| refuse("$.pipeline", "step array required"))?
+        .clone();
+    let mut flat = Vec::new();
+    let mut paths = Vec::new();
+    let mut slots = Vec::new();
+    let mut native_count = 0;
+    let mut index = 0;
+    let mut branches_seen = false;
+    while index < steps.len() {
+        let value = &steps[index];
+        let path = format!("$.pipeline[{index}]");
+        let step = object(value, &path)?;
+        if step
+            .keys()
+            .all(|k| matches!(k.as_str(), "_comment" | "comment"))
+        {
+            index += 1;
+            continue;
+        }
+        if let Some(branches) = step.get("branch") {
+            keys(&step, &["branch"], &path)?;
+            let merge_path = format!("$.pipeline[{}]", index + 1);
+            let merge = steps
+                .get(index + 1)
+                .ok_or_else(|| refuse(&path, "branch requires immediate merge: features"))?;
+            let merge = object(merge, &merge_path)?;
+            keys(&merge, &["merge"], &merge_path)?;
+            if merge.get("merge").and_then(Value::as_str) != Some("features") {
+                return Err(refuse(
+                    &merge_path,
+                    "branch requires immediate merge: features; prediction merging is unavailable",
+                ));
+            }
+            let declared = match branches {
+                Value::Object(map) => map
+                    .iter()
+                    .map(|(name, steps)| Ok((name.clone(), steps.clone())))
+                    .collect::<Result<Vec<_>>>()?,
+                Value::Array(list) => list
+                    .iter()
+                    .enumerate()
+                    .map(|(i, branch)| {
+                        if branch.is_array() {
+                            return Ok((format!("branch_{i}"), branch.clone()));
+                        }
+                        let branch = object(branch, &format!("{path}.branch[{i}]"))?;
+                        keys(&branch, &["name", "steps"], &format!("{path}.branch[{i}]"))?;
+                        let name = match branch.get("name") {
+                            None => format!("branch_{i}"),
+                            Some(v) => v
+                                .as_str()
+                                .ok_or_else(|| refuse(&path, "branch name must be a string"))?
+                                .into(),
+                        };
+                        Ok((
+                            name,
+                            branch
+                                .get("steps")
+                                .cloned()
+                                .ok_or_else(|| refuse(&path, "branch steps required"))?,
+                        ))
+                    })
+                    .collect::<Result<Vec<_>>>()?,
+                _ => return Err(refuse(&path, "branch must be an object or array")),
+            };
+            if declared.len() < 2 {
+                return Err(refuse(&path, "at least two nonempty branches required"));
+            }
+            let mut names = BTreeSet::new();
+            let mut branch_slots = Vec::new();
+            for (name, body) in declared {
+                let branch_path = format!("{path}.branch.{name}");
+                feature_branch_name(&name, &branch_path)?;
+                if !names.insert(name.clone()) {
+                    return Err(refuse(&branch_path, "duplicate branch name"));
+                }
+                let body = body
+                    .as_array()
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| refuse(&branch_path, "nonempty branch step array required"))?;
+                let mut positions = Vec::new();
+                for (i, value) in body.iter().enumerate() {
+                    let path = format!("{branch_path}[{i}]");
+                    let step = object(value, &path)?;
+                    keys(&step, &["class", "params", "name"], &path)?;
+                    let class = step
+                        .get("class")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| refuse(&path, "preprocessing class required"))?;
+                    if portable_ks(class)
+                        || method(class).is_some_and(|id| {
+                            id.starts_with("models.")
+                                || id.starts_with("splitters.")
+                                || id.starts_with("augmentation.")
+                        })
+                    {
+                        return Err(refuse(&path, "branch accepts preprocessing only; models, splitters and augmentation are unavailable"));
+                    }
+                    flat.push(value.clone());
+                    paths.push(path);
+                    positions.push(native_count);
+                    native_count += 1;
+                }
+                branch_slots.push((name, positions));
+            }
+            slots.push(Slot::Branch(branch_slots));
+            slots.push(Slot::Merge);
+            branches_seen = true;
+            index += 2;
+            continue;
+        }
+        if step.contains_key("merge") {
+            return Err(refuse(&path, "merge must immediately follow a branch"));
+        }
+        // Common grammar admission and live pre-fit role admission refuse unsupported intent.
+        let class = step.get("class").and_then(Value::as_str);
+        flat.push(value.clone());
+        paths.push(path);
+        if !class.is_some_and(portable_ks) {
+            slots.push(Slot::Native(native_count));
+            native_count += 1;
+        }
+        index += 1;
+    }
+    if !branches_seen {
+        return Err(refuse("$.pipeline", "feature graph requires a branch"));
+    }
+    let native_paths = flat
+        .iter()
+        .zip(&paths)
+        .filter(|(step, _)| {
+            !step
+                .get("class")
+                .and_then(Value::as_str)
+                .is_some_and(portable_ks)
+        })
+        .map(|(_, path)| path.clone())
+        .collect::<Vec<_>>();
+    root.remove("steps");
+    root.insert("pipeline".into(), json!(flat));
+    let mut admitted = admit(&Value::Object(root), true).map_err(|error| {
+        let mut message = error.to_string();
+        if let Some(start) = message.find("$.pipeline[") {
+            if let Some(end) = message[start..].find(']') {
+                let end = start + end;
+                if let Ok(index) = message[start + "$.pipeline[".len()..end].parse::<usize>() {
+                    if let Some(path) = paths.get(index) {
+                        message.replace_range(start..=end, path);
+                    }
+                }
+            }
+        }
+        refuse("$", message)
+    })?;
+    if admitted.profile == PORTABLE_CLASSIFICATION_PROFILE {
+        return Err(refuse(
+            "$.pipeline",
+            "feature_branch + classification remains a declared residual profile",
+        ));
+    }
+    let lowered = admitted.recipe.clone();
+    for (step, path) in lowered.iter().zip(&native_paths) {
+        // These are controller policy/routing keys, not native estimator
+        // parameters. In particular, never overwrite a declared method_id.
+        // Selector.method_id was already consumed by the common alias lowering.
+        for key in [
+            crate::METHODS_ESTIMATOR_METHOD_PARAM,
+            "unsafe_flags",
+            "native_target_index",
+        ] {
+            if step["params"].get(key).is_some() {
+                return Err(refuse(
+                    &format!("{path}.params.{key}"),
+                    "reserved native controller parameter is unavailable in method params",
+                ));
+            }
+        }
+    }
+    let mut topology = Vec::new();
+    for slot in slots {
+        match slot {
+            Slot::Native(i) => topology.push(lowered.get(i).cloned().ok_or_else(|| refuse("$.pipeline", "native topology lowering disagrees with admission"))?),
+            Slot::Merge => topology.push(json!({"merge":"features"})),
+            Slot::Branch(branches) => topology.push(json!({"branch":branches.into_iter().map(|(id, indices)| {
+                json!({"id":id,"steps":indices.into_iter().map(|i|lowered[i].clone()).collect::<Vec<_>>()})
+            }).collect::<Vec<_>>()})),
+        }
+    }
+    admitted.profile = PORTABLE_FEATURE_PROFILE.into();
+    admitted.owner_profile = "feature_graph.v1".into();
+    admitted.recipe = topology;
+    admitted.preprocessing = admitted.recipe[..admitted.recipe.len() - 1].to_vec();
+    Ok(admitted)
+}
+
+/// Existing DSL compiler owns graph structure. Only this profile records the
+/// declared join input order in parameters before the plan is fingerprinted.
+pub fn compile_portable_feature_graph(
+    admission: &PortableLinearAdmission,
+    binding: DataBinding,
+    fold_set: Option<crate::FoldSet>,
+    registry: &ControllerRegistry,
+) -> Result<CompiledPipelineDsl> {
+    if admission.profile != PORTABLE_FEATURE_PROFILE {
+        return Err(refuse("$", "feature graph profile required"));
+    }
+    let target = binding.node_id.clone();
+    let mut steps = Vec::new();
+    let mut bindings = Vec::new();
+    let mut joins = Vec::new();
+    let mut count = 0usize;
+    let mut external = true;
+    let native = |step: &Value, id: &str, kind: &str| -> Result<Value> {
+        let method = step["methodId"]
+            .as_str()
+            .ok_or_else(|| refuse("recipe", "native methodId required"))?;
+        let mut params = object(&step["params"], "recipe.params")?;
+        params.insert("method_id".into(), json!(method));
+        Ok(json!({"kind":kind,"id":id,"operator":{"ref":format!("n4m:{method}")},"params":params}))
+    };
+    for (i, step) in admission.recipe.iter().enumerate() {
+        if let Some(branches) = step.get("branch") {
+            let branches = branches
+                .as_array()
+                .ok_or_else(|| refuse("recipe.branch", "array required"))?;
+            let join_id = format!("portable:join:{}", joins.len());
+            let mut compiled_branches = Vec::new();
+            let mut branch_ids = Vec::new();
+            for branch in branches {
+                let id = branch["id"]
+                    .as_str()
+                    .ok_or_else(|| refuse("recipe.branch", "id required"))?;
+                let mut body = Vec::new();
+                for (j, step) in branch["steps"]
+                    .as_array()
+                    .ok_or_else(|| refuse("recipe.branch", "steps required"))?
+                    .iter()
+                    .enumerate()
+                {
+                    let node = format!("portable:step:{count}");
+                    count += 1;
+                    if external && j == 0 {
+                        let mut b = binding.clone();
+                        b.node_id = NodeId::new(&node)?;
+                        bindings.push(b);
+                    }
+                    let mut op = native(step, &node, "transform")?;
+                    op.as_object_mut().expect("native object").remove("kind");
+                    body.push(op);
+                }
+                compiled_branches.push(json!({"id":id,"steps":body}));
+                branch_ids.push(id.to_string());
+            }
+            steps
+                .push(json!({"kind":"concat_transform","id":join_id,"branches":compiled_branches}));
+            joins.push((join_id, branch_ids));
+            external = false;
+        } else if step.get("merge").is_some() {
+            continue;
+        } else {
+            let terminal = i + 1 == admission.recipe.len();
+            let node = if terminal {
+                target.to_string()
+            } else {
+                let id = format!("portable:step:{count}");
+                count += 1;
+                id
+            };
+            if external {
+                let mut b = binding.clone();
+                b.node_id = NodeId::new(&node)?;
+                bindings.push(b);
+            }
+            steps.push(native(
+                step,
+                &node,
+                if terminal { "model" } else { "transform" },
+            )?);
+            external = false;
+        }
+    }
+    let model = admission
+        .recipe
+        .last()
+        .ok_or_else(|| refuse("recipe", "terminal model required"))?;
+    let dimensions = json!([
+        {"name":"chain","choices":[{"label":"chain:0","value":0,"param_overrides":[{"node_id":target,"params":{"method_id":model["methodId"]}}]}]},
+        {"name":"model_parameters","choices":admission.candidates.iter().enumerate().map(|(i,p)|json!({"label":format!("candidate:{i}"),"value":i,"param_overrides":[{"node_id":target,"params":p}]})).collect::<Vec<_>>()}
+    ]);
+    let policy = json!({"split_unit":"sample","forbid_origin_cross_fold":true,"allow_observation_split_with_shared_target":false,"require_group_ids":false,"unsafe_flags":[]});
+    let spec: PipelineDslSpec = serde_json::from_value(
+        json!({"id":"portable:feature_graph","campaign_id":"portable:campaign","root_seed":admission.root_seed,
+        "input":{"name":"x","representation":"tabular_numeric"},"generation_strategy":"cartesian","max_variants":admission.candidates.len(),"generation_dimensions":dimensions,
+        "leakage_policy":policy,"data_bindings":bindings,"metadata":{(PORTABLE_GRAPH_RECIPE_PARAM):admission.recipe},
+        "split_invocation":fold_set.map(|fold|json!({"id":"portable:ks","controller_id":null,"params":{},"fold_set":fold,"leakage_policy":policy})),"steps":steps}),
+    )?;
+    let mut compiled =
+        compile_pipeline_dsl_with_generation_and_controller_registry(&spec, registry)?;
+    for (id, branches) in joins {
+        let join = compiled
+            .graph
+            .nodes
+            .iter_mut()
+            .find(|node| node.id.as_str() == id)
+            .ok_or_else(|| refuse("recipe.branch", "compiled join missing"))?;
+        if join.ports.inputs.len() != branches.len() {
+            return Err(refuse("recipe.branch", "join input count mismatch"));
+        }
+        join.params.insert(
+            "branch_inputs_v1".into(),
+            json!(branches
+                .into_iter()
+                .zip(&join.ports.inputs)
+                .map(|(branch_id, port)| json!({"branch_id":branch_id,"input":port.name}))
+                .collect::<Vec<_>>()),
+        );
+    }
+    Ok(compiled)
+}
+
+#[cfg(test)]
+mod feature_graph_admission_tests {
+    use super::*;
+
+    fn definition(branch: Value) -> Value {
+        json!([{"branch":branch},{"merge":"features"},{"model":{"class":"n4m.PLS","params":{"scale":false}}}])
+    }
+
+    #[test]
+    fn branch_forms_keep_canonical_topology_names_and_full_native_parameters() {
+        for (branch, names) in [
+            (
+                json!({"z_first":[{"class":"n4m.SNV","params":{"with_std":false}}],
+                "a_second":[{"class":"n4m.MSC"}]}),
+                vec!["z_first", "a_second"],
+            ),
+            (
+                json!([[{"class":"n4m.SNV"}],[{"class":"n4m.MSC"}]]),
+                vec!["branch_0", "branch_1"],
+            ),
+            (
+                json!([{"name":"z_first","steps":[{"class":"n4m.SNV"}]},
+                {"name":"a_second","steps":[{"class":"n4m.MSC"}]}]),
+                vec!["z_first", "a_second"],
+            ),
+        ] {
+            let ordered_array = branch.is_array();
+            let admitted = admit_portable_pipeline(&definition(branch)).unwrap();
+            assert_eq!(admitted.profile, PORTABLE_FEATURE_PROFILE);
+            let actual = admitted.recipe[0]["branch"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|branch| branch["id"].as_str().unwrap())
+                .collect::<Vec<_>>();
+            if ordered_array {
+                assert_eq!(actual, names);
+            } else {
+                assert_eq!(
+                    actual.iter().copied().collect::<BTreeSet<_>>(),
+                    names.into_iter().collect()
+                );
+            }
+            assert_eq!(admitted.recipe[1], json!({"merge":"features"}));
+            assert_eq!(admitted.candidates[0]["scale_x"], false);
+            assert_eq!(admitted.evaluation["scope"], "training");
+            assert!(admitted.recipe[0].get("feature_blocks").is_none());
+        }
+        let selector = admit_portable_pipeline(&definition(json!([
+            [{"class":"n4m.Selector","params":{"method_id":"selection.spa","n_components":2}}],
+            [{"class":"n4m.SNV"}]
+        ])))
+        .unwrap();
+        assert_eq!(
+            selector.recipe[0]["branch"][0]["steps"][0]["methodId"],
+            "selection.spa"
+        );
+    }
+
+    #[test]
+    fn branch_control_and_merge_intent_are_refused_by_path_without_fitting() {
+        for (definition, path) in [
+            (
+                definition(json!([[{"branch":[]}],[{"class":"n4m.SNV"}]])),
+                "$.pipeline[0].branch.branch_0[0].branch",
+            ),
+            (
+                definition(json!([[{"model":{"class":"n4m.PLS"}}],[{"class":"n4m.SNV"}]])),
+                "$.pipeline[0].branch.branch_0[0].model",
+            ),
+            (
+                json!([{"branch":[[{"class":"n4m.SNV"}],[{"class":"n4m.MSC"}]]},{"merge":"predictions"}]),
+                "$.pipeline[1]",
+            ),
+            (
+                json!([{"branch":[[{"class":"n4m.SNV"}],[{"class":"n4m.MSC"}]]}]),
+                "$.pipeline[0]",
+            ),
+            (
+                definition(json!({"parallel":[{"class":"n4m.SNV"}],"b":[{"class":"n4m.MSC"}]})),
+                "$.pipeline[0].branch.parallel",
+            ),
+            (
+                json!([{"merge":"features"},{"model":{"class":"n4m.PLS"}}]),
+                "$.pipeline[0]",
+            ),
+            (
+                definition(
+                    json!([[{"class":"n4m.MSC","params":{"method_id":"other"}}],[{"class":"n4m.SNV"}]]),
+                ),
+                "$.pipeline[0].branch.branch_0[0].params.method_id",
+            ),
+        ] {
+            let error = admit_portable_pipeline(&definition)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(path), "{error}");
+        }
     }
 }

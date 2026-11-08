@@ -1531,3 +1531,133 @@ pub(super) fn single_holdout_validation_evidence(
         selection_report,
     ))
 }
+
+/// Classification holdout dispatch (bank v2). Requires the actual fold's
+/// complete validation labels and the native accuracy, recomputed
+/// bit-identically. `fitted_classes` is the classifier's learned domain
+/// (`RolePipeline::classes()`); validation rows outside it stay scored
+/// (always as errors) and are reported.
+pub(super) fn single_holdout_classification_evidence(
+    ctx: &RunContext,
+    target: &NodeId,
+    fold: &FoldAssignment,
+    fitted_classes: &[i64],
+) -> Result<(
+    PredictionBlock,
+    RegressionTargetBlock,
+    RegressionMetricReport,
+    Vec<UnseenValidationClass>,
+)> {
+    let fail = || {
+        DagMlError::RuntimeValidation("classification holdout requires complete unambiguous validation labels and native accuracy on its actual fold".into())
+    };
+    let predictions = ctx
+        .prediction_store
+        .blocks()
+        .iter()
+        .filter(|block| {
+            &block.producer_node == target
+                && block.partition == PredictionPartition::Validation
+                && block.fold_id.as_ref() == Some(&fold.fold_id)
+        })
+        .collect::<Vec<_>>();
+    let [block] = predictions.as_slice() else {
+        return Err(fail());
+    };
+    if block.sample_ids.iter().collect::<BTreeSet<_>>()
+        != fold.validation_sample_ids.iter().collect()
+    {
+        return Err(fail());
+    }
+    let records = ctx
+        .regression_target_records
+        .iter()
+        .filter(|record| {
+            &record.producer_node == target
+                && record.producer_port == block.producer_port
+                && record.partition == PredictionPartition::Validation
+                && record.fold_id == block.fold_id
+                && record.variant_id == ctx.variant_id
+        })
+        .collect::<Vec<_>>();
+    let [validation] = records.as_slice() else {
+        return Err(fail());
+    };
+    let reports = ctx
+        .score_collector
+        .iter()
+        .filter(|report| {
+            &report.producer_node == target
+                && report.producer_port == block.producer_port
+                && report.partition == PredictionPartition::Validation
+                && report.fold_id == block.fold_id
+                && report.level == PredictionLevel::Sample
+                && report.variant_id == ctx.variant_id
+        })
+        .collect::<Vec<_>>();
+    let [native] = reports.as_slice() else {
+        return Err(fail());
+    };
+    let accuracy = native
+        .metrics
+        .get("accuracy")
+        .filter(|value| value.is_finite())
+        .ok_or_else(fail)?;
+    let recomputed = crate::metrics::score_regression_prediction_block(
+        block,
+        &validation.block,
+        &[RegressionMetricKind::Accuracy],
+    )?;
+    if accuracy.to_bits() != recomputed.metrics["accuracy"].to_bits() {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "classification holdout accuracy identity differs: native bits {:016x}, report bits {:016x}; no tolerance permitted",
+            accuracy.to_bits(),
+            recomputed.metrics["accuracy"].to_bits(),
+        )));
+    }
+    let truth = target_block_aligned_to_samples(&fold.validation_sample_ids, &validation.block);
+    let unseen = unseen_classes(&truth, fitted_classes)?;
+    let mut selection_report = (*native).clone();
+    selection_report
+        .metrics
+        .retain(|name, _| name == "accuracy");
+    Ok((
+        (*block).clone(),
+        target_block_aligned_to_samples(&block.sample_ids, &validation.block),
+        selection_report,
+        unseen,
+    ))
+}
+
+/// Evaluated rows (in `truth` order) whose class id is outside the fitted
+/// classifier domain, grouped by ascending class id.
+pub(super) fn unseen_classes(
+    truth: &RegressionTargetBlock,
+    fitted_classes: &[i64],
+) -> Result<Vec<UnseenValidationClass>> {
+    let mut unseen = BTreeMap::<i64, Vec<SampleId>>::new();
+    for (unit, row) in truth.unit_ids.iter().zip(&truth.values) {
+        let (PredictionUnitId::Sample(sample), [value]) = (unit, row.as_slice()) else {
+            return Err(DagMlError::RuntimeValidation(
+                "classification evidence requires one sample-level class id per row".into(),
+            ));
+        };
+        if value.fract() != 0.0 || value.abs() > 2f64.powi(53) {
+            return Err(DagMlError::RuntimeValidation(
+                "classification evidence requires integral class ids".into(),
+            ));
+        }
+        let class = *value as i64;
+        if !fitted_classes.contains(&class) {
+            unseen.entry(class).or_default().push(sample.clone());
+        }
+    }
+    Ok(unseen
+        .into_iter()
+        .map(|(class_id, sample_ids)| UnseenValidationClass {
+            class_id,
+            count: sample_ids.len(),
+            sample_ids,
+        })
+        .collect())
+}

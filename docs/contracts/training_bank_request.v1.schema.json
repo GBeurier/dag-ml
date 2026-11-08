@@ -7,7 +7,7 @@
   "required": ["schema_version", "profile", "failure_group_dimension", "target_node"],
   "properties": {
     "schema_version": {"const": 1},
-    "profile": {"const": "training_bank.v1"},
+    "profile": {"enum": ["training_bank.v1", "training_graph_bank.v1"]},
     "failure_group_dimension": {"type": "string", "minLength": 1},
     "target_node": {"type": "string", "minLength": 1}
   }

@@ -1,7 +1,9 @@
 //! Bounded selector tests; production-path WASM/Methods bank parity belongs to Root.
 use super::*;
 use crate::metrics::RegressionReportProfile;
-use crate::runtime::single_holdout::select_single_holdout_bank_with_runner;
+use crate::runtime::single_holdout::{
+    select_classification_holdout_with_runner, select_single_holdout_bank_with_runner,
+};
 
 fn bank() -> (ExecutionPlan, SingleHoldoutBankRequest) {
     let mut graph = simple_graph();
@@ -412,5 +414,425 @@ fn duplicate_failure_group_labels_refuse_before_callbacks() {
                 .into(),
         )
         .to_string()
+    );
+}
+
+// ---- Classification bank v2: accuracy, maximized, over ClassLabel ids ----
+
+const V2_CLASSIFIER: &str = "controller:methods.native.pipeline_steps_classifier";
+
+fn classification_bank() -> (ExecutionPlan, ClassificationBankRequest) {
+    let (base, v1) = bank();
+    let mut manifest = controller_manifest(V2_CLASSIFIER, NodeKind::Model);
+    manifest.controller_version = "1.0.0".into();
+    let mut registry = crate::controller::ControllerRegistry::new();
+    registry.register(manifest).unwrap();
+    let plan = build_execution_plan(
+        "plan:classification.bank",
+        base.graph_plan.graph.clone(),
+        base.campaign.clone(),
+        &registry,
+    )
+    .unwrap();
+    let request = ClassificationBankRequest {
+        schema_version: 1,
+        profile: SINGLE_HOLDOUT_BANK_V2_PROFILE.into(),
+        failure_group_dimension: v1.failure_group_dimension,
+        target_node: v1.target_node,
+    };
+    (plan, request)
+}
+
+/// One validation (s1) and one training (s2) row: predicted and observed ids.
+fn emit_labels(
+    candidate: &ExecutionPlan,
+    ctx: &mut RunContext,
+    predicted: f64,
+    validation_truth: f64,
+    training_truth: f64,
+) -> Result<()> {
+    let fold = &candidate.fold_set.as_ref().unwrap().folds[0];
+    let node = candidate.graph_plan.graph.nodes[0].id.clone();
+    let targets = |ids: &[SampleId], value: f64| RegressionTargetBlock {
+        level: PredictionLevel::Sample,
+        unit_ids: ids.iter().cloned().map(PredictionUnitId::Sample).collect(),
+        values: vec![vec![value]; ids.len()],
+        validity_masks: None,
+        target_names: vec!["y".into()],
+    };
+    let block = PredictionBlock {
+        prediction_id: None,
+        producer_node: node.clone(),
+        producer_port: None,
+        partition: PredictionPartition::Validation,
+        fold_id: Some(fold.fold_id.clone()),
+        sample_ids: fold.validation_sample_ids.clone(),
+        values: vec![vec![predicted]; fold.validation_sample_ids.len()],
+        target_names: vec!["y".into()],
+    };
+    let truth = targets(&fold.validation_sample_ids, validation_truth);
+    let mut report =
+        score_regression_prediction_block(&block, &truth, &[RegressionMetricKind::Accuracy])?;
+    report.variant_id = ctx.variant_id.clone();
+    ctx.score_collector.push(report);
+    for (partition, targets) in [
+        (PredictionPartition::Validation, truth),
+        (
+            PredictionPartition::Train,
+            targets(&fold.train_sample_ids, training_truth),
+        ),
+    ] {
+        ctx.regression_target_records.push(RegressionTargetRecord {
+            producer_node: node.clone(),
+            producer_port: None,
+            variant_id: ctx.variant_id.clone(),
+            partition,
+            fold_id: block.fold_id.clone(),
+            block: targets,
+        });
+    }
+    ctx.prediction_store.append(block)
+}
+
+#[test]
+fn v2_maximizes_native_accuracy_and_keeps_the_first_ordinal_tie() {
+    let (plan, request) = classification_bank();
+    let mut calls = 0;
+    let result = select_classification_holdout_with_runner(
+        &plan,
+        &request,
+        &RunId::new("run:classification.bank").unwrap(),
+        Some(7),
+        |candidate, ctx| {
+            let ordinal = calls;
+            calls += 1;
+            // Ordinals 1 and 2 are both correct; the first of them must win.
+            let predicted = if matches!(ordinal, 1 | 2) { 0.0 } else { 1.0 };
+            emit_labels(candidate, ctx, predicted, 0.0, 0.0)
+        },
+        |_| Ok(vec![0]),
+    )
+    .unwrap();
+    assert_eq!(calls, 4);
+    assert_eq!(result.profile, SINGLE_HOLDOUT_BANK_V2_PROFILE);
+    assert_eq!(result.status, HoldoutBankStatus::Selected);
+    let decision = result.decision.as_ref().unwrap();
+    assert_eq!(decision.selected_candidate_id, "ord:00001");
+    assert_eq!(
+        decision.policy_id,
+        "select:single_resampled_holdout_bank.v2:accuracy"
+    );
+    assert_eq!(decision.metric_name, "accuracy");
+    assert_eq!(
+        decision.objective,
+        crate::selection::MetricObjective::Maximize
+    );
+    assert_eq!(decision.selected_score, 1.0);
+    for (evidence, expected) in result.variants.iter().zip([0.0, 1.0, 1.0, 0.0]) {
+        let selection = evidence.selection_report.as_ref().unwrap();
+        assert_eq!(
+            selection.metrics.keys().collect::<Vec<_>>(),
+            vec!["accuracy"]
+        );
+        assert_eq!(selection.metrics["accuracy"], expected);
+        assert!(evidence.report.is_none(), "no regression report in v2");
+    }
+    assert_eq!(result.unseen_validation_classes, Some(Vec::new()));
+    let winner = result.selected.as_ref().unwrap();
+    assert_eq!(winner.identity.ordinal, "ord:00001");
+    assert_eq!(
+        winner.training_sample_ids,
+        plan.fold_set.as_ref().unwrap().folds[0].train_sample_ids
+    );
+}
+
+#[test]
+fn v2_reports_and_scores_a_validation_class_absent_from_the_fit_population() {
+    let (plan, request) = classification_bank();
+    // Class 2 exists only in validation; the fitted classifier learned class 0.
+    let result = select_classification_holdout_with_runner(
+        &plan,
+        &request,
+        &RunId::new("run:classification.unseen").unwrap(),
+        None,
+        |candidate, ctx| emit_labels(candidate, ctx, 0.0, 2.0, 0.0),
+        |_| Ok(vec![0]),
+    )
+    .unwrap();
+    assert_eq!(result.status, HoldoutBankStatus::Selected);
+    assert!(result.variants.iter().all(|evidence| {
+        evidence.eligible
+            && evidence.selection_report.as_ref().unwrap().metrics["accuracy"] == 0.0
+            && evidence.validation_targets.as_ref().unwrap().values == vec![vec![2.0]]
+    }));
+    let unseen = result.unseen_validation_classes.as_ref().unwrap();
+    assert_eq!(
+        unseen,
+        &vec![UnseenValidationClass {
+            class_id: 2,
+            count: 1,
+            sample_ids: vec![SampleId::new("s1").unwrap()],
+        }]
+    );
+    assert_eq!(result.decision.unwrap().selected_candidate_id, "ord:00000");
+    assert!(result
+        .variants
+        .iter()
+        .all(|evidence| evidence.unseen_validation_classes.as_ref() == Some(unseen)));
+}
+
+#[test]
+fn v2_unseen_report_uses_the_fitted_domain_not_raw_fit_labels() {
+    let (plan, request) = classification_bank();
+    // Raw fit rows carry class 2, but a training sample filter removed them
+    // before the classifier fit: the learned domain is only class 0.
+    let mut domains = Vec::new();
+    let result = select_classification_holdout_with_runner(
+        &plan,
+        &request,
+        &RunId::new("run:classification.filtered").unwrap(),
+        None,
+        |candidate, ctx| emit_labels(candidate, ctx, 0.0, 2.0, 2.0),
+        |fold| {
+            domains.push(fold.clone());
+            Ok(vec![0])
+        },
+    )
+    .unwrap();
+    // Taken once per completed candidate, for its actual fold.
+    assert_eq!(domains.len(), 4);
+    assert!(domains
+        .iter()
+        .all(|fold| fold == &plan.fold_set.as_ref().unwrap().folds[0].fold_id));
+    assert_eq!(
+        result.unseen_validation_classes,
+        Some(vec![UnseenValidationClass {
+            class_id: 2,
+            count: 1,
+            sample_ids: vec![SampleId::new("s1").unwrap()],
+        }])
+    );
+    // A domain that does contain the validation class reports nothing, while
+    // the row still scores as an error when mispredicted.
+    let result = select_classification_holdout_with_runner(
+        &plan,
+        &request,
+        &RunId::new("run:classification.seen").unwrap(),
+        None,
+        |candidate, ctx| emit_labels(candidate, ctx, 0.0, 2.0, 0.0),
+        |_| Ok(vec![0, 2]),
+    )
+    .unwrap();
+    assert_eq!(result.unseen_validation_classes, Some(Vec::new()));
+    assert!(result.variants.iter().all(|evidence| evidence
+        .selection_report
+        .as_ref()
+        .unwrap()
+        .metrics["accuracy"]
+        == 0.0));
+}
+
+#[test]
+fn v2_profile_and_classifier_identity_are_closed_and_v1_bytes_are_unchanged() {
+    let (plan, mut request) = classification_bank();
+    request.profile = SINGLE_HOLDOUT_BANK_PROFILE.into();
+    let error = select_classification_holdout_with_runner(
+        &plan,
+        &request,
+        &RunId::new("run:v2.profile").unwrap(),
+        None,
+        |_, _| panic!("must refuse before fitting"),
+        |_| panic!("must refuse before fitting"),
+    )
+    .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("unsupported single holdout bank v2 schema/profile"));
+    // The regression 1.1.0 plan is not a classification bank.
+    let (regression, v1) = bank();
+    let v2 = ClassificationBankRequest {
+        schema_version: 1,
+        profile: SINGLE_HOLDOUT_BANK_V2_PROFILE.into(),
+        failure_group_dimension: v1.failure_group_dimension.clone(),
+        target_node: v1.target_node.clone(),
+    };
+    let error = select_classification_holdout_with_runner(
+        &regression,
+        &v2,
+        &RunId::new("run:v2.controller").unwrap(),
+        None,
+        |_, _| panic!("must refuse before fitting"),
+        |_| panic!("must refuse before fitting"),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains(
+        "classification bank requires the pipeline_steps_classifier controller version 1.0.0"
+    ));
+    // And bank v1 still refuses the classifier controller version.
+    let error = select_single_holdout_bank_with_runner(
+        &plan,
+        &v1,
+        &RunId::new("run:v1.on.classifier").unwrap(),
+        None,
+        |_, _| panic!("must refuse before fitting"),
+    )
+    .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("holdout bank requires the pipeline_steps_v1 controller version 1.1.0"));
+    // v1 evidence keeps its RMSE selection and serializes without the v2 field.
+    let result = select_single_holdout_bank_with_runner(
+        &regression,
+        &v1,
+        &RunId::new("run:v1.bytes").unwrap(),
+        Some(7),
+        |candidate, ctx| emit(candidate, ctx, 1.0),
+    )
+    .unwrap();
+    assert_eq!(result.profile, SINGLE_HOLDOUT_BANK_PROFILE);
+    assert!(result.unseen_validation_classes.is_none());
+    let encoded = serde_json::to_value(&result).unwrap();
+    assert!(encoded.get("unseen_validation_classes").is_none());
+    assert!(encoded["variants"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|evidence| evidence.get("unseen_validation_classes").is_none()));
+    assert_eq!(
+        encoded["decision"]["policy_id"],
+        "select:single_resampled_holdout_bank.v1:rmse"
+    );
+}
+
+#[test]
+fn feature_graph_compile_and_bank_keep_declared_ports_native_ordinals_and_first_tie() {
+    let (legacy, _) = bank();
+    let mut registry = crate::ControllerRegistry::new();
+    for (id, kind) in [
+        ("controller:n4m.transformer", NodeKind::Transform),
+        ("controller:n4m.regressor", NodeKind::Model),
+        (
+            crate::METHODS_FEATURE_JOIN_CONTROLLER,
+            NodeKind::FeatureJoin,
+        ),
+    ] {
+        let mut spec = crate::HostControllerSpec::new(
+            id,
+            if kind == NodeKind::FeatureJoin {
+                "1.0.0"
+            } else {
+                "n4m-abi-2.14.0"
+            },
+            kind.clone(),
+        );
+        if kind == NodeKind::FeatureJoin {
+            spec.output_ports =
+                Some(crate::manifest_kind_template(&NodeKind::Transform).output_ports);
+        }
+        registry.register(spec.derive().unwrap()).unwrap();
+    }
+    let admitted = crate::admit_portable_pipeline(&json!([
+        {"class":"n4m.KennardStone"},
+        {"branch":[{"name":"z_first","steps":[{"class":"n4m.SNV"}]},
+            {"name":"a_second","steps":[{"class":"n4m.MSC"}]}]}, {"merge":"features"},
+        {"model":{"class":"n4m.PLS"},"param":"n_components","_range_":[1,2,1]}]))
+    .unwrap();
+    let binding = serde_json::from_value(json!({"node_id":"model:portable","input_name":"x","request_id":"io:test",
+        "schema_fingerprint":"a".repeat(64),"plan_fingerprint":"b".repeat(64),"relation_fingerprint":"c".repeat(64),
+        "output_representation":"tabular_numeric","feature_set_id":"x","source_ids":["nir"],"require_relations":false})).unwrap();
+    let compiled =
+        crate::compile_portable_linear(&admitted, binding, legacy.fold_set.clone(), &registry)
+            .unwrap();
+    assert_eq!(
+        compiled
+            .graph
+            .nodes
+            .iter()
+            .map(|node| node.kind.clone())
+            .collect::<Vec<_>>(),
+        vec![
+            NodeKind::Transform,
+            NodeKind::Transform,
+            NodeKind::FeatureJoin,
+            NodeKind::Model
+        ]
+    );
+    let join = &compiled.graph.nodes[2];
+    assert_eq!(
+        join.params["branch_inputs_v1"],
+        json!([
+        {"branch_id":"z_first","input":"z_first_x"},{"branch_id":"a_second","input":"a_second_x"}])
+    );
+    assert_eq!(
+        compiled.data_bindings.len(),
+        2,
+        "each branch root reads the same provider population"
+    );
+    let plan = build_execution_plan(
+        "plan:graph.bank",
+        compiled.graph,
+        compiled.campaign_template,
+        &registry,
+    )
+    .unwrap();
+    let target = NodeId::new("model:portable").unwrap();
+    let request = SingleHoldoutBankRequest {
+        schema_version: 1,
+        profile: SINGLE_HOLDOUT_GRAPH_BANK_PROFILE.into(),
+        report_profile: RegressionReportProfile::PopulationRmseRatiosV1,
+        failure_group_dimension: "chain".into(),
+        target_node: target.clone(),
+    };
+    let mut calls = 0;
+    let result = crate::runtime::single_holdout::select_single_holdout_graph_bank_with_runner(
+        &plan,
+        &request,
+        &RunId::new("run:graph.tie").unwrap(),
+        Some(7),
+        |candidate, ctx| {
+            calls += 1;
+            // Reuse the existing score emitter while retaining the real graph.
+            let mut scored = candidate.clone();
+            scored.graph_plan.graph.nodes.swap(0, 3);
+            emit(&scored, ctx, 1.0)
+        },
+    )
+    .unwrap();
+    assert_eq!(calls, 2);
+    assert_eq!(result.profile, SINGLE_HOLDOUT_GRAPH_BANK_PROFILE);
+    assert_eq!(
+        result.selected.as_ref().unwrap().identity.ordinal,
+        "ord:00000"
+    );
+    assert_eq!(
+        result.decision.as_ref().unwrap().selected_candidate_id,
+        "ord:00000"
+    );
+    for (index, entry) in result.variants.iter().enumerate() {
+        assert_eq!(entry.identity.ordinal, format!("ord:{index:05}"));
+        assert_eq!(entry.identity.variant_id, plan.variants[index].variant_id);
+        assert_eq!(entry.identity.recipe[0], admitted.recipe[0]);
+        assert_eq!(
+            entry.identity.recipe.last().unwrap()["params"]["n_components"],
+            json!(index + 1)
+        );
+        assert!(entry.identity.recipe[0].get("feature_blocks").is_none());
+        assert_eq!(
+            entry.selection_report.as_ref().unwrap().metrics["rmse"],
+            1.0
+        );
+    }
+    assert!(
+        crate::runtime::single_holdout::select_single_holdout_bank_with_runner(
+            &plan,
+            &SingleHoldoutBankRequest {
+                profile: SINGLE_HOLDOUT_BANK_PROFILE.into(),
+                ..request
+            },
+            &RunId::new("run:graph.not.v1").unwrap(),
+            None,
+            |_, _| panic!("wrong profile must refuse before execution")
+        )
+        .is_err()
     );
 }
