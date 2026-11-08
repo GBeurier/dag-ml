@@ -2576,3 +2576,338 @@ fn entrypoint_root_requirement_is_independent_and_full_refit_is_predictable() {
         Err(FacetRefusal::Mismatch { .. })
     ));
 }
+
+// Immutable run02 capture from the public synthetic parity oracle; see provenance.json.
+const JS_ROLE_V2_INITIAL: &[u8] =
+    include_bytes!("fixtures/artifact_facets/js_role_v2/initial_refit.json");
+
+fn js_role_v2_source() -> (InitialFullRefitPackage, serde_json::Value) {
+    let package =
+        InitialFullRefitPackage::from_json(std::str::from_utf8(JS_ROLE_V2_INITIAL).unwrap())
+            .unwrap();
+    let id = &package.artifacts[0].record.artifact.id;
+    let wrapper = serde_json::from_slice(&package.raw_artifact_payloads[id]).unwrap();
+    (package, wrapper)
+}
+
+// Negative copies bind transport bytes and use the existing owner plan/package
+// fingerprint APIs. The original capture and opaque state bytes are never fitted.
+fn reseal_js_role_v2_candidate(
+    package: &mut InitialFullRefitPackage,
+    wrapper: &mut serde_json::Value,
+    rebuild_plan: bool,
+) {
+    if rebuild_plan {
+        let plan = &package.effective_plan;
+        let mut registry = ControllerRegistry::new();
+        for manifest in plan.controller_manifests.values() {
+            registry.register(manifest.clone()).unwrap();
+        }
+        let rebuilt = build_execution_plan(
+            plan.id.clone(),
+            plan.graph_plan.graph.clone(),
+            plan.campaign.clone(),
+            &registry,
+        )
+        .unwrap();
+        let node = &rebuilt.node_plans[&package.artifacts[0].record.node_id];
+        let record = &mut package.artifacts[0].record;
+        record.controller_id = node.controller_id.clone();
+        record.artifact.controller_id = node.controller_id.clone();
+        record.params_fingerprint = node.params_fingerprint.clone();
+        wrapper["params_fingerprint"] = json!(node.params_fingerprint);
+        package.effective_plan_fingerprint =
+            parse_typed_json(&serde_json::to_string(&rebuilt).unwrap())
+                .unwrap()
+                .fingerprint()
+                .unwrap();
+        package.effective_plan = rebuilt;
+    }
+    let bytes = serde_json::to_vec(wrapper).unwrap();
+    let raw = format!("{:x}", sha2::Sha256::digest(&bytes));
+    let artifact = &mut package.artifacts[0].record.artifact;
+    artifact.content_fingerprint = Some(raw.clone());
+    artifact.size_bytes = Some(bytes.len() as u64);
+    artifact.uri = Some(format!("artifacts/{raw}.json"));
+    package
+        .raw_artifact_payloads
+        .insert(artifact.id.clone(), bytes);
+    package.package_fingerprint = package.compute_fingerprint().unwrap();
+    package.validate().unwrap();
+}
+
+#[test]
+fn genuine_js_v2_initial_refit_facets_preserve_bytes_and_bind_recipe() {
+    assert_eq!(
+        format!("{:x}", sha2::Sha256::digest(JS_ROLE_V2_INITIAL)),
+        "20552dc6779a742f8cddc02a13cf7c3c14056144054fc516a461a4c1def3a918"
+    );
+    let (package, wrapper) = js_role_v2_source();
+    let validated = proof(FACET_INITIAL_REFIT, 1, JS_ROLE_V2_INITIAL);
+    assert_eq!(validated.original_bytes(), JS_ROLE_V2_INITIAL);
+    assert_eq!(
+        validated.identity().fingerprint,
+        "27bf09eb9aa7bf96e6c72cea45690d75a96b13d6967f3500cdeeaa67668b42ab"
+    );
+    assert_eq!(package.package_id, "package:web-holdout");
+    assert_eq!(package.run_id.as_str(), "run:web-holdout-refit");
+    assert_eq!(package.variant_id.as_str(), "variant:base");
+    assert_eq!(
+        package
+            .training_sample_ids
+            .iter()
+            .map(|id| id.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "p3", "p20", "p12", "p27", "p8", "p30", "p15", "p25", "p33", "p37", "p0", "p17", "p6",
+            "p10", "p23", "p28", "p26", "p29", "p11", "p31", "p4", "p14", "p32", "p13", "p39",
+            "p22", "p35", "p1",
+        ]
+    );
+    let source_s = package
+        .training_envelope
+        .relation_fingerprint
+        .as_deref()
+        .unwrap();
+    let canonical_c = package.training_relations.fingerprint().unwrap();
+    assert_eq!(
+        source_s,
+        "2395c9d0ee44f21670136244ec9fcd4aac321755d83b67e2575d5176b234a257"
+    );
+    assert_eq!(
+        canonical_c,
+        "10404fec25008afabeff39ca5e7ba036bff93eecbcf0a4635bcbdf9ed93b8179"
+    );
+    assert_ne!(source_s, canonical_c);
+    assert_eq!(
+        package.training_envelope.coordinator_relations.as_ref(),
+        Some(&package.training_relations)
+    );
+    let record = &package.artifacts[0].record;
+    let node = &package.effective_plan.node_plans[&record.node_id];
+    let base = &node.params["pipeline_steps_v1"];
+    assert_eq!(base[2]["params"]["n_components"], json!(2));
+    assert_eq!(node.params["n_components"], json!(6));
+    assert_eq!(wrapper["steps"][2]["params"]["n_components"], json!(6));
+    assert_eq!(wrapper["steps"][0], base[0]);
+    assert_eq!(wrapper["steps"][1], base[1]);
+    let mut selected = base.clone();
+    selected[2]["params"]["n_components"] = json!(6);
+    assert_eq!(wrapper["steps"], selected);
+    let raw = &package.raw_artifact_payloads[&record.artifact.id];
+    assert_eq!(
+        format!("{:x}", sha2::Sha256::digest(raw)),
+        "2953f40d1e132f225a10baef73842649eed82d57560bff329cfb6313f49485e9"
+    );
+    let export = build_initial_refit_artifact_facets(&package).unwrap();
+    export.validate().unwrap();
+    let exported: InitialFullRefitPackage =
+        serde_json::from_slice(&export.members["dagml/full_refit.json"]).unwrap();
+    assert_eq!(exported, package);
+    let full_refit = export
+        .graph
+        .artifacts
+        .iter()
+        .find(|a| a.id == "full_refit")
+        .unwrap();
+    let members = validate_facet_state_members(
+        full_refit,
+        &export.context.owner_proofs["full_refit"],
+        &export.members,
+    )
+    .unwrap();
+    assert_eq!(members.len(), 1);
+    assert_eq!(&export.members[&members[0].member_path], raw);
+    assert_eq!(
+        export.context.owner_proofs["full_refit"].identity(),
+        validated.identity()
+    );
+}
+
+#[test]
+fn js_v2_role_facets_refuse_profile_and_recipe_mismatches() {
+    for (case, expected) in [
+        ("v2-under-v1-plugin", "unknown field"),
+        (
+            "v1-schema-under-v2-plugin",
+            "exact WASM 1.1.0 pipeline_steps.v1 profile",
+        ),
+        ("v1-wrapper-under-v2-plugin", "missing field"),
+        (
+            "unknown-plugin-version",
+            "trusted Methods RolePipeline RAW codec",
+        ),
+        ("other-host-v2", "trusted Methods RolePipeline RAW codec"),
+        ("wrong-controller", "trusted Methods RolePipeline RAW codec"),
+        (
+            "wrong-node-version",
+            "exact effective WASM 1.1.0 controller",
+        ),
+        (
+            "wrong-wrapper-version",
+            "exact WASM 1.1.0 pipeline_steps.v1 profile",
+        ),
+        (
+            "wrong-profile",
+            "exact WASM 1.1.0 pipeline_steps.v1 profile",
+        ),
+        ("unknown-wrapper-field", "unknown field"),
+        (
+            "missing-node-recipe",
+            "requires explicit node.params.pipeline_steps_v1",
+        ),
+        (
+            "operator-only-recipe",
+            "requires explicit node.params.pipeline_steps_v1",
+        ),
+        ("empty-node-recipe", "needs a nonempty recipe"),
+        (
+            "conflicting-operator-recipe",
+            "operator.steps differs from its base",
+        ),
+        (
+            "saved-selected-param",
+            "saved recipe differs from its effective graph",
+        ),
+        (
+            "saved-preprocessing-param",
+            "saved recipe differs from its effective graph",
+        ),
+        ("ambiguous-step", "steps need one nonempty class/methodId"),
+        ("null-step-params", "steps need one nonempty class/methodId"),
+        (
+            "nested-reserved-key",
+            "steps need one nonempty class/methodId",
+        ),
+    ] {
+        let (mut package, mut wrapper) = js_role_v2_source();
+        let mut rebuild_plan = false;
+        match case {
+            "v2-under-v1-plugin" => {
+                package.artifacts[0].record.artifact.plugin_version = Some("1.0.0".into());
+            }
+            "v1-schema-under-v2-plugin" => {
+                wrapper["schema"] = json!("dagml.methods.regression.v1");
+            }
+            "v1-wrapper-under-v2-plugin" => {
+                wrapper["schema"] = json!("dagml.methods.regression.v1");
+                let fields = wrapper.as_object_mut().unwrap();
+                fields.remove("controller_version");
+                fields.remove("recipe_profile");
+            }
+            "unknown-plugin-version" => {
+                package.artifacts[0].record.artifact.plugin_version = Some("1.2.0".into());
+            }
+            "other-host-v2" => {
+                package.artifacts[0].record.artifact.plugin =
+                    Some("dagml.methods.python.regression".into());
+            }
+            "wrong-controller" | "wrong-node-version" => {
+                let manifests = &mut package.effective_plan.controller_manifests;
+                let id = package.artifacts[0].record.controller_id.clone();
+                let mut manifest = manifests.remove(&id).unwrap();
+                if case == "wrong-controller" {
+                    manifest.controller_id = ControllerId::new("controller:other").unwrap();
+                } else {
+                    manifest.controller_version = "1.0.0".into();
+                }
+                manifests.insert(manifest.controller_id.clone(), manifest);
+                rebuild_plan = true;
+            }
+            "wrong-wrapper-version" => wrapper["controller_version"] = json!("1.0.0"),
+            "wrong-profile" => wrapper["recipe_profile"] = json!("other"),
+            "unknown-wrapper-field" => wrapper["unknown"] = json!(true),
+            "missing-node-recipe"
+            | "operator-only-recipe"
+            | "empty-node-recipe"
+            | "conflicting-operator-recipe" => {
+                let node = &mut package.effective_plan.graph_plan.graph.nodes[0];
+                let base = node.params["pipeline_steps_v1"].clone();
+                match case {
+                    "missing-node-recipe" => {
+                        node.params.remove("pipeline_steps_v1");
+                    }
+                    "operator-only-recipe" => {
+                        node.operator.as_mut().unwrap()["steps"] = base;
+                        node.params.remove("pipeline_steps_v1");
+                    }
+                    "empty-node-recipe" => {
+                        node.params.insert("pipeline_steps_v1".into(), json!([]));
+                    }
+                    "conflicting-operator-recipe" => {
+                        node.operator.as_mut().unwrap()["steps"] = base;
+                        node.operator.as_mut().unwrap()["steps"][2]["params"]["n_components"] =
+                            json!(6);
+                    }
+                    _ => unreachable!(),
+                }
+                rebuild_plan = true;
+            }
+            "saved-selected-param" => wrapper["steps"][2]["params"]["n_components"] = json!(2),
+            "saved-preprocessing-param" => wrapper["steps"][1]["params"]["deriv"] = json!(1),
+            "ambiguous-step" => {
+                wrapper["steps"][0]["class"] = json!("n4m:preprocessing.scatter.snv");
+            }
+            "null-step-params" => wrapper["steps"][0]["params"] = serde_json::Value::Null,
+            "nested-reserved-key" => {
+                wrapper["steps"][0]["params"]["pipeline_steps_v1"] = json!([]);
+            }
+            _ => unreachable!(),
+        }
+        reseal_js_role_v2_candidate(&mut package, &mut wrapper, rebuild_plan);
+        let bytes = serde_json::to_vec(&package).unwrap();
+        let refusal =
+            validate_owner_facet_bytes(&FacetContentType::new(FACET_INITIAL_REFIT, 1), &bytes)
+                .unwrap_err()
+                .to_string();
+        assert!(refusal.contains(expected), "{case}: {refusal}");
+    }
+}
+
+#[test]
+fn js_v2_role_facets_keep_state_inventory_opaque_and_bounded() {
+    let (_, wrapper) = js_role_v2_source();
+    let states: Vec<Vec<u8>> = serde_json::from_value(wrapper["states"].clone()).unwrap();
+    assert_eq!(
+        states.iter().map(Vec::len).collect::<Vec<_>>(),
+        [202, 308, 5329]
+    );
+    for (state, sha) in states.iter().zip([
+        "3465c352ca03eb6260debef987d0fb5e1f2e4d9b52c44618acc12d4ff3411ff1",
+        "2eba4a3e1257fa268d06ce15a18dec0d4ea6d515954c47d94bdfa3c2aefec2f1",
+        "79c5fe6d80c6b722f7cb44f22d66edc274d3f70dbecf46c7010eb68b5a16f5b1",
+    ]) {
+        assert!(state.starts_with(b"N4ME"));
+        assert_eq!(format!("{:x}", sha2::Sha256::digest(state)), sha);
+    }
+    let validated = proof(FACET_INITIAL_REFIT, 1, JS_ROLE_V2_INITIAL);
+    let inspection = inspect_facet_model_states(&validated).unwrap();
+    assert_eq!(inspection.len(), 1);
+    assert!(inspection.iter().all(|state| {
+        state.verdict.status == FacetSemanticStatus::Unverified && state.native_descriptor.is_none()
+    }));
+    for case in ["empty-buffer", "missing-buffer", "extra-buffer", "non-n4me"] {
+        let (mut package, mut wrapper) = js_role_v2_source();
+        let states = wrapper["states"].as_array_mut().unwrap();
+        match case {
+            "empty-buffer" => states[0] = json!([]),
+            "missing-buffer" => {
+                states.pop();
+            }
+            "extra-buffer" => states.push(states[0].clone()),
+            "non-n4me" => states[0][0] = json!(0),
+            _ => unreachable!(),
+        }
+        reseal_js_role_v2_candidate(&mut package, &mut wrapper, false);
+        let refusal = validate_owner_facet_bytes(
+            &FacetContentType::new(FACET_INITIAL_REFIT, 1),
+            &serde_json::to_vec(&package).unwrap(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            refusal.contains("complete native recipe and state sequence"),
+            "{case}: {refusal}"
+        );
+    }
+}

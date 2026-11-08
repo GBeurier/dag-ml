@@ -1,0 +1,36 @@
+{
+  "profile": "Genuine JS controller 1.1.0 pipeline_steps.v1 initial full-refit; semantic reader fixture only",
+  "source": {
+    "producer": {
+      "path": "/home/delete/nirs4all/_implementation/2026-11-03-ecosystem-consolidation/phase3-core-js-runner-retirement-20261108/web-holdout-production-probe/relation-fingerprint-followup/owner-implementation/probe_web_holdout_native_bridge.mjs",
+      "sha256": "d476834de8a1ef1ee5e71a3726a644f8ea9887377f427e75d372dbcd6a2b171f"
+    },
+    "cohort": {
+      "path": "/mnt/d/nirs4all-owned-compiler-cache-20261107/web-holdout-production-probe-root-frozen-02/cohort.json",
+      "sha256": "3b22802a0678334e87ab52f7a341aa07ba1e6fa49f11974300cd748ea6ff1fc8"
+    },
+    "web_oracle": {
+      "path": "/home/delete/nirs4all/nirs4all-web/web-app/src/engine/fixtures/core-parity/portable_python_oracle.json",
+      "sha256": "fc008911607a3260218d98fee86ec38e4dd0e5994e91126f7403baff5bc7377c"
+    },
+    "core_oracle": {
+      "path": "/home/delete/nirs4all/nirs4all-core/tests/parity/expected/portable_python_oracle.json",
+      "sha256": "fc008911607a3260218d98fee86ec38e4dd0e5994e91126f7403baff5bc7377c"
+    },
+    "synthetic_generator": {
+      "path": "/home/delete/nirs4all/nirs4all-core/scripts/parity/generate_python_oracle.py",
+      "sha256": "aea5b17c8c8bd5e665f6dbabbe2eaee23e183ed1372c639fb8fb978d918da1a2"
+    },
+    "source_package": {
+      "path": "/mnt/d/nirs4all-owned-compiler-cache-20261107/web-holdout-production-probe-root-frozen-02/initial-refit-package.json",
+      "sha256": "20552dc6779a742f8cddc02a13cf7c3c14056144054fc516a461a4c1def3a918"
+    }
+  },
+  "public_synthetic_evidence": [
+    "Preserved producer lines 18, 127-138 read only the 40x28 public synthetic parity oracle, declare synthetic independent-row provenance and generate feature names/IDs.",
+    "The Web and Core oracle files are byte-identical; Core scripts/parity/generate_python_oracle.py make_dataset (lines 35-61) constructs X/y deterministically without private input data.",
+    "The run02 cohort records the same producer and oracle SHA-256 values. No fit or regeneration was run for this inclusion."
+  ],
+  "preservation": "Package, raw wrapper and three state buffers copied without transformation; no v1 relabel, S/C rewrite or execution qualification.",
+  "historical_limits": "Capture evidence is historical; inclusion does not rerun or change its aggregate probe verdict. State validity, runtime replay, retention and portability remain unverified."
+}
