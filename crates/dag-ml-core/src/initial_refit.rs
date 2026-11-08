@@ -21,11 +21,12 @@ use crate::runtime::{
     ParallelScheduler, RunContext, RuntimeArtifactStore, RuntimeControllerRegistry,
     RuntimeDataProvider, SequentialScheduler,
 };
+use crate::terminal_prediction::validate_terminal_prediction_selector;
 use crate::training::{ArtifactLoadMode, TrainingDataIdentity};
 use crate::{
-    require_terminal_predict_cohort, validate_terminal_prediction_preflight, ExecutionPlan,
-    ExternalDataPlanEnvelope, PredictCohort, PredictionBlock, PredictionPartition,
-    RefitArtifactRecord, ScoreSet, TerminalPredictionSelector, TrainingResourceLimits,
+    require_terminal_predict_cohort, ExecutionPlan, ExternalDataPlanEnvelope, PredictCohort,
+    PredictionBlock, PredictionPartition, RefitArtifactRecord, ScoreSet,
+    TerminalPredictionSelector, TrainingResourceLimits,
 };
 
 pub const INITIAL_FULL_REFIT_PACKAGE_SCHEMA_VERSION: u32 = 1;
@@ -186,8 +187,6 @@ impl InitialFullRefitPackage {
             || self.training_envelope.predict_cohort.is_some()
             || self.training_envelope.coordinator_relations.as_ref()
                 != Some(&self.training_relations)
-            || self.training_envelope.relation_fingerprint.as_deref()
-                != Some(self.training_relations.fingerprint()?.as_str())
         {
             return Err(package_error(
                 "initial full-refit training envelope differs from its relations",
@@ -253,7 +252,8 @@ impl InitialFullRefitPackage {
                     != self.training_envelope.target_content_fingerprint.as_deref()
                 || Some(identity.relation_fingerprint.as_str())
                     != binding.relation_fingerprint.as_deref()
-                || identity.relation_fingerprint != self.training_relations.fingerprint()?
+                || Some(identity.relation_fingerprint.as_str())
+                    != self.training_envelope.relation_fingerprint.as_deref()
             {
                 return Err(package_error(
                     "initial full-refit data identity differs from plan or relations",
@@ -402,6 +402,18 @@ pub fn execute_initial_full_refit(
             "initial full refit requires one concrete no-splitter plan",
         ));
     }
+    let expected_relations = training_envelope
+        .coordinator_relations
+        .as_ref()
+        .ok_or_else(|| package_error("initial full refit requires attested sample relations"))?;
+    // C identifies the typed records, not the source-table replay key S.
+    let canonical_key = expected_relations.fingerprint()?;
+    let samples = input.training_sample_ids.iter().collect::<BTreeSet<_>>();
+    if samples.is_empty() || samples.len() != input.training_sample_ids.len() {
+        return Err(package_error(
+            "initial full-refit training_sample_ids must be non-empty and unique",
+        ));
+    }
     let mut identities = Vec::new();
     let mut training_relations = None;
     for binding in input
@@ -410,6 +422,7 @@ pub fn execute_initial_full_refit(
         .values()
         .flat_map(|node| node.data_bindings.iter())
     {
+        binding.validate_envelope(&training_envelope)?;
         let identity = input
             .data_provider
             .training_data_identity(binding)?
@@ -417,9 +430,7 @@ pub fn execute_initial_full_refit(
                 package_error("initial full refit requires attested feature and target content")
             })?;
         identity.validate()?;
-        if identity.requirement_key
-            != data_binding_requirement_key(&binding.node_id, &binding.input_name)
-        {
+        if identity != TrainingDataIdentity::from_binding_envelope(binding, &training_envelope)? {
             return Err(package_error(
                 "initial full-refit provider identity does not match binding",
             ));
@@ -442,11 +453,9 @@ pub fn execute_initial_full_refit(
                 package_error("initial full refit requires attested sample relations")
             })?;
         relations.validate()?;
-        let relation_fingerprint = relations.fingerprint()?;
-        if relation_fingerprint != identity.relation_fingerprint {
+        if &relations != expected_relations {
             return Err(package_error(format!(
-                "initial full-refit relation fingerprint {} differs from binding {}",
-                relation_fingerprint, identity.relation_fingerprint
+                "initial full-refit provider relations differ from training envelope ({canonical_key})"
             )));
         }
         if relations
@@ -454,7 +463,7 @@ pub fn execute_initial_full_refit(
             .iter()
             .map(|record| &record.sample_id)
             .collect::<BTreeSet<_>>()
-            != input.training_sample_ids.iter().collect()
+            != samples
         {
             return Err(package_error(
                 "initial full-refit sample identities differ from attested relations",
@@ -716,8 +725,10 @@ pub fn preflight_initial_full_refit_prediction(
 ) -> Result<()> {
     package.validate()?;
     require_terminal_predict_cohort(envelope)?;
+    let canonical_key = package.training_relations.fingerprint()?;
     envelope.validate_external_test_training_authority(
-        Some(&package.training_relations.fingerprint()?),
+        Some(&package.data_identities[0].relation_fingerprint),
+        Some(&canonical_key),
         None,
     )?;
     if output_ids.is_empty() || output_ids.iter().collect::<BTreeSet<_>>().len() != output_ids.len()
@@ -735,7 +746,9 @@ pub fn preflight_initial_full_refit_prediction(
             .ok_or_else(|| {
                 package_error(format!("unknown initial full-refit output `{output_id}`"))
             })?;
-        validate_terminal_prediction_preflight(
+        // The paired authority was checked once above. Reuse the same terminal
+        // selector checks without hashing the training records per output.
+        validate_terminal_prediction_selector(
             plan,
             envelope,
             &TerminalPredictionSelector::new(binding.node_id.clone(), binding.port_name.clone())?,
