@@ -978,3 +978,26 @@ The [v3 request schema](data_view_request.v3.schema.json) and
 [fixture](../../examples/fixtures/data/data_view_request_v3.json) freeze the
 transport shape. Hosts must still attest the generated buffers before enabling
 dynamic training views.
+
+## Opt-in population RMSE ratio reports
+
+`score_set.schema.json` (V1) and `score_set.v2.schema.json` retain their existing
+family versions and add optional `metric_profile` and `undefined_metrics` to
+`RegressionMetricReport`. Absent/empty values are omitted, preserving existing
+serialized reports and fingerprints. The known opt-in profile is
+`regression_report.population_rmse_ratios.v1`; unknown profile IDs and unknown
+undefined keys/reasons are refused. `r2` is omitted at constant targets with
+reason `constant_target`; `rpd`/`rpiq` are omitted at zero RMSE with reason
+`zero_rmse`. Defined values remain finite, and RMSE alone is selectable.
+
+The new `examples/fixtures/score_set_population_rmse_ratios.v1.json` records the
+four accepted literal cases. The historical `score_set.json` and built-in R²
+semantics remain unchanged. These additive fields change no C-ABI layout and
+require no implicit migration of existing reports. Historical Quali values stay
+as recorded; the corrected opt-in profile does not rewrite them.
+
+DAG owns scoring and semantic validation. The two score schemas and the new
+profile fixture must be mirrored byte-for-byte in DMD; both owners' existing drift
+checks compare these exact artifacts when a sibling exists. See
+[the single holdout bank](../SINGLE_HOLDOUT_BANK.md) for the native reporting
+contract and its bounded, still-unmeasured integration requirements.

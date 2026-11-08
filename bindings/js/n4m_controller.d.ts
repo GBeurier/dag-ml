@@ -1,5 +1,17 @@
 import type { RolePipeline } from "@nirs4all/methods";
 
+export declare const N4M_PIPELINE_STEPS_PARAM: "pipeline_steps_v1";
+export declare const N4M_PIPELINE_STEPS_CONTROLLER_VERSION: "1.1.0";
+export declare const N4M_PIPELINE_STEPS_PROFILE: "pipeline_steps.v1";
+export type MethodsRecipeStep =
+  | { class: string; methodId?: never; params?: Record<string, unknown> }
+  | { methodId: string; class?: never; params?: Record<string, unknown> };
+/** Reserved node parameter; opt into controllerVersion 1.1.0. */
+export interface N4mPipelineStepsV1Params {
+  pipeline_steps_v1: MethodsRecipeStep[];
+  [modelParameter: string]: unknown;
+}
+
 export interface HostMatrix {
   data: Float64Array;
   rows: number;
@@ -24,6 +36,7 @@ export interface MethodsRegressionControllerOptions {
   resolveTargets(request: { sampleIds: string[]; targetNames: string[]; task: Record<string, unknown> }): HostRows;
   targetNames?: string[];
   controllerId?: string;
+  /** Default 1.0.0; pipeline_steps_v1 requires 1.1.0 and payload profile v2. */
   controllerVersion?: string;
   /** Synchronous lowercase SHA-256; required for REFIT and portable hydration. */
   digest?: ((bytes: Uint8Array) => string) | null;

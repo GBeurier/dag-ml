@@ -97,6 +97,10 @@ NODE_TASK_SCHEMA_REL = Path("docs/contracts/node_task.schema.json")
 NODE_RESULT_SCHEMA_REL = Path("docs/contracts/node_result.schema.json")
 SCORE_SET_SCHEMA_REL = Path("docs/contracts/score_set.schema.json")
 SCORE_SET_FIXTURE_REL = Path("examples/fixtures/score_set.json")
+SCORE_SET_V2_SCHEMA_REL = Path("docs/contracts/score_set.v2.schema.json")
+SCORE_PROFILE_FIXTURE_REL = Path("examples/fixtures/score_set_population_rmse_ratios.v1.json")
+POPULATION_RMSE_RATIOS_PROFILE = "regression_report.population_rmse_ratios.v1"
+
 CHAIN_EFFECT_ANALYSIS_SCHEMA_REL = Path(
     "docs/contracts/chain_effect_analysis.schema.json"
 )
@@ -2717,14 +2721,16 @@ def validate_aggregation_controller_result_schema(schema: Any, label: str) -> No
     )
 
 
-def validate_score_set_schema(schema: Any, label: str) -> None:
+def validate_score_set_schema(
+    schema: Any, label: str, expected_schema_id: str = SCORE_SET_SCHEMA_ID
+) -> None:
     require(isinstance(schema, dict), f"{label} score-set schema must be an object")
     require(
         schema.get("$schema") == "https://json-schema.org/draft/2020-12/schema",
         f"{label} score-set schema must declare Draft 2020-12",
     )
     require(
-        schema.get("$id") == SCORE_SET_SCHEMA_ID,
+        schema.get("$id") == expected_schema_id,
         f"{label} score-set schema has unexpected $id",
     )
     require(schema.get("type") == "object", f"{label} score-set root must be an object")
@@ -2739,6 +2745,23 @@ def validate_score_set_schema(schema: Any, label: str) -> None:
     properties = schema.get("properties")
     require(isinstance(properties, dict), f"{label} score-set properties missing")
     require("reports" in properties, f"{label} score-set schema must define `reports`")
+    report_properties = schema["$defs"]["regression_metric_report"]["properties"]
+    require(
+        report_properties.get("metric_profile", {}).get("enum")
+        == [None, POPULATION_RMSE_RATIOS_PROFILE],
+        f"{label} score-set metric_profile definitions drifted",
+    )
+    undefined = report_properties.get("undefined_metrics", {})
+    require(
+        undefined.get("additionalProperties") is False
+        and undefined.get("properties") == {
+            "r2": {"const": "constant_target"},
+            "rpd": {"const": "zero_rmse"},
+            "rpiq": {"const": "zero_rmse"},
+        },
+        f"{label} score-set undefined metric reasons must be closed",
+    )
+
 
 
 def validate_score_set_fixture(value: Any, label: str) -> None:
@@ -2765,6 +2788,27 @@ def validate_score_set_fixture(value: Any, label: str) -> None:
             isinstance(report.get("metrics"), dict) and bool(report["metrics"]),
             f"{label} score-set report metrics must be a non-empty object",
         )
+        metrics = report["metrics"]
+        for name, metric_value in metrics.items():
+            require_non_empty_string(name, f"{label} metric name")
+            require(
+                isinstance(metric_value, (int, float)) and not isinstance(metric_value, bool)
+                and math.isfinite(metric_value), f"{label} metric {name} must be finite",
+            )
+        profile = report.get("metric_profile")
+        undefined = report.get("undefined_metrics", {})
+        require(isinstance(undefined, dict), f"{label} undefined_metrics must be an object")
+        if profile is not None:
+            require(profile == POPULATION_RMSE_RATIOS_PROFILE, f"{label} unknown metric_profile")
+            require("rmse" in metrics, f"{label} profile report requires rmse")
+            require(value.get("selection_metric") in (None, "rmse"), f"{label} profile selects on rmse only")
+        else:
+            require(not undefined, f"{label} undefined metrics require metric_profile")
+        reasons = {"r2": "constant_target", "rpd": "zero_rmse", "rpiq": "zero_rmse"}
+        for name, reason in undefined.items():
+            require(name in reasons and reason == reasons[name], f"{label} unknown undefined metric/reason")
+            require(name not in metrics, f"{label} metric {name} is both defined and undefined")
+            require(value.get("selection_metric") != name, f"{label} selection metric {name} is undefined")
         for optional_string in ("variant_id", "variant_label"):
             if optional_string in report and report[optional_string] is not None:
                 require_non_empty_string(
@@ -5976,6 +6020,9 @@ def _norm_regression_metric_report(source: Any) -> dict:
             {"name": "target_width"},
             {"name": "target_names", "default": lambda: [], "transform": _L},
             {"name": "metrics", "transform": lambda values: _BM(values, _F)},
+            {"name": "metric_profile", "skip": _skip_none},
+            {"name": "undefined_metrics", "default": lambda: {}, "skip": lambda value: value == {},
+             "transform": lambda values: _BM(values)},
         ],
     )
 
@@ -19916,6 +19963,17 @@ def main(argv: list[str] | None = None) -> int:
         validate_node_result_schema(local_node_result_schema, "dag-ml")
         validate_score_set_schema(local_score_set_schema, "dag-ml")
         validate_score_set_fixture(local_score_set_fixture, "dag-ml")
+        profile_fixture = load_json(ROOT / SCORE_PROFILE_FIXTURE_REL)
+        validate_score_set_fixture(profile_fixture, "dag-ml population RMSE ratios")
+        validate_score_set_schema(
+            load_json(ROOT / SCORE_SET_V2_SCHEMA_REL), "dag-ml V2",
+            "https://github.com/GBeurier/dag-ml/schemas/score_set.v2.schema.json",
+        )
+        try:
+            Draft202012Validator(local_score_set_schema).validate(profile_fixture)
+        except ValidationError as exc:
+            raise ContractError(f"dag-ml population RMSE ratios fixture: {exc}") from exc
+
         try:
             Draft202012Validator.check_schema(local_data_view_request_v3_schema)
             Draft202012Validator(local_data_view_request_v3_schema).validate(

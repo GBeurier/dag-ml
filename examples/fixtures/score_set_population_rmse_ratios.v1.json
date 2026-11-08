@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "plan_id": "plan:population-rmse-ratios.literal.v1",
+  "selection_metric": "rmse",
+  "reports": [
+    {
+      "producer_node": "model:report",
+      "partition": "validation",
+      "fold_id": "nonconstant_perfect",
+      "level": "sample",
+      "row_count": 2,
+      "target_width": 1,
+      "target_names": [
+        "y"
+      ],
+      "metrics": {
+        "rmse": 0.0,
+        "bias": 0.0,
+        "r2": 1.0
+      },
+      "metric_profile": "regression_report.population_rmse_ratios.v1",
+      "undefined_metrics": {
+        "rpd": "zero_rmse",
+        "rpiq": "zero_rmse"
+      }
+    },
+    {
+      "producer_node": "model:report",
+      "partition": "validation",
+      "fold_id": "constant_perfect",
+      "level": "sample",
+      "row_count": 2,
+      "target_width": 1,
+      "target_names": [
+        "y"
+      ],
+      "metrics": {
+        "rmse": 0.0,
+        "bias": 0.0
+      },
+      "metric_profile": "regression_report.population_rmse_ratios.v1",
+      "undefined_metrics": {
+        "r2": "constant_target",
+        "rpd": "zero_rmse",
+        "rpiq": "zero_rmse"
+      }
+    },
+    {
+      "producer_node": "model:report",
+      "partition": "validation",
+      "fold_id": "constant_imperfect",
+      "level": "sample",
+      "row_count": 2,
+      "target_width": 1,
+      "target_names": [
+        "y"
+      ],
+      "metrics": {
+        "rmse": 1.0,
+        "bias": 0.0,
+        "rpd": 0.0,
+        "rpiq": 0.0
+      },
+      "metric_profile": "regression_report.population_rmse_ratios.v1",
+      "undefined_metrics": {
+        "r2": "constant_target"
+      }
+    },
+    {
+      "producer_node": "model:report",
+      "partition": "validation",
+      "fold_id": "biased_residuals",
+      "level": "sample",
+      "row_count": 2,
+      "target_width": 1,
+      "target_names": [
+        "y"
+      ],
+      "metrics": {
+        "rmse": 1.0,
+        "bias": 1.0,
+        "r2": 0.0,
+        "rpd": 1.0,
+        "rpiq": 1.0
+      },
+      "metric_profile": "regression_report.population_rmse_ratios.v1"
+    }
+  ]
+}

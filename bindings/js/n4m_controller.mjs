@@ -3,6 +3,10 @@
  * stay in DAG-ML; fitting, preprocessing and prediction stay in Methods.
  */
 
+export const N4M_PIPELINE_STEPS_PARAM = "pipeline_steps_v1";
+export const N4M_PIPELINE_STEPS_CONTROLLER_VERSION = "1.1.0";
+export const N4M_PIPELINE_STEPS_PROFILE = "pipeline_steps.v1";
+
 function requireCondition(condition, message) {
   if (!condition) throw new Error(message);
 }
@@ -61,11 +65,35 @@ function join(blocks) {
   return { sampleIds, matrix: { data, rows: sampleIds.length, cols: width }, featureNames };
 }
 
+function validateRecipeSteps(steps) {
+  requireCondition(Array.isArray(steps) && steps.length > 0,
+    "pipeline_steps_v1 needs a nonempty recipe");
+  for (const step of steps) {
+    requireCondition(step && typeof step === "object" && !Array.isArray(step) &&
+      Object.keys(step).every(key => ["class", "methodId", "params"].includes(key)) &&
+      ((typeof step.class === "string" && step.class.length > 0 && step.methodId === undefined) ||
+       (typeof step.methodId === "string" && step.methodId.length > 0 && step.class === undefined)) &&
+      (step.params === undefined || (step.params && typeof step.params === "object" && !Array.isArray(step.params))) &&
+      !Object.hasOwn(step.params ?? {}, N4M_PIPELINE_STEPS_PARAM),
+    "Recipe steps use one nonempty class/methodId and optional params object; pipeline_steps_v1 is reserved for node parameters");
+  }
+}
+
 function recipe(node, operator) {
   requireCondition(operator && (typeof operator.type === "string"),
     "A native Methods operator is required");
+  const params = { ...node.params };
+  const hasRecipe = Object.hasOwn(params, N4M_PIPELINE_STEPS_PARAM);
   let steps;
-  if (operator.type === "N4mRolePipeline") {
+  if (hasRecipe) {
+    requireCondition(node.controller_version === N4M_PIPELINE_STEPS_CONTROLLER_VERSION &&
+      operator.type === "N4mRolePipeline",
+    "pipeline_steps_v1 requires N4mRolePipeline controller version 1.1.0");
+    validateRecipeSteps(params[N4M_PIPELINE_STEPS_PARAM]);
+    steps = structuredClone(params[N4M_PIPELINE_STEPS_PARAM]);
+    if (operator.steps !== undefined) sameRecipe(operator.steps, steps);
+    delete params[N4M_PIPELINE_STEPS_PARAM];
+  } else if (operator.type === "N4mRolePipeline") {
     requireCondition(Array.isArray(operator.steps) && operator.steps.length > 0,
       "N4mRolePipeline needs a nonempty native recipe");
     steps = structuredClone(operator.steps);
@@ -77,7 +105,7 @@ function recipe(node, operator) {
   requireCondition(last && typeof last === "object" && !Array.isArray(last) &&
     (typeof last.class === "string" || typeof last.methodId === "string"),
     "Recipe steps use {class, params} or {methodId, params}");
-  last.params = { ...last.params, ...node.params };
+  last.params = { ...last.params, ...params };
   return steps;
 }
 
@@ -211,9 +239,13 @@ export class N4mWasmRegressionController {
     requireCondition(this._hash(payload) === request.artifact.content_fingerprint,
       "Portable Methods payload fingerprint mismatch");
     const saved = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(payload));
-    requireCondition(saved.schema === "dagml.methods.regression.v1" &&
+    const recipeProfile = this.controllerVersion === N4M_PIPELINE_STEPS_CONTROLLER_VERSION;
+    requireCondition((recipeProfile ? saved.schema === "dagml.methods.regression.v2" &&
+      saved.controller_version === this.controllerVersion && saved.recipe_profile === N4M_PIPELINE_STEPS_PROFILE :
+      saved.schema === "dagml.methods.regression.v1") &&
       saved.node_id === request.node_id && saved.params_fingerprint === request.params_fingerprint,
-    "Portable Methods payload belongs to another node or parameter binding");
+    "Portable Methods payload belongs to another controller profile, node or parameter binding");
+    if (recipeProfile) validateRecipeSteps(saved.steps);
     sameIds(saved.target_names, this.targetNames, "Portable target names");
     ids(saved.feature_names, "Portable feature names");
     requireCondition(Array.isArray(saved.states) && saved.states.length > 0 &&
@@ -286,7 +318,10 @@ export class N4mWasmRegressionController {
         model.fit(train.matrix, targets, { featureNames: train.featureNames });
         if (task.phase === "REFIT") {
           const payload = new TextEncoder().encode(JSON.stringify({
-            schema: "dagml.methods.regression.v1", node_id: node.node_id,
+            ...(this.controllerVersion === N4M_PIPELINE_STEPS_CONTROLLER_VERSION ? {
+              schema: "dagml.methods.regression.v2", controller_version: this.controllerVersion,
+              recipe_profile: N4M_PIPELINE_STEPS_PROFILE,
+            } : { schema: "dagml.methods.regression.v1" }), node_id: node.node_id,
             params_fingerprint: node.params_fingerprint, target_names: this.targetNames,
             steps, feature_names: train.featureNames,
             states: model.exportStates().map(state => Array.from(state.n4me)),
