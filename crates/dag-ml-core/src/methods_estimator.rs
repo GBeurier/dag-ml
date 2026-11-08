@@ -38,7 +38,7 @@ use crate::controller_adapter::HostControllerSpec;
 use crate::hpo::{
     MethodsPlsController, MethodsRuntime, METHODS_ABI_MAJOR, METHODS_N4ME_MIN_ABI_MINOR,
 };
-use crate::n4m_roles::{n4m_host_controller_specs, N4mRole};
+use crate::n4m_roles::{n4m_host_controller_specs, N4mRole, METHODS_ESTIMATOR_FIT_INPUTS_PARAM};
 use crate::runtime::{
     refit_artifact_input_key, ArtifactBackend, ArtifactMaterializationRequest, ArtifactRef,
     ClassificationProbabilityBlock, HandleKind, HandleRef, LineageRecord, MethodsPlsDataset,
@@ -229,6 +229,18 @@ pub fn register_methods_estimator_controllers(
             shared: Arc::clone(&shared),
         }))?;
     }
+    // Train-only augmenter procedures share the same feature store; they hold
+    // no fitted state and export no artifact.
+    registry.register(Box::new(MethodsEstimatorController {
+        id: ControllerId::new(
+            N4mRole::Augmenter
+                .controller_id()
+                .expect("the augmenter role has a controller id"),
+        )?,
+        role: N4mRole::Augmenter,
+        runtime: runtime.clone(),
+        shared: Arc::clone(&shared),
+    }))?;
     registry.register(Box::new(MethodsFeatureJoinController {
         id: ControllerId::new(METHODS_FEATURE_JOIN_CONTROLLER)?,
         shared,
@@ -279,9 +291,16 @@ fn inspect_descriptor(
 
 /// Identity-keyed rows produced by one node: the rows it fits on and, when
 /// the scheduler supplied one, the separately selected prediction rows.
+///
+/// After a train augmenter, `fit` holds the augmented fit rows and
+/// `fit_scoring` the raw fit rows (same ids, order, targets and masks) carried
+/// through every learned transform. Fit-population scoring surfaces (`Train`,
+/// `TrainPool`, `Final`) read `fit_scoring`, so no candidate is scored on
+/// augmented rows.
 struct FeatureSet {
     fit: MethodsPlsDataset,
     prediction: Option<MethodsPlsDataset>,
+    fit_scoring: Option<MethodsPlsDataset>,
 }
 
 struct SharedState {
@@ -323,6 +342,8 @@ struct NodeMethod {
     params: Vec<(String, ParamValue)>,
     allow_training_rows: bool,
     target_index: Option<usize>,
+    blocks: Option<Vec<i64>>,
+    feature_groups: Option<Vec<i64>>,
 }
 
 impl NodeMethod {
@@ -400,10 +421,44 @@ impl NodeMethod {
                 "native_target_index is supported only by target model nodes".into(),
             ));
         }
+        let (mut blocks, mut feature_groups) = (None, None);
+        if let Some(carrier) = params.get(METHODS_ESTIMATOR_FIT_INPUTS_PARAM) {
+            if !matches!(role, N4mRole::Regressor | N4mRole::Classifier) {
+                return Err(invalid(format!(
+                    "`{METHODS_ESTIMATOR_FIT_INPUTS_PARAM}` is supported only by model nodes"
+                )));
+            }
+            let carrier = carrier
+                .as_object()
+                .filter(|c| !c.is_empty())
+                .ok_or_else(|| {
+                    invalid(format!(
+                        "`{METHODS_ESTIMATOR_FIT_INPUTS_PARAM}` must be a nonempty object"
+                    ))
+                })?;
+            for (key, values) in carrier {
+                let Some(ParamValue::IntArray(values)) = param_value(ParamType::IntArray, values)
+                else {
+                    return Err(invalid(format!(
+                        "`{METHODS_ESTIMATOR_FIT_INPUTS_PARAM}.{key}` must be an array of exact integers"
+                    )));
+                };
+                match key.as_str() {
+                    "blocks" => blocks = Some(values),
+                    "feature_groups" => feature_groups = Some(values),
+                    _ => {
+                        return Err(invalid(format!(
+                            "`{METHODS_ESTIMATOR_FIT_INPUTS_PARAM}` has unknown fit input `{key}`"
+                        )))
+                    }
+                }
+            }
+        }
         let mut typed = Vec::new();
         for (name, value) in params {
             if name == METHODS_ESTIMATOR_METHOD_PARAM
                 || name == METHODS_ESTIMATOR_UNSAFE_FLAGS_PARAM
+                || name == METHODS_ESTIMATOR_FIT_INPUTS_PARAM
                 || name == "native_target_index"
             {
                 continue;
@@ -428,6 +483,8 @@ impl NodeMethod {
             params: typed,
             allow_training_rows,
             target_index,
+            blocks,
+            feature_groups,
         })
     }
 
@@ -507,6 +564,13 @@ impl NodeMethod {
         if let Some(labels) = &labels {
             inputs = inputs.labels(labels);
         }
+        // Per-column inputs; Methods checks their width and use on this matrix.
+        if let Some(blocks) = &self.blocks {
+            inputs = inputs.blocks(blocks);
+        }
+        if let Some(groups) = &self.feature_groups {
+            inputs = inputs.feature_groups(groups);
+        }
         estimator
             .fit(context, &inputs)
             .map_err(|error| native_error("fit", error))?;
@@ -584,6 +648,43 @@ fn param_value(param_type: ParamType, value: &serde_json::Value) -> Option<Param
         ParamType::Enum => ParamValue::Enum(value.as_str()?.to_string()),
         ParamType::IntArray => ParamValue::IntArray(ints()?),
         ParamType::DoubleArray => ParamValue::DoubleArray(doubles()?),
+    })
+}
+
+/// A positional augmentation value typed by its live manifest parameter, as
+/// the native augmentation dispatcher reads it: `int` requires an exact
+/// integer, `bool` exactly 0 or 1 and `enum` an exact index into the declared
+/// choices. Returns the typed value and its named JSON form.
+fn positional_value(
+    param: &NativeParam,
+    value: &serde_json::Value,
+) -> Option<(ParamValue, serde_json::Value)> {
+    let index = || match param_value(ParamType::Int, value)? {
+        ParamValue::Int(index) => Some(index),
+        _ => None,
+    };
+    Some(match param.native_type()? {
+        ParamType::Int => {
+            let n = index()?;
+            (ParamValue::Int(n), serde_json::json!(n))
+        }
+        ParamType::Double => {
+            let n = value.as_f64().filter(|n| n.is_finite())?;
+            (ParamValue::Double(n), serde_json::json!(n))
+        }
+        ParamType::Bool => {
+            let flag = match index()? {
+                0 => false,
+                1 => true,
+                _ => return None,
+            };
+            (ParamValue::Bool(flag), serde_json::json!(flag))
+        }
+        ParamType::Enum => {
+            let label = param.choices.get(usize::try_from(index()?).ok()?)?;
+            (ParamValue::Enum(label.clone()), serde_json::json!(label))
+        }
+        ParamType::IntArray | ParamType::DoubleArray => return None,
     })
 }
 
@@ -771,6 +872,7 @@ impl MethodsEstimatorController {
             return Ok(Arc::new(FeatureSet {
                 fit: data.fit,
                 prediction: data.prediction,
+                fit_scoring: None,
             }));
         }
         let node_id = &task.node_plan.node_id;
@@ -1043,9 +1145,12 @@ impl MethodsEstimatorController {
             output.validate("transform output", false)?;
             Ok(output)
         };
+        // Fitted on (possibly augmented) fit rows; the same learned state
+        // transforms the raw scoring view and the prediction rows.
         let output = Arc::new(FeatureSet {
             fit: apply(&features.fit)?,
             prediction: features.prediction.as_ref().map(apply).transpose()?,
+            fit_scoring: features.fit_scoring.as_ref().map(apply).transpose()?,
         });
         let outputs = BTreeMap::from([(
             "x_out".to_string(),
@@ -1079,9 +1184,25 @@ impl MethodsEstimatorController {
                         task.node_plan.node_id
                     )));
                 }
+                // The raw scoring view shares ids and order with the fit rows,
+                // so the same keep mask removes the same samples from both.
+                let fit_scoring = features
+                    .fit_scoring
+                    .as_ref()
+                    .map(|raw| {
+                        if raw.sample_ids != features.fit.sample_ids {
+                            return Err(DagMlError::RuntimeValidation(format!(
+                                "native Methods sample filter `{}` raw scoring rows disagree with its fit rows",
+                                task.node_plan.node_id
+                            )));
+                        }
+                        Ok(keep_rows(raw, &keep))
+                    })
+                    .transpose()?;
                 Arc::new(FeatureSet {
                     fit: keep_rows(&features.fit, &keep),
                     prediction: features.prediction.clone(),
+                    fit_scoring,
                 })
             }
             // Sample filters are train-only: inference rows pass unchanged.
@@ -1093,6 +1214,113 @@ impl MethodsEstimatorController {
             self.emit_features(&task.run_id, output)?,
         )]);
         self.result(task, method, outputs, Scores::default(), None)
+    }
+
+    /// Train-only augmentation of the actual FIT_CV/REFIT fit rows by one live
+    /// Methods augmenter procedure. Every manifest parameter, the seed
+    /// included, is explicit: no native default and no task or root seed is
+    /// used. Rows keep their ids, order, targets and masks; the first
+    /// augmenter keeps the raw rows as the scoring view. PREDICT passes rows
+    /// unchanged; there is no state and no artifact.
+    fn augment(&self, task: &NodeTask, features: &Arc<FeatureSet>) -> Result<NodeResult> {
+        let node_id = &task.node_plan.node_id;
+        let invalid = |reason: String| {
+            DagMlError::RuntimeValidation(format!(
+                "native Methods augmenter node `{node_id}` {reason}"
+            ))
+        };
+        let params = &task.node_plan.params;
+        let method_id = params
+            .get(METHODS_ESTIMATOR_METHOD_PARAM)
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                invalid(format!(
+                    "requires a string `{METHODS_ESTIMATOR_METHOD_PARAM}` parameter"
+                ))
+            })?;
+        let info = self
+            .shared
+            .catalog
+            .method(method_id)
+            .map_err(|error| invalid(format!("names an unknown method: {error}")))?;
+        if info.kind != "procedure" || !info.roles.contains(&N4mRole::Augmenter) {
+            return Err(invalid(format!(
+                "method `{method_id}` is not an augmenter procedure"
+            )));
+        }
+        if let Some(name) = params.keys().find(|name| {
+            name.as_str() != METHODS_ESTIMATOR_METHOD_PARAM && info.param(name).is_none()
+        }) {
+            return Err(invalid(format!(
+                "sets unknown parameter `{name}` of `{method_id}`"
+            )));
+        }
+        let mut typed = Vec::new();
+        for param in &info.params {
+            let value = params
+                .get(&param.name)
+                .ok_or_else(|| invalid(format!("requires explicit parameter `{}`", param.name)))?;
+            let value = param
+                .native_type()
+                .and_then(|param_type| param_value(param_type, value))
+                .ok_or_else(|| {
+                    invalid(format!(
+                        "parameter `{}` is not a {} value",
+                        param.name, param.param_type
+                    ))
+                })?;
+            typed.push((param.name.clone(), value));
+        }
+        let output = match task.phase {
+            Phase::FitCv | Phase::Refit => {
+                let context =
+                    Context::new().map_err(|error| native_error("context_create", error))?;
+                let mut native = Params::new(&context, method_id)
+                    .map_err(|error| native_error("params_create", error))?;
+                for (name, value) in &typed {
+                    native
+                        .set(name, value)
+                        .map_err(|error| native_error("params_set", error))?;
+                }
+                let result = roles::run_procedure(
+                    &context,
+                    method_id,
+                    Some(&native),
+                    &FitInputs::new(matrix(&features.fit.x)?),
+                )
+                .map_err(|error| native_error("augmentation", error))?;
+                let x = owned(
+                    result
+                        .double_matrix("X")
+                        .map_err(|error| native_error("augmentation_result", error))?,
+                );
+                if x.rows != features.fit.x.rows || x.cols != features.fit.x.cols {
+                    return Err(invalid(format!(
+                        "returned a {}x{} matrix for {}x{} fit rows; train augmentation never adds rows or columns",
+                        x.rows, x.cols, features.fit.x.rows, features.fit.x.cols
+                    )));
+                }
+                let fit = with_features(&features.fit, x);
+                fit.validate("augmentation output", false)?;
+                Arc::new(FeatureSet {
+                    fit,
+                    prediction: features.prediction.clone(),
+                    fit_scoring: Some(
+                        features
+                            .fit_scoring
+                            .clone()
+                            .unwrap_or_else(|| features.fit.clone()),
+                    ),
+                })
+            }
+            Phase::Predict => Arc::clone(features),
+            phase => return Err(unsupported_phase(task, phase)),
+        };
+        let outputs = BTreeMap::from([(
+            "x_out".to_string(),
+            self.emit_features(&task.run_id, output)?,
+        )]);
+        Self::result_with_flags(&self.id, task, outputs, Scores::default(), None, false)
     }
 
     /// Regressor and classifier nodes: fit (or hydrate), then score every
@@ -1121,12 +1349,16 @@ impl MethodsEstimatorController {
             selected = FeatureSet {
                 fit: project(&features.fit)?,
                 prediction: features.prediction.as_ref().map(project).transpose()?,
+                fit_scoring: features.fit_scoring.as_ref().map(project).transpose()?,
             };
             &selected
         } else {
             features
         };
         let context = Context::new().map_err(|error| native_error("context_create", error))?;
+        // The model fits on `fit` (augmented after a train augmenter) and
+        // scores the fit population on its raw rows.
+        let scoring = features.fit_scoring.as_ref().unwrap_or(&features.fit);
         let (estimator, artifact, surfaces) = match task.phase {
             Phase::FitCv => {
                 let estimator = method.fit(&context, &features.fit)?;
@@ -1134,14 +1366,14 @@ impl MethodsEstimatorController {
                 if let Some(validation) = &features.prediction {
                     surfaces.push((Cow::Borrowed(validation), PredictionPartition::Validation));
                 }
-                surfaces.push((Cow::Borrowed(&features.fit), PredictionPartition::Train));
+                surfaces.push((Cow::Borrowed(scoring), PredictionPartition::Train));
                 // Report-only: the fold model on its whole training pool.
                 surfaces.push((
                     features
                         .prediction
                         .as_ref()
-                        .map_or(Cow::Borrowed(&features.fit), |validation| {
-                            Cow::Owned(union_rows(&features.fit, validation))
+                        .map_or(Cow::Borrowed(scoring), |validation| {
+                            Cow::Owned(union_rows(scoring, validation))
                         }),
                     PredictionPartition::TrainPool,
                 ));
@@ -1150,7 +1382,7 @@ impl MethodsEstimatorController {
             Phase::Refit => {
                 let estimator = method.fit(&context, &features.fit)?;
                 let artifact = self.refit_artifact(task, &context, &estimator, method)?;
-                let mut surfaces = vec![(Cow::Borrowed(&features.fit), PredictionPartition::Final)];
+                let mut surfaces = vec![(Cow::Borrowed(scoring), PredictionPartition::Final)];
                 // A REFIT prediction view is an explicitly held-out cohort.
                 if let Some(held_out) = &features.prediction {
                     surfaces.push((Cow::Borrowed(held_out), PredictionPartition::Test));
@@ -1395,6 +1627,10 @@ impl RuntimeController for MethodsEstimatorController {
                 task.node_plan.node_id, prediction_ports
             )));
         }
+        if self.role == N4mRole::Augmenter {
+            let features = self.input_features(task, provider)?;
+            return self.augment(task, &features);
+        }
         let method = NodeMethod::from_task(task, self.role, &self.shared.catalog)?;
         let features = self.input_features(task, provider)?;
         match self.role {
@@ -1531,6 +1767,7 @@ mod tests {
                 target_names: vec![],
             },
             prediction: None,
+            fit_scoring: None,
         });
         shared.features.lock().unwrap().extend([
             (1, (first_run.clone(), features.clone())),
@@ -3117,6 +3354,435 @@ mod tests {
             "declared-order branch graph vs direct Methods",
         );
     }
+
+    /// Compile one portable graph admission over a single holdout fold
+    /// (`ids[..nfit]` fit, the rest validation) and run FIT_CV for one variant.
+    fn run_portable_graph_fold(
+        executable: &crate::PortableLinearAdmission,
+        provider: &Provider,
+        ids: &[SampleId],
+        nfit: usize,
+        variant: usize,
+        seed: u64,
+    ) -> Result<(RunContext, Vec<NodeResult>)> {
+        let envelope = envelope();
+        let binding: DataBinding = serde_json::from_value(json!({"node_id":"model:portable","input_name":"x","request_id":"nir-to-tabular",
+            "schema_fingerprint":envelope.schema_fingerprint,"plan_fingerprint":envelope.plan_fingerprint,"relation_fingerprint":envelope.relation_fingerprint,
+            "output_representation":"tabular_numeric","feature_set_id":"x","source_ids":["nir"],"require_relations":false})).unwrap();
+        let folds = serde_json::from_value(json!({"id":"outer","sample_ids":ids,"partition_mode":"resampled","sample_groups":{},
+            "folds":[{"fold_id":"fold:holdout","train_sample_ids":&ids[..nfit],"validation_sample_ids":&ids[nfit..],"metadata":{}}]})).unwrap();
+        let registry = methods_estimator_controller_registry(&runtime()).unwrap();
+        let compiled = crate::compile_portable_linear(executable, binding, Some(folds), &registry)?;
+        let plan = build_execution_plan(
+            "plan:portable.graph",
+            compiled.graph,
+            compiled.campaign_template,
+            &registry,
+        )?;
+        let mut ctx = RunContext::new(
+            RunId::new(format!("run:portable.graph.{variant}.{seed}"))?,
+            Some(seed),
+        );
+        ctx.variant_id = Some(plan.variants[variant].variant_id.clone());
+        let results = SequentialScheduler.execute_campaign_phase_with_data_provider(
+            &plan,
+            &controllers(),
+            provider,
+            &mut ctx,
+            Phase::FitCv,
+        )?;
+        Ok((ctx, results))
+    }
+
+    fn train_augmentation(kind: &str, values: Value, seed: Value) -> Value {
+        json!({"train_augmentation":{"class":"n4m.NativeXAugmentation",
+            "params":{"kind":kind,"values":values,"seed":seed}}})
+    }
+
+    #[test]
+    fn train_augmentation_fits_augmented_rows_and_scores_raw_rows_with_recipe_seeds() {
+        let fixture = fixture();
+        let x = rows(&fixture["x_train"]);
+        let y = rows(&fixture["y_train"]).concat();
+        let nfit = x.len() - 6;
+        let provider = Provider::new(&x, &y, &[]);
+        let ids = (0..x.len()).map(|i| sample("", i)).collect::<Vec<_>>();
+        let fit = provider.dataset(&ids[..nfit]);
+        let validation = provider.dataset(&ids[nfit..]);
+        // dead_band: n_bands, width_low, width_high (int), noise_std,
+        // probability (double), variation_scope (enum choice index).
+        let definition = |dead_band: Value| {
+            json!([
+                {"class":"n4m.KennardStone"},
+                train_augmentation("gaussian_noise", json!([0.05]), json!(11)),
+                train_augmentation("dead_band", dead_band, json!(5.0)),
+                {"class":"n4m.MSC"},
+                {"model":{"class":"n4m.PLS","params":{"scale":false}},"_range_":[1,2,1],"param":"n_components"}
+            ])
+        };
+        let admission =
+            crate::admit_portable_pipeline(&definition(json!([2, 2, 4, 0.01, 1.0, 0]))).unwrap();
+        let resolved =
+            preflight_methods_feature_graph(&admission.recipe, &admission.candidates).unwrap();
+        assert_eq!(resolved[0]["methodId"], "augmentation.noise.gaussian_noise");
+        assert_eq!(resolved[0]["params"], json!({"sigma":0.05,"seed":11}));
+        assert_eq!(resolved[1]["methodId"], "augmentation.scattering.dead_band");
+        assert_eq!(
+            resolved[1]["params"],
+            json!({"n_bands":2,"width_low":2,"width_high":4,"noise_std":0.01,
+                "probability":1.0,"variation_scope":"sample","seed":5})
+        );
+        for (resolved, declared) in resolved.iter().zip(&admission.recipe).take(2) {
+            assert_eq!(
+                resolved["train_augmentation"],
+                declared["train_augmentation"]
+            );
+        }
+        assert_eq!(resolved[2..], admission.recipe[2..]);
+        // Live typing and naming refusals, by declared path, before any fit.
+        for (values, kind, expected) in [
+            (
+                json!([2.5, 2, 4, 0.01, 1.0, 0]),
+                "dead_band",
+                "$.recipe[1].train_augmentation.params.values[0]",
+            ),
+            (
+                json!([2, 2, 4, 0.01, 1.0, 2]),
+                "dead_band",
+                "$.recipe[1].train_augmentation.params.values[5]",
+            ),
+            (
+                json!([2, 2, 4, 0.01, 1.0]),
+                "dead_band",
+                "$.recipe[1].train_augmentation.params.values: declares 5 values",
+            ),
+            (
+                json!([0.1]),
+                "no_such_augmenter",
+                "$.recipe[1].train_augmentation.params.kind",
+            ),
+        ] {
+            let mut declared = crate::admit_portable_pipeline(&definition(values)).unwrap();
+            declared.recipe[1]["train_augmentation"]["params"]["kind"] = json!(kind);
+            let error = preflight_methods_feature_graph(&declared.recipe, &declared.candidates)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(expected), "{expected}: {error}");
+        }
+        // One of the four R spline renames resolves by unique live leaf.
+        let mut spline = admission.clone();
+        spline.recipe[1] = train_augmentation("spline_y_perturb", json!([-1, 0.005]), json!(3));
+        let renamed = preflight_methods_feature_graph(&spline.recipe, &spline.candidates).unwrap();
+        assert_eq!(
+            renamed[1]["methodId"],
+            "augmentation.splines.spline_y_perturbations"
+        );
+        // A positional bool (`uniform`, after `spline_points`) is exactly 0 or 1.
+        spline.recipe[1] = train_augmentation("spline_x_simplify", json!([8, 1]), json!(3));
+        let simplified =
+            preflight_methods_feature_graph(&spline.recipe, &spline.candidates).unwrap();
+        assert_eq!(
+            simplified[1]["methodId"],
+            "augmentation.splines.spline_x_simplification"
+        );
+        assert_eq!(
+            simplified[1]["params"],
+            json!({"spline_points":8,"uniform":true,"seed":3})
+        );
+        spline.recipe[1] = train_augmentation("spline_x_simplify", json!([8, 2]), json!(3));
+        let error = preflight_methods_feature_graph(&spline.recipe, &spline.candidates)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("$.recipe[1].train_augmentation.params.values[1]"),
+            "{error}"
+        );
+        // The live Selector role is refused even without a `selection.` id,
+        // which the pure prefix check cannot see.
+        let variance = crate::admit_portable_pipeline(&json!([
+            {"class":"n4m.KennardStone"},
+            train_augmentation("gaussian_noise", json!([0.05]), json!(11)),
+            {"class":"n4m:filters.variance"},
+            {"model":{"class":"n4m.PLS","params":{"scale":false}}}
+        ]))
+        .unwrap();
+        let error = preflight_methods_feature_graph(&variance.recipe, &variance.candidates)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("$.recipe[1]: train augmentation + feature selector"),
+            "{error}"
+        );
+
+        // Direct reference: the declared procedures in order on the fold-train
+        // rows in fold order, each with its own recipe seed; MSC (a learned
+        // reference spectrum) and PLS fit on the augmented rows; every surface
+        // is predicted on raw rows through that learned MSC state.
+        let context = Context::new().unwrap();
+        let procedure = |method: &str, named: &[(&str, ParamValue)], data: &MethodsPlsDataset| {
+            let mut params = Params::new(&context, method).unwrap();
+            for (name, value) in named {
+                params.set(name, value).unwrap();
+            }
+            let result = roles::run_procedure(
+                &context,
+                method,
+                Some(&params),
+                &FitInputs::new(matrix(&data.x).unwrap()),
+            )
+            .unwrap();
+            with_features(data, owned(result.double_matrix("X").unwrap()))
+        };
+        let noisy = procedure(
+            "augmentation.noise.gaussian_noise",
+            &[
+                ("sigma", ParamValue::Double(0.05)),
+                ("seed", ParamValue::Int(11)),
+            ],
+            &fit,
+        );
+        let augmented = procedure(
+            "augmentation.scattering.dead_band",
+            &[
+                ("n_bands", ParamValue::Int(2)),
+                ("width_low", ParamValue::Int(2)),
+                ("width_high", ParamValue::Int(4)),
+                ("noise_std", ParamValue::Double(0.01)),
+                ("probability", ParamValue::Double(1.0)),
+                ("variation_scope", ParamValue::Enum("sample".into())),
+                ("seed", ParamValue::Int(5)),
+            ],
+            &noisy,
+        );
+        assert_ne!(augmented.x.values, fit.x.values, "augmentation must act");
+        assert_eq!(augmented.sample_ids, fit.sample_ids);
+        // As the owner transformer fits MSC (`preprocessing.scatter.msc`, no
+        // declared parameters, optional y supplied): on the augmented rows.
+        let mut msc = Estimator::new(&context, "preprocessing.scatter.msc", None).unwrap();
+        msc.fit(
+            &context,
+            &FitInputs::new(matrix(&augmented.x).unwrap())
+                .y(matrix(augmented.y.as_ref().unwrap()).unwrap()),
+        )
+        .unwrap();
+        let transform = |data: &MethodsPlsDataset| {
+            with_features(
+                data,
+                owned(msc.transform(&context, matrix(&data.x).unwrap()).unwrap()),
+            )
+        };
+        let (fit_augmented, fit_raw, validation_raw) = (
+            transform(&augmented),
+            transform(&fit),
+            transform(&validation),
+        );
+        let pool = union_rows(&fit_raw, &validation_raw);
+        let mut executable = admission.clone();
+        executable.recipe = resolved;
+        let catalog = NativeCatalog::live().unwrap();
+        let pls = catalog.method("models.pls.pls_regression").unwrap();
+        // Distinct task seeds per candidate: augmentation must not depend on them.
+        for (index, candidate) in admission.candidates.iter().enumerate() {
+            let (ctx, results) = run_portable_graph_fold(
+                &executable,
+                &provider,
+                &ids,
+                nfit,
+                index,
+                7 + index as u64,
+            )
+            .unwrap();
+            for result in results
+                .iter()
+                .filter(|r| r.lineage.controller_id.as_str() == "controller:n4m.augmenter")
+            {
+                assert!(result.artifacts.is_empty(), "augmenters export nothing");
+            }
+            assert_eq!(
+                results
+                    .iter()
+                    .filter(|r| r.lineage.controller_id.as_str() == "controller:n4m.augmenter")
+                    .count(),
+                2
+            );
+            let model = results
+                .iter()
+                .find(|r| r.node_id.as_str() == "model:portable")
+                .unwrap();
+            assert_eq!(model.lineage.metrics["native_fit_rows"], nfit as f64);
+            let mut params = Params::new(&context, "models.pls.pls_regression").unwrap();
+            for (name, value) in candidate {
+                let param_type = pls.param(name).unwrap().native_type().unwrap();
+                params
+                    .set(name, &param_value(param_type, value).unwrap())
+                    .unwrap();
+            }
+            let mut estimator =
+                Estimator::new(&context, "models.pls.pls_regression", Some(&params)).unwrap();
+            estimator
+                .fit(
+                    &context,
+                    &FitInputs::new(matrix(&fit_augmented.x).unwrap())
+                        .y(matrix(fit_augmented.y.as_ref().unwrap()).unwrap()),
+                )
+                .unwrap();
+            for (partition, rows) in [
+                (PredictionPartition::Validation, &validation_raw),
+                (PredictionPartition::Train, &fit_raw),
+                (PredictionPartition::TrainPool, &pool),
+            ] {
+                let expected = estimator
+                    .predict(&context, matrix(&rows.x).unwrap())
+                    .unwrap();
+                let actual = ctx
+                    .prediction_store
+                    .blocks()
+                    .iter()
+                    .find(|b| {
+                        b.producer_node.as_str() == "model:portable" && b.partition == partition
+                    })
+                    .unwrap();
+                assert_eq!(actual.sample_ids, rows.sample_ids);
+                close(
+                    &actual.values.concat(),
+                    &expected.data,
+                    1e-10,
+                    &format!("{partition:?} on raw rows, candidate {index}"),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn terminal_fit_inputs_reach_methods_which_alone_checks_width_and_use() {
+        let fixture = fixture();
+        let x = rows(&fixture["x_train"]);
+        let y = rows(&fixture["y_train"]).concat();
+        let nfit = x.len() - 6;
+        let provider = Provider::new(&x, &y, &[]);
+        let ids = (0..x.len()).map(|i| sample("", i)).collect::<Vec<_>>();
+        let fit = provider.dataset(&ids[..nfit]);
+        let validation = provider.dataset(&ids[nfit..]);
+        let admit = |model: Value| {
+            crate::admit_portable_pipeline(&json!([{"class":"n4m.KennardStone"},{"model":model}]))
+                .unwrap()
+        };
+        let blocks = fixture["blocks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_i64().unwrap())
+            .collect::<Vec<_>>();
+        let groups = fixture["feature_groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_i64().unwrap())
+            .collect::<Vec<_>>();
+        let context = Context::new().unwrap();
+        for (model, method, extra, inputs) in [
+            (
+                json!({"class":"n4m.MBPLS","params":{"n_components":2,"block_sizes":blocks}}),
+                "models.multiblock.mb_pls",
+                None,
+                FitInputs::new(matrix(&fit.x).unwrap()).blocks(&blocks),
+            ),
+            (
+                json!({"class":"n4m.GroupSparsePLS","params":{"n_components":2,"group_lambda":0.2,"group_assignment":groups}}),
+                "models.sparse.group_sparse_pls",
+                Some(0.2),
+                FitInputs::new(matrix(&fit.x).unwrap()).feature_groups(&groups),
+            ),
+        ] {
+            let admission = admit(model);
+            // The carrier supplies the required input; nothing is resolved.
+            assert_eq!(
+                preflight_methods_feature_graph(&admission.recipe, &admission.candidates).unwrap(),
+                admission.recipe
+            );
+            let (ctx, _) =
+                run_portable_graph_fold(&admission, &provider, &ids, nfit, 0, 7).unwrap();
+            let mut params = Params::new(&context, method).unwrap();
+            params.set_int("n_components", 2).unwrap();
+            if let Some(lambda) = extra {
+                params.set_double("group_lambda", lambda).unwrap();
+            }
+            let mut estimator = Estimator::new(&context, method, Some(&params)).unwrap();
+            estimator
+                .fit(
+                    &context,
+                    &inputs.y(matrix(fit.y.as_ref().unwrap()).unwrap()),
+                )
+                .unwrap();
+            let expected = estimator
+                .predict(&context, matrix(&validation.x).unwrap())
+                .unwrap();
+            let actual = ctx
+                .prediction_store
+                .blocks()
+                .iter()
+                .find(|b| {
+                    b.producer_node.as_str() == "model:portable"
+                        && b.partition == PredictionPartition::Validation
+                })
+                .unwrap();
+            close(
+                &actual.values.concat(),
+                &expected.data,
+                1e-10,
+                &format!("{method} with its declared fit input"),
+            );
+        }
+        // Methods refuses a width mismatch at the actual terminal fit.
+        for (model, name) in [
+            (
+                json!({"class":"n4m.MBPLS","params":{"block_sizes":[4, 4]}}),
+                "blocks",
+            ),
+            (
+                json!({"class":"n4m.GroupSparsePLS","params":{"group_assignment":[0, 1]}}),
+                "feature_groups",
+            ),
+        ] {
+            let admission = admit(model);
+            preflight_methods_feature_graph(&admission.recipe, &admission.candidates).unwrap();
+            let error = run_portable_graph_fold(&admission, &provider, &ids, nfit, 0, 7)
+                .err()
+                .expect("Methods refuses this fit input")
+                .to_string();
+            assert!(error.contains("incompatible length"), "{error}");
+            assert!(error.contains(name), "{error}");
+        }
+        // A carried input the method does not use is refused by Methods.
+        let mut unused = admit(json!({"class":"n4m.PLS","params":{"n_components":2}}));
+        let carrier = json!({"blocks":[4, 4, 4]});
+        unused.recipe[0]["params"][crate::METHODS_ESTIMATOR_FIT_INPUTS_PARAM] = carrier.clone();
+        for candidate in &mut unused.candidates {
+            candidate.insert(
+                crate::METHODS_ESTIMATOR_FIT_INPUTS_PARAM.into(),
+                carrier.clone(),
+            );
+        }
+        unused.profile = crate::PORTABLE_FEATURE_PROFILE.into();
+        unused.owner_profile = "feature_graph.v1".into();
+        preflight_methods_feature_graph(&unused.recipe, &unused.candidates).unwrap();
+        let error = run_portable_graph_fold(&unused, &provider, &ids, nfit, 0, 7)
+            .err()
+            .expect("Methods refuses an unused fit input")
+            .to_string();
+        assert!(error.contains("not used by this method"), "{error}");
+        // A carrier key outside the closed set is refused before any fit.
+        for candidate in &mut unused.candidates {
+            candidate.insert(
+                crate::METHODS_ESTIMATOR_FIT_INPUTS_PARAM.into(),
+                json!({"groups":[0, 1]}),
+            );
+        }
+        let error = preflight_methods_feature_graph(&unused.recipe, &unused.candidates)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("unknown fit input `groups`"), "{error}");
+    }
 }
 
 #[cfg(all(test, feature = "methods-optimizer"))]
@@ -3192,13 +3858,17 @@ fn retain_feature_store(
     Ok(Some(lease))
 }
 
-/// Before any branch fit, check every method's live role, input requirements
-/// and typed parameters through the same native node admission. No numerical
-/// operation or estimator fit occurs here.
+/// Before the split and any fit: resolve every declared train augmentation
+/// against the live augmenter procedures, then check every method's live role,
+/// input requirements and typed parameters through the same native node
+/// admission. Returns the executable recipe, where each augmentation entry
+/// becomes `{"train_augmentation": <declared>, "methodId", "params"}`; the
+/// declared recipe stays the canonical identity. No numerical operation or
+/// estimator fit occurs here.
 pub fn preflight_methods_feature_graph(
     recipe: &[serde_json::Value],
     candidates: &[BTreeMap<String, serde_json::Value>],
-) -> Result<()> {
+) -> Result<Vec<serde_json::Value>> {
     let catalog = NativeCatalog::live()?;
     let context = Context::new().map_err(|e| native_error("context_create", e))?;
     fn check(
@@ -3208,6 +3878,7 @@ pub fn preflight_methods_feature_graph(
         catalog: &NativeCatalog,
         context: &Context,
         extra: Option<&BTreeMap<String, serde_json::Value>>,
+        augmented: bool,
     ) -> Result<()> {
         let invalid = |message: String| DagMlError::RuntimeValidation(format!("{path}: {message}"));
         let method = step["methodId"]
@@ -3227,18 +3898,33 @@ pub fn preflight_methods_feature_graph(
                     .into(),
             ));
         }
-        if info.inputs.iter().any(|(name, requirement)| {
-            requirement == "required" && !matches!(name.as_str(), "x" | "y" | "labels")
-        }) {
+        // The live role is the authority: any method resolved as a selector,
+        // whatever its id, stays a residual combination with augmentation.
+        if augmented && role == N4mRole::Selector {
             return Err(invalid(
-                "required physical axis or auxiliary fit input is unavailable in the feature graph"
-                    .into(),
+                "train augmentation + feature selector remains a declared residual profile".into(),
             ));
         }
         let mut params: BTreeMap<String, serde_json::Value> =
             serde_json::from_value(step["params"].clone())?;
         if let Some(extra) = extra {
             params.extend(extra.clone());
+        }
+        // Per-column inputs a terminal model declares through its carrier.
+        let supplied = params
+            .get(METHODS_ESTIMATOR_FIT_INPUTS_PARAM)
+            .and_then(serde_json::Value::as_object)
+            .map(|carrier| carrier.keys().cloned().collect::<BTreeSet<_>>())
+            .unwrap_or_default();
+        if info.inputs.iter().any(|(name, requirement)| {
+            requirement == "required"
+                && !matches!(name.as_str(), "x" | "y" | "labels")
+                && !(model && supplied.contains(name))
+        }) {
+            return Err(invalid(
+                "required physical axis or auxiliary fit input is unavailable in the feature graph"
+                    .into(),
+            ));
         }
         params.insert(
             METHODS_ESTIMATOR_METHOD_PARAM.into(),
@@ -3255,7 +3941,141 @@ pub fn preflight_methods_feature_graph(
             .map_err(|e| invalid(e.to_string()))?;
         Ok(())
     }
+    /// One declared R augmentation, named and typed from the live manifest.
+    fn resolve(
+        step: &serde_json::Value,
+        path: &str,
+        catalog: &NativeCatalog,
+        context: &Context,
+    ) -> Result<serde_json::Value> {
+        let path = format!("{path}.train_augmentation.params");
+        let invalid = |at: &str, message: String| {
+            DagMlError::RuntimeValidation(format!("{path}{at}: {message}"))
+        };
+        let declared = &step["train_augmentation"]["params"];
+        let kind = declared["kind"]
+            .as_str()
+            .ok_or_else(|| invalid(".kind", "declared kind required".into()))?;
+        // The only R vocabulary this owner maps: four spline names.
+        let leaf = match kind {
+            "spline_x_perturb" => "spline_x_perturbations",
+            "spline_y_perturb" => "spline_y_perturbations",
+            "spline_x_simplify" => "spline_x_simplification",
+            "spline_curve_simplify" => "spline_curve_simplification",
+            other => other,
+        };
+        let matches = catalog
+            .0
+            .values()
+            .filter(|method| {
+                method.kind == "procedure"
+                    && method.roles.contains(&N4mRole::Augmenter)
+                    && method.method_id.rsplit('.').next() == Some(leaf)
+            })
+            .collect::<Vec<_>>();
+        let [info] = matches.as_slice() else {
+            return Err(invalid(
+                ".kind",
+                format!(
+                    "`{kind}` must name exactly one loaded Methods augmenter procedure with leaf `{leaf}`; found {}",
+                    matches.len()
+                ),
+            ));
+        };
+        if let Some((name, _)) = info
+            .inputs
+            .iter()
+            .find(|(name, requirement)| requirement.as_str() == "required" && name.as_str() != "x")
+        {
+            return Err(invalid(
+                ".kind",
+                format!(
+                    "`{}` requires fit input `{name}`, unavailable to train augmentation",
+                    info.method_id
+                ),
+            ));
+        }
+        if info.param("seed").is_none() {
+            return Err(invalid(
+                ".seed",
+                format!("`{}` declares no seed parameter", info.method_id),
+            ));
+        }
+        let values = declared["values"]
+            .as_array()
+            .ok_or_else(|| invalid(".values", "declared values required".into()))?;
+        let names = info
+            .params
+            .iter()
+            .filter(|param| param.name != "seed")
+            .collect::<Vec<_>>();
+        if values.len() != names.len() {
+            return Err(invalid(
+                ".values",
+                format!(
+                    "declares {} values; `{}` takes {} ({})",
+                    values.len(),
+                    info.method_id,
+                    names.len(),
+                    names
+                        .iter()
+                        .map(|param| param.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            ));
+        }
+        let mut native =
+            Params::new(context, &info.method_id).map_err(|e| invalid("", e.to_string()))?;
+        let mut named = serde_json::Map::new();
+        for (index, (param, value)) in names.iter().zip(values).enumerate() {
+            let at = format!(".values[{index}]");
+            let (typed, json) = positional_value(param, value).ok_or_else(|| {
+                invalid(
+                    &at,
+                    format!(
+                        "`{}` is not a positional {} value (int: exact integer; bool: 0 or 1; enum: choice index)",
+                        param.name, param.param_type
+                    ),
+                )
+            })?;
+            native
+                .set(&param.name, &typed)
+                .map_err(|e| invalid(&at, e.to_string()))?;
+            named.insert(param.name.clone(), json);
+        }
+        // Always the declared recipe seed: never a task, candidate or root seed.
+        let seed = declared["seed"]
+            .as_u64()
+            .filter(|seed| *seed < 1 << 53)
+            .ok_or_else(|| invalid(".seed", "exact integer in 0..2^53-1 required".into()))?;
+        native
+            .set("seed", &ParamValue::Int(seed as i64))
+            .map_err(|e| invalid(".seed", e.to_string()))?;
+        named.insert("seed".into(), serde_json::json!(seed));
+        native
+            .validate(context)
+            .map_err(|e| invalid("", e.to_string()))?;
+        Ok(serde_json::json!({
+            "train_augmentation": step["train_augmentation"],
+            "methodId": info.method_id,
+            "params": named,
+        }))
+    }
+    let augmented = recipe
+        .iter()
+        .any(|step| step.get("train_augmentation").is_some());
+    let mut resolved = Vec::with_capacity(recipe.len());
     for (i, step) in recipe.iter().enumerate() {
+        if step.get("train_augmentation").is_some() {
+            resolved.push(resolve(
+                step,
+                &format!("$.recipe[{i}]"),
+                &catalog,
+                &context,
+            )?);
+            continue;
+        }
         if let Some(branches) = step.get("branch").and_then(serde_json::Value::as_array) {
             for branch in branches {
                 for (j, step) in branch["steps"]
@@ -3271,6 +4091,7 @@ pub fn preflight_methods_feature_graph(
                         &catalog,
                         &context,
                         None,
+                        augmented,
                     )?;
                 }
             }
@@ -3284,6 +4105,7 @@ pub fn preflight_methods_feature_graph(
                         &catalog,
                         &context,
                         Some(params),
+                        augmented,
                     )?;
                 }
             } else {
@@ -3294,11 +4116,13 @@ pub fn preflight_methods_feature_graph(
                     &catalog,
                     &context,
                     None,
+                    augmented,
                 )?;
             }
         }
+        resolved.push(step.clone());
     }
-    Ok(())
+    Ok(resolved)
 }
 
 struct MethodsFeatureJoinController {
@@ -3453,6 +4277,11 @@ impl RuntimeController for MethodsFeatureJoinController {
             branches.push(Arc::clone(data));
         }
         drop(store);
+        if branches.iter().any(|b| b.fit_scoring.is_some()) {
+            return Err(DagMlError::RuntimeValidation(
+                "feature join cannot combine train augmentation with branches".into(),
+            ));
+        }
         let fit = join_feature_datasets(&branches.iter().map(|b| &b.fit).collect::<Vec<_>>())?;
         let prediction = if branches.iter().all(|b| b.prediction.is_none()) {
             None
@@ -3507,7 +4336,11 @@ impl RuntimeController for MethodsFeatureJoinController {
                 handle.handle,
                 (
                     task.run_id.clone(),
-                    Arc::new(FeatureSet { fit, prediction }),
+                    Arc::new(FeatureSet {
+                        fit,
+                        prediction,
+                        fit_scoring: None,
+                    }),
                 ),
             );
         // Reuse the native result/lineage constructor; no method or fit is invoked.
