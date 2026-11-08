@@ -88,7 +88,11 @@ def validate_wrapper(saved):
     validate_classification(saved["classification"])
     validate_recipe(saved["recipe"], saved["source_schemas"])
     state = saved["state"]
-    require(isinstance(state, list) and 28 <= len(state) <= MAX_STATE and all(type(byte) is int and 0 <= byte <= 255 for byte in state) and bytes(state[:20]) == b"N4MC" + (1).to_bytes(4,"little") + (2).to_bytes(4,"little") + (17).to_bytes(4,"little") + (0).to_bytes(4,"little"), "Bounded N4MC classifier state required")
+    require(isinstance(state, list) and 28 <= len(state) <= MAX_STATE and all(type(byte) is int and 0 <= byte <= 255 for byte in state) and bytes(state[:12]) == b"N4MC" + (1).to_bytes(4,"little") + (2).to_bytes(4,"little"), "Bounded N4MC classifier state required")
+    from n4m import abi_version
+    runtime_major, runtime_minor, _ = abi_version()
+    # Methods classifier_load accepts writer minors 17..runtime_minor and ignores patch.
+    require(runtime_major == 2 and 17 <= int.from_bytes(bytes(state[12:16]), "little") <= runtime_minor, "Unsupported N4MC classifier state ABI")
 
 
 def _classification_result(owner, task, surfaces, model, classification, refs, adapt):

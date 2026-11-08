@@ -1953,6 +1953,43 @@ pub struct ExternalDataPlanEnvelope {
 }
 
 impl ExternalDataPlanEnvelope {
+    /// Prove an external test cohort against the owner's training universe.
+    /// Inference and V1 envelopes make no such claim.
+    pub fn validate_external_test_training_authority(
+        &self,
+        training_relation_fingerprint: Option<&str>,
+        fold_set: Option<&FoldSet>,
+    ) -> Result<()> {
+        let Some(cohort) = self
+            .predict_cohort
+            .as_ref()
+            .filter(|cohort| cohort.role == PredictCohortRole::ExternalTest)
+        else {
+            return Ok(());
+        };
+        let expected = training_relation_fingerprint.ok_or_else(|| {
+            DagMlError::CampaignValidation(
+                "external_test requires an owner training relation fingerprint".to_string(),
+            )
+        })?;
+        let relations = self.coordinator_relations.as_ref().ok_or_else(|| {
+            DagMlError::CampaignValidation(
+                "external_test requires owner training relations".to_string(),
+            )
+        })?;
+        if relations.fingerprint()? != expected
+            || self.relation_fingerprint.as_deref() != Some(expected)
+        {
+            return Err(DagMlError::CampaignValidation(
+                "external_test training relations do not match owner authority".to_string(),
+            ));
+        }
+        if let Some(folds) = fold_set {
+            cohort.validate_against_cv_fold_set(folds)?;
+        }
+        cohort.validate_against_cv_relations(relations)
+    }
+
     pub fn validate(&self) -> Result<()> {
         if !matches!(
             self.schema_version,

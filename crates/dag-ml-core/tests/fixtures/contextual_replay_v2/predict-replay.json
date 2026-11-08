@@ -1,0 +1,234 @@
+{
+  "schema_version": 3,
+  "outcome_id": "outcome:predict",
+  "run_id": "run:predict",
+  "source_training_outcome": {
+    "outcome_id": "outcome:probe.models-shared",
+    "outcome_fingerprint": "6dc9f720d02cbe2ad38102403df617d7f7518626f8ba5b6a155dfdd7f85902c3",
+    "training_request_fingerprint": "7837647cca302f0e1a8e8080ce9974058b64b6798a4c0a17d23a071cc33d0be4",
+    "effective_plan_fingerprint": "019e89c50133420f915842bf7a5afff936e3805f3cf3359cd3005e67189f5b41",
+    "execution_bundle_id": "bundle:probe.models-shared",
+    "execution_bundle_fingerprint": "8f851ecbab4cacde0cacc2c3704707e6ca24abd518f6ed3b3eba8416d1581d94",
+    "output_binding_fingerprints": [
+      "2c8f415954ef45dff1fd807ffbb5de24150765c7d9966afa4af48519358675e9",
+      "78235772c295a5f06027b60db6c70f30ee0c163312c56b2de33dfe821d530f22"
+    ],
+    "training_influence_fingerprint": "81543cf4b45b06fdab4e537b93b422977be5786d5937e56ecb096803afbd9103",
+    "data_identities_fingerprint": "9aadb1856dfdec9dc733c093829651280bcb6df97ad33d3813cebdad60d3a278"
+  },
+  "replay_request_id": "replay:predict",
+  "replay_request_fingerprint": "6756cf6a42c4c845250dadc67378cac0238d7d89cb5438d57f272bc688dc0ab2",
+  "input_data_identities": [
+    {
+      "requirement_key": "transform:snv.x",
+      "schema_fingerprint": "f97b37872fa22134b508f98fd8e207e5b776b52594fb8f6f5c3e15bee212246b",
+      "plan_fingerprint": "7c5431d85574b3f337022fa5d25971d5b5cf445b90331b49938f573ff6901e4d",
+      "relation_fingerprint": "a7fb28d44ff0b8c6c4316fafc6efb450f3d004b7fb7199f6df2d8c255518e549",
+      "data_content_fingerprint": "994b2b8105a7fe1b427b6536def09de6fab09eb484d1f0fd0a8a24553f09cdeb",
+      "target_content_fingerprint": null,
+      "identity_fingerprint": "d2f075799df1ba34d00a0893834b700919e9903400e0fe70db10a079ac8b35ac"
+    }
+  ],
+  "bundle_id": "bundle:probe.models-shared",
+  "plan_id": "plan:contextual.synthetic",
+  "phase": "PREDICT",
+  "result_count": 3,
+  "lineage_record_count": 3,
+  "prediction_block_count": 2,
+  "observation_prediction_block_count": 0,
+  "aggregated_prediction_block_count": 0,
+  "explanation_block_count": 0,
+  "controller_count": 2,
+  "prediction_cache_store": false,
+  "outputs": [
+    {
+      "schema_version": 2,
+      "binding": {
+        "schema_version": 1,
+        "binding_id": "output:a",
+        "node_id": "model:base",
+        "port_name": "oof",
+        "prediction_level": "sample",
+        "unit_level": "physical_sample",
+        "prediction_kind": "regression_point",
+        "prediction_source": "final_refit",
+        "refit_strategy": "refit_one",
+        "aggregation_fingerprint": "c61fa6071ed0f78e811f31e3f76b090a9b7e7950ca53483c50ccd0fbe8b0105d",
+        "target_names": [
+          "protein"
+        ],
+        "target_units": [
+          "percent"
+        ],
+        "class_labels": [
+          []
+        ],
+        "output_order": "target_order",
+        "target_space": "raw",
+        "binding_fingerprint": "2c8f415954ef45dff1fd807ffbb5de24150765c7d9966afa4af48519358675e9"
+      },
+      "predictions": [
+        {
+          "prediction_id": "prediction:model:base:PREDICT:full",
+          "producer_node": "model:base",
+          "producer_port": "oof",
+          "partition": "final",
+          "fold_id": null,
+          "sample_ids": [
+            "sample:contextual:11",
+            "sample:contextual:12",
+            "sample:contextual:13",
+            "sample:contextual:14"
+          ],
+          "values": [
+            [
+              0.0
+            ],
+            [
+              0.0
+            ],
+            [
+              0.0
+            ],
+            [
+              0.0
+            ]
+          ],
+          "target_names": [
+            "protein"
+          ]
+        }
+      ],
+      "observation_predictions": [],
+      "aggregated_predictions": []
+    },
+    {
+      "schema_version": 2,
+      "binding": {
+        "schema_version": 1,
+        "binding_id": "output:b",
+        "node_id": "model:second",
+        "port_name": "oof",
+        "prediction_level": "sample",
+        "unit_level": "physical_sample",
+        "prediction_kind": "regression_point",
+        "prediction_source": "final_refit",
+        "refit_strategy": "refit_one",
+        "aggregation_fingerprint": "c61fa6071ed0f78e811f31e3f76b090a9b7e7950ca53483c50ccd0fbe8b0105d",
+        "target_names": [
+          "fat"
+        ],
+        "target_units": [
+          "percent"
+        ],
+        "class_labels": [
+          []
+        ],
+        "output_order": "target_order",
+        "target_space": "raw",
+        "binding_fingerprint": "78235772c295a5f06027b60db6c70f30ee0c163312c56b2de33dfe821d530f22"
+      },
+      "predictions": [
+        {
+          "prediction_id": "prediction:model:second:PREDICT:full",
+          "producer_node": "model:second",
+          "producer_port": "oof",
+          "partition": "final",
+          "fold_id": null,
+          "sample_ids": [
+            "sample:contextual:11",
+            "sample:contextual:12",
+            "sample:contextual:13",
+            "sample:contextual:14"
+          ],
+          "values": [
+            [
+              0.0
+            ],
+            [
+              0.0
+            ],
+            [
+              0.0
+            ],
+            [
+              0.0
+            ]
+          ],
+          "target_names": [
+            "fat"
+          ]
+        }
+      ],
+      "observation_predictions": [],
+      "aggregated_predictions": []
+    }
+  ],
+  "explanations": [],
+  "lineage": [
+    {
+      "record_id": "lineage:model:base:PREDICT:variant:af810523e92fd31b:full",
+      "run_id": "run:predict",
+      "node_id": "model:base",
+      "phase": "PREDICT",
+      "controller_id": "controller:model.mock",
+      "controller_version": "0.1.0",
+      "variant_id": "variant:af810523e92fd31b",
+      "fold_id": null,
+      "branch_path": [],
+      "input_lineage": [
+        "lineage:transform:snv:PREDICT:variant:af810523e92fd31b:full"
+      ],
+      "artifact_refs": [],
+      "params_fingerprint": "97fefbccf77e64dfa755f23bc374273a992f79dd721d8b10c24ec0b1e65835da",
+      "data_model_shape_fingerprint": null,
+      "aggregation_policy_fingerprint": null,
+      "seed": 2067202315869434030,
+      "unsafe_flags": [],
+      "metrics": {}
+    },
+    {
+      "record_id": "lineage:model:second:PREDICT:variant:af810523e92fd31b:full",
+      "run_id": "run:predict",
+      "node_id": "model:second",
+      "phase": "PREDICT",
+      "controller_id": "controller:model.mock",
+      "controller_version": "0.1.0",
+      "variant_id": "variant:af810523e92fd31b",
+      "fold_id": null,
+      "branch_path": [],
+      "input_lineage": [
+        "lineage:transform:snv:PREDICT:variant:af810523e92fd31b:full"
+      ],
+      "artifact_refs": [],
+      "params_fingerprint": "b3957f4a4076a63edad09b131c62903d589649c3ac9d23bb53dea7a7fa656b9b",
+      "data_model_shape_fingerprint": null,
+      "aggregation_policy_fingerprint": null,
+      "seed": 12280893479762251685,
+      "unsafe_flags": [],
+      "metrics": {}
+    },
+    {
+      "record_id": "lineage:transform:snv:PREDICT:variant:af810523e92fd31b:full",
+      "run_id": "run:predict",
+      "node_id": "transform:snv",
+      "phase": "PREDICT",
+      "controller_id": "controller:transform.mock",
+      "controller_version": "0.1.0",
+      "variant_id": "variant:af810523e92fd31b",
+      "fold_id": null,
+      "branch_path": [],
+      "input_lineage": [],
+      "artifact_refs": [],
+      "params_fingerprint": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "data_model_shape_fingerprint": null,
+      "aggregation_policy_fingerprint": null,
+      "seed": 3049862136497587060,
+      "unsafe_flags": [],
+      "metrics": {}
+    }
+  ],
+  "warnings": [],
+  "diagnostics": {},
+  "outcome_fingerprint": "1da2a2fb9dd3c819d7870b774eb01f1cb7d93362f7f43cd5466e3296288a2995"
+}

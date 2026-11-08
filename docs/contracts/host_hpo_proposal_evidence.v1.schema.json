@@ -1,0 +1,501 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GBeurier/dag-ml/schemas/host_hpo_proposal_evidence.v1.schema.json",
+  "title": "DAG-ML captured host HPO proposal evidence v1",
+  "$comment": "Closed reply of a capture-gated proposal source. Hosts name seeds and uses by local id only; the coordinator owns every scope id and records these facts through the closed realization Recorder, which is the only seed, first-use and node gate. status=failed carries only stages that happen before the coordinator receives a usable proposal.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "outcome"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "outcome": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/proposed"
+        },
+        {
+          "$ref": "#/$defs/exhausted"
+        },
+        {
+          "$ref": "#/$defs/failed"
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "proposed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "owner_ref_hex",
+        "owner_evidence_hex",
+        "params",
+        "located_choices",
+        "seed_resolutions",
+        "seed_uses"
+      ],
+      "properties": {
+        "status": {
+          "const": "proposed"
+        },
+        "owner_ref_hex": {
+          "type": "string",
+          "pattern": "^(?:[0-9a-f]{2})+$(?![\\s\\S])"
+        },
+        "owner_evidence_hex": {
+          "type": "string",
+          "pattern": "^(?:[0-9a-f]{2})+$(?![\\s\\S])"
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": {}
+        },
+        "located_choices": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/located_choice"
+          }
+        },
+        "seed_resolutions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/seed_resolution"
+          }
+        },
+        "seed_uses": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/seed_use"
+          }
+        }
+      },
+      "$comment": "seed_resolutions lists seeds first used by this proposal, with no id repeated. A logical seed id has one immutable value across capture lineages: an owner that resumed may omit a seed the restored publication resolved, and the coordinator carries the sealed fact forward with no draw. A restatement must match that fact exactly."
+    },
+    "exhausted": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "const": "exhausted"
+        }
+      }
+    },
+    "failed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "failure_stage",
+        "causal_diagnostic_hex",
+        "consumption",
+        "owned_attempt"
+      ],
+      "properties": {
+        "status": {
+          "const": "failed"
+        },
+        "failure_stage": {
+          "enum": [
+            "ask",
+            "parameter_resolution",
+            "proposal_conversion"
+          ]
+        },
+        "causal_diagnostic_hex": {
+          "type": "string",
+          "pattern": "^(?:[0-9a-f]{2})*$(?![\\s\\S])"
+        },
+        "consumption": {
+          "$ref": "https://dag-ml.org/contracts/realization_evidence.v1.schema.json#/$defs/Consumption"
+        },
+        "owned_attempt": {
+          "anyOf": [
+            {
+              "$ref": "https://dag-ml.org/contracts/realization_evidence.v1.schema.json#/$defs/OwnedAttempt"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "$comment": "owned_attempt=null is an authoritative owner observation that no attempt exists. An unknown attempt keeps ownership=unknown and a null reference."
+    },
+    "located_choice": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "choice_id",
+        "parameter",
+        "node_id",
+        "source_path_hex",
+        "value_hex",
+        "semantics",
+        "seed_id"
+      ],
+      "properties": {
+        "choice_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.:-]{1,128}$(?![\\s\\S])"
+        },
+        "parameter": {
+          "type": "string",
+          "minLength": 1
+        },
+        "node_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.:-]{1,128}$(?![\\s\\S])"
+        },
+        "source_path_hex": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^(?:[0-9a-f]{2})*$(?![\\s\\S])"
+          }
+        },
+        "value_hex": {
+          "type": "string",
+          "pattern": "^(?:[0-9a-f]{2})+$(?![\\s\\S])"
+        },
+        "semantics": {
+          "$ref": "https://dag-ml.org/contracts/realization_evidence.v1.schema.json#/$defs/ChoiceSemantics"
+        },
+        "seed_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_.:-]{1,128}$(?![\\s\\S])"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "$comment": "value_hex is the UTF-8 JSON text of params[parameter]."
+    },
+    "seed_parent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "seed_id",
+        "value_slot"
+      ],
+      "properties": {
+        "seed_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.:-]{1,128}$(?![\\s\\S])"
+        },
+        "value_slot": {
+          "$ref": "https://dag-ml.org/contracts/realization_evidence.v1.schema.json#/$defs/ValueSlot"
+        }
+      }
+    },
+    "seed_resolution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "seed_id",
+        "effective",
+        "resolution",
+        "parent",
+        "policy",
+        "first_actual_use_id"
+      ],
+      "properties": {
+        "seed_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.:-]{1,128}$(?![\\s\\S])"
+        },
+        "effective": {
+          "$ref": "https://dag-ml.org/contracts/realization_evidence.v1.schema.json#/$defs/SeedValue"
+        },
+        "resolution": {
+          "$ref": "https://dag-ml.org/contracts/realization_evidence.v1.schema.json#/$defs/ResolutionKind"
+        },
+        "parent": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/seed_parent"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "policy": {
+          "anyOf": [
+            {
+              "$ref": "https://dag-ml.org/contracts/realization_evidence.v1.schema.json#/$defs/Policy"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "first_actual_use_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.:-]{1,128}$(?![\\s\\S])"
+        }
+      }
+    },
+    "seed_use": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "use_id",
+        "seed_id",
+        "operation"
+      ],
+      "properties": {
+        "use_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.:-]{1,128}$(?![\\s\\S])"
+        },
+        "seed_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.:-]{1,128}$(?![\\s\\S])"
+        },
+        "operation": {
+          "$ref": "https://dag-ml.org/contracts/realization_evidence.v1.schema.json#/$defs/Policy"
+        }
+      }
+    },
+    "seed_declaration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "seed_id",
+        "requested"
+      ],
+      "properties": {
+        "seed_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.:-]{1,128}$(?![\\s\\S])"
+        },
+        "requested": {
+          "anyOf": [
+            {
+              "$ref": "https://dag-ml.org/contracts/realization_evidence.v1.schema.json#/$defs/SeedValue"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "owner_variant_id",
+        "owner_fingerprint",
+        "active_node_ids",
+        "parameters_hex"
+      ],
+      "properties": {
+        "owner_variant_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.:-]{1,128}$(?![\\s\\S])"
+        },
+        "owner_fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$(?![\\s\\S])"
+        },
+        "active_node_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.:-]{1,128}$(?![\\s\\S])"
+          }
+        },
+        "parameters_hex": {
+          "type": "string",
+          "pattern": "^(?:[0-9a-f]{2})*$(?![\\s\\S])"
+        }
+      }
+    },
+    "attempt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "trial_index",
+        "capture_id",
+        "scope_id",
+        "search_scope_id",
+        "owner_ref_hex",
+        "owner_evidence_hex",
+        "phase_index",
+        "seed_declarations",
+        "seed_resolutions",
+        "seed_uses",
+        "located_choices",
+        "candidate",
+        "failure_stage",
+        "causal_diagnostic_hex",
+        "terminal_capture_id",
+        "terminal_scope_id",
+        "owner_observation"
+      ],
+      "properties": {
+        "trial_index": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "capture_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.:-]{1,128}$(?![\\s\\S])"
+        },
+        "scope_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.:-]{1,128}$(?![\\s\\S])"
+        },
+        "search_scope_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.:-]{1,128}$(?![\\s\\S])"
+        },
+        "owner_ref_hex": {
+          "type": "string",
+          "pattern": "^(?:[0-9a-f]{2})+$(?![\\s\\S])"
+        },
+        "owner_evidence_hex": {
+          "type": "string",
+          "pattern": "^(?:[0-9a-f]{2})+$(?![\\s\\S])"
+        },
+        "phase_index": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967295
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "seed_declarations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/seed_declaration"
+          }
+        },
+        "seed_resolutions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/seed_resolution"
+          }
+        },
+        "seed_uses": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/seed_use"
+          }
+        },
+        "located_choices": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/located_choice"
+          }
+        },
+        "candidate": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/candidate"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "failure_stage": {
+          "anyOf": [
+            {
+              "$ref": "https://dag-ml.org/contracts/realization_evidence.v1.schema.json#/$defs/FailureStage"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "causal_diagnostic_hex": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^(?:[0-9a-f]{2})+$(?![\\s\\S])"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "terminal_capture_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_.:-]{1,128}$(?![\\s\\S])"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "terminal_scope_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_.:-]{1,128}$(?![\\s\\S])"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "owner_observation": {
+          "$ref": "https://dag-ml.org/contracts/realization_evidence.v1.schema.json#/$defs/OwnedAttempt"
+        }
+      },
+      "$comment": "Evidence of one asked trial. capture_id is the capture that asked it and stays on replay; terminal_capture_id and terminal_scope_id name the capture that observed its terminal transition and are null while pending. search_scope_id is the scope its live seed facts were recorded in. seed_resolutions is the closure this attempt references, with the first use inside this attempt, so the closed Recorder can replay it without reconstruction."
+    },
+    "proposal_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "owner_checkpoint_fingerprint",
+        "structural_binding",
+        "owner_trial_count"
+      ],
+      "properties": {
+        "owner_checkpoint_fingerprint": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$(?![\\s\\S])"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "structural_binding": {},
+        "owner_trial_count": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "$comment": "Observed owner state, read with no draw. The fingerprint must be a canonical 64-hex TCV1 digest of everything that can change a future proposal: trial rows and status, sampler and RNG state, pending parameters and owner configuration. Rows alone are insufficient where that state moves independently. null means no pairable state exists, which refuses qualified resume; an owner must never guess or restore a seed to fill the gap."
+    }
+  }
+}

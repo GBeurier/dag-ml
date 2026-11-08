@@ -1,0 +1,21 @@
+{
+  "status": "passed",
+  "library_sha256_before": "05ae1a2e82491439f0e71ada0ea500ed79d03af227a11c4a2dbb317a99558529",
+  "library_sha256_after": "05ae1a2e82491439f0e71ada0ea500ed79d03af227a11c4a2dbb317a99558529",
+  "raw_state": {
+    "artifact:methods-pls:model:pls:refit": {
+      "sha256": "6a721ee4c688a1b4b38fb4bc43e94b621d7134249b475772c020adee96b204a9",
+      "format_version": 3
+    }
+  },
+  "fresh_native_predictions_identical_to_retained_replay": true,
+  "fresh_replay_conformal_interval_blocks": 1,
+  "checks": [
+    "strict raw-TCV1 reload of outcome/PPC before+after and replay",
+    "outcome/PPC/replay validate",
+    "PPC-before anchors uncalibrated source; PPC-after pre_conformal anchor == before fingerprint",
+    "attached replay == retained replay; calibration context source == before fingerprint; schema_version 2",
+    "raw N4MM3 bytes identical before/after and equal to retained files",
+    "fresh native replay of calibrated PPC"
+  ]
+}

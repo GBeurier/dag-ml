@@ -1,5 +1,15 @@
 # C ABI
 
+## Package 0.4.0 compatibility change
+
+Package 0.4.0 removes the physical archive builder exports
+`dagml_archive_v2_native_portable_payloads_json` and
+`dagml_archive_v3_native_refit_payloads_json`. Consumers must migrate to native
+DAG artifact facets and the Core V1 container before upgrading. No compatibility
+shim is provided. Controller, artifact-store, prediction-cache, data-provider
+and tensor vtable/layout versions are unchanged; `dagml_version()` continues
+to report the package version.
+
 The ABI is designed around opaque host handles. Rust owns the control lifetime;
 the host owns the underlying object behind each handle.
 
@@ -146,12 +156,25 @@ status code before parsing a payload.
   required process-adapter `--describe` JSON used by CLI-managed host adapters.
   The C ABI exposes its schema version and schema id through
   `dagml_process_adapter_description_contract_json`.
+  The CLI strictly decodes raw description JSON with the label `process adapter
+  description` and refuses unknown fields. It still accepts repeated array entries,
+  extra mode names, and identifiers or capability strings outside schema patterns;
+  strict decoding does not imply complete schema validation.
 - `docs/contracts/process_adapter_frame.schema.json` documents the
   `control_frames_v1` JSONL protocol used by persistent process adapters:
   coordinator `init`/`task`/`close` request frames and adapter
   `ack`/`result`/`error` response frames wrapping the published
   `NodeTask`/`NodeResult` contracts. The C ABI exposes the frame schema version
   and schema id through `dagml_process_adapter_frame_contract_json`.
+
+The CLI process controller strictly decodes a one-shot NodeResult and each
+whole persistent `control_frames_v1` response line using the external-contract
+decoder. Invalid replies are runtime-validation failures labelled `process
+adapter NodeResult` or `process adapter response frame`; invalid UTF-8 in a
+persistent response is terminal. Unknown frame-envelope members are ignored by
+the CLI, while the published schema forbids them: this is an open contract gap.
+Even ignored members must contain strict JSON, including unique keys and
+in-range integer tokens. A discarded close acknowledgement is not decoded.
 - `docs/contracts/graph_spec.schema.json` documents the canonical graph JSON
   consumed by the planner and C ABI.
 - `docs/contracts/model_input_spec.schema.json` and
@@ -161,15 +184,6 @@ status code before parsing a payload.
 
 The vtables are intentionally small in this scaffold. They establish shape,
 ownership and naming before full execution is implemented.
-
-`dagml_archive_v2_native_portable_payloads_json` and
-`dagml_archive_v3_native_refit_payloads_json` expose the existing strict
-DAG-ML archive-member builders to C ABI hosts. They accept complete signed
-DAG-ML contracts and return JSON containing `manifest` plus `members`, where
-each member is an array of raw bytes. The host must pass those exact bytes to
-the nirs4all-core archive writer; these calls perform no ZIP IO, artifact
-conversion, replay, or training. A Package V2 built from host-sidecar artifacts
-is refused by the V2 builder. V3 requires a real target-bound refit package.
 
 `DagMlStatusCode` is a fixed `uint32_t` ABI value rather than a C/Rust enum
 boundary type. Unknown host status codes are treated as runtime validation
@@ -294,6 +308,26 @@ marks interrupted in-flight proposals failed without inventing scores. The
 host remains responsible for persisting its optimizer state and pairing it
 with these native records before the next call. The C/Rust conformance test
 exercises overlap, pruning, ordered terminal callbacks, resume and recovery.
+
+Host ask parameter documents and v2 feedback replies must be well-formed UTF-8
+and strict TCV1 JSON, including unique object keys after NFC normalization and
+numbers in the supported domain. Invalid documents are reported as status 2
+with a runtime-validation descriptor identifying the ask parameters or feedback
+operation. Reply buffers are copied and released before decoding. A rejected
+intermediate report terminalizes the C ABI trial as failed, calls `fail`, and
+publishes the failed checkpoint in both sequential and parallel execution. A
+rejected `pruned` reply stops before checkpoint publication. If prepare fails,
+recover from the committed and delivered prepared checkpoints; if checkpoint
+publication fails, the delivered checkpoint can be resumed. WASM parallel
+intermediate-report rejection instead rejects the search without a failed trial.
+The CLI optimizer adapter applies the same strict JSON rules to every reply,
+including initialization, and labels failures `HPO optimizer adapter reply`.
+Browser tuning hosts must also preserve valid numeric tokens and checkpoint
+identity across their adapter boundary; JavaScript stringification can turn a
+finite floating-point value into an out-of-domain integer token. The queued
+optimizer token and checkpoint relay migration must be coordinated with Core's
+browser tuning binding before a release that changes that snapshot format.
+
 
 The invocation request and result are strict JSON but intentionally
 binding-defined: feature and autodiff tensors remain host-owned, so R, MATLAB,

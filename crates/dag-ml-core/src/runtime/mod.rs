@@ -258,6 +258,8 @@ pub(crate) fn ensure_aggregation_controller_capability(
 
 #[derive(Clone, Debug)]
 pub struct RunContext {
+    /// Bound output kinds used when retaining reports; calculation reports stay generic.
+    pub(crate) training_score_kinds: TrainingScoreKinds,
     pub(crate) target_domain_policy: Option<crate::target_domain::TargetDomainPolicy>,
     pub(crate) target_domain_folds: BTreeSet<FoldId>,
     executed_variants: BTreeSet<VariantId>,
@@ -408,6 +410,7 @@ impl RunContext {
 
     pub fn new(run_id: RunId, root_seed: Option<u64>) -> Self {
         Self {
+            training_score_kinds: BTreeMap::new(),
             executed_variants: BTreeSet::new(),
             target_domain_policy: None,
             target_domain_folds: BTreeSet::new(),
@@ -1348,6 +1351,7 @@ where
             }
             report.variant_id = Some(variant.variant_id.clone());
             report.variant_label = variant_label.clone();
+            retain_metric_families(&ctx.training_score_kinds, std::slice::from_mut(&mut report));
             variant_validation_reports.push(report);
         }
         if let Some(policy) = &ctx.target_domain_policy {

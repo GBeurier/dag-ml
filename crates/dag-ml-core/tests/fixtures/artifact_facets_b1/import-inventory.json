@@ -1,0 +1,83 @@
+{
+  "source_ready_packet_sha256": "566569b1fe645a1f5bfd6e9098756b3b3583c7f415100945a6aad9eaa60667c7",
+  "staging_ready_sha256": "f1552802c5b1b48b23bf60614903e4aa6731712ff9f3fce0fa64ce463c0a5ddd",
+  "scope": "Genuine existing published owner APIs and exact binary; not final-B source, canonical facet, same-snapshot IO/DMD, platform parity or generalization qualification. No product import by this lane.",
+  "selected_files": {
+    "outputs/training_outcome.before.json": {
+      "sha256": "3b13e1412788edcfe2f0874bf093c6d1e8f8d62882718a0b556050385ae7265e",
+      "bytes": 37493
+    },
+    "outputs/training_outcome.after.json": {
+      "sha256": "23bae90d3953ad7bc46f99a62ef2c02a7eb96af63b0b3a778ba40ec8d22c38ba",
+      "bytes": 45263
+    },
+    "outputs/ppc.before.json": {
+      "sha256": "b4575e23003bcb9f9c29bd4e95c3f7adefe8d2a96507a484d944390a31911b84",
+      "bytes": 26979
+    },
+    "outputs/ppc.after.json": {
+      "sha256": "ca4a2e76c79f3f7a534d687a0e779fd6a092486bf22accc968720f095fa93fe9",
+      "bytes": 34852
+    },
+    "outputs/calibration_replay.json": {
+      "sha256": "b8d24568d82a55c85ba3e128c1e864b44fc314fb93334b4e67e2325d5683a7c5",
+      "bytes": 5039
+    },
+    "outputs/calibration_truth.json": {
+      "sha256": "13b88cdd7486ef56c899e0418b1f71329407788f3f4786f4abb52713ab236b3f",
+      "bytes": 1518
+    },
+    "outputs/calibration_relations.json": {
+      "sha256": "ad7d860489908779c5605e58526a882b45c14afa41c2a4717c654b6aa84a9c8a",
+      "bytes": 21853
+    },
+    "outputs/replay_request.json": {
+      "sha256": "52bbe42104d92ca66a220ee34124bbf3176513bb7547c197cc183a16f16f631e",
+      "bytes": 349
+    },
+    "outputs/replay_envelope.json": {
+      "sha256": "42bdbd9307b933d82fecbeffc007587243fbcaf5d035516cfd243407f84293ef",
+      "bytes": 42117
+    },
+    "outputs/calibrated_package_replay.json": {
+      "sha256": "d2c78b67f82300c8ebd4ae6ea76a042608f108199ec394bd2d1482b3ed3472c9",
+      "bytes": 16824
+    },
+    "outputs/producer_facts.json": {
+      "sha256": "eaae4922712098f0cd008aac60fd415e8940e1e15dbb4c6b6e15f21fbe15e504",
+      "bytes": 11411
+    },
+    "outputs/disjointness.json": {
+      "sha256": "ebaa502c49954dd2bf3bc0bc0303a3f07e0496c1c85d69e446ec295f3f0a1f68",
+      "bytes": 537
+    },
+    "outputs/fresh_process_verify.json": {
+      "sha256": "71596b7c6528fb3e276a7200111110adcfd5c9d6cd95b11fc9f168b2b27d8a0c",
+      "bytes": 961
+    },
+    "inputs/source_dataset.json": {
+      "sha256": "9d0010a8297401a0a36fb0bbabe946ad37e7dedd14b0a8433286db663879be5a",
+      "bytes": 5479
+    },
+    "inputs/calibration_dataset.json": {
+      "sha256": "db9ab5fc65cad7bc7747e29e0c29f9744589ec32851ef60af77db22beeed5508",
+      "bytes": 6352
+    },
+    "provenance/provenance.json": {
+      "sha256": "960b6a7249d6e9ceda1eb6d944c01b663b188529dc79bfd9428967aa436bb543",
+      "bytes": 5832
+    },
+    "source/harness-src/main.rs": {
+      "sha256": "e17fcdb2c3bd17b3db3f1848f5346944a93290776b640beaa7f9f5efd3f02c1d",
+      "bytes": 23140
+    },
+    "source/harness-src/host_provider.rs": {
+      "sha256": "f7fdce76e27106fc1eb139adb70ab8fa1093ae5aaa219c9ebddf6415a211905f",
+      "bytes": 41360
+    },
+    "source/generate_controlled_synthetic.py": {
+      "sha256": "51a11890d0f519b00b40ee13382531f8e4a09a399f0ba7003609cd0bc1918873",
+      "bytes": 2786
+    }
+  }
+}

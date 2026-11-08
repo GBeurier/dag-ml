@@ -95,11 +95,29 @@ and a profile they cannot reproduce; they must not substitute the historical
 NumPy dtype/string hash. Existing serialized outcomes stay readable because a
 replay identity records a SHA-256 value, not an implicit conversion rule.
 
-D4's cohort guarantee is deliberately narrow and safe: identities emitted in any
-prediction family are unique and belong to the union of current coordinator relations.
-`excluded: true` only excludes a relation record from training; it remains eligible for
-replay prediction. Exact transitive row coverage in multi-source/missing-input cases is
-deferred to D4.1 and must not be inferred from a D4 outcome.
+Current-row validation checks each selected binding against the union of authenticated
+chosen relations in that binding's predictor-closure input keys. An explicit V2
+`predict_cohort` supplies its relations; otherwise coordinator relations apply. It does
+not combine development and current sets. Prediction blocks use physical sample IDs,
+observation blocks use observation IDs, and aggregates use sample/target/group IDs;
+a configured relation-metadata grouping key replaces raw group IDs. Relation unit
+and origin metadata are not alternative output keys. IDs are unique within and across
+blocks of each family per binding; distinct bindings may share IDs. `excluded: true`
+remains eligible. Partial/reordered rows are valid; complete transitive row coverage
+is deferred to D4.1.
+
+Intrinsic validation and existing source-context methods make no current-row claim.
+Contextual methods require complete request/bundle data-key coverage, independently
+of whether the request and stored input identity keys agree with each other. They
+refuse incomplete and unknown keys for attached, package and V3 child sources.
+The additive current-cohort methods authenticate the recorded relation digests and
+recompute input identities exactly before checking membership. This does not prove
+host buffers match their data-content fingerprint. Explanation payload rows remain
+unverified because EXPLAIN receives no cohort view, even though any bound prediction
+rows emitted during EXPLAIN are checked. See
+[Contextual replay validation](contracts/contextual-replay-validation.md) for the
+three validation levels, typed missing authority, explanation selection/payload rules,
+and the strict WASM JSON numeric-token boundary.
 
 ## Outcome syntax and effects
 

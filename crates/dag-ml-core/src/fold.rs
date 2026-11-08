@@ -189,8 +189,7 @@ impl FoldSet {
             for (sample_id, count) in validation_counts {
                 if count != 1 {
                     return Err(DagMlError::OofValidation(format!(
-                        "sample `{}` appears in validation {} time(s), expected exactly once",
-                        sample_id, count
+                        "sample `{sample_id}` appears in validation {count} time(s), expected exactly once"
                     )));
                 }
             }
@@ -665,17 +664,39 @@ pub struct GroupKFoldSpec {
 
 impl GroupKFoldSpec {
     /// Group-disjoint variant of [`KFoldSpec::split_with_target_missing`]. The observed universe
-    /// must still hold at least `n_splits` distinct groups.
+    /// must still hold at least `n_splits` distinct groups. Candidates are explicit; target-missing
+    /// samples need no group, and any groups supplied for them are ignored.
     pub fn split_with_target_missing(
         &self,
         id: impl Into<String>,
+        samples: &[SampleId],
         sample_groups: &BTreeMap<SampleId, GroupId>,
         target_missing: &BTreeSet<SampleId>,
     ) -> Result<FoldSet> {
         let id = id.into();
+        let candidates = unique_samples("GroupKFold samples", samples)?;
+        let extra = sample_groups
+            .keys()
+            .filter(|sample_id| !candidates.contains(*sample_id))
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        if !extra.is_empty() {
+            return Err(DagMlError::OofValidation(format!(
+                "GroupKFold sample groups contain non-candidate sample(s): {}",
+                extra.join(", ")
+            )));
+        }
+        // Validate every observed candidate before observed_universe counts groups by indexing.
+        for sample_id in samples {
+            if !target_missing.contains(sample_id) && !sample_groups.contains_key(sample_id) {
+                return Err(DagMlError::OofValidation(format!(
+                    "GroupKFold requires a group for target-observed sample `{sample_id}`"
+                )));
+            }
+        }
         let observed = observed_universe(
             &id,
-            sample_groups.keys(),
+            samples.iter(),
             target_missing,
             self.n_splits,
             |sample_id| sample_groups[sample_id].clone(),
@@ -1494,9 +1515,113 @@ mod tests {
             .map(|(i, id)| (id.clone(), gid(&format!("g{}", i / 2))))
             .collect::<BTreeMap<_, _>>();
         let grouped = GroupKFoldSpec { n_splits: 3 }
-            .split_with_target_missing("outer", &groups, &missing)
+            .split_with_target_missing("outer", &samples, &groups, &missing)
             .unwrap();
         assert_outside_cv(&grouped, &missing);
+    }
+
+    #[test]
+    fn group_kfold_target_missing_needs_no_group_and_preserves_observed_split() {
+        let samples = ["s3", "missing", "s0", "s2", "s1"].map(sid);
+        let missing = BTreeSet::from([sid("missing")]);
+        let groups = BTreeMap::from([
+            (sid("s0"), gid("g0")),
+            (sid("s1"), gid("g0")),
+            (sid("s2"), gid("g1")),
+            (sid("s3"), gid("g2")),
+        ]);
+        let spec = GroupKFoldSpec { n_splits: 3 };
+        let folds = spec
+            .split_with_target_missing("outer", &samples, &groups, &missing)
+            .unwrap();
+        assert_outside_cv(&folds, &missing);
+
+        let observed = groups.keys().cloned().collect::<Vec<_>>();
+        let baseline = spec.split("outer", &groups).unwrap();
+        assert_eq!(folds.folds, baseline.folds);
+        let unmarked = spec
+            .split_with_target_missing("outer", &observed, &groups, &BTreeSet::new())
+            .unwrap();
+        assert_eq!(
+            serde_json::to_string(&unmarked).unwrap(),
+            serde_json::to_string(&baseline).unwrap()
+        );
+        let expected = declare_target_missing(baseline, &missing).unwrap();
+        assert_eq!(
+            serde_json::to_string(&folds).unwrap(),
+            serde_json::to_string(&expected).unwrap()
+        );
+
+        let mut with_missing_group = groups;
+        with_missing_group.insert(sid("missing"), gid("g0"));
+        let with_group = spec
+            .split_with_target_missing("outer", &samples, &with_missing_group, &missing)
+            .unwrap();
+        assert_outside_cv(&with_group, &missing);
+        assert_eq!(
+            serde_json::to_string(&with_group).unwrap(),
+            serde_json::to_string(&folds).unwrap()
+        );
+    }
+
+    #[test]
+    fn group_kfold_target_missing_refuses_invalid_candidate_groups() {
+        let samples = ["s0", "s1", "missing"].map(sid);
+        let missing = BTreeSet::from([sid("missing")]);
+        let groups = BTreeMap::from([(sid("s0"), gid("g0")), (sid("s1"), gid("g1"))]);
+        let spec = GroupKFoldSpec { n_splits: 2 };
+
+        let mut incomplete = groups.clone();
+        incomplete.remove(&sid("s1"));
+        let error = spec
+            .split_with_target_missing("outer", &samples, &incomplete, &missing)
+            .unwrap_err();
+        assert!(matches!(error, DagMlError::OofValidation(ref detail)
+            if detail == "GroupKFold requires a group for target-observed sample `s1`"));
+
+        let mut extra = groups.clone();
+        extra.insert(sid("outside"), gid("g2"));
+        let error = spec
+            .split_with_target_missing("outer", &samples, &extra, &missing)
+            .unwrap_err();
+        assert!(matches!(error, DagMlError::OofValidation(ref detail)
+            if detail == "GroupKFold sample groups contain non-candidate sample(s): outside"));
+
+        let duplicate = ["s0", "s1", "missing", "s0"].map(sid);
+        let error = spec
+            .split_with_target_missing("outer", &duplicate, &groups, &missing)
+            .unwrap_err();
+        assert!(matches!(error, DagMlError::OofValidation(ref detail)
+            if detail == "GroupKFold samples contains duplicate sample `s0`"));
+
+        let unknown = refusal(
+            spec.split_with_target_missing(
+                "outer",
+                &samples,
+                &groups,
+                &BTreeSet::from([sid("missing"), sid("unknown")]),
+            )
+            .unwrap_err(),
+        );
+        assert_eq!(unknown.reason, TargetMissingRefusal::UnknownSample);
+        assert_eq!(unknown.sample_ids, vec!["unknown".to_string()]);
+        assert_eq!(
+            (unknown.target_missing_count, unknown.observed_count),
+            (2, 2)
+        );
+    }
+
+    #[test]
+    fn group_kfold_target_missing_refuses_all_missing_without_groups() {
+        let samples = [sid("missing")];
+        let missing = BTreeSet::from([sid("missing")]);
+        let report = refusal(
+            GroupKFoldSpec { n_splits: 2 }
+                .split_with_target_missing("outer", &samples, &BTreeMap::new(), &missing)
+                .unwrap_err(),
+        );
+        assert_eq!(report.reason, TargetMissingRefusal::NoObservedTargets);
+        assert_eq!((report.target_missing_count, report.observed_count), (1, 0));
     }
 
     #[test]
@@ -1584,7 +1709,7 @@ mod tests {
         ]);
         let grouped = refusal(
             GroupKFoldSpec { n_splits: 3 }
-                .split_with_target_missing("outer", &groups, &BTreeSet::from([sid("s2")]))
+                .split_with_target_missing("outer", &samples, &groups, &BTreeSet::from([sid("s2")]))
                 .unwrap_err(),
         );
         assert_eq!(

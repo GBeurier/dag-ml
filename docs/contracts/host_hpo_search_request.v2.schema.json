@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GBeurier/dag-ml/schemas/host_hpo_search_request.v2.schema.json",
+  "title": "DAG-ML captured host HPO request v2",
+  "$comment": "Selects the capture-gated route only. request stays the immutable v1 document, so objective fingerprints do not depend on capture lineage. seed_declarations are recorded before any ask. failed_attempts must contain exactly the provenance derived from a restored publication; extra entries may carry no owned attempts.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "request",
+    "capture"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 2
+    },
+    "request": {
+      "$ref": "https://github.com/GBeurier/dag-ml/schemas/host_hpo_search_request.v1.schema.json"
+    },
+    "capture": {
+      "$ref": "#/$defs/capture"
+    }
+  },
+  "$defs": {
+    "capture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "capture_id",
+        "scope_id",
+        "search_scope_id",
+        "declaration_text",
+        "source_digest",
+        "node_ids",
+        "seed_declarations",
+        "failed_attempts"
+      ],
+      "properties": {
+        "capture_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.:-]{1,128}$(?![\\s\\S])"
+        },
+        "scope_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.:-]{1,128}$(?![\\s\\S])"
+        },
+        "search_scope_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.:-]{1,128}$(?![\\s\\S])"
+        },
+        "declaration_text": {
+          "type": "string"
+        },
+        "source_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$(?![\\s\\S])"
+        },
+        "node_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.:-]{1,128}$(?![\\s\\S])"
+          }
+        },
+        "seed_declarations": {
+          "type": "array",
+          "items": {
+            "$ref": "https://github.com/GBeurier/dag-ml/schemas/host_hpo_proposal_evidence.v1.schema.json#/$defs/seed_declaration"
+          }
+        },
+        "failed_attempts": {
+          "type": "array",
+          "items": {
+            "$ref": "https://dag-ml.org/contracts/realization_evidence.v1.schema.json#/$defs/FailedAttempt"
+          }
+        }
+      }
+    }
+  }
+}

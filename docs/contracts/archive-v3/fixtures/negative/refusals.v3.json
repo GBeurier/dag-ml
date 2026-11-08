@@ -1,0 +1,1319 @@
+{
+  "profile": "nirs4all.archive_workspace.refusals.v3",
+  "description": "Archive V3 storage-only refusal cases. Each case mutates the positive manifest (op/path/value arrays, as in refusals.v2.json; additionally `append`) and/or the synthetic payload bytes, then must be refused with the stated category. No case asserts rejection of a future Methods ABI minor: that is a replay-time capability owned by the Methods runtime, not a storage property.",
+  "cases": [
+    {
+      "id": "future_archive_v4_is_refused",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": [
+            "schema_version"
+          ],
+          "value": 4
+        }
+      ],
+      "expected_error": "schema_refusal"
+    },
+    {
+      "id": "future_archive_v999_is_refused",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": [
+            "schema_version"
+          ],
+          "value": 999
+        }
+      ],
+      "expected_error": "schema_refusal"
+    },
+    {
+      "id": "profile_v4_is_refused",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": [
+            "profile"
+          ],
+          "value": "nirs4all.archive_workspace.v4"
+        }
+      ],
+      "expected_error": "schema_refusal"
+    },
+    {
+      "id": "profile_v999_is_refused",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": [
+            "profile"
+          ],
+          "value": "nirs4all.archive_workspace.v999"
+        }
+      ],
+      "expected_error": "schema_refusal"
+    },
+    {
+      "id": "archive_v2_profile_with_v3_version_is_refused",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": [
+            "profile"
+          ],
+          "value": "nirs4all.archive_workspace.v2"
+        }
+      ],
+      "expected_error": "schema_refusal"
+    },
+    {
+      "id": "archive_v2_version_with_v3_profile_is_refused",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": [
+            "schema_version"
+          ],
+          "value": 2
+        }
+      ],
+      "expected_error": "schema_refusal"
+    },
+    {
+      "id": "archive_v1_version_with_v3_profile_is_refused",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": [
+            "schema_version"
+          ],
+          "value": 1
+        }
+      ],
+      "expected_error": "schema_refusal"
+    },
+    {
+      "id": "writer_v2_identity_is_refused",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": [
+            "writer",
+            "canonical_writer_id"
+          ],
+          "value": "nirs4all-core.archive_workspace_writer.v2"
+        }
+      ],
+      "expected_error": "schema_refusal"
+    },
+    {
+      "id": "writer_owner_is_refused",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": [
+            "writer",
+            "product_aggregate_owner"
+          ],
+          "value": "nirs4all"
+        }
+      ],
+      "expected_error": "schema_refusal"
+    },
+    {
+      "id": "persistence_kind_is_refused",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": [
+            "persistence_kind"
+          ],
+          "value": "n4d_workspace"
+        }
+      ],
+      "expected_error": "schema_refusal"
+    },
+    {
+      "id": "predictor_package_v2_mixing_is_refused",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": [
+            "replay",
+            "portable_refit_package",
+            "schema_id"
+          ],
+          "value": "https://github.com/GBeurier/dag-ml/schemas/portable_predictor_package.v2.schema.json"
+        },
+        {
+          "op": "replace",
+          "path": [
+            "replay",
+            "portable_refit_package",
+            "schema_version"
+          ],
+          "value": 2
+        },
+        {
+          "op": "replace",
+          "path": [
+            "replay",
+            "portable_refit_package",
+            "member_path"
+          ],
+          "value": "dagml/portable_predictor_package.json"
+        }
+      ],
+      "expected_error": "schema_refusal"
+    },
+    {
+      "id": "refit_package_v4_is_refused",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": [
+            "replay",
+            "portable_refit_package",
+            "schema_id"
+          ],
+          "value": "https://github.com/GBeurier/dag-ml/schemas/portable_refit_package.v4.schema.json"
+        },
+        {
+          "op": "replace",
+          "path": [
+            "replay",
+            "portable_refit_package",
+            "schema_version"
+          ],
+          "value": 4
+        }
+      ],
+      "expected_error": "schema_refusal"
+    },
+    {
+      "id": "training_outcome_v2_mixing_is_refused",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": [
+            "replay",
+            "refit_artifacts",
+            "refit_outcome",
+            "schema_id"
+          ],
+          "value": "https://github.com/GBeurier/dag-ml/schemas/training_outcome.v2.schema.json"
+        },
+        {
+          "op": "replace",
+          "path": [
+            "replay",
+            "refit_artifacts",
+            "refit_outcome",
+            "schema_version"
+          ],
+          "value": 2
+        }
+      ],
+      "expected_error": "schema_refusal"
+    },
+    {
+      "id": "execution_bundle_v2_mixing_is_refused",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": [
+            "replay",
+            "refit_artifacts",
+            "execution_bundle",
+            "schema_id"
+          ],
+          "value": "https://github.com/GBeurier/dag-ml/schemas/execution_bundle.v2.schema.json"
+        },
+        {
+          "op": "replace",
+          "path": [
+            "replay",
+            "refit_artifacts",
+            "execution_bundle",
+            "schema_version"
+          ],
+          "value": 2
+        }
+      ],
+      "expected_error": "schema_refusal"
+    },
+    {
+      "id": "graph_schema_version_2_is_refused",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": [
+            "replay",
+            "refit_artifacts",
+            "graph",
+            "schema_version"
+          ],
+          "value": 2
+        }
+      ],
+      "expected_error": "schema_refusal"
+    },
+    {
+      "id": "reader_dispatch_v3_future_versions_must_refuse",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": [
+            "reader_dispatch",
+            "archive_v3",
+            "future_versions"
+          ],
+          "value": "accept"
+        }
+      ],
+      "expected_error": "schema_refusal"
+    },
+    {
+      "id": "reader_dispatch_v3_accepting_v4_is_refused",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": [
+            "reader_dispatch",
+            "archive_v3",
+            "accepted_versions"
+          ],
+          "value": [
+            3,
+            4
+          ]
+        }
+      ],
+      "expected_error": "schema_refusal"
+    },
+    {
+      "id": "reader_dispatch_v2_must_be_never_in_place",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": [
+            "reader_dispatch",
+            "archive_v2",
+            "mutation"
+          ],
+          "value": "in_place"
+        }
+      ],
+      "expected_error": "schema_refusal"
+    },
+    {
+      "id": "reader_dispatch_v1_read_mode_is_refused",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": [
+            "reader_dispatch",
+            "archive_v1",
+            "read_mode"
+          ],
+          "value": "migrate_in_place"
+        }
+      ],
+      "expected_error": "schema_refusal"
+    },
+    {
+      "id": "reader_dispatch_v2_is_required",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "delete",
+          "path": [
+            "reader_dispatch",
+            "archive_v2"
+          ]
+        }
+      ],
+      "expected_error": "schema_refusal"
+    },
+    {
+      "id": "n4mm_abi_major_3_is_refused",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": [
+            "payloads",
+            "methods",
+            "n4mm",
+            0,
+            "abi_major"
+          ],
+          "value": 3
+        }
+      ],
+      "expected_error": "schema_refusal"
+    },
+    {
+      "id": "n4mm_abi_major_missing_is_refused",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "delete",
+          "path": [
+            "payloads",
+            "methods",
+            "n4mm",
+            0,
+            "abi_major"
+          ]
+        }
+      ],
+      "expected_error": "schema_refusal"
+    },
+    {
+      "id": "n4mm_abi_min_minor_string_is_refused",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": [
+            "payloads",
+            "methods",
+            "n4mm",
+            0,
+            "abi_min_minor"
+          ],
+          "value": "3"
+        }
+      ],
+      "expected_error": "schema_refusal"
+    },
+    {
+      "id": "n4mm_abi_min_minor_negative_is_refused",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": [
+            "payloads",
+            "methods",
+            "n4mm",
+            0,
+            "abi_min_minor"
+          ],
+          "value": -1
+        }
+      ],
+      "expected_error": "schema_refusal"
+    },
+    {
+      "id": "n4mm_format_version_3_requires_abi_2_20",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": [
+            "payloads",
+            "methods",
+            "n4mm",
+            0,
+            "format_version"
+          ],
+          "value": 3
+        }
+      ],
+      "expected_error": "schema_refusal"
+    },
+    {
+      "id": "n4mm_format_version_4_is_refused",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": [
+            "payloads",
+            "methods",
+            "n4mm",
+            0,
+            "format_version"
+          ],
+          "value": 4
+        }
+      ],
+      "expected_error": "schema_refusal"
+    },
+    {
+      "id": "unknown_manifest_field_is_refused",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "add",
+          "path": [
+            "extensions"
+          ],
+          "value": {
+            "example.extension-v3": 1
+          }
+        }
+      ],
+      "expected_error": "schema_refusal"
+    },
+    {
+      "id": "unknown_n4mm_field_is_refused",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "add",
+          "path": [
+            "payloads",
+            "methods",
+            "n4mm",
+            0,
+            "plugin"
+          ],
+          "value": "python"
+        }
+      ],
+      "expected_error": "schema_refusal"
+    },
+    {
+      "id": "unknown_dag_reference_field_is_refused",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "add",
+          "path": [
+            "replay",
+            "portable_refit_package",
+            "fallback"
+          ],
+          "value": "host"
+        }
+      ],
+      "expected_error": "schema_refusal"
+    },
+    {
+      "id": "unknown_inventory_field_is_refused",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "add",
+          "path": [
+            "member_inventory",
+            0,
+            "mode"
+          ],
+          "value": "0777"
+        }
+      ],
+      "expected_error": "schema_refusal"
+    },
+    {
+      "id": "package_missing_producer_port_is_refused",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "delete",
+          "path": [
+            "replay",
+            "portable_refit_package",
+            "producer_port_required"
+          ]
+        }
+      ],
+      "expected_error": "schema_refusal"
+    },
+    {
+      "id": "bundle_wrong_producer_port_is_refused",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": [
+            "replay",
+            "refit_artifacts",
+            "execution_bundle",
+            "producer_port_required"
+          ],
+          "value": false
+        }
+      ],
+      "expected_error": "schema_refusal"
+    },
+    {
+      "id": "outcome_missing_producer_port_is_refused",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "delete",
+          "path": [
+            "replay",
+            "refit_artifacts",
+            "refit_outcome",
+            "producer_port_required"
+          ]
+        }
+      ],
+      "expected_error": "schema_refusal"
+    },
+    {
+      "id": "host_artifacts_are_refused",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": [
+            "payloads",
+            "host_artifacts"
+          ],
+          "value": [
+            {
+              "artifact_id": "artifact:host-sidecar",
+              "host_state": "host_sidecar",
+              "serialization_backend": "joblib",
+              "load_policy": "host_opt_in",
+              "member_path": "host/model.joblib",
+              "raw_sha256": "8888888888888888888888888888888888888888888888888888888888888888",
+              "semantic_fingerprint": null,
+              "semantic_profile": "none"
+            }
+          ]
+        }
+      ],
+      "expected_error": "schema_refusal"
+    },
+    {
+      "id": "n4mopt_is_refused",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": [
+            "payloads",
+            "methods",
+            "n4mopt"
+          ],
+          "value": [
+            {
+              "kind": "N4MOPT",
+              "owner": "nirs4all-methods",
+              "format_version": 2,
+              "abi_major": 2,
+              "member_path": "methods/resume.n4mopt",
+              "raw_sha256": "9999999999999999999999999999999999999999999999999999999999999999",
+              "semantic_fingerprint": "9999999999999999999999999999999999999999999999999999999999999999",
+              "semantic_profile": "methods_rfc8785_jcs"
+            }
+          ]
+        }
+      ],
+      "expected_error": "schema_refusal"
+    },
+    {
+      "id": "archive_level_conformal_is_refused",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": [
+            "payloads",
+            "conformal"
+          ],
+          "value": {
+            "owner": "dag-ml"
+          }
+        }
+      ],
+      "expected_error": "schema_refusal"
+    },
+    {
+      "id": "robustness_sidecar_is_refused",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": [
+            "payloads",
+            "robustness"
+          ],
+          "value": {
+            "owner": "dag-ml"
+          }
+        }
+      ],
+      "expected_error": "schema_refusal"
+    },
+    {
+      "id": "n4d_aggregate_reference_is_refused",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": [
+            "payloads",
+            "n4d_aggregate_reference"
+          ],
+          "value": {
+            "owner": "nirs4all-core"
+          }
+        }
+      ],
+      "expected_error": "schema_refusal"
+    },
+    {
+      "id": "deferred_future_artifact_is_refused",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "append",
+          "path": [
+            "replay",
+            "future_artifacts"
+          ],
+          "value": {
+            "kind": "later",
+            "status": "deferred_future_contract",
+            "reason": "x",
+            "affects_replay": false
+          }
+        }
+      ],
+      "expected_error": "schema_refusal"
+    },
+    {
+      "id": "workspace_snapshot_is_refused",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": [
+            "workspace"
+          ],
+          "value": {
+            "snapshot": "x"
+          }
+        }
+      ],
+      "expected_error": "schema_refusal"
+    },
+    {
+      "id": "migration_provenance_is_refused",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": [
+            "migration_provenance"
+          ],
+          "value": {
+            "source_schema_version": 2
+          }
+        }
+      ],
+      "expected_error": "schema_refusal"
+    },
+    {
+      "id": "signature_is_refused",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": [
+            "security",
+            "signature"
+          ],
+          "value": "unsigned-claim"
+        }
+      ],
+      "expected_error": "schema_refusal"
+    },
+    {
+      "id": "integrity_profile_v2_is_refused",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": [
+            "security",
+            "integrity_profile"
+          ],
+          "value": "sha256_raw_member_inventory_v2"
+        }
+      ],
+      "expected_error": "schema_refusal"
+    },
+    {
+      "id": "missing_native_n4mm_is_refused",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": [
+            "payloads",
+            "methods",
+            "n4mm"
+          ],
+          "value": []
+        }
+      ],
+      "expected_error": "schema_refusal"
+    },
+    {
+      "id": "physical_entry_limit_change_is_refused",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": [
+            "physical_profile",
+            "limits",
+            "max_entries"
+          ],
+          "value": 257
+        }
+      ],
+      "expected_error": "schema_refusal"
+    },
+    {
+      "id": "parent_traversal_member_path_is_refused",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": [
+            "payloads",
+            "methods",
+            "n4mm",
+            0,
+            "member_path"
+          ],
+          "value": "methods/../escape.n4mm"
+        },
+        {
+          "op": "replace",
+          "path": [
+            "member_inventory",
+            4,
+            "path"
+          ],
+          "value": "methods/../escape.n4mm"
+        }
+      ],
+      "payload_mutations": [
+        {
+          "op": "rename",
+          "member": "methods/synthetic.n4mm",
+          "to": "methods/../escape.n4mm"
+        }
+      ],
+      "expected_error": "schema_refusal"
+    },
+    {
+      "id": "nested_n4mm_member_path_is_refused",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": [
+            "payloads",
+            "methods",
+            "n4mm",
+            0,
+            "member_path"
+          ],
+          "value": "methods/nested/synthetic.n4mm"
+        },
+        {
+          "op": "replace",
+          "path": [
+            "member_inventory",
+            4,
+            "path"
+          ],
+          "value": "methods/nested/synthetic.n4mm"
+        }
+      ],
+      "payload_mutations": [
+        {
+          "op": "rename",
+          "member": "methods/synthetic.n4mm",
+          "to": "methods/nested/synthetic.n4mm"
+        }
+      ],
+      "expected_error": "schema_refusal"
+    },
+    {
+      "id": "non_ascii_member_path_is_refused",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": [
+            "payloads",
+            "methods",
+            "n4mm",
+            0,
+            "member_path"
+          ],
+          "value": "methods/mod\u00e8le.n4mm"
+        },
+        {
+          "op": "replace",
+          "path": [
+            "member_inventory",
+            4,
+            "path"
+          ],
+          "value": "methods/mod\u00e8le.n4mm"
+        }
+      ],
+      "payload_mutations": [
+        {
+          "op": "rename",
+          "member": "methods/synthetic.n4mm",
+          "to": "methods/mod\u00e8le.n4mm"
+        }
+      ],
+      "expected_error": "schema_refusal"
+    },
+    {
+      "id": "non_ascii_archive_id_is_refused",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": [
+            "archive_id"
+          ],
+          "value": "archive:\u0394"
+        }
+      ],
+      "expected_error": "schema_refusal"
+    },
+    {
+      "id": "uppercase_sha256_is_refused",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": [
+            "member_inventory",
+            0,
+            "raw_sha256"
+          ],
+          "value": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        }
+      ],
+      "expected_error": "schema_refusal"
+    },
+    {
+      "id": "short_sha256_is_refused",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": [
+            "payloads",
+            "methods",
+            "n4mm",
+            0,
+            "raw_sha256"
+          ],
+          "value": "abc"
+        }
+      ],
+      "expected_error": "schema_refusal"
+    },
+    {
+      "id": "inventory_below_mandatory_closure_is_refused",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "delete",
+          "path": [
+            "member_inventory",
+            3
+          ]
+        }
+      ],
+      "expected_error": "schema_refusal"
+    },
+    {
+      "id": "inventory_path_diverges_from_reference_is_refused",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": [
+            "member_inventory",
+            4,
+            "path"
+          ],
+          "value": "methods/other.n4mm"
+        }
+      ],
+      "expected_error": "semantic_refusal"
+    },
+    {
+      "id": "unreferenced_inventory_member_is_refused",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "append",
+          "path": [
+            "member_inventory"
+          ],
+          "value": {
+            "path": "extra/unreferenced.bin",
+            "regular_file": true,
+            "raw_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+            "uncompressed_size_bytes": 1,
+            "semantic_fingerprint": "1111111111111111111111111111111111111111111111111111111111111111",
+            "semantic_profile": "dagml_tcv1"
+          }
+        }
+      ],
+      "expected_error": "semantic_refusal"
+    },
+    {
+      "id": "duplicate_inventory_path_is_refused",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": [
+            "member_inventory",
+            1,
+            "path"
+          ],
+          "value": "dagml/portable_refit_package.json"
+        }
+      ],
+      "expected_error": "semantic_refusal"
+    },
+    {
+      "id": "reference_hash_diverges_from_inventory_is_refused",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": [
+            "replay",
+            "portable_refit_package",
+            "raw_sha256"
+          ],
+          "value": "1111111111111111111111111111111111111111111111111111111111111111"
+        }
+      ],
+      "expected_error": "semantic_refusal"
+    },
+    {
+      "id": "reference_semantic_fingerprint_diverges_is_refused",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": [
+            "replay",
+            "refit_artifacts",
+            "execution_bundle",
+            "semantic_fingerprint"
+          ],
+          "value": "1111111111111111111111111111111111111111111111111111111111111111"
+        }
+      ],
+      "expected_error": "semantic_refusal"
+    },
+    {
+      "id": "reference_semantic_profile_diverges_is_refused",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": [
+            "member_inventory",
+            0,
+            "semantic_profile"
+          ],
+          "value": "dagml_historical_serde_json_v1"
+        }
+      ],
+      "expected_error": "semantic_refusal"
+    },
+    {
+      "id": "n4mm_semantic_fingerprint_not_raw_is_refused",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": [
+            "payloads",
+            "methods",
+            "n4mm",
+            0,
+            "semantic_fingerprint"
+          ],
+          "value": "1111111111111111111111111111111111111111111111111111111111111111"
+        },
+        {
+          "op": "replace",
+          "path": [
+            "member_inventory",
+            4,
+            "semantic_fingerprint"
+          ],
+          "value": "1111111111111111111111111111111111111111111111111111111111111111"
+        }
+      ],
+      "expected_error": "semantic_refusal"
+    },
+    {
+      "id": "n4mm_inventory_profile_not_raw_is_refused",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": [
+            "member_inventory",
+            4,
+            "semantic_profile"
+          ],
+          "value": "dagml_tcv1"
+        }
+      ],
+      "expected_error": "semantic_refusal"
+    },
+    {
+      "id": "n4mm_duplicate_artifact_id_is_refused",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "append",
+          "path": [
+            "payloads",
+            "methods",
+            "n4mm"
+          ],
+          "value": {
+            "artifact_id": "artifact:synthetic-n4mm",
+            "kind": "N4MM",
+            "owner": "nirs4all-methods",
+            "format_version": 1,
+            "abi_major": 2,
+            "member_path": "methods/second.n4mm",
+            "raw_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+            "semantic_fingerprint": "1111111111111111111111111111111111111111111111111111111111111111",
+            "semantic_profile": "n4mm_raw_sha256"
+          }
+        },
+        {
+          "op": "append",
+          "path": [
+            "member_inventory"
+          ],
+          "value": {
+            "path": "methods/second.n4mm",
+            "regular_file": true,
+            "raw_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+            "uncompressed_size_bytes": 1,
+            "semantic_fingerprint": "1111111111111111111111111111111111111111111111111111111111111111",
+            "semantic_profile": "n4mm_raw_sha256"
+          }
+        }
+      ],
+      "expected_error": "semantic_refusal"
+    },
+    {
+      "id": "n4mm_duplicate_member_path_is_refused",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "append",
+          "path": [
+            "payloads",
+            "methods",
+            "n4mm"
+          ],
+          "value": {
+            "artifact_id": "artifact:second",
+            "kind": "N4MM",
+            "owner": "nirs4all-methods",
+            "format_version": 1,
+            "abi_major": 2,
+            "member_path": "methods/synthetic.n4mm",
+            "raw_sha256": "859e282c4b441d48730fc144da21602979288a0f7c369f9923eb75c29bed6ea0",
+            "semantic_fingerprint": "859e282c4b441d48730fc144da21602979288a0f7c369f9923eb75c29bed6ea0",
+            "semantic_profile": "n4mm_raw_sha256"
+          }
+        }
+      ],
+      "expected_error": "semantic_refusal"
+    },
+    {
+      "id": "n4mm_pipeline_format_requires_abi_2_5",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": [
+            "payloads",
+            "methods",
+            "n4mm",
+            0,
+            "format_version"
+          ],
+          "value": 2
+        },
+        {
+          "op": "replace",
+          "path": [
+            "payloads",
+            "methods",
+            "n4mm",
+            0,
+            "abi_min_minor"
+          ],
+          "value": 4
+        }
+      ],
+      "expected_error": "semantic_refusal"
+    },
+    {
+      "id": "n4mm_pipeline_format_without_abi_minor_is_refused",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": [
+            "payloads",
+            "methods",
+            "n4mm",
+            0,
+            "format_version"
+          ],
+          "value": 2
+        },
+        {
+          "op": "delete",
+          "path": [
+            "payloads",
+            "methods",
+            "n4mm",
+            0,
+            "abi_min_minor"
+          ]
+        }
+      ],
+      "expected_error": "semantic_refusal"
+    },
+    {
+      "id": "inventory_size_mismatch_is_refused",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": [
+            "member_inventory",
+            0,
+            "uncompressed_size_bytes"
+          ],
+          "value": 114
+        }
+      ],
+      "expected_error": "member_integrity_refusal"
+    },
+    {
+      "id": "forged_consistent_raw_hash_is_refused",
+      "base": "archive_v3",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": [
+            "member_inventory",
+            1,
+            "raw_sha256"
+          ],
+          "value": "1111111111111111111111111111111111111111111111111111111111111111"
+        },
+        {
+          "op": "replace",
+          "path": [
+            "replay",
+            "refit_artifacts",
+            "graph",
+            "raw_sha256"
+          ],
+          "value": "1111111111111111111111111111111111111111111111111111111111111111"
+        }
+      ],
+      "expected_error": "member_integrity_refusal"
+    },
+    {
+      "id": "package_payload_tamper_is_refused",
+      "base": "archive_v3",
+      "payload_mutations": [
+        {
+          "op": "append_hex",
+          "member": "dagml/portable_refit_package.json",
+          "value_hex": "00"
+        }
+      ],
+      "expected_error": "member_integrity_refusal"
+    },
+    {
+      "id": "n4mm_payload_tamper_is_refused",
+      "base": "archive_v3",
+      "payload_mutations": [
+        {
+          "op": "append_hex",
+          "member": "methods/synthetic.n4mm",
+          "value_hex": "ff"
+        }
+      ],
+      "expected_error": "member_integrity_refusal"
+    },
+    {
+      "id": "missing_zip_member_is_refused",
+      "base": "archive_v3",
+      "payload_mutations": [
+        {
+          "op": "drop",
+          "member": "dagml/portable_refit_outcome.json"
+        }
+      ],
+      "expected_error": "member_inventory_refusal"
+    },
+    {
+      "id": "undeclared_zip_member_is_refused",
+      "base": "archive_v3",
+      "payload_mutations": [
+        {
+          "op": "add_hex",
+          "member": "extra/undeclared.bin",
+          "value_hex": "00"
+        }
+      ],
+      "expected_error": "member_inventory_refusal"
+    }
+  ]
+}

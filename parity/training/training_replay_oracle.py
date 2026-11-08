@@ -976,79 +976,45 @@ def validate_replay_envelopes(
 
 
 def _validate_output_cohort(
-    outputs: list[dict[str, Any]], envelope_fixture: dict[str, Any], label: str
+    outputs: list[dict[str, Any]], envelope_fixture: dict[str, Any], label: str,
+    plan: dict[str, Any],
 ) -> None:
-    relation_sets = [
-        envelope["coordinator_relations"]
-        for envelope in envelope_fixture["envelopes"].values()
-    ]
-    require(bool(relation_sets), f"{label} has no coordinator relations")
-    for index, relations in enumerate(relation_sets):
-        replay_relation_fingerprint(relations, f"{label}.relations[{index}]")
-    # `excluded` is a training-only relation flag; replay covers these units.
-    records = [record for relations in relation_sets for record in relations["records"]]
-    expected = {
-        "observation": {record["observation_id"] for record in records},
-        "target": {
-            record["target_id"] for record in records if record.get("target_id")
-        },
-        "group": {record["group_id"] for record in records if record.get("group_id")},
-    }
-    for index, output in enumerate(outputs):
-        output_label = f"{label}.outputs[{index}]"
-        unit_level = output["binding"].get("unit_level")
-        if unit_level == "source_sample":
-            sample_units = {
-                f"{record['sample_id']}::{record['source_id']}"
-                for record in records
-                if record.get("source_id") is not None
-            }
-        elif unit_level == "observation":
-            sample_units = expected["observation"]
-        elif unit_level == "combo":
-            sample_units = {
-                record["derived_unit_id"]
-                for record in records
-                if record.get("derived_unit_id") is not None
-            }
-        else:
-            sample_units = {record["sample_id"] for record in records}
-        families = (
-            (
-                "predictions",
-                "sample",
-                {
-                    identifier
-                    for block in output["predictions"]
-                    for identifier in block["sample_ids"]
-                },
-            ),
-            (
-                "observation_predictions",
-                "observation",
-                {
-                    identifier
-                    for block in output["observation_predictions"]
-                    for identifier in block["observation_ids"]
-                },
-            ),
-            (
-                "aggregated_predictions",
-                output["binding"]["prediction_level"],
-                {
-                    unit["id"]
-                    for block in output["aggregated_predictions"]
-                    for unit in block["unit_ids"]
-                },
-            ),
-        )
-        for family, level, actual in families:
-            if output[family]:
-                eligible = sample_units if level == "sample" else expected[level]
-                require(
-                    actual <= eligible,
-                    f"{output_label}.{family} contains an id outside current cohort",
-                )
+    """Independent per-binding chosen-relation membership; no full-row claim."""
+    for output in outputs:
+        closure = _graph_closure(plan["graph_plan"]["graph"], [output["binding"]["node_id"]])
+        records = []
+        for node in closure:
+            for data in plan["node_plans"][node].get("data_bindings", []):
+                key = data["node_id"] + "." + data["input_name"]
+                require(key in envelope_fixture["envelopes"], f"{label} missing current envelope {key}")
+                envelope = envelope_fixture["envelopes"][key]
+                current = envelope.get("predict_cohort")
+                relations = current["relations"] if current else envelope.get("coordinator_relations")
+                require(relations is not None, f"{label} current relations are unverified")
+                digest = current["relation_fingerprint"] if current else envelope.get("relation_fingerprint")
+                require(replay_relation_fingerprint(relations) == digest, f"{label} chosen relation digest mismatch")
+                records.extend(relations["records"])
+        require(bool(records), f"{label} no data-key relation authority")
+        shape = plan["node_plans"][output["binding"]["node_id"]].get("shape_plan") or {}
+        grouping = shape.get("aggregation_policy", {}).get("grouping_key")
+        allowed = {"sample": set(), "observation": set(), "target": set(), "group": set()}
+        for record in records:
+            allowed["sample"].add(record["sample_id"])
+            allowed["observation"].add(record["observation_id"])
+            if record.get("target_id") is not None:
+                allowed["target"].add(record["target_id"])
+            group = record.get("metadata", {}).get(grouping["key"]) if grouping else record.get("group_id")
+            if isinstance(group, str) and group.strip():
+                allowed["group"].add(group)
+        for family, key, fixed in [("predictions", "sample_ids", "sample"), ("observation_predictions", "observation_ids", "observation"), ("aggregated_predictions", "unit_ids", None)]:
+            seen = set()
+            for block in output[family]:
+                level = fixed or block["level"]
+                for value in block[key]:
+                    unit = value if fixed else value["id"]
+                    require((level, unit) not in seen, f"{label} duplicate {family} identity")
+                    seen.add((level, unit))
+                    require(unit in allowed[level], f"{label} output outside current cohort for this binding")
 
 
 def _validate_lineage(
@@ -1162,11 +1128,11 @@ def _validate_lineage(
     closure = set(_graph_closure(plan["graph_plan"]["graph"], requested_nodes))
     records_by_node = {record["node_id"]: record for record in records}
     require(
-        len(records_by_node) == len(records) and set(records_by_node) == closure,
-        f"{label} does not exactly cover the requested predictor closure",
+        len(records_by_node) == len(records) and closure <= set(records_by_node) <= set(plan["node_plans"]),
+        f"{label} must include requested closure and stay within the effective plan",
     )
     node_plans = plan["node_plans"]
-    for node_id in sorted(closure):
+    for node_id in sorted(records_by_node):
         record = records_by_node[node_id]
         node_plan = node_plans[node_id]
         require(
@@ -1320,7 +1286,7 @@ def validate_replay_outcome(
         validate_replay_bound_output(output, plan, f"{label}.outputs[{index}]")
         for index, output in enumerate(outputs_value)
     ]
-    _validate_output_cohort(outputs, envelope_fixture, f"{label}.current_cohort")
+    _validate_output_cohort(outputs, envelope_fixture, f"{label}.current_cohort", plan)
     for index, output in enumerate(outputs):
         require(
             output.get("schema_version") == 2,
@@ -1355,6 +1321,8 @@ def validate_replay_outcome(
         )
         require(bool(explanations), f"{label} EXPLAIN requires an explanation")
 
+    coordinates = [(binding["node_id"], binding["port_name"]) for binding in source_bindings.values()]
+    require(len(coordinates) == len(set(coordinates)), f"{label} ambiguous source binding coordinate")
     requested_coordinates = {
         (
             source_bindings[binding_id]["node_id"],
@@ -1387,7 +1355,7 @@ def validate_replay_outcome(
             f"{explanation_label} does not explain a requested prediction port",
         )
         _non_blank(block["method"], f"{explanation_label}.method")
-        if "target_name" in block:
+        if block.get("target_name") is not None:
             _non_blank(block["target_name"], f"{explanation_label}.target_name")
             require(
                 block["target_name"]

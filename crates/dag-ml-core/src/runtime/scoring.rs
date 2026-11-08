@@ -11,6 +11,108 @@ pub(crate) const SCORE_METRICS: &[RegressionMetricKind] = &[
     RegressionMetricKind::F1,
 ];
 
+/// Operation-local output kinds. None is admitted only for a sole declared prediction port.
+pub(crate) type TrainingScoreKinds =
+    BTreeMap<(NodeId, Option<String>), crate::training::PredictionKind>;
+
+pub(crate) fn training_score_kinds(
+    graph: &crate::graph::GraphSpec,
+    outputs: &[crate::training::ResolvedTrainingOutput],
+) -> TrainingScoreKinds {
+    let mut kinds = BTreeMap::new();
+    let operator_sources = graph.metadata.contains_key("training_operator_source_dsl");
+    for output in outputs {
+        if !matches!(
+            output.prediction_kind,
+            crate::training::PredictionKind::RegressionPoint
+                | crate::training::PredictionKind::ClassLabel
+        ) {
+            continue;
+        }
+        let source_index = if operator_sources {
+            graph
+                .nodes
+                .iter()
+                .find(|node| node.id == output.node_id)
+                .and_then(|node| node.metadata.get("source_index"))
+        } else {
+            None
+        };
+        for node in graph.nodes.iter().filter(|node| {
+            node.id == output.node_id
+                || (node.kind == NodeKind::Model
+                    && source_index
+                        .is_some_and(|index| node.metadata.get("source_index") == Some(index)))
+        }) {
+            if !node
+                .ports
+                .outputs
+                .iter()
+                .any(|port| port.kind == PortKind::Prediction && port.name == output.port_name)
+            {
+                continue;
+            }
+            kinds.insert(
+                (node.id.clone(), Some(output.port_name.clone())),
+                output.prediction_kind,
+            );
+            let mut ports = node
+                .ports
+                .outputs
+                .iter()
+                .filter(|port| port.kind == PortKind::Prediction);
+            if ports
+                .next()
+                .is_some_and(|port| port.name == output.port_name)
+                && ports.next().is_none()
+            {
+                kinds.insert((node.id.clone(), None), output.prediction_kind);
+            }
+        }
+    }
+    kinds
+}
+
+/// Filter report emission, retaining values and identities exactly. Unbound generic
+/// intermediates have no prediction-kind contract here and remain unchanged.
+pub(crate) fn retain_metric_families(
+    kinds: &TrainingScoreKinds,
+    reports: &mut [RegressionMetricReport],
+) {
+    for report in reports {
+        if report.target_domain.is_some() {
+            continue;
+        }
+        let Some(kind) = kinds.get(&(report.producer_node.clone(), report.producer_port.clone()))
+        else {
+            continue;
+        };
+        if !matches!(
+            kind,
+            crate::training::PredictionKind::RegressionPoint
+                | crate::training::PredictionKind::ClassLabel
+        ) {
+            continue;
+        }
+        report.metrics.retain(|name, _| {
+            let base = name.split(':').next().expect("metric name has a base");
+            RegressionMetricKind::from_name(base).is_none_or(|metric| {
+                RegressionMetricKind::resolve_for_prediction_kind(base, metric.objective(), *kind)
+                    .is_ok()
+            })
+        });
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn retain_training_metric_families(
+    graph: &crate::graph::GraphSpec,
+    outputs: &[crate::training::ResolvedTrainingOutput],
+    reports: &mut [RegressionMetricReport],
+) {
+    retain_metric_families(&training_score_kinds(graph, outputs), reports);
+}
+
 /// Resolve the aggregation contracts that must run after all CV folds have emitted their OOF
 /// rows.  A `Target` or `Group` unit is allowed to span folds; aggregating it inside an individual
 /// fold would make the score depend on the splitter rather than on the declared semantic unit.

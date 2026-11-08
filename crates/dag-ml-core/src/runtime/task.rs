@@ -1126,7 +1126,30 @@ impl ExplanationBlock {
                 ));
             }
         }
+        if crate::training::contains_runtime_handle(&self.payload)
+            || contains_reserved_explanation_input(&self.payload)
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "explanation payload cannot contain runtime handles or reserved raw input keys"
+                    .into(),
+            ));
+        }
         Ok(())
+    }
+}
+
+// This portable profile prevents known opaque-handle/raw-input fields, not
+// arbitrary mathematical arrays under unrelated controller-defined keys.
+fn contains_reserved_explanation_input(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Object(fields) => fields.iter().any(|(key, value)| {
+            matches!(
+                key.to_ascii_lowercase().as_str(),
+                "raw_features" | "feature_matrix" | "raw_spectra" | "raw_wavelengths"
+            ) || contains_reserved_explanation_input(value)
+        }),
+        serde_json::Value::Array(values) => values.iter().any(contains_reserved_explanation_input),
+        _ => false,
     }
 }
 
@@ -2249,8 +2272,7 @@ pub(crate) fn require_fit_influence_support(
         return Ok(());
     }
     Err(DagMlError::RuntimeValidation(format!(
-        "controller capabilities do not support requested fit influence policy {:?}",
-        policy
+        "controller capabilities do not support requested fit influence policy {policy:?}"
     )))
 }
 

@@ -151,7 +151,7 @@ const run = (optimizer, budget, nativeController = controller) => {
   request.trial_budget = budget;
   return JSON.parse(dagMl.host_hpo_search_json(plan, JSON.stringify([manifest]),
     JSON.stringify(envelope), JSON.stringify(request),
-    optimizer.committed === null ? undefined : JSON.stringify(optimizer.committed),
+    optimizer.committedJson ?? undefined,
     nativeController.callback, optimizer.callback));
 };
 let optimizer = new N4mWasmHostOptimizer({ ...config, persist });
@@ -378,16 +378,13 @@ const completeArchive = { requestJson: completeRequestJson,
   failedReplayReleasedStates: true,
   trainingTamperRefusedBeforeCallback: true, parallelSchedulerRefusedBeforeCallback: true,
 };
-// Transport the original five signed RAW wrappers; no N4MM conversion or
-// synthetic estimator replaces any source or the OOF meta model.
-const portablePayloads = JSON.parse(dagMl.build_archive_v2_native_portable_payloads_json(
-  "archive:methods.four-sources", completeCapture.training_outcome_json, completePackageJson));
-assert.equal(portablePayloads.manifest.payloads.methods.n4mm.length, 0);
-assert.equal(portablePayloads.manifest.payloads.methods.role_pipelines.length, 5);
-assert.equal(Object.keys(portablePayloads.members).length, 11);
-assert.deepEqual(JSON.parse(dagMl.validate_archive_v2_portable_payloads_json(
-  JSON.stringify(portablePayloads.manifest), completePackageJson,
-  JSON.stringify(portablePayloads.members))), { valid: true });
+// Transport the original TrainingOutcome and PortablePredictorPackage V2 bytes through Core's
+// generic native Package2 writer. Core builds the physical native-methods-package container and
+// owns its scientific closure validation; there is no old manifest, nested ZIP or converter.
+// Without NIRS4ALL_CORE_WASM_MODULE this DAG smoke cannot qualify the container.
+const utf8 = new TextEncoder();
+const outcomeBytes = utf8.encode(completeCapture.training_outcome_json);
+const packageBytes = utf8.encode(completePackageJson);
 const coreModules = (process.env.NIRS4ALL_CORE_WASM_MODULE ?? "").split(",").filter(Boolean);
 const archiveConsumers = [];
 if (coreModules.length) {
@@ -397,9 +394,8 @@ if (coreModules.length) {
     fs.writeFileSync(capturePath, JSON.stringify({ ...completeArchive, manifest }));
     for (const coreModule of coreModules) {
       const core = await import(pathToFileURL(path.resolve(coreModule)).href);
-      const bytes = await core.writePortableArchiveV2(portablePayloads.manifest,
-        Object.fromEntries(Object.entries(portablePayloads.members).map(
-          ([member, payload]) => [member, Uint8Array.from(payload)])));
+      const bytes = await core.writeNativePredictorPackage("archive:methods.four-sources",
+        outcomeBytes, packageBytes);
       const archivePath = path.join(directory, "five-models.n4a");
       fs.writeFileSync(archivePath, bytes);
       const consumer = spawnSync(process.execPath, [path.join(repo, "scripts/replay_wasm_role_pipeline_archive.mjs"),
@@ -410,8 +406,9 @@ if (coreModules.length) {
     }
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 }
-completeArchive.archiveV2 = { manifest: portablePayloads.manifest, consumers: archiveConsumers,
-  semanticClosureValidated: true, coreTransportQualified: archiveConsumers.length > 0 };
+completeArchive.archiveV2 = { profile: "native-methods-package", packageSchemaVersion: 2,
+  consumers: archiveConsumers, semanticClosureValidated: archiveConsumers.length > 0,
+  coreTransportQualified: archiveConsumers.length > 0 };
 if (process.argv[4]) fs.writeFileSync(process.argv[4], JSON.stringify({
   dsl, envelope, manifest, request, sourceRows, sampleIds, target, resumed, fitLog, nativeRefit, completeArchive,
   dagml_version: dagMl.dag_ml_version(), methods_version: methods.version(), methods_abi: methods.abiVersion(),
@@ -422,5 +419,5 @@ console.log("METHODS_MULTIMODAL_HPO_OK", JSON.stringify({
   trials: resumed.trials.length, searchSourceFitViews: searchFitViewCount,
   completeTrainingSourceFitViews: fitLog.length - searchFitViewCount, selected: resumed.selected_trial_index,
   selectedSourceNativeArchiveReplay: true, completeFiveModelPortablePackageReplay: true,
-  completeFiveModelArchiveSemanticClosure: true, coreArchiveConsumers: archiveConsumers,
+  completeFiveModelArchiveSemanticClosure: archiveConsumers.length > 0, coreArchiveConsumers: archiveConsumers,
 }));

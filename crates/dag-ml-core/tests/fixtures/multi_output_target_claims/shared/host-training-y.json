@@ -1,0 +1,30 @@
+{
+  "sample_ids": [
+    "sample:1",
+    "sample:2",
+    "sample:3",
+    "sample:4"
+  ],
+  "target_names": [
+    "protein",
+    "fat"
+  ],
+  "y": [
+    [
+      0.0,
+      0.0
+    ],
+    [
+      0.0,
+      0.0
+    ],
+    [
+      0.0,
+      0.0
+    ],
+    [
+      0.0,
+      0.0
+    ]
+  ]
+}

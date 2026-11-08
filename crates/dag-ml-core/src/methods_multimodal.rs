@@ -210,17 +210,16 @@ fn parse_payload(record: &RefitArtifactRecord, bytes: &[u8]) -> Result<Payload> 
         || artifact.native_predictor_descriptor.is_some()
         || artifact.native_estimator_descriptor.is_some()
         || bytes.is_empty()
-        || bytes.len() > 134_217_728
         || artifact.content_fingerprint.as_deref() != Some(digest.as_str())
         || artifact.size_bytes != Some(bytes.len() as u64)
         || artifact.uri.as_deref() != Some(format!("artifacts/{digest}.json").as_str())
     {
-        return refuse("Methods multimodal requires a bounded trusted RAW payload and exact owner");
+        return refuse("Methods multimodal requires a trusted RAW payload and exact owner");
     }
     let text = std::str::from_utf8(bytes).map_err(|error| {
         DagMlError::RuntimeValidation(format!("Methods multimodal payload is not UTF-8: {error}"))
     })?;
-    crate::canonical::parse_bounded_typed_json(text, 4_000_000).map_err(|error| {
+    crate::canonical::parse_typed_json(text).map_err(|error| {
         DagMlError::RuntimeValidation(format!(
             "Methods multimodal payload is outside strict TCV1 JSON: {error}"
         ))
@@ -231,7 +230,6 @@ fn parse_payload(record: &RefitArtifactRecord, bytes: &[u8]) -> Result<Payload> 
         || payload.params_fingerprint != record.params_fingerprint
         || payload.target_names.len() != 1
         || payload.target_names[0].is_empty()
-        || payload.target_names[0].len() > 4096
         || payload.state.len() < 28
         || payload.state.len() > 67_108_864
         || &payload.state[..4] != b"N4MF"
@@ -436,11 +434,57 @@ mod tests {
 
     fn seal(record: &mut RefitArtifactRecord, saved: &Value) -> Vec<u8> {
         let bytes = serde_json::to_vec(saved).unwrap();
-        let digest = format!("{:x}", Sha256::digest(&bytes));
+        bind_bytes(record, &bytes);
+        bytes
+    }
+
+    fn bind_bytes(record: &mut RefitArtifactRecord, bytes: &[u8]) {
+        let digest = format!("{:x}", Sha256::digest(bytes));
         record.artifact.content_fingerprint = Some(digest.clone());
         record.artifact.uri = Some(format!("artifacts/{digest}.json"));
         record.artifact.size_bytes = Some(bytes.len() as u64);
-        bytes
+    }
+
+    #[test]
+    fn more_than_four_million_nodes_reach_closed_wrapper_validation() {
+        let (mut record, _, _) = fixture();
+        // Intentionally invalid envelope, with no claimed fitted state. The
+        // former node budget hid the closed-schema error on this exact path.
+        let mut bytes = Vec::with_capacity(8_000_100);
+        bytes.extend_from_slice(b"{\"oversized_probe\":[");
+        for _ in 0..4_000_000 {
+            bytes.extend_from_slice(b"0,");
+        }
+        bytes.extend_from_slice(b"0]}");
+        bind_bytes(&mut record, &bytes);
+        let error = validate_methods_multimodal_pipeline_payload(&record, &bytes).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("unknown field `oversized_probe`"));
+    }
+
+    #[test]
+    fn long_target_name_keeps_transport_and_recipe_checks() {
+        let (mut record, mut saved, plan) = fixture();
+        // Reuse the existing transport witness, without claiming native import.
+        saved["target_names"][0] = Value::String("y".repeat(4097));
+        let bytes = seal(&mut record, &saved);
+        validate_methods_multimodal_pipeline_recipe(&record, &bytes, &plan).unwrap();
+        saved["target_names"][0] = Value::String(String::new());
+        let bytes = seal(&mut record, &saved);
+        assert!(validate_methods_multimodal_pipeline_payload(&record, &bytes).is_err());
+    }
+
+    #[test]
+    #[ignore = "explicit 128 MiB materialized-input regression; transport validation only"]
+    fn wrapper_above_128_mib_preserves_the_existing_transport_witness() {
+        let (mut record, saved, plan) = fixture();
+        let mut bytes = seal(&mut record, &saved);
+        bytes.resize(128 * 1024 * 1024 + 1, b' ');
+        bind_bytes(&mut record, &bytes);
+        validate_methods_multimodal_pipeline_recipe(&record, &bytes, &plan).unwrap();
+        record.artifact.size_bytes = Some(bytes.len() as u64 - 1);
+        assert!(validate_methods_multimodal_pipeline_payload(&record, &bytes).is_err());
     }
 
     #[test]

@@ -294,6 +294,18 @@ pub fn validate_terminal_prediction_preflight(
             selector.node_id, selector.port
         )));
     }
+    for node in plan
+        .node_plans
+        .values()
+        .filter(|node| node.supported_phases.contains(&Phase::Predict))
+    {
+        for binding in &node.data_bindings {
+            envelope.validate_external_test_training_authority(
+                binding.relation_fingerprint.as_deref(),
+                plan.fold_set.as_ref(),
+            )?;
+        }
+    }
     Ok(())
 }
 
@@ -814,10 +826,19 @@ mod tests {
     fn terminal_fixture_with_custom_aggregation(
         custom_aggregation: bool,
     ) -> (ExecutionPlan, ExecutionBundle, ExternalDataPlanEnvelope) {
-        let cv_envelope: ExternalDataPlanEnvelope = serde_json::from_str(include_str!(
+        let mut cv_envelope: ExternalDataPlanEnvelope = serde_json::from_str(include_str!(
             "../tests/fixtures/package/data/coordinator_data_plan_envelope_sample12.json"
         ))
         .expect("fixture envelope parses");
+        // Keep the historical fixture bytes; bind execution to its actual relations.
+        cv_envelope.relation_fingerprint = Some(
+            cv_envelope
+                .coordinator_relations
+                .as_ref()
+                .expect("fixture training relations")
+                .fingerprint()
+                .expect("fixture training relation fingerprint"),
+        );
         assert_eq!(cv_envelope.schema_fingerprint, SCHEMA_FINGERPRINT);
         assert_eq!(cv_envelope.plan_fingerprint, PLAN_FINGERPRINT);
 

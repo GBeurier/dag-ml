@@ -441,8 +441,7 @@ fn validate_unique_ports(node_id: &NodeId, direction: &str, ports: &[PortSpec]) 
     for port in ports {
         if port.name.trim().is_empty() {
             return Err(DagMlError::GraphValidation(format!(
-                "{} port on node `{}` has an empty name",
-                direction, node_id
+                "{direction} port on node `{node_id}` has an empty name"
             )));
         }
         if !seen.insert(port.name.as_str()) {
@@ -565,8 +564,7 @@ fn validate_edge_unit_alignment(
             if let Some(unit) = unit {
                 if unit != contract_unit && !edge.contract.allows_broadcast {
                     return Err(DagMlError::GraphValidation(format!(
-                        "{label} {endpoint} unit {:?} does not match edge unit {:?}",
-                        unit, contract_unit
+                        "{label} {endpoint} unit {unit:?} does not match edge unit {contract_unit:?}"
                     )));
                 }
             }
@@ -577,8 +575,7 @@ fn validate_edge_unit_alignment(
     {
         if source_unit != target_unit && !edge.contract.allows_broadcast {
             return Err(DagMlError::GraphValidation(format!(
-                "{label} joins incompatible unit levels {:?} and {:?}",
-                source_unit, target_unit
+                "{label} joins incompatible unit levels {source_unit:?} and {target_unit:?}"
             )));
         }
     }
@@ -588,8 +585,7 @@ fn validate_edge_unit_alignment(
     {
         if source_target != target_target {
             return Err(DagMlError::GraphValidation(format!(
-                "{label} joins incompatible target levels {:?} and {:?}",
-                source_target, target_target
+                "{label} joins incompatible target levels {source_target:?} and {target_target:?}"
             )));
         }
     }
@@ -601,8 +597,7 @@ fn validate_edge_unit_alignment(
             if let Some(target_level) = target_level {
                 if target_level != contract_target {
                     return Err(DagMlError::GraphValidation(format!(
-                        "{label} {endpoint} target level {:?} does not match edge target_level {:?}",
-                        target_level, contract_target
+                        "{label} {endpoint} target level {target_level:?} does not match edge target_level {contract_target:?}"
                     )));
                 }
             }

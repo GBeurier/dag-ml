@@ -1,0 +1,1978 @@
+{
+  "schema_version": 2,
+  "package_id": "package:probe.models-multi-equal",
+  "template": {
+    "graph": {
+      "id": "minimal-coordinator-smoke",
+      "interface": {
+        "inputs": [
+          {
+            "name": "x",
+            "kind": "data",
+            "representation": "tabular_numeric",
+            "cardinality": "one",
+            "description": "input features"
+          }
+        ],
+        "outputs": [
+          {
+            "name": "prediction",
+            "kind": "prediction",
+            "representation": null,
+            "cardinality": "one",
+            "description": "final prediction"
+          }
+        ]
+      },
+      "nodes": [
+        {
+          "id": "transform:snv",
+          "kind": "transform",
+          "operator": {
+            "type": "StandardNormalVariate"
+          },
+          "params": {},
+          "ports": {
+            "inputs": [
+              {
+                "name": "x",
+                "kind": "data",
+                "representation": "tabular_numeric",
+                "cardinality": "one",
+                "description": ""
+              }
+            ],
+            "outputs": [
+              {
+                "name": "x_out",
+                "kind": "data",
+                "representation": "tabular_numeric",
+                "cardinality": "one",
+                "description": ""
+              }
+            ]
+          },
+          "metadata": {},
+          "seed_label": "snv"
+        },
+        {
+          "id": "model:base",
+          "kind": "model",
+          "operator": {
+            "type": "RandomForestRegressor"
+          },
+          "params": {
+            "n_estimators": 100,
+            "toy_targets": [
+              "protein",
+              "fat"
+            ]
+          },
+          "ports": {
+            "inputs": [
+              {
+                "name": "x",
+                "kind": "data",
+                "representation": "tabular_numeric",
+                "cardinality": "one",
+                "description": ""
+              }
+            ],
+            "outputs": [
+              {
+                "name": "oof",
+                "kind": "prediction",
+                "representation": null,
+                "cardinality": "one",
+                "description": ""
+              }
+            ]
+          },
+          "metadata": {},
+          "seed_label": "base"
+        },
+        {
+          "id": "model:second",
+          "kind": "model",
+          "operator": {
+            "type": "RandomForestRegressor"
+          },
+          "params": {
+            "n_estimators": 100,
+            "toy_target": "protein",
+            "toy_targets": [
+              "protein",
+              "fat"
+            ]
+          },
+          "ports": {
+            "inputs": [
+              {
+                "name": "x",
+                "kind": "data",
+                "representation": "tabular_numeric",
+                "cardinality": "one",
+                "description": ""
+              }
+            ],
+            "outputs": [
+              {
+                "name": "oof",
+                "kind": "prediction",
+                "representation": null,
+                "cardinality": "one",
+                "description": ""
+              }
+            ]
+          },
+          "metadata": {},
+          "seed_label": "second"
+        }
+      ],
+      "edges": [
+        {
+          "source": {
+            "node_id": "transform:snv",
+            "port_name": "x_out"
+          },
+          "target": {
+            "node_id": "model:base",
+            "port_name": "x"
+          },
+          "contract": {
+            "kind": "data",
+            "representation": "tabular_numeric",
+            "requires_oof": false,
+            "requires_fold_alignment": true,
+            "propagates_lineage": true
+          }
+        },
+        {
+          "source": {
+            "node_id": "transform:snv",
+            "port_name": "x_out"
+          },
+          "target": {
+            "node_id": "model:second",
+            "port_name": "x"
+          },
+          "contract": {
+            "kind": "data",
+            "representation": "tabular_numeric",
+            "requires_oof": false,
+            "requires_fold_alignment": true,
+            "propagates_lineage": true
+          }
+        }
+      ],
+      "search_space_fingerprint": null,
+      "metadata": {}
+    },
+    "campaign": {
+      "id": "campaign:oof.generation.smoke",
+      "root_seed": 12345,
+      "leakage_policy": {
+        "split_unit": "sample",
+        "forbid_origin_cross_fold": true,
+        "allow_observation_split_with_shared_target": false,
+        "require_group_ids": false,
+        "unsafe_flags": []
+      },
+      "aggregation_policy": {
+        "aggregation_level": "sample",
+        "method": "mean",
+        "weights": "none",
+        "emit_parallel_metrics": true,
+        "selection_metric_level": "sample",
+        "store_raw_predictions": true,
+        "store_aggregated_predictions": true
+      },
+      "split_invocation": {
+        "id": "split:outer",
+        "controller_id": null,
+        "leakage_policy": {
+          "split_unit": "sample",
+          "forbid_origin_cross_fold": true,
+          "allow_observation_split_with_shared_target": false,
+          "require_group_ids": false,
+          "unsafe_flags": []
+        },
+        "params": {
+          "kind": "kfold",
+          "n_splits": 2,
+          "shuffle": false
+        },
+        "fold_set": {
+          "id": "outer",
+          "sample_ids": [
+            "sample:1",
+            "sample:2",
+            "sample:3",
+            "sample:4"
+          ],
+          "folds": [
+            {
+              "fold_id": "fold:0",
+              "train_sample_ids": [
+                "sample:3",
+                "sample:4"
+              ],
+              "validation_sample_ids": [
+                "sample:1",
+                "sample:2"
+              ],
+              "metadata": {}
+            },
+            {
+              "fold_id": "fold:1",
+              "train_sample_ids": [
+                "sample:1",
+                "sample:2"
+              ],
+              "validation_sample_ids": [
+                "sample:3",
+                "sample:4"
+              ],
+              "metadata": {}
+            }
+          ],
+          "sample_groups": {}
+        }
+      },
+      "generation": {
+        "strategy": "cartesian",
+        "dimensions": [
+          {
+            "name": "model_family",
+            "choices": [
+              {
+                "label": "rf",
+                "value": {
+                  "operator": "RandomForestRegressor"
+                },
+                "param_overrides": [
+                  {
+                    "node_id": "model:base",
+                    "params": {
+                      "n_estimators": 10
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "name": "preprocessing",
+            "choices": [
+              {
+                "label": "snv",
+                "value": {
+                  "operator": "StandardNormalVariate"
+                }
+              }
+            ]
+          }
+        ],
+        "max_variants": 8
+      },
+      "shape_plans": {
+        "model:base": {
+          "node_id": "model:base",
+          "input_granularity": "sample",
+          "target_granularity": "sample",
+          "fit_rows": "fold_train",
+          "predict_rows": "fold_validation",
+          "feature_namespace": "model_input",
+          "feature_schema_fingerprint": null,
+          "target_space": "raw",
+          "aggregation_policy": {
+            "aggregation_level": "sample",
+            "method": "mean",
+            "weights": "none",
+            "emit_parallel_metrics": true,
+            "selection_metric_level": "sample",
+            "store_raw_predictions": true,
+            "store_aggregated_predictions": true
+          },
+          "augmentation_policy": {
+            "sample_scope": "train_only",
+            "feature_scope": "train_only",
+            "require_origin_id": true,
+            "inherit_group": true,
+            "inherit_target": true
+          },
+          "selection_policy": {
+            "scope": "none",
+            "store_masks": true,
+            "allow_schema_mismatch_on_join": false
+          }
+        },
+        "model:second": {
+          "node_id": "model:second",
+          "input_granularity": "sample",
+          "target_granularity": "sample",
+          "fit_rows": "fold_train",
+          "predict_rows": "fold_validation",
+          "feature_namespace": "model_input",
+          "feature_schema_fingerprint": null,
+          "target_space": "raw",
+          "aggregation_policy": {
+            "aggregation_level": "sample",
+            "method": "mean",
+            "weights": "none",
+            "emit_parallel_metrics": true,
+            "selection_metric_level": "sample",
+            "store_raw_predictions": true,
+            "store_aggregated_predictions": true
+          },
+          "augmentation_policy": {
+            "sample_scope": "train_only",
+            "feature_scope": "train_only",
+            "require_origin_id": true,
+            "inherit_group": true,
+            "inherit_target": true
+          },
+          "selection_policy": {
+            "scope": "none",
+            "store_masks": true,
+            "allow_schema_mismatch_on_join": false
+          }
+        },
+        "transform:snv": {
+          "node_id": "transform:snv",
+          "input_granularity": "sample",
+          "target_granularity": "sample",
+          "fit_rows": "fold_train",
+          "predict_rows": "fold_validation",
+          "feature_namespace": "snv",
+          "feature_schema_fingerprint": null,
+          "target_space": "raw",
+          "aggregation_policy": {
+            "aggregation_level": "sample",
+            "method": "mean",
+            "weights": "none",
+            "emit_parallel_metrics": true,
+            "selection_metric_level": "sample",
+            "store_raw_predictions": true,
+            "store_aggregated_predictions": true
+          },
+          "augmentation_policy": {
+            "sample_scope": "train_only",
+            "feature_scope": "train_only",
+            "require_origin_id": true,
+            "inherit_group": true,
+            "inherit_target": true
+          },
+          "selection_policy": {
+            "scope": "none",
+            "store_masks": true,
+            "allow_schema_mismatch_on_join": false
+          }
+        }
+      },
+      "data_bindings": {
+        "transform:snv": [
+          {
+            "node_id": "transform:snv",
+            "input_name": "x",
+            "request_id": "nir-to-tabular",
+            "schema_fingerprint": "f97b37872fa22134b508f98fd8e207e5b776b52594fb8f6f5c3e15bee212246b",
+            "plan_fingerprint": "7c5431d85574b3f337022fa5d25971d5b5cf445b90331b49938f573ff6901e4d",
+            "relation_fingerprint": "d69346fd7dc5d7f13eca13da6ebfac27d0b17f8af2dea5f2278f6f0b9591f760",
+            "output_representation": "tabular_numeric",
+            "feature_set_id": "x",
+            "source_ids": [
+              "nir"
+            ],
+            "require_relations": true,
+            "view_policy": {
+              "fit_partition": "fold_train",
+              "predict_partition": "fold_validation",
+              "include_augmented_train": true,
+              "include_augmented_validation": false,
+              "include_excluded": false,
+              "require_sample_ids": true
+            },
+            "metadata": {}
+          }
+        ]
+      },
+      "metadata": {}
+    },
+    "controller_manifests": {
+      "controller:model.mock": {
+        "controller_id": "controller:model.mock",
+        "controller_version": "0.1.0",
+        "operator_kind": "model",
+        "priority": 0,
+        "supported_phases": [
+          "FIT_CV",
+          "REFIT",
+          "PREDICT"
+        ],
+        "input_ports": [
+          {
+            "name": "x",
+            "kind": "data",
+            "representation": "tabular_numeric",
+            "cardinality": "one",
+            "description": ""
+          }
+        ],
+        "output_ports": [
+          {
+            "name": "oof",
+            "kind": "prediction",
+            "representation": null,
+            "cardinality": "one",
+            "description": ""
+          }
+        ],
+        "data_requirements": null,
+        "capabilities": [
+          "deterministic",
+          "thread_safe",
+          "process_safe",
+          "emits_predictions",
+          "consumes_oof_predictions",
+          "emits_artifacts",
+          "stateful",
+          "uses_core_rng"
+        ],
+        "fit_scope": "fold_train",
+        "rng_policy": "uses_core_seed",
+        "artifact_policy": "serializable"
+      },
+      "controller:transform.mock": {
+        "controller_id": "controller:transform.mock",
+        "controller_version": "0.1.0",
+        "operator_kind": "transform",
+        "priority": 0,
+        "supported_phases": [
+          "FIT_CV",
+          "REFIT",
+          "PREDICT"
+        ],
+        "input_ports": [
+          {
+            "name": "x",
+            "kind": "data",
+            "representation": "tabular_numeric",
+            "cardinality": "one",
+            "description": ""
+          }
+        ],
+        "output_ports": [
+          {
+            "name": "x_out",
+            "kind": "data",
+            "representation": "tabular_numeric",
+            "cardinality": "one",
+            "description": ""
+          }
+        ],
+        "data_requirements": null,
+        "capabilities": [
+          "deterministic",
+          "thread_safe",
+          "process_safe",
+          "uses_core_rng"
+        ],
+        "fit_scope": "fold_train",
+        "rng_policy": "uses_core_seed",
+        "artifact_policy": "serializable"
+      }
+    },
+    "template_fingerprint": "f002a065406f5da79bdb3f243cd4ab970e0d04e023c3ba15a46c4fa100310c97"
+  },
+  "training_request_fingerprint": "ba6c981c9ab11d7c99bd59bc16588f63eddcc7f865bf257d55fca4b418af7b44",
+  "training_outcome": {
+    "outcome_id": "outcome:probe.models-multi-equal",
+    "outcome_fingerprint": "27b9bbb868e130c65a8c0126d6821aa15cb9e2649eca306d30b637edd5245015",
+    "training_request_fingerprint": "ba6c981c9ab11d7c99bd59bc16588f63eddcc7f865bf257d55fca4b418af7b44",
+    "effective_plan_fingerprint": "ac900553c477dd5fba118428603f14b62738c1c2296b4910a7db1c1d358d6f17",
+    "execution_bundle_id": "bundle:probe.models-multi-equal",
+    "execution_bundle_fingerprint": "fbc5ca4afca12d5521637149c84ddf0af7ca1c33017686956cf062471fdef928",
+    "output_binding_fingerprints": [
+      "883ca2d7a7b7f2c0bc866d2380b940a5bf57e7b0d2002cbc3997efdee290de83",
+      "da4d2548c35b838451e183fde1bac57a0f6cfb74283a51a931398890807a7a8e"
+    ],
+    "training_influence_fingerprint": "81543cf4b45b06fdab4e537b93b422977be5786d5937e56ecb096803afbd9103",
+    "data_identities_fingerprint": "9aadb1856dfdec9dc733c093829651280bcb6df97ad33d3813cebdad60d3a278"
+  },
+  "effective_plan": {
+    "id": "plan:training.package.synthetic",
+    "graph_plan": {
+      "graph": {
+        "id": "minimal-coordinator-smoke",
+        "interface": {
+          "inputs": [
+            {
+              "name": "x",
+              "kind": "data",
+              "representation": "tabular_numeric",
+              "cardinality": "one",
+              "description": "input features"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "prediction",
+              "kind": "prediction",
+              "representation": null,
+              "cardinality": "one",
+              "description": "final prediction"
+            }
+          ]
+        },
+        "nodes": [
+          {
+            "id": "transform:snv",
+            "kind": "transform",
+            "operator": {
+              "type": "StandardNormalVariate"
+            },
+            "params": {},
+            "ports": {
+              "inputs": [
+                {
+                  "name": "x",
+                  "kind": "data",
+                  "representation": "tabular_numeric",
+                  "cardinality": "one",
+                  "description": ""
+                }
+              ],
+              "outputs": [
+                {
+                  "name": "x_out",
+                  "kind": "data",
+                  "representation": "tabular_numeric",
+                  "cardinality": "one",
+                  "description": ""
+                }
+              ]
+            },
+            "metadata": {},
+            "seed_label": "snv"
+          },
+          {
+            "id": "model:base",
+            "kind": "model",
+            "operator": {
+              "type": "RandomForestRegressor"
+            },
+            "params": {
+              "n_estimators": 100,
+              "toy_targets": [
+                "protein",
+                "fat"
+              ]
+            },
+            "ports": {
+              "inputs": [
+                {
+                  "name": "x",
+                  "kind": "data",
+                  "representation": "tabular_numeric",
+                  "cardinality": "one",
+                  "description": ""
+                }
+              ],
+              "outputs": [
+                {
+                  "name": "oof",
+                  "kind": "prediction",
+                  "representation": null,
+                  "cardinality": "one",
+                  "description": ""
+                }
+              ]
+            },
+            "metadata": {},
+            "seed_label": "base"
+          },
+          {
+            "id": "model:second",
+            "kind": "model",
+            "operator": {
+              "type": "RandomForestRegressor"
+            },
+            "params": {
+              "n_estimators": 100,
+              "toy_target": "protein",
+              "toy_targets": [
+                "protein",
+                "fat"
+              ]
+            },
+            "ports": {
+              "inputs": [
+                {
+                  "name": "x",
+                  "kind": "data",
+                  "representation": "tabular_numeric",
+                  "cardinality": "one",
+                  "description": ""
+                }
+              ],
+              "outputs": [
+                {
+                  "name": "oof",
+                  "kind": "prediction",
+                  "representation": null,
+                  "cardinality": "one",
+                  "description": ""
+                }
+              ]
+            },
+            "metadata": {},
+            "seed_label": "second"
+          }
+        ],
+        "edges": [
+          {
+            "source": {
+              "node_id": "transform:snv",
+              "port_name": "x_out"
+            },
+            "target": {
+              "node_id": "model:base",
+              "port_name": "x"
+            },
+            "contract": {
+              "kind": "data",
+              "representation": "tabular_numeric",
+              "requires_oof": false,
+              "requires_fold_alignment": true,
+              "propagates_lineage": true
+            }
+          },
+          {
+            "source": {
+              "node_id": "transform:snv",
+              "port_name": "x_out"
+            },
+            "target": {
+              "node_id": "model:second",
+              "port_name": "x"
+            },
+            "contract": {
+              "kind": "data",
+              "representation": "tabular_numeric",
+              "requires_oof": false,
+              "requires_fold_alignment": true,
+              "propagates_lineage": true
+            }
+          }
+        ],
+        "search_space_fingerprint": null,
+        "metadata": {}
+      },
+      "topological_order": [
+        "transform:snv",
+        "model:base",
+        "model:second"
+      ],
+      "parallel_levels": [
+        [
+          "transform:snv"
+        ],
+        [
+          "model:base",
+          "model:second"
+        ]
+      ]
+    },
+    "campaign": {
+      "id": "campaign:oof.generation.smoke",
+      "root_seed": 12345,
+      "leakage_policy": {
+        "split_unit": "sample",
+        "forbid_origin_cross_fold": true,
+        "allow_observation_split_with_shared_target": false,
+        "require_group_ids": false,
+        "unsafe_flags": []
+      },
+      "aggregation_policy": {
+        "aggregation_level": "sample",
+        "method": "mean",
+        "weights": "none",
+        "emit_parallel_metrics": true,
+        "selection_metric_level": "sample",
+        "store_raw_predictions": true,
+        "store_aggregated_predictions": true
+      },
+      "split_invocation": {
+        "id": "split:outer",
+        "controller_id": null,
+        "leakage_policy": {
+          "split_unit": "sample",
+          "forbid_origin_cross_fold": true,
+          "allow_observation_split_with_shared_target": false,
+          "require_group_ids": false,
+          "unsafe_flags": []
+        },
+        "params": {
+          "kind": "kfold",
+          "n_splits": 2,
+          "shuffle": false
+        },
+        "fold_set": {
+          "id": "outer",
+          "sample_ids": [
+            "sample:1",
+            "sample:2",
+            "sample:3",
+            "sample:4"
+          ],
+          "folds": [
+            {
+              "fold_id": "fold:0",
+              "train_sample_ids": [
+                "sample:3",
+                "sample:4"
+              ],
+              "validation_sample_ids": [
+                "sample:1",
+                "sample:2"
+              ],
+              "metadata": {}
+            },
+            {
+              "fold_id": "fold:1",
+              "train_sample_ids": [
+                "sample:1",
+                "sample:2"
+              ],
+              "validation_sample_ids": [
+                "sample:3",
+                "sample:4"
+              ],
+              "metadata": {}
+            }
+          ],
+          "sample_groups": {}
+        }
+      },
+      "generation": {
+        "strategy": "cartesian",
+        "dimensions": [
+          {
+            "name": "model_family",
+            "choices": [
+              {
+                "label": "rf",
+                "value": {
+                  "operator": "RandomForestRegressor"
+                },
+                "param_overrides": [
+                  {
+                    "node_id": "model:base",
+                    "params": {
+                      "n_estimators": 10
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "name": "preprocessing",
+            "choices": [
+              {
+                "label": "snv",
+                "value": {
+                  "operator": "StandardNormalVariate"
+                }
+              }
+            ]
+          }
+        ],
+        "max_variants": 8
+      },
+      "shape_plans": {
+        "model:base": {
+          "node_id": "model:base",
+          "input_granularity": "sample",
+          "target_granularity": "sample",
+          "fit_rows": "fold_train",
+          "predict_rows": "fold_validation",
+          "feature_namespace": "model_input",
+          "feature_schema_fingerprint": null,
+          "target_space": "raw",
+          "aggregation_policy": {
+            "aggregation_level": "sample",
+            "method": "mean",
+            "weights": "none",
+            "emit_parallel_metrics": true,
+            "selection_metric_level": "sample",
+            "store_raw_predictions": true,
+            "store_aggregated_predictions": true
+          },
+          "augmentation_policy": {
+            "sample_scope": "train_only",
+            "feature_scope": "train_only",
+            "require_origin_id": true,
+            "inherit_group": true,
+            "inherit_target": true
+          },
+          "selection_policy": {
+            "scope": "none",
+            "store_masks": true,
+            "allow_schema_mismatch_on_join": false
+          }
+        },
+        "model:second": {
+          "node_id": "model:second",
+          "input_granularity": "sample",
+          "target_granularity": "sample",
+          "fit_rows": "fold_train",
+          "predict_rows": "fold_validation",
+          "feature_namespace": "model_input",
+          "feature_schema_fingerprint": null,
+          "target_space": "raw",
+          "aggregation_policy": {
+            "aggregation_level": "sample",
+            "method": "mean",
+            "weights": "none",
+            "emit_parallel_metrics": true,
+            "selection_metric_level": "sample",
+            "store_raw_predictions": true,
+            "store_aggregated_predictions": true
+          },
+          "augmentation_policy": {
+            "sample_scope": "train_only",
+            "feature_scope": "train_only",
+            "require_origin_id": true,
+            "inherit_group": true,
+            "inherit_target": true
+          },
+          "selection_policy": {
+            "scope": "none",
+            "store_masks": true,
+            "allow_schema_mismatch_on_join": false
+          }
+        },
+        "transform:snv": {
+          "node_id": "transform:snv",
+          "input_granularity": "sample",
+          "target_granularity": "sample",
+          "fit_rows": "fold_train",
+          "predict_rows": "fold_validation",
+          "feature_namespace": "snv",
+          "feature_schema_fingerprint": null,
+          "target_space": "raw",
+          "aggregation_policy": {
+            "aggregation_level": "sample",
+            "method": "mean",
+            "weights": "none",
+            "emit_parallel_metrics": true,
+            "selection_metric_level": "sample",
+            "store_raw_predictions": true,
+            "store_aggregated_predictions": true
+          },
+          "augmentation_policy": {
+            "sample_scope": "train_only",
+            "feature_scope": "train_only",
+            "require_origin_id": true,
+            "inherit_group": true,
+            "inherit_target": true
+          },
+          "selection_policy": {
+            "scope": "none",
+            "store_masks": true,
+            "allow_schema_mismatch_on_join": false
+          }
+        }
+      },
+      "data_bindings": {
+        "transform:snv": [
+          {
+            "node_id": "transform:snv",
+            "input_name": "x",
+            "request_id": "nir-to-tabular",
+            "schema_fingerprint": "f97b37872fa22134b508f98fd8e207e5b776b52594fb8f6f5c3e15bee212246b",
+            "plan_fingerprint": "7c5431d85574b3f337022fa5d25971d5b5cf445b90331b49938f573ff6901e4d",
+            "relation_fingerprint": "d69346fd7dc5d7f13eca13da6ebfac27d0b17f8af2dea5f2278f6f0b9591f760",
+            "output_representation": "tabular_numeric",
+            "feature_set_id": "x",
+            "source_ids": [
+              "nir"
+            ],
+            "require_relations": true,
+            "view_policy": {
+              "fit_partition": "fold_train",
+              "predict_partition": "fold_validation",
+              "include_augmented_train": true,
+              "include_augmented_validation": false,
+              "include_excluded": false,
+              "require_sample_ids": true
+            },
+            "metadata": {}
+          }
+        ]
+      },
+      "metadata": {}
+    },
+    "node_plans": {
+      "model:base": {
+        "node_id": "model:base",
+        "kind": "model",
+        "controller_id": "controller:model.mock",
+        "controller_version": "0.1.0",
+        "supported_phases": [
+          "FIT_CV",
+          "REFIT",
+          "PREDICT"
+        ],
+        "controller_capabilities": [
+          "deterministic",
+          "thread_safe",
+          "process_safe",
+          "emits_predictions",
+          "consumes_oof_predictions",
+          "emits_artifacts",
+          "stateful",
+          "uses_core_rng"
+        ],
+        "fit_scope": "fold_train",
+        "rng_policy": "uses_core_seed",
+        "artifact_policy": "serializable",
+        "input_nodes": [
+          "transform:snv"
+        ],
+        "output_nodes": [],
+        "shape_plan": {
+          "node_id": "model:base",
+          "input_granularity": "sample",
+          "target_granularity": "sample",
+          "fit_rows": "fold_train",
+          "predict_rows": "fold_validation",
+          "feature_namespace": "model_input",
+          "feature_schema_fingerprint": null,
+          "target_space": "raw",
+          "aggregation_policy": {
+            "aggregation_level": "sample",
+            "method": "mean",
+            "weights": "none",
+            "emit_parallel_metrics": true,
+            "selection_metric_level": "sample",
+            "store_raw_predictions": true,
+            "store_aggregated_predictions": true
+          },
+          "augmentation_policy": {
+            "sample_scope": "train_only",
+            "feature_scope": "train_only",
+            "require_origin_id": true,
+            "inherit_group": true,
+            "inherit_target": true
+          },
+          "selection_policy": {
+            "scope": "none",
+            "store_masks": true,
+            "allow_schema_mismatch_on_join": false
+          }
+        },
+        "data_bindings": [],
+        "params": {
+          "n_estimators": 10,
+          "toy_targets": [
+            "protein",
+            "fat"
+          ]
+        },
+        "params_fingerprint": "bec0c9e37869e9a61d1222823764b60e961f21a2913c3b02db23b33ff7c68f80"
+      },
+      "model:second": {
+        "node_id": "model:second",
+        "kind": "model",
+        "controller_id": "controller:model.mock",
+        "controller_version": "0.1.0",
+        "supported_phases": [
+          "FIT_CV",
+          "REFIT",
+          "PREDICT"
+        ],
+        "controller_capabilities": [
+          "deterministic",
+          "thread_safe",
+          "process_safe",
+          "emits_predictions",
+          "consumes_oof_predictions",
+          "emits_artifacts",
+          "stateful",
+          "uses_core_rng"
+        ],
+        "fit_scope": "fold_train",
+        "rng_policy": "uses_core_seed",
+        "artifact_policy": "serializable",
+        "input_nodes": [
+          "transform:snv"
+        ],
+        "output_nodes": [],
+        "shape_plan": {
+          "node_id": "model:second",
+          "input_granularity": "sample",
+          "target_granularity": "sample",
+          "fit_rows": "fold_train",
+          "predict_rows": "fold_validation",
+          "feature_namespace": "model_input",
+          "feature_schema_fingerprint": null,
+          "target_space": "raw",
+          "aggregation_policy": {
+            "aggregation_level": "sample",
+            "method": "mean",
+            "weights": "none",
+            "emit_parallel_metrics": true,
+            "selection_metric_level": "sample",
+            "store_raw_predictions": true,
+            "store_aggregated_predictions": true
+          },
+          "augmentation_policy": {
+            "sample_scope": "train_only",
+            "feature_scope": "train_only",
+            "require_origin_id": true,
+            "inherit_group": true,
+            "inherit_target": true
+          },
+          "selection_policy": {
+            "scope": "none",
+            "store_masks": true,
+            "allow_schema_mismatch_on_join": false
+          }
+        },
+        "data_bindings": [],
+        "params": {
+          "n_estimators": 100,
+          "toy_target": "protein",
+          "toy_targets": [
+            "protein",
+            "fat"
+          ]
+        },
+        "params_fingerprint": "f5b0aa663dec5ce897a131fb3188ab18634389a334e17f315af56c7a81d6594c"
+      },
+      "transform:snv": {
+        "node_id": "transform:snv",
+        "kind": "transform",
+        "controller_id": "controller:transform.mock",
+        "controller_version": "0.1.0",
+        "supported_phases": [
+          "FIT_CV",
+          "REFIT",
+          "PREDICT"
+        ],
+        "controller_capabilities": [
+          "deterministic",
+          "thread_safe",
+          "process_safe",
+          "uses_core_rng"
+        ],
+        "fit_scope": "fold_train",
+        "rng_policy": "uses_core_seed",
+        "artifact_policy": "serializable",
+        "input_nodes": [],
+        "output_nodes": [
+          "model:base",
+          "model:second"
+        ],
+        "shape_plan": {
+          "node_id": "transform:snv",
+          "input_granularity": "sample",
+          "target_granularity": "sample",
+          "fit_rows": "fold_train",
+          "predict_rows": "fold_validation",
+          "feature_namespace": "snv",
+          "feature_schema_fingerprint": null,
+          "target_space": "raw",
+          "aggregation_policy": {
+            "aggregation_level": "sample",
+            "method": "mean",
+            "weights": "none",
+            "emit_parallel_metrics": true,
+            "selection_metric_level": "sample",
+            "store_raw_predictions": true,
+            "store_aggregated_predictions": true
+          },
+          "augmentation_policy": {
+            "sample_scope": "train_only",
+            "feature_scope": "train_only",
+            "require_origin_id": true,
+            "inherit_group": true,
+            "inherit_target": true
+          },
+          "selection_policy": {
+            "scope": "none",
+            "store_masks": true,
+            "allow_schema_mismatch_on_join": false
+          }
+        },
+        "data_bindings": [
+          {
+            "node_id": "transform:snv",
+            "input_name": "x",
+            "request_id": "nir-to-tabular",
+            "schema_fingerprint": "f97b37872fa22134b508f98fd8e207e5b776b52594fb8f6f5c3e15bee212246b",
+            "plan_fingerprint": "7c5431d85574b3f337022fa5d25971d5b5cf445b90331b49938f573ff6901e4d",
+            "relation_fingerprint": "d69346fd7dc5d7f13eca13da6ebfac27d0b17f8af2dea5f2278f6f0b9591f760",
+            "output_representation": "tabular_numeric",
+            "feature_set_id": "x",
+            "source_ids": [
+              "nir"
+            ],
+            "require_relations": true,
+            "view_policy": {
+              "fit_partition": "fold_train",
+              "predict_partition": "fold_validation",
+              "include_augmented_train": true,
+              "include_augmented_validation": false,
+              "include_excluded": false,
+              "require_sample_ids": true
+            },
+            "metadata": {}
+          }
+        ],
+        "params_fingerprint": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      }
+    },
+    "controller_manifests": {
+      "controller:model.mock": {
+        "controller_id": "controller:model.mock",
+        "controller_version": "0.1.0",
+        "operator_kind": "model",
+        "priority": 0,
+        "supported_phases": [
+          "FIT_CV",
+          "REFIT",
+          "PREDICT"
+        ],
+        "input_ports": [
+          {
+            "name": "x",
+            "kind": "data",
+            "representation": "tabular_numeric",
+            "cardinality": "one",
+            "description": ""
+          }
+        ],
+        "output_ports": [
+          {
+            "name": "oof",
+            "kind": "prediction",
+            "representation": null,
+            "cardinality": "one",
+            "description": ""
+          }
+        ],
+        "data_requirements": null,
+        "capabilities": [
+          "deterministic",
+          "thread_safe",
+          "process_safe",
+          "emits_predictions",
+          "consumes_oof_predictions",
+          "emits_artifacts",
+          "stateful",
+          "uses_core_rng"
+        ],
+        "fit_scope": "fold_train",
+        "rng_policy": "uses_core_seed",
+        "artifact_policy": "serializable"
+      },
+      "controller:transform.mock": {
+        "controller_id": "controller:transform.mock",
+        "controller_version": "0.1.0",
+        "operator_kind": "transform",
+        "priority": 0,
+        "supported_phases": [
+          "FIT_CV",
+          "REFIT",
+          "PREDICT"
+        ],
+        "input_ports": [
+          {
+            "name": "x",
+            "kind": "data",
+            "representation": "tabular_numeric",
+            "cardinality": "one",
+            "description": ""
+          }
+        ],
+        "output_ports": [
+          {
+            "name": "x_out",
+            "kind": "data",
+            "representation": "tabular_numeric",
+            "cardinality": "one",
+            "description": ""
+          }
+        ],
+        "data_requirements": null,
+        "capabilities": [
+          "deterministic",
+          "thread_safe",
+          "process_safe",
+          "uses_core_rng"
+        ],
+        "fit_scope": "fold_train",
+        "rng_policy": "uses_core_seed",
+        "artifact_policy": "serializable"
+      }
+    },
+    "variants": [
+      {
+        "variant_id": "variant:af810523e92fd31b",
+        "choices": {
+          "model_family": {
+            "label": "rf",
+            "value": {
+              "operator": "RandomForestRegressor"
+            },
+            "param_overrides": [
+              {
+                "node_id": "model:base",
+                "params": {
+                  "n_estimators": 10
+                }
+              }
+            ]
+          },
+          "preprocessing": {
+            "label": "snv",
+            "value": {
+              "operator": "StandardNormalVariate"
+            }
+          }
+        },
+        "fingerprint": "af810523e92fd31b644cdf1841bdde752a282997e86f215e32c98b75357e14fa",
+        "seed": 6041973065072261420
+      }
+    ],
+    "fold_set": {
+      "id": "outer",
+      "sample_ids": [
+        "sample:1",
+        "sample:2",
+        "sample:3",
+        "sample:4"
+      ],
+      "folds": [
+        {
+          "fold_id": "fold:0",
+          "train_sample_ids": [
+            "sample:3",
+            "sample:4"
+          ],
+          "validation_sample_ids": [
+            "sample:1",
+            "sample:2"
+          ],
+          "metadata": {}
+        },
+        {
+          "fold_id": "fold:1",
+          "train_sample_ids": [
+            "sample:1",
+            "sample:2"
+          ],
+          "validation_sample_ids": [
+            "sample:3",
+            "sample:4"
+          ],
+          "metadata": {}
+        }
+      ],
+      "sample_groups": {}
+    },
+    "graph_fingerprint": "98d2d904cfc2d34a7a03b6862b4e2bfc0fdef6b32fd9dfccc549ad56eb9687ec",
+    "campaign_fingerprint": "9074f6d14d71ccb9c7e090a32a4ea4518af35c7955a122a8957d3547c300e906",
+    "controller_fingerprint": "256a970fed335d054bb70473c28706f29500c0306c93d2917511e5e58075a3fb"
+  },
+  "execution_bundle": {
+    "bundle_id": "bundle:probe.models-multi-equal",
+    "schema_version": 2,
+    "plan_id": "plan:training.package.synthetic",
+    "graph_fingerprint": "98d2d904cfc2d34a7a03b6862b4e2bfc0fdef6b32fd9dfccc549ad56eb9687ec",
+    "campaign_fingerprint": "9074f6d14d71ccb9c7e090a32a4ea4518af35c7955a122a8957d3547c300e906",
+    "controller_fingerprint": "256a970fed335d054bb70473c28706f29500c0306c93d2917511e5e58075a3fb",
+    "selected_variant_id": "variant:af810523e92fd31b",
+    "selections": {
+      "selection:rmse": {
+        "policy_id": "selection:rmse",
+        "selected_candidate_id": "variant:af810523e92fd31b",
+        "metric_name": "rmse",
+        "objective": "minimize",
+        "metric_level": "sample",
+        "evaluation_scope": "oof",
+        "selected_score": 0.0,
+        "ranked_candidates": [
+          {
+            "candidate_id": "variant:af810523e92fd31b",
+            "score": 0.0,
+            "rank": 1
+          }
+        ]
+      }
+    },
+    "refit_artifacts": [
+      {
+        "node_id": "model:base",
+        "controller_id": "controller:model.mock",
+        "artifact": {
+          "id": "artifact:model:base:refit",
+          "kind": "test_model",
+          "controller_id": "controller:model.mock",
+          "backend": "raw",
+          "uri": "artifacts/toy-state.bin",
+          "content_fingerprint": "91c01023e3d65644c0013294019ec021764720c1a53a674d2c747d8b397bf397",
+          "size_bytes": 30
+        },
+        "params_fingerprint": "bec0c9e37869e9a61d1222823764b60e961f21a2913c3b02db23b33ff7c68f80",
+        "data_requirement_keys": [],
+        "prediction_requirement_keys": []
+      },
+      {
+        "node_id": "model:second",
+        "controller_id": "controller:model.mock",
+        "artifact": {
+          "id": "artifact:model:second:refit",
+          "kind": "test_model",
+          "controller_id": "controller:model.mock",
+          "backend": "raw",
+          "uri": "artifacts/toy-state.bin",
+          "content_fingerprint": "91c01023e3d65644c0013294019ec021764720c1a53a674d2c747d8b397bf397",
+          "size_bytes": 30
+        },
+        "params_fingerprint": "f5b0aa663dec5ce897a131fb3188ab18634389a334e17f315af56c7a81d6594c",
+        "data_requirement_keys": [],
+        "prediction_requirement_keys": []
+      }
+    ],
+    "prediction_requirements": [],
+    "prediction_caches": [],
+    "raw_artifact_payloads": {
+      "artifact:model:base:refit": [
+        115,
+        121,
+        110,
+        116,
+        104,
+        101,
+        116,
+        105,
+        99,
+        45,
+        104,
+        111,
+        115,
+        116,
+        45,
+        102,
+        105,
+        116,
+        116,
+        101,
+        100,
+        45,
+        115,
+        116,
+        97,
+        116,
+        101,
+        45,
+        118,
+        49
+      ],
+      "artifact:model:second:refit": [
+        115,
+        121,
+        110,
+        116,
+        104,
+        101,
+        116,
+        105,
+        99,
+        45,
+        104,
+        111,
+        115,
+        116,
+        45,
+        102,
+        105,
+        116,
+        116,
+        101,
+        100,
+        45,
+        115,
+        116,
+        97,
+        116,
+        101,
+        45,
+        118,
+        49
+      ]
+    },
+    "scores": {
+      "schema_version": 2,
+      "plan_id": "plan:training.package.synthetic",
+      "selection_metric": "rmse",
+      "reports": [
+        {
+          "prediction_id": "prediction:model:base:FIT_CV:fold:0",
+          "producer_node": "model:base",
+          "producer_port": "oof",
+          "variant_id": "variant:af810523e92fd31b",
+          "partition": "validation",
+          "fold_id": "fold:0",
+          "level": "sample",
+          "row_count": 2,
+          "target_width": 2,
+          "target_names": [
+            "protein",
+            "fat"
+          ],
+          "metrics": {
+            "accuracy": 1.0,
+            "accuracy:fat": 1.0,
+            "accuracy:protein": 1.0,
+            "balanced_accuracy": 1.0,
+            "balanced_accuracy:fat": 1.0,
+            "balanced_accuracy:protein": 1.0,
+            "f1": 1.0,
+            "f1:fat": 1.0,
+            "f1:protein": 1.0,
+            "mae": 0.0,
+            "mae:fat": 0.0,
+            "mae:protein": 0.0,
+            "mse": 0.0,
+            "mse:fat": 0.0,
+            "mse:protein": 0.0,
+            "r2": 1.0,
+            "r2:fat": 1.0,
+            "r2:protein": 1.0,
+            "rmse": 0.0,
+            "rmse:fat": 0.0,
+            "rmse:protein": 0.0
+          }
+        },
+        {
+          "prediction_id": "prediction:model:second:FIT_CV:fold:0",
+          "producer_node": "model:second",
+          "producer_port": "oof",
+          "variant_id": "variant:af810523e92fd31b",
+          "partition": "validation",
+          "fold_id": "fold:0",
+          "level": "sample",
+          "row_count": 2,
+          "target_width": 2,
+          "target_names": [
+            "protein",
+            "fat"
+          ],
+          "metrics": {
+            "accuracy": 1.0,
+            "accuracy:fat": 1.0,
+            "accuracy:protein": 1.0,
+            "balanced_accuracy": 1.0,
+            "balanced_accuracy:fat": 1.0,
+            "balanced_accuracy:protein": 1.0,
+            "f1": 1.0,
+            "f1:fat": 1.0,
+            "f1:protein": 1.0,
+            "mae": 0.0,
+            "mae:fat": 0.0,
+            "mae:protein": 0.0,
+            "mse": 0.0,
+            "mse:fat": 0.0,
+            "mse:protein": 0.0,
+            "r2": 1.0,
+            "r2:fat": 1.0,
+            "r2:protein": 1.0,
+            "rmse": 0.0,
+            "rmse:fat": 0.0,
+            "rmse:protein": 0.0
+          }
+        },
+        {
+          "prediction_id": "prediction:model:base:FIT_CV:fold:1",
+          "producer_node": "model:base",
+          "producer_port": "oof",
+          "variant_id": "variant:af810523e92fd31b",
+          "partition": "validation",
+          "fold_id": "fold:1",
+          "level": "sample",
+          "row_count": 2,
+          "target_width": 2,
+          "target_names": [
+            "protein",
+            "fat"
+          ],
+          "metrics": {
+            "accuracy": 1.0,
+            "accuracy:fat": 1.0,
+            "accuracy:protein": 1.0,
+            "balanced_accuracy": 1.0,
+            "balanced_accuracy:fat": 1.0,
+            "balanced_accuracy:protein": 1.0,
+            "f1": 1.0,
+            "f1:fat": 1.0,
+            "f1:protein": 1.0,
+            "mae": 0.0,
+            "mae:fat": 0.0,
+            "mae:protein": 0.0,
+            "mse": 0.0,
+            "mse:fat": 0.0,
+            "mse:protein": 0.0,
+            "r2": 1.0,
+            "r2:fat": 1.0,
+            "r2:protein": 1.0,
+            "rmse": 0.0,
+            "rmse:fat": 0.0,
+            "rmse:protein": 0.0
+          }
+        },
+        {
+          "prediction_id": "prediction:model:second:FIT_CV:fold:1",
+          "producer_node": "model:second",
+          "producer_port": "oof",
+          "variant_id": "variant:af810523e92fd31b",
+          "partition": "validation",
+          "fold_id": "fold:1",
+          "level": "sample",
+          "row_count": 2,
+          "target_width": 2,
+          "target_names": [
+            "protein",
+            "fat"
+          ],
+          "metrics": {
+            "accuracy": 1.0,
+            "accuracy:fat": 1.0,
+            "accuracy:protein": 1.0,
+            "balanced_accuracy": 1.0,
+            "balanced_accuracy:fat": 1.0,
+            "balanced_accuracy:protein": 1.0,
+            "f1": 1.0,
+            "f1:fat": 1.0,
+            "f1:protein": 1.0,
+            "mae": 0.0,
+            "mae:fat": 0.0,
+            "mae:protein": 0.0,
+            "mse": 0.0,
+            "mse:fat": 0.0,
+            "mse:protein": 0.0,
+            "r2": 1.0,
+            "r2:fat": 1.0,
+            "r2:protein": 1.0,
+            "rmse": 0.0,
+            "rmse:fat": 0.0,
+            "rmse:protein": 0.0
+          }
+        },
+        {
+          "prediction_id": null,
+          "producer_node": "model:base",
+          "producer_port": "oof",
+          "variant_id": "variant:af810523e92fd31b",
+          "partition": "validation",
+          "fold_id": "avg",
+          "level": "sample",
+          "row_count": 4,
+          "target_width": 2,
+          "target_names": [
+            "protein",
+            "fat"
+          ],
+          "metrics": {
+            "accuracy": 1.0,
+            "accuracy:fat": 1.0,
+            "accuracy:protein": 1.0,
+            "balanced_accuracy": 1.0,
+            "balanced_accuracy:fat": 1.0,
+            "balanced_accuracy:protein": 1.0,
+            "f1": 1.0,
+            "f1:fat": 1.0,
+            "f1:protein": 1.0,
+            "mae": 0.0,
+            "mae:fat": 0.0,
+            "mae:protein": 0.0,
+            "mse": 0.0,
+            "mse:fat": 0.0,
+            "mse:protein": 0.0,
+            "r2": 1.0,
+            "r2:fat": 1.0,
+            "r2:protein": 1.0,
+            "rmse": 0.0,
+            "rmse:fat": 0.0,
+            "rmse:protein": 0.0
+          }
+        },
+        {
+          "prediction_id": null,
+          "producer_node": "model:second",
+          "producer_port": "oof",
+          "variant_id": "variant:af810523e92fd31b",
+          "partition": "validation",
+          "fold_id": "avg",
+          "level": "sample",
+          "row_count": 4,
+          "target_width": 2,
+          "target_names": [
+            "protein",
+            "fat"
+          ],
+          "metrics": {
+            "accuracy": 1.0,
+            "accuracy:fat": 1.0,
+            "accuracy:protein": 1.0,
+            "balanced_accuracy": 1.0,
+            "balanced_accuracy:fat": 1.0,
+            "balanced_accuracy:protein": 1.0,
+            "f1": 1.0,
+            "f1:fat": 1.0,
+            "f1:protein": 1.0,
+            "mae": 0.0,
+            "mae:fat": 0.0,
+            "mae:protein": 0.0,
+            "mse": 0.0,
+            "mse:fat": 0.0,
+            "mse:protein": 0.0,
+            "r2": 1.0,
+            "r2:fat": 1.0,
+            "r2:protein": 1.0,
+            "rmse": 0.0,
+            "rmse:fat": 0.0,
+            "rmse:protein": 0.0
+          }
+        },
+        {
+          "prediction_id": null,
+          "producer_node": "model:base",
+          "producer_port": "oof",
+          "variant_id": "variant:af810523e92fd31b",
+          "partition": "validation",
+          "fold_id": "w_avg",
+          "level": "sample",
+          "row_count": 4,
+          "target_width": 2,
+          "target_names": [
+            "protein",
+            "fat"
+          ],
+          "metrics": {
+            "accuracy": 1.0,
+            "accuracy:fat": 1.0,
+            "accuracy:protein": 1.0,
+            "balanced_accuracy": 1.0,
+            "balanced_accuracy:fat": 1.0,
+            "balanced_accuracy:protein": 1.0,
+            "f1": 1.0,
+            "f1:fat": 1.0,
+            "f1:protein": 1.0,
+            "mae": 0.0,
+            "mae:fat": 0.0,
+            "mae:protein": 0.0,
+            "mse": 0.0,
+            "mse:fat": 0.0,
+            "mse:protein": 0.0,
+            "r2": 1.0,
+            "r2:fat": 1.0,
+            "r2:protein": 1.0,
+            "rmse": 0.0,
+            "rmse:fat": 0.0,
+            "rmse:protein": 0.0
+          }
+        },
+        {
+          "prediction_id": null,
+          "producer_node": "model:second",
+          "producer_port": "oof",
+          "variant_id": "variant:af810523e92fd31b",
+          "partition": "validation",
+          "fold_id": "w_avg",
+          "level": "sample",
+          "row_count": 4,
+          "target_width": 2,
+          "target_names": [
+            "protein",
+            "fat"
+          ],
+          "metrics": {
+            "accuracy": 1.0,
+            "accuracy:fat": 1.0,
+            "accuracy:protein": 1.0,
+            "balanced_accuracy": 1.0,
+            "balanced_accuracy:fat": 1.0,
+            "balanced_accuracy:protein": 1.0,
+            "f1": 1.0,
+            "f1:fat": 1.0,
+            "f1:protein": 1.0,
+            "mae": 0.0,
+            "mae:fat": 0.0,
+            "mae:protein": 0.0,
+            "mse": 0.0,
+            "mse:fat": 0.0,
+            "mse:protein": 0.0,
+            "r2": 1.0,
+            "r2:fat": 1.0,
+            "r2:protein": 1.0,
+            "rmse": 0.0,
+            "rmse:fat": 0.0,
+            "rmse:protein": 0.0
+          }
+        }
+      ]
+    },
+    "data_requirements": [
+      {
+        "node_id": "transform:snv",
+        "input_name": "x",
+        "schema_fingerprint": "f97b37872fa22134b508f98fd8e207e5b776b52594fb8f6f5c3e15bee212246b",
+        "plan_fingerprint": "7c5431d85574b3f337022fa5d25971d5b5cf445b90331b49938f573ff6901e4d",
+        "relation_fingerprint": "d69346fd7dc5d7f13eca13da6ebfac27d0b17f8af2dea5f2278f6f0b9591f760",
+        "output_representation": "tabular_numeric",
+        "feature_set_id": "x"
+      }
+    ],
+    "unsafe_flags": [],
+    "metadata": {}
+  },
+  "output_bindings": [
+    {
+      "schema_version": 1,
+      "binding_id": "output:a",
+      "node_id": "model:base",
+      "port_name": "oof",
+      "prediction_level": "sample",
+      "unit_level": "physical_sample",
+      "prediction_kind": "regression_point",
+      "prediction_source": "final_refit",
+      "refit_strategy": "refit_one",
+      "aggregation_fingerprint": "c61fa6071ed0f78e811f31e3f76b090a9b7e7950ca53483c50ccd0fbe8b0105d",
+      "target_names": [
+        "protein",
+        "fat"
+      ],
+      "target_units": [
+        "percent",
+        "percent"
+      ],
+      "class_labels": [
+        [],
+        []
+      ],
+      "output_order": "target_order",
+      "target_space": "raw",
+      "binding_fingerprint": "883ca2d7a7b7f2c0bc866d2380b940a5bf57e7b0d2002cbc3997efdee290de83"
+    },
+    {
+      "schema_version": 1,
+      "binding_id": "output:b",
+      "node_id": "model:second",
+      "port_name": "oof",
+      "prediction_level": "sample",
+      "unit_level": "physical_sample",
+      "prediction_kind": "regression_point",
+      "prediction_source": "final_refit",
+      "refit_strategy": "refit_one",
+      "aggregation_fingerprint": "c61fa6071ed0f78e811f31e3f76b090a9b7e7950ca53483c50ccd0fbe8b0105d",
+      "target_names": [
+        "protein",
+        "fat"
+      ],
+      "target_units": [
+        "percent",
+        "percent"
+      ],
+      "class_labels": [
+        [],
+        []
+      ],
+      "output_order": "target_order",
+      "target_space": "raw",
+      "binding_fingerprint": "da4d2548c35b838451e183fde1bac57a0f6cfb74283a51a931398890807a7a8e"
+    }
+  ],
+  "predictor_node_ids": [
+    "model:base",
+    "model:second",
+    "transform:snv"
+  ],
+  "training_influence": {
+    "schema_version": 1,
+    "relation_fingerprint": "d69346fd7dc5d7f13eca13da6ebfac27d0b17f8af2dea5f2278f6f0b9591f760",
+    "entries": [
+      {
+        "kind": "transform_fit",
+        "scope_id": "fit_cv:fold:0",
+        "node_id": "transform:snv",
+        "physical_sample_ids": [
+          "sample:3",
+          "sample:4"
+        ],
+        "origin_sample_ids": [],
+        "group_ids": [
+          "group:1"
+        ]
+      },
+      {
+        "kind": "transform_fit",
+        "scope_id": "fit_cv:fold:1",
+        "node_id": "transform:snv",
+        "physical_sample_ids": [
+          "sample:1",
+          "sample:2"
+        ],
+        "origin_sample_ids": [],
+        "group_ids": [
+          "group:0"
+        ]
+      },
+      {
+        "kind": "transform_fit",
+        "scope_id": "refit:full",
+        "node_id": "transform:snv",
+        "physical_sample_ids": [
+          "sample:1",
+          "sample:2",
+          "sample:3",
+          "sample:4"
+        ],
+        "origin_sample_ids": [],
+        "group_ids": [
+          "group:0",
+          "group:1"
+        ]
+      },
+      {
+        "kind": "model_fit",
+        "scope_id": "fit_cv:fold:0",
+        "node_id": "model:base",
+        "physical_sample_ids": [
+          "sample:3",
+          "sample:4"
+        ],
+        "origin_sample_ids": [],
+        "group_ids": [
+          "group:1"
+        ]
+      },
+      {
+        "kind": "model_fit",
+        "scope_id": "fit_cv:fold:0",
+        "node_id": "model:second",
+        "physical_sample_ids": [
+          "sample:3",
+          "sample:4"
+        ],
+        "origin_sample_ids": [],
+        "group_ids": [
+          "group:1"
+        ]
+      },
+      {
+        "kind": "model_fit",
+        "scope_id": "fit_cv:fold:1",
+        "node_id": "model:base",
+        "physical_sample_ids": [
+          "sample:1",
+          "sample:2"
+        ],
+        "origin_sample_ids": [],
+        "group_ids": [
+          "group:0"
+        ]
+      },
+      {
+        "kind": "model_fit",
+        "scope_id": "fit_cv:fold:1",
+        "node_id": "model:second",
+        "physical_sample_ids": [
+          "sample:1",
+          "sample:2"
+        ],
+        "origin_sample_ids": [],
+        "group_ids": [
+          "group:0"
+        ]
+      },
+      {
+        "kind": "model_fit",
+        "scope_id": "refit:full",
+        "node_id": "model:base",
+        "physical_sample_ids": [
+          "sample:1",
+          "sample:2",
+          "sample:3",
+          "sample:4"
+        ],
+        "origin_sample_ids": [],
+        "group_ids": [
+          "group:0",
+          "group:1"
+        ]
+      },
+      {
+        "kind": "model_fit",
+        "scope_id": "refit:full",
+        "node_id": "model:second",
+        "physical_sample_ids": [
+          "sample:1",
+          "sample:2",
+          "sample:3",
+          "sample:4"
+        ],
+        "origin_sample_ids": [],
+        "group_ids": [
+          "group:0",
+          "group:1"
+        ]
+      },
+      {
+        "kind": "hpo_selection",
+        "scope_id": "select:selection:rmse",
+        "node_id": null,
+        "physical_sample_ids": [
+          "sample:1",
+          "sample:2",
+          "sample:3",
+          "sample:4"
+        ],
+        "origin_sample_ids": [],
+        "group_ids": [
+          "group:0",
+          "group:1"
+        ]
+      }
+    ],
+    "manifest_fingerprint": "81543cf4b45b06fdab4e537b93b422977be5786d5937e56ecb096803afbd9103"
+  },
+  "data_identities": [
+    {
+      "requirement_key": "transform:snv.x",
+      "schema_fingerprint": "f97b37872fa22134b508f98fd8e207e5b776b52594fb8f6f5c3e15bee212246b",
+      "plan_fingerprint": "7c5431d85574b3f337022fa5d25971d5b5cf445b90331b49938f573ff6901e4d",
+      "relation_fingerprint": "d69346fd7dc5d7f13eca13da6ebfac27d0b17f8af2dea5f2278f6f0b9591f760",
+      "data_content_fingerprint": "c210105edc4614bc1233f10d73b105127e9c8d4db13cb75567c6bc766685838b",
+      "target_content_fingerprint": "f4860ed23486f6423261bd1b4709c6f344e9e631e7d6db623588aee68bd5ca0b",
+      "identity_fingerprint": "262e9d649465e3d322c46b10788d2f20c7ba759816685431ec0ba1bccd3561cf"
+    }
+  ],
+  "fitted_artifact_mode": "portable_required",
+  "artifact_bindings": [
+    {
+      "artifact_id": "artifact:model:base:refit",
+      "load_mode": "native_portable"
+    },
+    {
+      "artifact_id": "artifact:model:second:refit",
+      "load_mode": "native_portable"
+    }
+  ],
+  "package_fingerprint": "9661a31f1d6237b40aa53b7fbf70175cc788328c654ddf8f9bdc4b8eb43b9e09"
+}

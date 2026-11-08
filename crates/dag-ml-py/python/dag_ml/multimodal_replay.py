@@ -63,6 +63,7 @@ def replay_multimodal_predictor_package(package: Any, current: Mapping[str, Any]
     bindings = document["output_bindings"]
     if len(bindings) != 1 or bindings[0]["target_names"] != ["y"]:
         raise ValueError("Public U07 replay requires one output named y")
+    target_names = list(bindings[0]["target_names"])
     relations = current["data_envelope"]["coordinator_relations"]
     relation_fingerprint = native.sample_relation_set_fingerprint_json(json.dumps(relations))
     envelopes = {}
@@ -75,7 +76,7 @@ def replay_multimodal_predictor_package(package: Any, current: Mapping[str, Any]
                     "data_content_fingerprint": current["data_content_fingerprint"], "target_content_fingerprint": None,
                     "coordinator_relations": relations}
         envelopes[key] = native.attach_predict_cohort_to_envelope(envelope, {
-            "role": "inference", "relations": relations, "target_names": ["y"],
+            "role": "inference", "relations": relations, "target_names": list(target_names),
             "data_content_fingerprint": current["data_content_fingerprint"], "target_content_fingerprint": None,
         }).to_dict()
     if not envelopes:
@@ -88,7 +89,7 @@ def replay_multimodal_predictor_package(package: Any, current: Mapping[str, Any]
         values = np.asarray(source["rows"], dtype=object) if name == "metadata" else np.asarray(source["data"], dtype=np.dtype(saved_schemas[name]["dtype"])).reshape(source["shape"])
         sources[name] = {"sample_ids": source["sample_ids"], "descriptor": saved_schemas[name], "values": values}
     controller = MethodsMultimodalController(operators={node["id"]: node["operator"]}, sources=sources, targets=None,
-        target_names=("y",), allow_fit=False, controller_id=owner, source_ids=tuple(current["source_ids"]),
+        target_names=tuple(target_names), allow_fit=False, controller_id=owner, source_ids=tuple(current["source_ids"]),
         node_params={key: value.get("params", {}) for key, value in plan["node_plans"].items()})
     trusted = manifest_for_host(hosts[owner])
     try:

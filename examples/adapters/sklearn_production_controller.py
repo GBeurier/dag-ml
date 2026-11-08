@@ -767,8 +767,8 @@ def run_jsonl() -> None:
             if is_control_frame(payload):
                 if not handle_control_frame(payload):
                     break
-                continue
-            emit_result(payload)
+            else:
+                emit_error("unsupported_frame", "expected a control frame")
         except AdapterTaskError as exc:
             emit_error(exc.code, exc.message, exc.retryable)
         except Exception as exc:  # noqa: BLE001 — surface as a structured frame, not a crash

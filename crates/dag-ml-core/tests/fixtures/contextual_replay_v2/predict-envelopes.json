@@ -1,0 +1,167 @@
+{
+  "transform:snv.x": {
+    "schema_version": 2,
+    "schema_fingerprint": "f97b37872fa22134b508f98fd8e207e5b776b52594fb8f6f5c3e15bee212246b",
+    "plan_fingerprint": "7c5431d85574b3f337022fa5d25971d5b5cf445b90331b49938f573ff6901e4d",
+    "relation_fingerprint": "a7fb28d44ff0b8c6c4316fafc6efb450f3d004b7fb7199f6df2d8c255518e549",
+    "data_content_fingerprint": "994b2b8105a7fe1b427b6536def09de6fab09eb484d1f0fd0a8a24553f09cdeb",
+    "coordinator_relations": {
+      "records": [
+        {
+          "unit_level": "observation",
+          "unit_id": null,
+          "observation_id": "observation:contextual:11",
+          "sample_id": "sample:contextual:11",
+          "source_id": null,
+          "rep_id": null,
+          "target_id": null,
+          "group_id": null,
+          "origin_sample_id": null,
+          "derived_unit_id": null,
+          "component_observation_ids": [],
+          "sample_influence_weight": null,
+          "quality_flag": null,
+          "is_augmented": false
+        },
+        {
+          "unit_level": "observation",
+          "unit_id": null,
+          "observation_id": "observation:contextual:12",
+          "sample_id": "sample:contextual:12",
+          "source_id": null,
+          "rep_id": null,
+          "target_id": null,
+          "group_id": null,
+          "origin_sample_id": null,
+          "derived_unit_id": null,
+          "component_observation_ids": [],
+          "sample_influence_weight": null,
+          "quality_flag": null,
+          "is_augmented": false
+        },
+        {
+          "unit_level": "observation",
+          "unit_id": null,
+          "observation_id": "observation:contextual:13",
+          "sample_id": "sample:contextual:13",
+          "source_id": null,
+          "rep_id": null,
+          "target_id": null,
+          "group_id": null,
+          "origin_sample_id": null,
+          "derived_unit_id": null,
+          "component_observation_ids": [],
+          "sample_influence_weight": null,
+          "quality_flag": null,
+          "is_augmented": false
+        },
+        {
+          "unit_level": "observation",
+          "unit_id": null,
+          "observation_id": "observation:contextual:14",
+          "sample_id": "sample:contextual:14",
+          "source_id": null,
+          "rep_id": null,
+          "target_id": null,
+          "group_id": null,
+          "origin_sample_id": null,
+          "derived_unit_id": null,
+          "component_observation_ids": [],
+          "sample_influence_weight": null,
+          "quality_flag": null,
+          "is_augmented": false
+        }
+      ]
+    },
+    "predict_cohort": {
+      "role": "inference",
+      "physical_sample_ids": [
+        "sample:contextual:11",
+        "sample:contextual:12",
+        "sample:contextual:13",
+        "sample:contextual:14"
+      ],
+      "origin_sample_ids": [
+        "sample:contextual:11",
+        "sample:contextual:12",
+        "sample:contextual:13",
+        "sample:contextual:14"
+      ],
+      "target_names": [
+        "protein",
+        "fat"
+      ],
+      "relation_fingerprint": "a7fb28d44ff0b8c6c4316fafc6efb450f3d004b7fb7199f6df2d8c255518e549",
+      "relations": {
+        "records": [
+          {
+            "unit_level": "observation",
+            "unit_id": null,
+            "observation_id": "observation:contextual:11",
+            "sample_id": "sample:contextual:11",
+            "source_id": null,
+            "rep_id": null,
+            "target_id": null,
+            "group_id": null,
+            "origin_sample_id": null,
+            "derived_unit_id": null,
+            "component_observation_ids": [],
+            "sample_influence_weight": null,
+            "quality_flag": null,
+            "is_augmented": false
+          },
+          {
+            "unit_level": "observation",
+            "unit_id": null,
+            "observation_id": "observation:contextual:12",
+            "sample_id": "sample:contextual:12",
+            "source_id": null,
+            "rep_id": null,
+            "target_id": null,
+            "group_id": null,
+            "origin_sample_id": null,
+            "derived_unit_id": null,
+            "component_observation_ids": [],
+            "sample_influence_weight": null,
+            "quality_flag": null,
+            "is_augmented": false
+          },
+          {
+            "unit_level": "observation",
+            "unit_id": null,
+            "observation_id": "observation:contextual:13",
+            "sample_id": "sample:contextual:13",
+            "source_id": null,
+            "rep_id": null,
+            "target_id": null,
+            "group_id": null,
+            "origin_sample_id": null,
+            "derived_unit_id": null,
+            "component_observation_ids": [],
+            "sample_influence_weight": null,
+            "quality_flag": null,
+            "is_augmented": false
+          },
+          {
+            "unit_level": "observation",
+            "unit_id": null,
+            "observation_id": "observation:contextual:14",
+            "sample_id": "sample:contextual:14",
+            "source_id": null,
+            "rep_id": null,
+            "target_id": null,
+            "group_id": null,
+            "origin_sample_id": null,
+            "derived_unit_id": null,
+            "component_observation_ids": [],
+            "sample_influence_weight": null,
+            "quality_flag": null,
+            "is_augmented": false
+          }
+        ]
+      },
+      "data_content_fingerprint": "994b2b8105a7fe1b427b6536def09de6fab09eb484d1f0fd0a8a24553f09cdeb",
+      "cohort_fingerprint": "4f6e26345f214bcbff3eb09e0bf8c5ef00f4912305fe8608e7b2acf631e88f6b"
+    }
+  }
+}

@@ -78,7 +78,8 @@ octave --no-gui --quiet --eval \
 export DAGML_REQUIRE_OCTAVE_ROLES=1
 export DAG_ML_OCTAVE=/absolute/path/to/real/octave
 export NIRS4ALL_OCTAVE_ROLE_NODE_CAPTURE="$QUALIFICATION_DIR/four-source-receipt.json"
-cargo test -p dag-ml-core archive_workspace
+cargo test -p dag-ml-core legacy_semantics_tests
+cargo test -p dag-ml-core --test native_package_closure
 python -m pytest tests/test_archive_v2_contract.py tests/test_octave_methods_role_adapter.py
 python scripts/qualify_multimodal_methods_hpo_octave.py \
   --node-capture "$QUALIFICATION_DIR/four-source-receipt.json" \

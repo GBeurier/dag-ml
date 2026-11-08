@@ -49,7 +49,7 @@ const optimizer = new N4mWasmHostOptimizer({
 try {
   const result = JSON.parse(dagMl.host_hpo_search_json(
     planJson, JSON.stringify(manifests), envelopeJson, requestJson,
-    optimizer.committed === null ? undefined : JSON.stringify(optimizer.committed),
+    optimizer.committedJson ?? undefined,
     controller.callback, optimizer.callback,
   ));
 } finally {
@@ -164,3 +164,6 @@ generically in the core, even when the native Methods feature is disabled.
 
 `execute_nested_selection_json(requestJson, manifestsJson, envelopeJson, controller.callback, metrics?)` runs `dag_ml_core::execute_nested_selection_with_metrics` in the browser. The optional synchronous `metrics(name, payloadJson)` callback receives `mse`, `rmse` or `mae` with `{"y_true", "y_pred"}` and returns a finite nonnegative number; it computes every selection and pooled metric (for example through Methods `statsRegressionScores`). Without it, the DAG-ML metric registry is used. Plans, comparison and tie rule stay in DAG-ML. The request names a graph template, a campaign template with data bindings, the target model node, the finite candidate list (parameter patches of that node), the sample groups, the outer and inner `GroupKFold` counts and the selection metric. DAG-ML builds every fold set first, runs the inner FIT_CV of each candidate, selects from pooled inner OOF only, then fits the winner on each outer training pool and predicts only its validation rows. The controller resolves rows by the task's sample IDs, as for host HPO. The outcome carries the fold sets, candidate scores, decisions and one OOF row per sample. Masked references are refused in version 1. `scripts/test_wasm_nested_selection.mjs` qualifies it with Methods PLS.
 
+
+The optimizer snapshot uses `dagml.n4m.wasm-hpo.v2` with `committed_json` and `prepared_json` raw checkpoint strings. Persist these strings unchanged and pass `committedJson` to resume. The `committed` and `prepared` getters are inspection views; do not reserialize them for persistence or recovery. Version 1 snapshots are not accepted.
+Pruning dispatchers receive `{kind, task, fold_index}` and must pass the raw `task` member text to the worker exports, for example `strictJson(payload, "task")`, because parsing and re-stringifying changes float tokens and fails candidate validation.

@@ -45,7 +45,7 @@
       "items": {
         "$ref": "#/$defs/identifier"
       },
-      "description": "Strictly sorted explicit subset of source TrainingOutcome output binding ids requested from replay."
+      "description": "Strictly sorted explicit subset of saved output binding ids requested from PREDICT or EXPLAIN replay. For each actual input requirement key in the selected bindings' predictor closures, an explicit V2 PredictCohort must cover exactly the union of selected binding target names. Each binding's ordered target list must be an ordered subsequence of that cohort. No order is imposed between independent bindings; conflicting orders on a shared key require separate requests. Legacy envelopes without PredictCohort make no explicit target-name claim."
     },
     "request_fingerprint": {
       "$ref": "#/$defs/sha256",

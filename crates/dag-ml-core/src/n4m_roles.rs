@@ -94,6 +94,16 @@ pub const N4M_GRAPH_ROLES: [N4mRole; 7] = [
     N4mRole::Augmenter,
 ];
 
+/// Roles executed natively. Splitters and augmenters are derived as
+/// controller specs but have no native execution path yet.
+pub const METHODS_ESTIMATOR_EXECUTABLE_ROLES: [N4mRole; 5] = [
+    N4mRole::Transformer,
+    N4mRole::Selector,
+    N4mRole::Regressor,
+    N4mRole::Classifier,
+    N4mRole::SampleFilter,
+];
+
 /// The subset of the native manifest that controller derivation reads.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct N4mManifest {

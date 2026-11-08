@@ -29,6 +29,40 @@ pub(super) fn controllers_for_plan(
 #[wasm_bindgen]
 #[allow(clippy::too_many_arguments)]
 pub fn execute_initial_full_refit_json(
+    plan_json: &js_sys::JsString,
+    trusted_controller_manifests_json: &js_sys::JsString,
+    envelope_json: &js_sys::JsString,
+    training_sample_ids_json: &js_sys::JsString,
+    package_id: &js_sys::JsString,
+    run_id: &js_sys::JsString,
+    root_seed: &js_sys::JsString,
+    js_invoke: &js_sys::Function,
+) -> Result<String, JsValue> {
+    let plan_json = crate::js_text::text_argument(plan_json, "plan_json")?;
+    let trusted_controller_manifests_json = crate::js_text::text_argument(
+        trusted_controller_manifests_json,
+        "trusted_controller_manifests_json",
+    )?;
+    let envelope_json = crate::js_text::text_argument(envelope_json, "envelope_json")?;
+    let training_sample_ids_json =
+        crate::js_text::text_argument(training_sample_ids_json, "training_sample_ids_json")?;
+    let package_id = crate::js_text::text_argument(package_id, "package_id")?;
+    let run_id = crate::js_text::text_argument(run_id, "run_id")?;
+    let root_seed = crate::js_text::text_argument(root_seed, "root_seed")?;
+    execute_initial_full_refit_json_impl(
+        &plan_json,
+        &trusted_controller_manifests_json,
+        &envelope_json,
+        &training_sample_ids_json,
+        &package_id,
+        &run_id,
+        &root_seed,
+        js_invoke,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_initial_full_refit_json_impl(
     plan_json: &str,
     trusted_controller_manifests_json: &str,
     envelope_json: &str,
@@ -94,6 +128,30 @@ pub fn execute_initial_full_refit_json(
 /// caller-owned artifact handles registered for this invocation only.
 #[wasm_bindgen]
 pub fn replay_initial_full_refit_json(
+    package_json: &js_sys::JsString,
+    envelope_json: &js_sys::JsString,
+    output_ids_json: &js_sys::JsString,
+    artifact_handles_json: &js_sys::JsString,
+    run_id: &js_sys::JsString,
+    js_invoke: &js_sys::Function,
+) -> Result<String, JsValue> {
+    let package_json = crate::js_text::text_argument(package_json, "package_json")?;
+    let envelope_json = crate::js_text::text_argument(envelope_json, "envelope_json")?;
+    let output_ids_json = crate::js_text::text_argument(output_ids_json, "output_ids_json")?;
+    let artifact_handles_json =
+        crate::js_text::text_argument(artifact_handles_json, "artifact_handles_json")?;
+    let run_id = crate::js_text::text_argument(run_id, "run_id")?;
+    replay_initial_full_refit_json_impl(
+        &package_json,
+        &envelope_json,
+        &output_ids_json,
+        &artifact_handles_json,
+        &run_id,
+        js_invoke,
+    )
+}
+
+fn replay_initial_full_refit_json_impl(
     package_json: &str,
     envelope_json: &str,
     output_ids_json: &str,

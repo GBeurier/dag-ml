@@ -77,7 +77,7 @@ def _terminal_dsl() -> dict[str, Any]:
                 "request_id": "nir-to-tabular",
                 "schema_fingerprint": "f97b37872fa22134b508f98fd8e207e5b776b52594fb8f6f5c3e15bee212246b",
                 "plan_fingerprint": "7c5431d85574b3f337022fa5d25971d5b5cf445b90331b49938f573ff6901e4d",
-                "relation_fingerprint": "a3a7e329df35db9f2883a17b8611b7fae6dcaa031875e3ec2c9be1b9e29cbe10",
+                "relation_fingerprint": _terminal_training_envelope()["relation_fingerprint"],
                 "output_representation": "tabular_numeric",
                 "feature_set_id": "x",
                 "source_ids": ["nir"],
@@ -121,7 +121,7 @@ def _terminal_manifest() -> list[dict[str, Any]]:
     ]
 
 
-def _terminal_envelope() -> dag_ml.JsonContract:
+def _terminal_training_envelope() -> dict[str, Any]:
     base = json.loads(
         (
             REPO
@@ -134,6 +134,14 @@ def _terminal_envelope() -> dag_ml.JsonContract:
             / "coordinator_data_plan_envelope_sample12.json"
         ).read_text(encoding="utf-8")
     )
+    base["relation_fingerprint"] = dag_ml.sample_relation_set_fingerprint_json(
+        json.dumps(base["coordinator_relations"])
+    )
+    return base
+
+
+def _terminal_envelope() -> dag_ml.JsonContract:
+    base = _terminal_training_envelope()
     return dag_ml.attach_predict_cohort_to_envelope(
         base,
         {
@@ -410,6 +418,84 @@ class TerminalPredictFacadeTests(unittest.TestCase):
             )
         self.assertIn("has no output port `missing`", str(raised.exception))
         self.assertEqual(selector_calls, [])
+
+    def test_same_universe_altered_training_relations_refused_before_callbacks(
+        self,
+    ) -> None:
+        """Owner authority must refuse a same-universe, group-altered cohort.
+
+        The altered envelope keeps exactly the same sample universe (so fold
+        validation still passes) and keeps the owner's recorded training
+        relation fingerprint, but one sample's ``group_id`` is changed
+        consistently across all of its repeated rows. The owner must refuse it
+        in the terminal preflight, before any controller callback runs.
+        """
+
+        # Positive control: the unaltered envelope really executes CV -> REFIT
+        # -> PREDICT through the genuine owner API.
+        positive = _RealTerminalCallback()
+        result = dag_ml.run_cv_refit_predict_in_process(
+            _terminal_dsl(),
+            _terminal_envelope(),
+            _terminal_manifest(),
+            positive,
+            "rmse",
+            "model:terminal",
+            "oof",
+        )
+        self.assertEqual(positive.calls, ["FIT_CV", "FIT_CV", "REFIT", "PREDICT"])
+        self.assertGreater(len(positive.calls), 0)
+        self.assertEqual(
+            result["terminal_prediction"]["sample_ids"],
+            ["sample:holdout:1", "sample:holdout:2"],
+        )
+
+        # Same sample universe, group_id altered consistently on every repeated
+        # row of one sample; the owner training relation fingerprint is kept.
+        altered = _terminal_envelope().to_dict()
+        owner_fingerprint = altered["relation_fingerprint"]
+        records = altered["coordinator_relations"]["records"]
+        original_samples = {row["sample_id"] for row in records}
+        changed_sample = records[0]["sample_id"]
+        changed_rows = [row for row in records if row["sample_id"] == changed_sample]
+        self.assertGreater(len(changed_rows), 1, "fixture must repeat the sample")
+        for row in changed_rows:
+            row["group_id"] = "group:authority:changed"
+        self.assertEqual({row["sample_id"] for row in records}, original_samples)
+        self.assertEqual(altered["relation_fingerprint"], owner_fingerprint)
+        self.assertEqual(
+            owner_fingerprint,
+            _terminal_training_envelope()["relation_fingerprint"],
+        )
+        self.assertNotEqual(
+            dag_ml.sample_relation_set_fingerprint_json(
+                json.dumps(altered["coordinator_relations"])
+            ),
+            owner_fingerprint,
+        )
+
+        refused_calls: list[dict[str, Any]] = []
+
+        def forbidden_callback(task: dict[str, Any]) -> dict[str, Any]:
+            refused_calls.append(task)
+            raise AssertionError("owner authority must refuse before any callback")
+
+        with self.assertRaises(dag_ml.DagMlError) as raised:
+            dag_ml.run_cv_refit_predict_in_process(
+                _terminal_dsl(),
+                altered,
+                _terminal_manifest(),
+                forbidden_callback,
+                "rmse",
+                "model:terminal",
+                "oof",
+            )
+        self.assertEqual(
+            str(raised.exception),
+            "campaign validation failed: external_test training relations "
+            "do not match owner authority",
+        )
+        self.assertEqual(refused_calls, [])
 
 
 if __name__ == "__main__":

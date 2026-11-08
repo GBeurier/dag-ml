@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "request_id": "replay:predict",
+  "source_outcome_fingerprint": "6dc9f720d02cbe2ad38102403df617d7f7518626f8ba5b6a155dfdd7f85902c3",
+  "phase": "PREDICT",
+  "data_envelope_keys": [
+    "transform:snv.x"
+  ],
+  "output_binding_ids": [
+    "output:a",
+    "output:b"
+  ],
+  "request_fingerprint": "6756cf6a42c4c845250dadc67378cac0238d7d89cb5438d57f272bc688dc0ab2"
+}

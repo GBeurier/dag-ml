@@ -32,8 +32,9 @@ impl NestedSelectionMetrics for JsMetrics {
             )
             .map_err(|error| {
                 CoreDagMlError::RuntimeValidation(format!(
-                    "JS metrics `{}` threw: {error:?}",
-                    metric.name()
+                    "JS metrics `{}` threw: {}",
+                    metric.name(),
+                    crate::js_text::js_failure_text(&error)
                 ))
             })?;
         value.as_f64().ok_or_else(|| {
@@ -54,6 +55,29 @@ impl NestedSelectionMetrics for JsMetrics {
 /// it the DAG-ML metric registry is used. Returns the outcome JSON.
 #[wasm_bindgen]
 pub fn execute_nested_selection_json(
+    request_json: &js_sys::JsString,
+    trusted_controller_manifests_json: &js_sys::JsString,
+    data_envelope_json: &js_sys::JsString,
+    js_invoke: &js_sys::Function,
+    js_metrics: Option<js_sys::Function>,
+) -> Result<String, JsValue> {
+    let request_json = crate::js_text::text_argument(request_json, "request_json")?;
+    let trusted_controller_manifests_json = crate::js_text::text_argument(
+        trusted_controller_manifests_json,
+        "trusted_controller_manifests_json",
+    )?;
+    let data_envelope_json =
+        crate::js_text::text_argument(data_envelope_json, "data_envelope_json")?;
+    execute_nested_selection_json_impl(
+        &request_json,
+        &trusted_controller_manifests_json,
+        &data_envelope_json,
+        js_invoke,
+        js_metrics,
+    )
+}
+
+fn execute_nested_selection_json_impl(
     request_json: &str,
     trusted_controller_manifests_json: &str,
     data_envelope_json: &str,

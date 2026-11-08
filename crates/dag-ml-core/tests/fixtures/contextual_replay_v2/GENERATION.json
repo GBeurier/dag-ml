@@ -1,0 +1,69 @@
+{
+  "explain": {
+    "actual_envelope_claims": {
+      "transform:snv.x": [
+        "protein"
+      ]
+    },
+    "claim": [
+      "protein"
+    ],
+    "execution": {
+      "ok": true,
+      "output_targets": []
+    },
+    "invocations": 3,
+    "label": "explain-selected",
+    "preflight": {
+      "Ok": null
+    },
+    "request_validation": {
+      "Ok": null
+    },
+    "selected": [
+      "output:a"
+    ]
+  },
+  "predict": {
+    "actual_envelope_claims": {
+      "transform:snv.x": [
+        "protein",
+        "fat"
+      ]
+    },
+    "claim": [
+      "protein",
+      "fat"
+    ],
+    "execution": {
+      "ok": true,
+      "output_targets": [
+        [
+          "output:a",
+          [
+            "protein"
+          ]
+        ],
+        [
+          "output:b",
+          [
+            "fat"
+          ]
+        ]
+      ]
+    },
+    "invocations": 3,
+    "label": "predict",
+    "preflight": {
+      "Ok": null
+    },
+    "request_validation": {
+      "Ok": null
+    },
+    "selected": [
+      "output:a",
+      "output:b"
+    ]
+  },
+  "qualification": "SYNTHETIC HOST/MOCK; no Methods/IO/scientific qualification"
+}

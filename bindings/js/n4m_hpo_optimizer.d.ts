@@ -1,10 +1,10 @@
 import type { Optimizer, OptimizerOptions, SearchAxis, TrialValue } from "@nirs4all/methods";
 
 export interface N4mWasmHpoSnapshot {
-  schema: "dagml.n4m.wasm-hpo.v1";
+  schema: "dagml.n4m.wasm-hpo.v2";
   contract: unknown;
-  committed: Record<string, unknown> | null;
-  prepared: Record<string, unknown> | null;
+  committed_json: string | null;
+  prepared_json: string | null;
   n4mopt: number[];
 }
 export interface N4mWasmHpoOptions {
@@ -22,6 +22,9 @@ export interface N4mWasmHpoOptions {
 export declare class N4mWasmHostOptimizer {
   constructor(options: N4mWasmHpoOptions);
   readonly callback: (operation: string, payloadJson: string) => string;
+  readonly committedJson: string | null;
+  readonly preparedJson: string | null;
+  /** Parsed inspection views; persist and resume using the raw JSON strings. */
   readonly committed: Record<string, unknown> | null;
   readonly prepared: Record<string, unknown> | null;
   snapshot(): N4mWasmHpoSnapshot;

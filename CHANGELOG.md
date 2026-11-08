@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.4.0 - Unreleased
+
+- Breaking: `GroupKFoldSpec::split_with_target_missing` now takes explicit candidate
+  `samples` before `sample_groups`; WASM `group_kfold_split_json` likewise takes
+  `sample_ids_json` before `sample_groups_json`. Target-missing candidates need no
+  group; any real groups supplied for them are ignored. Observed candidates still
+  require groups, and group keys outside the candidate universe are refused.
+- Replace public physical archive builders/validation with native artifact facets
+  and selected native closures; Core owns the V1 byte container. Portable owner
+  package schemas, fitted-state formats and recipe versions are unchanged.
+- Remove the C exports `dagml_archive_v2_native_portable_payloads_json` and
+  `dagml_archive_v3_native_refit_payloads_json`, plus the corresponding physical
+  Python/WASM exports. Vtable/layout versions remain unchanged.
+- Make the CLI development binding floor explicit at Rust n4m 0.4.1; Methods
+  ABI 2.20 and the isolated historical oracle pins are unchanged.
+- WASM: render a JavaScript `Error` from a host callback as `name: message`,
+  without reading its `stack` (single-file builds put megabyte `data:` WASM
+  URLs in stack frames). Other values render as before. New failed-trial
+  checkpoints from an Error get a new fingerprint; stored ones are unchanged.
+
 ## 0.3.44 - 2026-11-02
 
 - Declare target-missing samples outside the CV universe with `FoldSet.target_missing_sample_ids` (omitted when empty, so existing fold sets keep their bytes and fingerprints). These samples never train in FIT_CV or REFIT, are never validated, scored or used by SELECT, and stay eligible for PREDICT.

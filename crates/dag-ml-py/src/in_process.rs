@@ -4162,7 +4162,12 @@ mod tests {
                 "request_id": "nir-to-tabular",
                 "schema_fingerprint": "f97b37872fa22134b508f98fd8e207e5b776b52594fb8f6f5c3e15bee212246b",
                 "plan_fingerprint": "7c5431d85574b3f337022fa5d25971d5b5cf445b90331b49938f573ff6901e4d",
-                "relation_fingerprint": "a3a7e329df35db9f2883a17b8611b7fae6dcaa031875e3ec2c9be1b9e29cbe10",
+                "relation_fingerprint": crate::strict_json_input::<ExternalDataPlanEnvelope>(
+                    &terminal_predict_envelope_json(),
+                )
+                .unwrap()
+                .relation_fingerprint
+                .unwrap(),
                 "output_representation": "tabular_numeric",
                 "feature_set_id": "x",
                 "source_ids": ["nir"],
@@ -4218,6 +4223,14 @@ mod tests {
             "../../dag-ml-core/tests/fixtures/package/data/coordinator_data_plan_envelope_sample12.json"
         ))
         .unwrap();
+        envelope.relation_fingerprint = Some(
+            envelope
+                .coordinator_relations
+                .as_ref()
+                .unwrap()
+                .fingerprint()
+                .unwrap(),
+        );
         let heldout_relations: SampleRelationSet = serde_json::from_value(serde_json::json!({
             "records": [
                 {"observation_id": "obs.H001", "sample_id": "sample:holdout:1", "target_id": "target:holdout:1", "group_id": "group:holdout", "origin_sample_id": null, "source_id": "nir", "is_augmented": false},

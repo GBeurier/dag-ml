@@ -1,0 +1,305 @@
+use dag_ml_core::*;
+use serde::Serialize;
+use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
+use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+include!("helpers.rs");
+
+const LIBRARY: &str = "/home/delete/nirs4all/nirs4all-methods/build/dev-release/cpp/src/libn4m.so.2.20.0";
+const LIBRARY_SHA256: &str = "05ae1a2e82491439f0e71ada0ea500ed79d03af227a11c4a2dbb317a99558529";
+
+fn hash(bytes: &[u8]) -> String {
+    Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
+}
+fn write_owner<T: Serialize>(root: &Path, name: &str, owner: &T) -> String {
+    // Serialize the owner object exactly once. Never parse and reserialize this export.
+    let bytes = serde_json::to_vec(owner).unwrap();
+    std::fs::write(root.join(name), &bytes).unwrap();
+    String::from_utf8(bytes).unwrap()
+}
+fn registry(runtime: &MethodsRuntime) -> RuntimeControllerRegistry {
+    let mut registry = RuntimeControllerRegistry::new();
+    register_methods_native_controllers(&mut registry, runtime.clone()).unwrap();
+    registry
+}
+fn configure_native_role(f: &mut Fixture) {
+    f.request.campaign.generation.dimensions.clear();
+    f.request.campaign.generation.strategy = GenerationStrategy::None;
+    f.request.campaign.shape_plans.remove(&node("transform:snv"));
+    f.request.graph.nodes.retain(|n| n.id.as_str() == "model:base");
+    f.request.graph.edges.clear();
+    let params = BTreeMap::from([
+        ("native_profile".into(), json!(METHODS_PLS_ROLE_PROFILE)),
+        ("n_components".into(), json!(1)),
+        ("scale".into(), json!(true)),
+    ]);
+    let contract = methods_pls_role_pipeline_contract(&params).unwrap();
+    let model = f.request.graph.nodes.first_mut().unwrap();
+    model.operator = Some(contract["operator"].clone());
+    model.seed_label = None;
+    model.params = params;
+    let manifest: ControllerManifest = serde_json::from_value(contract["manifest"].clone()).unwrap();
+    assert!(manifest.capabilities.contains(&ControllerCapability::SupportsPortableFullRefit));
+    f.request.controller_manifests = vec![manifest];
+    give_methods_hpo_four_train_rows(f);
+    rebuild(f);
+}
+fn attest_numeric_inputs(f: &mut Fixture, p: &mut AttestedProvider, root: &Path, prefix: &str) {
+    // This convention attests this synthetic provider's rows only. It is not an IO fingerprint.
+    let features = p.methods_rows.iter().map(|(id, row)| (id, &row[..p.methods_pls_feature_count])).collect::<Vec<_>>();
+    let targets = p.methods_rows.iter().map(|(id, row)| (id, row[3])).collect::<Vec<_>>();
+    let x_json = write_owner(root, &format!("{prefix}_feature_rows.json"), &features);
+    let y_json = write_owner(root, &format!("{prefix}_target_rows.json"), &targets);
+    write_owner(root, &format!("{prefix}_provider_rows.json"), &p.methods_rows);
+    let relation = f.relations.fingerprint().unwrap();
+    for bindings in f.request.campaign.data_bindings.values_mut() {
+        for binding in bindings {
+            binding.relation_fingerprint = Some(relation.clone());
+        }
+    }
+    for identity in &mut f.request.data_identities {
+        identity.relation_fingerprint = relation.clone();
+        identity.data_content_fingerprint = hash(x_json.as_bytes());
+        identity.target_content_fingerprint = hash(y_json.as_bytes());
+        identity.identity_fingerprint = identity.compute_fingerprint().unwrap();
+    }
+    rebuild(f);
+    p.identity = Some(f.request.data_identities[0].clone());
+    p.relations = f.relations.clone();
+    let mut envelopes = BTreeMap::new();
+    for binding in f.request.campaign.data_bindings.values().flatten() {
+        let key = data_binding_requirement_key(&binding.node_id, &binding.input_name);
+        let identity = f.request.data_identities.iter().find(|i| i.requirement_key == key).unwrap();
+        let envelope = ExternalDataPlanEnvelope {
+            schema_version: EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION_V1,
+            schema_fingerprint: binding.schema_fingerprint.clone(),
+            plan_fingerprint: binding.plan_fingerprint.clone(),
+            relation_fingerprint: Some(relation.clone()),
+            data_content_fingerprint: Some(identity.data_content_fingerprint.clone()),
+            target_content_fingerprint: Some(identity.target_content_fingerprint.clone()),
+            coordinator_relations: Some(f.relations.clone()),
+            predict_cohort: None,
+        };
+        envelope.validate().unwrap();
+        assert_eq!(TrainingDataIdentity::from_binding_envelope(binding, &envelope).unwrap(), *identity);
+        envelopes.insert(key, envelope);
+    }
+    write_owner(root, &format!("{prefix}_data_envelopes.json"), &envelopes);
+    let request_json = write_owner(root, &format!("{prefix}_training_request.json"), &f.request);
+    assert_eq!(TrainingRequest::from_json(&request_json).unwrap(), f.request);
+    let projection = f.request.project().unwrap();
+    let projection_json = write_owner(root, &format!("{prefix}_projection.json"), &projection);
+    assert_eq!(TrainingContractProjection::from_json(&projection_json).unwrap(), projection);
+    write_owner(root, &format!("{prefix}_relations.json"), &f.relations);
+    write_owner(root, &format!("{prefix}_training_influence.json"), &f.influence);
+}
+fn save_raw(root: &Path, prefix: &str, payloads: &BTreeMap<ArtifactId, Vec<u8>>, runtime: &MethodsRuntime) -> Value {
+    assert!(!payloads.is_empty());
+    let context = n4m::Context::new().unwrap();
+    let mut records = Vec::new();
+    for (index, (id, bytes)) in payloads.iter().enumerate() {
+        let raw_name = format!("{prefix}_role_pipeline_{index}.raw.json");
+        std::fs::write(root.join(&raw_name), bytes).unwrap();
+        // Inspection is separate from the retained export. No inspected value overwrites bytes.
+        let inspection = inspect_methods_role_pipeline_params(bytes, runtime).unwrap();
+        write_owner(root, &format!("{prefix}_role_pipeline_{index}.inspection.json"), &inspection);
+        let wrapper: Value = serde_json::from_slice(bytes).unwrap();
+        let mut states = Vec::new();
+        for (step, value) in wrapper["states"].as_array().unwrap().iter().enumerate() {
+            let state = value.as_array().unwrap().iter().map(|v| u8::try_from(v.as_u64().unwrap()).unwrap()).collect::<Vec<_>>();
+            let filename = format!("{prefix}_role_pipeline_{index}.state_{step}.n4me");
+            std::fs::write(root.join(&filename), &state).unwrap();
+            let estimator = n4m::roles::Estimator::from_n4me(&context, &state).unwrap();
+            assert!(estimator.is_fitted().unwrap());
+            let method = estimator.method_id().unwrap();
+            let info = n4m::roles::method_info(&method).unwrap();
+            states.push(json!({
+                "path": filename, "bytes": state.len(), "sha256": hash(&state),
+                "native_import": "Estimator::from_n4me", "method_id": method,
+                "is_fitted": estimator.is_fitted().unwrap(),
+                "n_features_in": estimator.n_features_in().unwrap(),
+                "n_outputs": estimator.n_outputs().unwrap(),
+                "contains_training_rows": estimator.contains_training_rows().unwrap(),
+                "native_manifest_state_format": info.state_format,
+                "raw_prefix_32_hex": state.iter().take(32).map(|b|format!("{b:02x}")).collect::<String>()
+            }));
+        }
+        records.push(json!({"artifact_id":id,"path":raw_name,"sha256":hash(bytes),"bytes":bytes.len(),"states":states}));
+    }
+    json!(records)
+}
+
+fn validate_saved(root: &Path, runtime: &MethodsRuntime) {
+    let read = |name:&str| std::fs::read_to_string(root.join(name)).unwrap();
+    let parent = TrainingOutcome::from_json(&read("training_outcome.json")).unwrap();
+    let package = PortablePredictorPackage::from_json(&read("predictor_package.json")).unwrap();
+    let child = PortableRefitPackageV3::from_json(&read("child_refit_v3.json")).unwrap();
+    let recipe = PortableRefitRecipe::from_json(&read("refit_recipe.json")).unwrap();
+    parent.validate().unwrap();
+    package.validate().unwrap();
+    child.validate().unwrap();
+    recipe.validate_against_source_package(&package).unwrap();
+    assert_eq!(child.outcome.recipe, recipe);
+    assert_eq!(package.training_outcome, parent.to_reference().unwrap());
+    assert_eq!(child.outcome.execution_bundle.raw_artifact_payloads.len(),1);
+    assert_eq!(package.execution_bundle.raw_artifact_payloads.len(),1);
+    assert_eq!(package.execution_bundle.raw_artifact_payloads,parent.execution_bundle.raw_artifact_payloads);
+    let context = n4m::Context::new().unwrap();
+    for (prefix, payloads) in [("source",&package.execution_bundle.raw_artifact_payloads),("child",&child.outcome.execution_bundle.raw_artifact_payloads)] {
+        for (index, (_,bytes)) in payloads.iter().enumerate() {
+            assert_eq!(*bytes,std::fs::read(root.join(format!("{prefix}_role_pipeline_{index}.raw.json"))).unwrap());
+            inspect_methods_role_pipeline_params(bytes,runtime).unwrap();
+            let wrapper:Value=serde_json::from_slice(bytes).unwrap();
+            for (step,v) in wrapper["states"].as_array().unwrap().iter().enumerate() {
+                let states=v.as_array().unwrap().iter().map(|v|u8::try_from(v.as_u64().unwrap()).unwrap()).collect::<Vec<_>>();
+                assert_eq!(states,std::fs::read(root.join(format!("{prefix}_role_pipeline_{index}.state_{step}.n4me"))).unwrap());
+                let estimator=n4m::roles::Estimator::from_n4me(&context,&states).unwrap();
+                assert!(estimator.is_fitted().unwrap());
+                assert_eq!(estimator.method_id().unwrap(),"models.pls.pls_regression");
+                assert_eq!(estimator.to_n4me(&context, false).unwrap(),states, "native owner re-export must retain the complete original header and state bytes");
+            }
+        }
+    }
+    for prefix in ["source","target"] {
+        let request=TrainingRequest::from_json(&read(&format!("{prefix}_training_request.json"))).unwrap();
+        let projection=TrainingContractProjection::from_json(&read(&format!("{prefix}_projection.json"))).unwrap();
+        assert_eq!(request.project().unwrap(),projection);
+        for i in &request.data_identities {
+            assert_eq!(i.data_content_fingerprint,hash(&std::fs::read(root.join(format!("{prefix}_feature_rows.json"))).unwrap()));
+            assert_eq!(i.target_content_fingerprint,hash(&std::fs::read(root.join(format!("{prefix}_target_rows.json"))).unwrap()));
+        }
+    }
+    assert_ne!(package.execution_bundle.raw_artifact_payloads.values().next().unwrap(),child.outcome.execution_bundle.raw_artifact_payloads.values().next().unwrap());
+    println!("Fresh-process owner from_json/validate, parent-child recipe links, exact raw JSON/state sidecars and numeric sidecar content hashes passed.");
+}
+
+fn main() {
+    let root_arg = std::env::args().nth(1).expect("output directory");
+    let root = Path::new(&root_arg);
+    std::fs::create_dir_all(root).unwrap();
+    for key in ["N4M_LIB_PATH", "N4M_LIBRARY_PATH"] {
+        assert_eq!(std::env::var(key).unwrap(), LIBRARY);
+    }
+    assert_eq!(hash(&std::fs::read(LIBRARY).unwrap()), LIBRARY_SHA256);
+    let runtime = MethodsRuntime::configure(LIBRARY).unwrap();
+    assert_eq!(runtime.abi_version(), (2, 20));
+    if std::env::args().nth(2).as_deref() == Some("--validate") {
+        validate_saved(root, &runtime);
+        return;
+    }
+    let manifest = n4m::roles::manifest_json().unwrap();
+    std::fs::write(root.join("methods_manifest.owner.json"), manifest.as_bytes()).unwrap();
+
+    let mut source = fixture(true, false);
+    configure_native_role(&mut source);
+    let mut source_provider = provider(&source);
+    source_provider.methods_pls_enabled = true;
+    attest_numeric_inputs(&mut source, &mut source_provider, root, "source");
+    let source_request_before = serde_json::to_vec(&source.request).unwrap();
+    let parent = {
+        let registry = registry(&runtime);
+        execute_training(TrainingExecutionInput {
+            request: &source.request,
+            outcome_id: "outcome:phase2a.role.parent".into(),
+            run_id: RunId::new("run:phase2a.role.parent").unwrap(),
+            bundle_id: BundleId::new("bundle:phase2a.role.parent").unwrap(),
+            controllers: &registry,
+            data_provider: &source_provider,
+            relations: &source.relations,
+            training_influence: &source.influence,
+            artifact_store: &mut InMemoryArtifactStore::new(),
+            warnings: Vec::new(), diagnostics: BTreeMap::new(),
+        }).expect("genuine native RolePipeline CV/SELECT/REFIT")
+    };
+    parent.validate().unwrap();
+    assert!(!parent.execution_bundle.raw_artifact_payloads.is_empty());
+    let package = parent.to_portable_predictor_package(
+        "package:phase2a.role.parent", FittedArtifactMode::PortableRequired, ArtifactLoadMode::NativePortable
+    ).unwrap();
+    package.validate().unwrap();
+    let outcome_json = write_owner(root, "training_outcome.json", &parent);
+    let package_json = write_owner(root, "predictor_package.json", &package);
+    assert_eq!(TrainingOutcome::from_json(&outcome_json).unwrap(), parent);
+    assert_eq!(PortablePredictorPackage::from_json(&package_json).unwrap(), package);
+    assert_eq!(package.execution_bundle.raw_artifact_payloads, parent.execution_bundle.raw_artifact_payloads);
+    let source_raw = save_raw(root, "source", &package.execution_bundle.raw_artifact_payloads, &runtime);
+    let recipe = PortableRefitRecipe::derive_from_package(&package, "recipe:phase2a.role.child").unwrap();
+    let recipe_json = write_owner(root, "refit_recipe.json", &recipe);
+    assert_eq!(PortableRefitRecipe::from_json(&recipe_json).unwrap(), recipe);
+    recipe.validate_against_source_package(&package).unwrap();
+
+    let mut target = Fixture {request:source.request.clone(), relations:source.relations.clone(), influence:source.influence.clone(), preferred:source.preferred.clone()};
+    target.request.request_id = "training:phase2a.target.synthetic".into();
+    target.request.plan_id = "plan:phase2a.target.synthetic".into();
+    let rename = |s:&SampleId| SampleId::new(format!("target:{s}")).unwrap();
+    let mut target_provider = provider(&target);
+    target_provider.methods_pls_enabled = true;
+    target_provider.methods_rows = source_provider.methods_rows.iter().map(|(id,row)| {
+        let mut next = *row;
+        next[0] += 0.25;
+        next[1] *= 0.75;
+        next[3] = 2.0 * row[3] + 0.3 * next[0] + 1.0;
+        (rename(id), next)
+    }).collect();
+    target.relations = SampleRelationSet {records: (1..=8).map(|i|SampleRelation::new(
+        ObservationId::new(format!("target:observation:{i}")).unwrap(),
+        SampleId::new(format!("target:sample:{i}")).unwrap()
+    )).collect()};
+    let folds = target.request.campaign.split_invocation.as_mut().unwrap().fold_set.as_mut().unwrap();
+    folds.sample_ids = folds.sample_ids.iter().map(rename).collect();
+    for f in &mut folds.folds {
+        f.train_sample_ids = f.train_sample_ids.iter().map(rename).collect();
+        f.validation_sample_ids = f.validation_sample_ids.iter().map(rename).collect();
+    }
+    attest_numeric_inputs(&mut target, &mut target_provider, root, "target");
+    let target_request_before = serde_json::to_vec(&target.request).unwrap();
+    let plan = derive_portable_full_refit_target_plan(&recipe, &package, &target.request).unwrap();
+    write_owner(root, "target_refit_plan.json", &plan);
+    let execution = {
+        let registry = registry(&runtime);
+        execute_portable_full_refit(PortableFullRefitExecutionInput {
+            recipe:&recipe, source_package:&package, target_plan:&plan,
+            target_training_request:&target.request,
+            target_training_request_fingerprint:target.request.request_fingerprint.clone(),
+            target_data_identities:&target.request.data_identities,
+            target_training_influence:&target.influence,
+            run_id:RunId::new("run:phase2a.role.target").unwrap(),
+            controllers:&registry, data_provider:&target_provider,
+        }).expect("genuine fresh target native Methods REFIT")
+    };
+    assert_eq!(execution.results.len(), 1);
+    assert!(execution.results.iter().all(|r|r.lineage.phase==Phase::Refit));
+    write_owner(root, "target_execution_provenance.json", &execution.provenance);
+    write_owner(root, "target_execution_results.json", &execution.results);
+    write_owner(root, "target_execution_refit_artifacts.json", &execution.refit_artifacts);
+    let child = build_portable_refit_package_v3(PortableRefitPackageV3BuildInput {
+        package_id:"package:phase2a.role.child".into(), outcome_id:"outcome:phase2a.role.child".into(),
+        bundle_id:BundleId::new("bundle:phase2a.role.child").unwrap(),
+        recipe:&recipe,source_package:&package,target_plan:&plan,target_training_request:&target.request,
+        target_data_identities:&target.request.data_identities,target_training_influence:&target.influence,execution:&execution,
+    }).unwrap();
+    child.validate().unwrap();
+    let child_json = write_owner(root, "child_refit_v3.json", &child);
+    assert_eq!(PortableRefitPackageV3::from_json(&child_json).unwrap(), child);
+    assert_eq!(child.outcome.execution_bundle.raw_artifact_payloads,execution.raw_artifact_payloads);
+    assert_ne!(package.execution_bundle.raw_artifact_payloads.values().next().unwrap(),execution.raw_artifact_payloads.values().next().unwrap());
+    let child_raw = save_raw(root, "child", &child.outcome.execution_bundle.raw_artifact_payloads, &runtime);
+    assert_eq!(serde_json::to_vec(&source.request).unwrap(),source_request_before);
+    assert_eq!(serde_json::to_vec(&target.request).unwrap(),target_request_before);
+    assert_eq!(serde_json::to_vec(&package).unwrap(),package_json.as_bytes());
+    assert_eq!(hash(&std::fs::read(LIBRARY).unwrap()), LIBRARY_SHA256);
+    write_owner(root, "owner_validation.json", &json!({
+        "status":"passed","owner":"dag-ml-core 0.3.44 methods-optimizer",
+        "runtime_library":runtime.library_path(),"runtime_abi":n4m::runtime_abi_version().unwrap(),
+        "types":{"training_outcome":parent.schema_version,"predictor_package":package.schema_version,"child_refit_v3":child.schema_version},
+        "checks":["TrainingRequest::from_json (source and target)","TrainingContractProjection::from_json (source and target)","ExternalDataPlanEnvelope::validate and TrainingDataIdentity::from_binding_envelope equality", "TrainingOutcome::validate/from_json equality", "PortablePredictorPackage::validate/from_json equality", "PortableRefitRecipe::from_json/validate_against_source_package", "PortableRefitPackageV3::validate/from_json equality", "inspect_methods_role_pipeline_params imports actual N4ME states", "Estimator::from_n4me/is_fitted/method_id/n_features_in/n_outputs/contains_training_rows", "source outcome/package raw payload equality", "child detached execution/package raw payload equality", "parent and child native fitted bytes differ", "source package/source and target request bytes remain unchanged"],
+        "source_raw":source_raw,"child_raw":child_raw,
+        "refit_results":execution.results.len(),"source_oof_averages":parent.oof_averages.len(),
+        "archive_builders_invoked":false,"container_readers_invoked":false,
+        "data_identity_scope":"Generic coordinator synthetic provider fixture only. Binding schema/plan fingerprints are inherited literal fixture attestations; numeric content fingerprints are SHA-256 of exact retained provider row sidecars. No nirs4all-io logical dataset identity is claimed."
+    }));
+    println!("Owner training, portable source, fresh native REFIT V3 and exact raw-state validation passed.");
+}

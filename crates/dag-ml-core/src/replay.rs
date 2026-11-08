@@ -213,6 +213,13 @@ impl PortableRefitReplayOutcomeV3 {
         }
         package.validate()?;
         request.validate()?;
+        let bundle = package.outcome.to_runtime_replay_bundle()?;
+        ReplayPhaseRequest {
+            bundle_id: bundle.bundle_id.clone(),
+            phase: request.phase,
+            data_envelope_keys: request.data_envelope_keys.clone(),
+        }
+        .validate_for_bundle(&bundle)?;
         validate_replay_phase(request.phase)?;
         validate_identifier("portable refit replay outcome_id", &self.outcome_id)?;
         validate_sha256(
@@ -307,6 +314,12 @@ impl PortableRefitReplayOutcomeV3 {
             output.validate(&package.outcome.effective_plan)?;
             validate_replay_bound_output_blocks(output)?;
         }
+        validate_replay_explanations(
+            &package.outcome.effective_plan,
+            bindings.values().copied(),
+            request,
+            &self.explanations,
+        )?;
         for explanation in &self.explanations {
             explanation.validate()?;
         }
@@ -432,6 +445,48 @@ pub struct TrainingReplayOutcome {
     pub warnings: Vec<String>,
     pub diagnostics: BTreeMap<String, serde_json::Value>,
     pub outcome_fingerprint: String,
+}
+
+/// A nonserialized current-row validation refusal; no facet or wire dependency.
+#[derive(Debug)]
+pub enum ReplayCurrentCohortError {
+    Invalid(DagMlError),
+    Mismatch {
+        binding_id: Option<String>,
+        input_key: Option<String>,
+        reason: String,
+    },
+    Missing(ReplayCurrentCohortMissing),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReplayCurrentCohortMissing {
+    EnvelopeAbsent { input_key: String },
+    NoClosureDataKey { binding_id: String },
+}
+
+impl std::fmt::Display for ReplayCurrentCohortError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Invalid(error) => error.fmt(f),
+            Self::Mismatch { binding_id, input_key, reason } => write!(f, "replay current-cohort mismatch (binding {binding_id:?}, input {input_key:?}): {reason}"),
+            Self::Missing(missing) => write!(f, "replay current-cohort rows are unverified: {missing:?}"),
+        }
+    }
+}
+impl std::error::Error for ReplayCurrentCohortError {}
+impl From<DagMlError> for ReplayCurrentCohortError {
+    fn from(error: DagMlError) -> Self {
+        Self::Invalid(error)
+    }
+}
+impl From<ReplayCurrentCohortError> for DagMlError {
+    fn from(error: ReplayCurrentCohortError) -> Self {
+        match error {
+            ReplayCurrentCohortError::Invalid(error) => error,
+            other => Self::RuntimeValidation(other.to_string()),
+        }
+    }
 }
 
 /// Content identity for one external replay input.
@@ -630,6 +685,12 @@ impl TrainingReplayOutcome {
         self.validate()?;
         source.validate()?;
         request.validate()?;
+        ReplayPhaseRequest {
+            bundle_id: source.execution_bundle.bundle_id.clone(),
+            phase: request.phase,
+            data_envelope_keys: request.data_envelope_keys.clone(),
+        }
+        .validate_for_bundle(&source.execution_bundle)?;
         crate::target_domain::validate_domain_replay(
             &source.effective_plan,
             &source.lineage,
@@ -720,6 +781,12 @@ impl TrainingReplayOutcome {
             }
             output.validate(&source.effective_plan)?;
         }
+        validate_replay_explanations(
+            &source.effective_plan,
+            source_bindings.values().copied(),
+            request,
+            &self.explanations,
+        )?;
         match &source.conformal_calibration {
             None if !self.conformal_intervals.is_empty() => {
                 return contract_error(
@@ -744,6 +811,12 @@ impl TrainingReplayOutcome {
         self.validate()?;
         package.validate()?;
         request.validate()?;
+        ReplayPhaseRequest {
+            bundle_id: package.execution_bundle.bundle_id.clone(),
+            phase: request.phase,
+            data_envelope_keys: request.data_envelope_keys.clone(),
+        }
+        .validate_for_bundle(&package.execution_bundle)?;
         validate_replay_phase(request.phase)?;
         if request.source_outcome_fingerprint != package.training_outcome.outcome_fingerprint {
             return contract_error(
@@ -827,6 +900,12 @@ impl TrainingReplayOutcome {
             }
             output.validate(&package.effective_plan)?;
         }
+        validate_replay_explanations(
+            &package.effective_plan,
+            package_bindings.values().copied(),
+            request,
+            &self.explanations,
+        )?;
         match &package.conformal_calibration {
             None if !self.conformal_intervals.is_empty() => {
                 return contract_error(
@@ -896,6 +975,229 @@ impl TrainingReplayOutcome {
         )?;
         Ok(())
     }
+}
+
+impl TrainingReplayOutcome {
+    /// Validate source/request context and authenticated current-row membership.
+    /// Unlike source-only validation, this needs the exact current envelopes.
+    /// It does not authenticate host numerical buffers or explanation rows.
+    pub fn validate_against_current_cohort(
+        &self,
+        source: &TrainingOutcome,
+        request: &TrainingReplayRequest,
+        envelopes: &BTreeMap<String, ExternalDataPlanEnvelope>,
+    ) -> std::result::Result<(), ReplayCurrentCohortError> {
+        self.validate_against(source, request)?;
+        validate_replay_current_rows(
+            &source.effective_plan,
+            source.outputs.iter().map(|o| &o.binding),
+            &source.execution_bundle,
+            request,
+            &self.input_data_identities,
+            &self.outputs,
+            envelopes,
+        )
+    }
+    /// Validate a detached replay's context and authenticated current-row membership.
+    pub fn validate_against_package_current_cohort(
+        &self,
+        package: &PortablePredictorPackage,
+        request: &TrainingReplayRequest,
+        envelopes: &BTreeMap<String, ExternalDataPlanEnvelope>,
+    ) -> std::result::Result<(), ReplayCurrentCohortError> {
+        self.validate_against_package(package, request)?;
+        validate_replay_current_rows(
+            &package.effective_plan,
+            &package.output_bindings,
+            &package.execution_bundle,
+            request,
+            &self.input_data_identities,
+            &self.outputs,
+            envelopes,
+        )
+    }
+}
+impl PortableRefitReplayOutcomeV3 {
+    /// Validate V3 source context, exact identities and authenticated current rows.
+    pub fn validate_against_current_cohort(
+        &self,
+        package: &PortableRefitPackageV3,
+        request: &TrainingReplayRequest,
+        envelopes: &BTreeMap<String, ExternalDataPlanEnvelope>,
+    ) -> std::result::Result<(), ReplayCurrentCohortError> {
+        self.validate_against(package, request)?;
+        let bundle = package.outcome.to_runtime_replay_bundle()?;
+        validate_replay_current_rows(
+            &package.outcome.effective_plan,
+            &package.outcome.output_bindings,
+            &bundle,
+            request,
+            &self.input_data_identities,
+            &self.outputs,
+            envelopes,
+        )
+    }
+}
+
+// An executor preserves the existing no-key route only after the shared method
+// has checked every identity and every binding that does have closure keys.
+fn finish_current_row_check(
+    result: std::result::Result<(), ReplayCurrentCohortError>,
+) -> Result<()> {
+    match result {
+        Ok(())
+        | Err(ReplayCurrentCohortError::Missing(ReplayCurrentCohortMissing::NoClosureDataKey {
+            ..
+        })) => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_replay_current_rows<'a>(
+    plan: &ExecutionPlan,
+    bindings: impl IntoIterator<Item = &'a crate::OutputBinding>,
+    bundle: &ExecutionBundle,
+    request: &TrainingReplayRequest,
+    identities: &[ReplayDataIdentity],
+    outputs: &[BoundTrainingOutput],
+    envelopes: &BTreeMap<String, ExternalDataPlanEnvelope>,
+) -> std::result::Result<(), ReplayCurrentCohortError> {
+    use ReplayCurrentCohortError::{Mismatch, Missing};
+    ReplayPhaseRequest {
+        bundle_id: bundle.bundle_id.clone(),
+        phase: request.phase,
+        data_envelope_keys: request.data_envelope_keys.clone(),
+    }
+    .validate_for_bundle(bundle)?;
+    for key in &request.data_envelope_keys {
+        if !envelopes.contains_key(key) {
+            return Err(Missing(ReplayCurrentCohortMissing::EnvelopeAbsent {
+                input_key: key.clone(),
+            }));
+        }
+    }
+    for key in &request.data_envelope_keys {
+        let envelope = envelopes.get(key).ok_or_else(|| {
+            Missing(ReplayCurrentCohortMissing::EnvelopeAbsent {
+                input_key: key.clone(),
+            })
+        })?;
+        let digest = envelope
+            .predict_cohort
+            .as_ref()
+            .map(|c| &c.relation_fingerprint)
+            .or(envelope.relation_fingerprint.as_ref());
+        if let Some(digest) = digest {
+            if replay_chosen_relations(envelope, key)?.fingerprint()? != *digest {
+                return Err(Mismatch {
+                    binding_id: None,
+                    input_key: Some(key.clone()),
+                    reason: "chosen relation preimage does not match the recorded digest".into(),
+                });
+            }
+        }
+    }
+    if replay_input_data_identities(bundle, request, envelopes)? != identities {
+        return Err(Mismatch {
+            binding_id: None,
+            input_key: None,
+            reason: "current input identities differ, including identity_fingerprint".into(),
+        });
+    }
+    let bindings = bindings
+        .into_iter()
+        .map(|b| (b.binding_id.as_str(), b))
+        .collect::<BTreeMap<_, _>>();
+    let mut no_key = None;
+    for id in &request.output_binding_ids {
+        let binding = bindings.get(id.as_str()).ok_or_else(|| {
+            DagMlError::RuntimeValidation(format!("absent selected binding `{id}`"))
+        })?;
+        let closure = crate::training::predictor_closure(plan, [&binding.node_id])?;
+        let keys = closure
+            .iter()
+            .flat_map(|n| &plan.node_plans[n].data_bindings)
+            .map(|b| crate::data::data_binding_requirement_key(&b.node_id, &b.input_name))
+            .collect::<BTreeSet<_>>();
+        if keys.is_empty() {
+            if no_key.is_none() {
+                no_key = Some(id.clone());
+            }
+            continue;
+        }
+        let mut samples = BTreeSet::new();
+        let mut observations = BTreeSet::new();
+        let mut targets = BTreeSet::new();
+        let mut groups = BTreeSet::new();
+        for key in keys {
+            let envelope = envelopes.get(&key).ok_or_else(|| {
+                Missing(ReplayCurrentCohortMissing::EnvelopeAbsent {
+                    input_key: key.clone(),
+                })
+            })?;
+            for record in &replay_chosen_relations(envelope, &key)?.records {
+                samples.insert(record.sample_id.as_str());
+                observations.insert(record.observation_id.as_str());
+                if let Some(target) = &record.target_id {
+                    targets.insert(target.as_str());
+                }
+                match plan.node_plans[&binding.node_id]
+                    .shape_plan
+                    .as_ref()
+                    .and_then(|shape| shape.aggregation_policy.grouping_key.as_ref())
+                {
+                    Some(crate::AggregationGroupingKey::RelationMetadata { key }) => {
+                        if let Some(value) = record
+                            .metadata
+                            .get(key)
+                            .and_then(serde_json::Value::as_str)
+                            .filter(|v| !v.trim().is_empty())
+                        {
+                            groups.insert(value);
+                        }
+                    }
+                    None => {
+                        if let Some(group) = &record.group_id {
+                            groups.insert(group.as_str());
+                        }
+                    }
+                }
+            }
+        }
+        for output in outputs.iter().filter(|o| o.binding.binding_id == *id) {
+            let alien = output
+                .predictions
+                .iter()
+                .any(|b| b.sample_ids.iter().any(|id| !samples.contains(id.as_str())))
+                || output.observation_predictions.iter().any(|b| {
+                    b.observation_ids
+                        .iter()
+                        .any(|id| !observations.contains(id.as_str()))
+                })
+                || output.aggregated_predictions.iter().any(|b| {
+                    b.unit_ids.iter().any(|unit| match unit {
+                        crate::PredictionUnitId::Sample(id) => !samples.contains(id.as_str()),
+                        crate::PredictionUnitId::Target(id) => !targets.contains(id.as_str()),
+                        crate::PredictionUnitId::Group(id) => !groups.contains(id.as_str()),
+                    })
+                });
+            if alien {
+                return Err(Mismatch {
+                    binding_id: Some(id.clone()),
+                    input_key: None,
+                    reason: "output identity is outside this binding's current relation closure"
+                        .into(),
+                });
+            }
+        }
+    }
+    if let Some(binding_id) = no_key {
+        return Err(Missing(ReplayCurrentCohortMissing::NoClosureDataKey {
+            binding_id,
+        }));
+    }
+    Ok(())
 }
 
 /// Reconstruct the complete signed request preimage retained transitively by
@@ -1111,6 +1413,14 @@ pub fn execute_attached_training_replay(
     {
         return contract_error("training replay phase is not replayable by source outcome");
     }
+    validate_replay_cohort_target_claims(
+        &input.source.effective_plan,
+        input.source.outputs.iter().map(|output| &output.binding),
+        input.request,
+        input.data_envelopes,
+        false,
+    )
+    .map_err(ReplayCohortTargetError::into_owner_error)?;
     for node_plan in input.source.effective_plan.node_plans.values() {
         if input.controllers.get(&node_plan.controller_id).is_none() {
             return Err(DagMlError::RuntimeValidation(format!(
@@ -1175,7 +1485,12 @@ pub fn execute_attached_training_replay(
     if let Some(calibration) = input.source.conformal_calibration.as_ref() {
         validate_replay_interval_closure(calibration, &outputs, &conformal_intervals)?;
     }
-    let explanations = bind_attached_replay_explanations(input.request, &results)?;
+    let explanations = bind_attached_replay_explanations(
+        &input.source.effective_plan,
+        input.source.outputs.iter().map(|o| &o.binding),
+        input.request,
+        &results,
+    )?;
     let mut lineage = ctx.lineage.records().cloned().collect::<Vec<_>>();
     for record in &mut lineage {
         record.input_lineage.sort();
@@ -1223,7 +1538,11 @@ pub fn execute_attached_training_replay(
         outcome_fingerprint: zero_fingerprint(),
     };
     let outcome = stabilize_training_replay_outcome_for_tcv1(outcome)?;
-    outcome.validate_against(input.source, input.request)?;
+    finish_current_row_check(outcome.validate_against_current_cohort(
+        input.source,
+        input.request,
+        input.data_envelopes,
+    ))?;
     Ok(outcome)
 }
 
@@ -1231,6 +1550,9 @@ pub fn execute_attached_training_replay(
 /// This uses the same native cohort derivation as execution, without hydration
 /// or numerical callbacks. Artifact sidecar coverage remains owned by
 /// `LoadedPredictor::new`.
+/// Explicit V2 cohort targets cover exactly the selected bindings reading each
+/// input key, preserving each binding's order as an ordered subsequence. No order
+/// is imposed between independent outputs. Legacy envelopes make no such claim.
 pub fn preflight_loaded_predictor_replay(
     package: &PortablePredictorPackage,
     request: &TrainingReplayRequest,
@@ -1242,6 +1564,14 @@ pub fn preflight_loaded_predictor_replay(
         return contract_error("training replay request does not target package source outcome");
     }
     preflight_replay_output_bindings(&package.output_bindings, request)?;
+    validate_replay_cohort_target_claims(
+        &package.effective_plan,
+        package.output_bindings.iter(),
+        request,
+        envelopes,
+        false,
+    )
+    .map_err(ReplayCohortTargetError::into_owner_error)?;
     replay_input_data_identities(&package.execution_bundle, request, envelopes)?;
     replay_plan_and_bundle_for_current_cohort(
         &package.effective_plan,
@@ -1252,7 +1582,8 @@ pub fn preflight_loaded_predictor_replay(
     Ok(())
 }
 
-/// Validate a detached V3 replay without starting a host or hydrating state.
+/// Validate a detached V3 replay, including selected explicit cohort target
+/// claims, without starting a host or hydrating state.
 pub fn preflight_loaded_portable_refit_replay_v3(
     package: &PortableRefitPackageV3,
     request: &TrainingReplayRequest,
@@ -1266,6 +1597,14 @@ pub fn preflight_loaded_portable_refit_replay_v3(
         );
     }
     preflight_replay_output_bindings(&package.outcome.output_bindings, request)?;
+    validate_replay_cohort_target_claims(
+        &package.outcome.effective_plan,
+        package.outcome.output_bindings.iter(),
+        request,
+        envelopes,
+        false,
+    )
+    .map_err(ReplayCohortTargetError::into_owner_error)?;
     let bundle = package.outcome.to_runtime_replay_bundle()?;
     replay_input_data_identities(&bundle, request, envelopes)?;
     replay_plan_and_bundle_for_current_cohort(
@@ -1274,6 +1613,155 @@ pub fn preflight_loaded_portable_refit_replay_v3(
         request,
         envelopes,
     )?;
+    Ok(())
+}
+
+/// Internal typed distinction lets the canonical facet port preserve Mismatch
+/// and UnverifiedEvidence without classifying owner error message strings.
+#[derive(Debug)]
+pub(crate) enum ReplayCohortTargetError {
+    Validation(DagMlError),
+    Mismatch {
+        binding_id: String,
+        input_key: String,
+        reason: &'static str,
+    },
+    Missing {
+        binding_id: String,
+        input_key: Option<String>,
+    },
+}
+
+impl ReplayCohortTargetError {
+    fn detail(&self) -> String {
+        match self {
+            Self::Validation(source) => source.to_string(),
+            Self::Mismatch { binding_id, input_key, reason } => format!(
+                "explicit replay cohort targets for `{input_key}` fail validation for selected output binding `{binding_id}`: {reason}"),
+            Self::Missing { binding_id, input_key } => format!(
+                "selected output binding `{binding_id}` lacks concrete V2 cohort evidence at {input_key:?}"),
+        }
+    }
+    fn into_owner_error(self) -> DagMlError {
+        match self {
+            Self::Validation(source) => source,
+            other => DagMlError::RuntimeValidation(other.detail()),
+        }
+    }
+    pub(crate) fn into_facet_refusal(self) -> crate::FacetRefusal {
+        match self {
+            Self::Validation(source) => source.into(),
+            other @ Self::Mismatch { .. } => crate::FacetRefusal::Mismatch {
+                detail: other.detail(),
+            },
+            other @ Self::Missing { .. } => crate::FacetRefusal::UnverifiedEvidence {
+                detail: other.detail(),
+            },
+        }
+    }
+}
+
+/// Check only explicit cohort target claims for the actual selected saved
+/// OutputBindings grouped by their actual owner input requirement keys, in
+/// PREDICT and EXPLAIN. Each cohort covers exactly the selected target union;
+/// each binding's ordered targets must be a subsequence of its input claim.
+/// Conflicting orders on one key require separate requests. Unselected bindings
+/// never contribute coverage, and distinct keys are constrained independently.
+/// A legacy envelope without PredictCohort makes no such claim. The canonical
+/// facet port separately requires presence via its stricter internal flag.
+/// No runtime, provider, controller or hydration callback is involved.
+pub(crate) fn validate_replay_cohort_target_claims<'a>(
+    plan: &ExecutionPlan,
+    bindings: impl IntoIterator<Item = &'a crate::OutputBinding>,
+    request: &TrainingReplayRequest,
+    envelopes: &BTreeMap<String, ExternalDataPlanEnvelope>,
+    require_explicit: bool,
+) -> std::result::Result<(), ReplayCohortTargetError> {
+    let bindings = bindings
+        .into_iter()
+        .map(|binding| (binding.binding_id.as_str(), binding))
+        .collect::<BTreeMap<_, _>>();
+    let mut by_key: BTreeMap<String, (&crate::PredictCohort, Vec<&crate::OutputBinding>)> =
+        BTreeMap::new();
+    for id in &request.output_binding_ids {
+        let binding = bindings.get(id.as_str()).ok_or_else(|| {
+            ReplayCohortTargetError::Validation(DagMlError::RuntimeValidation(format!(
+                "training replay references absent binding `{id}`"
+            )))
+        })?;
+        let closure = crate::training::predictor_closure(plan, [&binding.node_id])
+            .map_err(ReplayCohortTargetError::Validation)?;
+        let mut found = false;
+        for data in closure
+            .iter()
+            .flat_map(|node| &plan.node_plans[node].data_bindings)
+        {
+            let key = crate::data::data_binding_requirement_key(&data.node_id, &data.input_name);
+            if let Some(cohort) = envelopes
+                .get(&key)
+                .and_then(|envelope| envelope.predict_cohort.as_ref())
+            {
+                found = true;
+                by_key
+                    .entry(key)
+                    .or_insert_with(|| (cohort, Vec::new()))
+                    .1
+                    .push(binding);
+            } else if require_explicit {
+                return Err(ReplayCohortTargetError::Missing {
+                    binding_id: id.clone(),
+                    input_key: Some(key),
+                });
+            }
+        }
+        if require_explicit && !found {
+            return Err(ReplayCohortTargetError::Missing {
+                binding_id: id.clone(),
+                input_key: None,
+            });
+        }
+    }
+    for (key, (cohort, consumers)) in by_key {
+        let expected = consumers
+            .iter()
+            .flat_map(|binding| binding.target_names.iter().map(String::as_str))
+            .collect::<BTreeSet<_>>();
+        let claimed = cohort
+            .target_names
+            .iter()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        if claimed != expected {
+            let binding = consumers
+                .iter()
+                .find(|binding| {
+                    binding
+                        .target_names
+                        .iter()
+                        .any(|name| !claimed.contains(name.as_str()))
+                })
+                .unwrap_or(&consumers[0]);
+            return Err(ReplayCohortTargetError::Mismatch {
+                binding_id: binding.binding_id.clone(),
+                input_key: key,
+                reason: "coverage differs from the exact selected target union",
+            });
+        }
+        for binding in consumers {
+            let mut names = cohort.target_names.iter();
+            if !binding
+                .target_names
+                .iter()
+                .all(|target| names.any(|name| name == target))
+            {
+                return Err(ReplayCohortTargetError::Mismatch {
+                    binding_id: binding.binding_id.clone(),
+                    input_key: key,
+                    reason: "binding target order is not an ordered subsequence",
+                });
+            }
+        }
+    }
     Ok(())
 }
 
@@ -1306,6 +1794,14 @@ pub fn execute_loaded_predictor_replay(
     if input.request.source_outcome_fingerprint != package.training_outcome.outcome_fingerprint {
         return contract_error("training replay request does not target package source outcome");
     }
+    validate_replay_cohort_target_claims(
+        &package.effective_plan,
+        package.output_bindings.iter(),
+        input.request,
+        input.data_envelopes,
+        false,
+    )
+    .map_err(ReplayCohortTargetError::into_owner_error)?;
     for node_plan in package.effective_plan.node_plans.values() {
         if input.controllers.get(&node_plan.controller_id).is_none() {
             return Err(DagMlError::RuntimeValidation(format!(
@@ -1371,7 +1867,12 @@ pub fn execute_loaded_predictor_replay(
     if let Some(calibration) = package.conformal_calibration.as_ref() {
         validate_replay_interval_closure(calibration, &outputs, &conformal_intervals)?;
     }
-    let explanations = bind_attached_replay_explanations(input.request, &results)?;
+    let explanations = bind_attached_replay_explanations(
+        &package.effective_plan,
+        &package.output_bindings,
+        input.request,
+        &results,
+    )?;
     let mut lineage = ctx.lineage.records().cloned().collect::<Vec<_>>();
     for record in &mut lineage {
         record.input_lineage.sort();
@@ -1419,7 +1920,11 @@ pub fn execute_loaded_predictor_replay(
         outcome_fingerprint: zero_fingerprint(),
     };
     let outcome = stabilize_training_replay_outcome_for_tcv1(outcome)?;
-    outcome.validate_against_package(package, input.request)?;
+    finish_current_row_check(outcome.validate_against_package_current_cohort(
+        package,
+        input.request,
+        input.data_envelopes,
+    ))?;
     Ok(outcome)
 }
 
@@ -1441,6 +1946,14 @@ pub fn execute_loaded_portable_refit_replay_v3(
             "portable refit replay request does not target the V3 child outcome".to_string(),
         );
     }
+    validate_replay_cohort_target_claims(
+        &input.package.outcome.effective_plan,
+        input.package.outcome.output_bindings.iter(),
+        input.request,
+        input.data_envelopes,
+        false,
+    )
+    .map_err(ReplayCohortTargetError::into_owner_error)?;
     for node_plan in input.package.outcome.effective_plan.node_plans.values() {
         if input.controllers.get(&node_plan.controller_id).is_none() {
             return Err(DagMlError::RuntimeValidation(format!(
@@ -1494,7 +2007,12 @@ pub fn execute_loaded_portable_refit_replay_v3(
         );
     }
     let outputs = bind_refit_package_replay_outputs(input.package, input.request, &results)?;
-    let explanations = bind_attached_replay_explanations(input.request, &results)?;
+    let explanations = bind_attached_replay_explanations(
+        &input.package.outcome.effective_plan,
+        &input.package.outcome.output_bindings,
+        input.request,
+        &results,
+    )?;
     let mut lineage = ctx.lineage.records().cloned().collect::<Vec<_>>();
     for record in &mut lineage {
         record.input_lineage.sort();
@@ -1523,7 +2041,11 @@ pub fn execute_loaded_portable_refit_replay_v3(
         outcome_fingerprint: zero_fingerprint(),
     };
     outcome.outcome_fingerprint = outcome.compute_fingerprint()?;
-    outcome.validate_against(input.package, input.request)?;
+    finish_current_row_check(outcome.validate_against_current_cohort(
+        input.package,
+        input.request,
+        input.data_envelopes,
+    ))?;
     Ok(outcome)
 }
 
@@ -1831,29 +2353,52 @@ fn calibration_origin_closure(
 
 // Structural fingerprints stay bound to the archived development envelope.
 // Content provenance must name the cohort actually read by this replay.
+fn replay_chosen_relations<'a>(
+    envelope: &'a ExternalDataPlanEnvelope,
+    key: &str,
+) -> Result<&'a SampleRelationSet> {
+    envelope
+        .predict_cohort
+        .as_ref()
+        .map(|cohort| &cohort.relations)
+        .or(envelope.coordinator_relations.as_ref())
+        .ok_or_else(|| {
+            DagMlError::RuntimeValidation(format!(
+                "training replay envelope for `{key}` requires concrete current relations"
+            ))
+        })
+}
+
 fn replay_cohort_content_identity(
     envelope: &ExternalDataPlanEnvelope,
     key: &str,
 ) -> Result<(String, String, Option<String>)> {
     envelope.validate()?;
-    if let Some(cohort) = &envelope.predict_cohort {
-        return Ok((
+    let (relation, data, target) = if let Some(cohort) = &envelope.predict_cohort {
+        (
             cohort.relation_fingerprint.clone(),
             cohort.data_content_fingerprint.clone(),
             cohort.target_content_fingerprint.clone(),
-        ));
+        )
+    } else {
+        let relation = envelope.relation_fingerprint.clone().ok_or_else(|| {
+            DagMlError::RuntimeValidation(format!(
+                "training replay envelope for `{key}` requires a relation fingerprint"
+            ))
+        })?;
+        let data = envelope.data_content_fingerprint.clone().ok_or_else(|| {
+            DagMlError::RuntimeValidation(format!(
+                "training replay envelope for `{key}` requires a data content fingerprint"
+            ))
+        })?;
+        (relation, data, envelope.target_content_fingerprint.clone())
+    };
+    if replay_chosen_relations(envelope, key)?.fingerprint()? != relation {
+        return Err(DagMlError::RuntimeValidation(format!(
+            "training replay chosen relations for `{key}` do not match their recorded relation fingerprint"
+        )));
     }
-    let relation = envelope.relation_fingerprint.clone().ok_or_else(|| {
-        DagMlError::RuntimeValidation(format!(
-            "training replay envelope for `{key}` requires a relation fingerprint"
-        ))
-    })?;
-    let data = envelope.data_content_fingerprint.clone().ok_or_else(|| {
-        DagMlError::RuntimeValidation(format!(
-            "training replay envelope for `{key}` requires a data content fingerprint"
-        ))
-    })?;
-    Ok((relation, data, envelope.target_content_fingerprint.clone()))
+    Ok((relation, data, target))
 }
 
 fn replay_input_data_identities(
@@ -1948,6 +2493,10 @@ fn replay_plan_and_bundle_for_current_cohort(
                     "training replay is missing external data envelope for `{key}`"
                 ))
             })?;
+            envelope.validate_external_test_training_authority(
+                requirement.relation_fingerprint.as_deref(),
+                plan.fold_set.as_ref(),
+            )?;
             requirement.relation_fingerprint = envelope.relation_fingerprint.clone();
             for bindings in replay_plan.campaign.data_bindings.values_mut() {
                 for binding in bindings {
@@ -2219,18 +2768,97 @@ fn validate_replay_interval_closure(
     Ok(())
 }
 
-fn bind_attached_replay_explanations(
+fn replay_explanation_coordinates<'a>(
+    bindings: &[&'a crate::OutputBinding],
+) -> Result<BTreeMap<(crate::NodeId, String), &'a crate::OutputBinding>> {
+    let mut map = BTreeMap::new();
+    for binding in bindings {
+        if map
+            .insert(
+                (binding.node_id.clone(), binding.port_name.clone()),
+                *binding,
+            )
+            .is_some()
+        {
+            return contract_error("replay source has ambiguous output binding coordinates");
+        }
+    }
+    Ok(map)
+}
+fn explanation_matches_binding(
+    plan: &ExecutionPlan,
+    block: &ExplanationBlock,
+    binding: &crate::OutputBinding,
+) -> bool {
+    block.producer_node == binding.node_id
+        && crate::training_runtime::producer_port_matches_graph_output(
+            plan,
+            &binding.node_id,
+            &binding.port_name,
+            &block.producer_port,
+        )
+}
+fn validate_replay_explanations<'a>(
+    plan: &ExecutionPlan,
+    bindings: impl IntoIterator<Item = &'a crate::OutputBinding>,
+    request: &TrainingReplayRequest,
+    explanations: &[ExplanationBlock],
+) -> Result<()> {
+    let bindings = bindings.into_iter().collect::<Vec<_>>();
+    let coordinates = replay_explanation_coordinates(&bindings)?;
+    for block in explanations {
+        block.validate()?;
+        let binding = coordinates
+            .values()
+            .find(|b| {
+                explanation_matches_binding(plan, block, b)
+                    && request.output_binding_ids.contains(&b.binding_id)
+            })
+            .ok_or_else(|| {
+                DagMlError::RuntimeValidation(
+                    "replay explanation coordinate is outside the selected bindings".into(),
+                )
+            })?;
+        if block
+            .target_name
+            .as_ref()
+            .is_some_and(|target| !binding.target_names.contains(target))
+        {
+            return contract_error(
+                "replay explanation target is outside its selected binding target names",
+            );
+        }
+    }
+    if request.phase == Phase::Explain && explanations.is_empty() {
+        return contract_error("EXPLAIN selection contains no explanation block");
+    }
+    Ok(())
+}
+
+fn bind_attached_replay_explanations<'a>(
+    plan: &ExecutionPlan,
+    bindings: impl IntoIterator<Item = &'a crate::OutputBinding>,
     request: &TrainingReplayRequest,
     results: &[crate::runtime::NodeResult],
 ) -> Result<Vec<ExplanationBlock>> {
     if request.phase != Phase::Explain {
         return Ok(Vec::new());
     }
+    let bindings = bindings.into_iter().collect::<Vec<_>>();
+    let coordinates = replay_explanation_coordinates(&bindings)?;
     let mut explanations = results
         .iter()
         .flat_map(|result| result.explanations.iter().cloned())
-        .filter(|block| block.producer_port.is_some())
         .collect::<Vec<_>>();
+    // Every callback block has already passed task producer/port and intrinsic
+    // payload validation. Filtering never hides an invalid callback payload.
+    explanations.retain(|block| {
+        coordinates.values().any(|binding| {
+            request.output_binding_ids.contains(&binding.binding_id)
+                && explanation_matches_binding(plan, block, binding)
+        })
+    });
+    validate_replay_explanations(plan, bindings, request, &explanations)?;
     explanations.sort_by(|left, right| {
         (
             left.producer_node.as_str(),
@@ -2283,7 +2911,15 @@ fn validate_replay_bound_output_blocks(output: &BoundTrainingOutput) -> Result<(
     {
         return contract_error("training replay bound output contains no prediction block");
     }
+    let mut sample_ids = BTreeSet::new();
     for block in &output.predictions {
+        for id in &block.sample_ids {
+            if !sample_ids.insert(id) {
+                return contract_error(
+                    "training replay binding contains duplicate sample output identities",
+                );
+            }
+        }
         validate_optional_port(
             "training replay prediction producer_port",
             &block.producer_port,
@@ -2294,7 +2930,15 @@ fn validate_replay_bound_output_blocks(output: &BoundTrainingOutput) -> Result<(
             );
         }
     }
+    let mut observation_ids = BTreeSet::new();
     for block in &output.observation_predictions {
+        for id in &block.observation_ids {
+            if !observation_ids.insert(id) {
+                return contract_error(
+                    "training replay binding contains duplicate observation output identities",
+                );
+            }
+        }
         validate_optional_port(
             "training replay observation prediction producer_port",
             &block.producer_port,
@@ -2305,7 +2949,15 @@ fn validate_replay_bound_output_blocks(output: &BoundTrainingOutput) -> Result<(
             );
         }
     }
+    let mut aggregate_ids = BTreeSet::new();
     for block in &output.aggregated_predictions {
+        for id in &block.unit_ids {
+            if !aggregate_ids.insert((block.level, id)) {
+                return contract_error(
+                    "training replay binding contains duplicate aggregate output identities",
+                );
+            }
+        }
         validate_optional_port(
             "training replay aggregated prediction producer_port",
             &block.producer_port,
@@ -2823,5 +3475,624 @@ mod tests {
         outcome.outcome_fingerprint = outcome.compute_fingerprint().unwrap();
         let error = outcome.validate().unwrap_err().to_string();
         assert!(error.contains("V1/V2 requires target-bound"), "{error}");
+    }
+}
+
+#[cfg(test)]
+mod cohort_target_claim_tests {
+    use super::*;
+
+    #[test]
+    fn selected_binding_target_order_applies_to_predict_and_explain_only_for_selected_claims() {
+        // An owner-unit target-vector fixture, not a fabricated multi-target
+        // package/model or a numerical qualification claim. Saved root/plan
+        // topology comes from the genuine owner fixture; no private proof is minted.
+        let package = PortablePredictorPackage::from_json(include_str!(
+            "../tests/fixtures/artifact_facets_b1/outputs/ppc.before.json"
+        ))
+        .unwrap();
+        let mut binding = package.output_bindings[0].clone();
+        binding.target_names = vec!["protein".into(), "fat".into()];
+        binding.binding_fingerprint = binding.compute_fingerprint().unwrap();
+        let mut unselected = binding.clone();
+        unselected.binding_id = "output:unselected".into();
+        unselected.target_names = vec!["unrelated".into()];
+        unselected.binding_fingerprint = unselected.compute_fingerprint().unwrap();
+        let mut request = TrainingReplayRequest::from_json(include_str!(
+            "../tests/fixtures/artifact_facets_b1/outputs/replay_request.json"
+        ))
+        .unwrap();
+        let mut envelopes: BTreeMap<String, ExternalDataPlanEnvelope> = serde_json::from_str(
+            include_str!("../tests/fixtures/artifact_facets_b1/outputs/replay_envelope.json"),
+        )
+        .unwrap();
+        for envelope in envelopes.values_mut() {
+            let cohort = envelope.predict_cohort.as_mut().unwrap();
+            cohort.target_names = binding.target_names.clone();
+            cohort.cohort_fingerprint = cohort.fingerprint().unwrap();
+            envelope.validate().unwrap();
+        }
+        for phase in [Phase::Predict, Phase::Explain] {
+            request.phase = phase;
+            request.request_fingerprint = request.compute_fingerprint().unwrap();
+            validate_replay_cohort_target_claims(
+                &package.effective_plan,
+                [&binding, &unselected],
+                &request,
+                &envelopes,
+                false,
+            )
+            .unwrap();
+            let mut reversed = envelopes.clone();
+            for envelope in reversed.values_mut() {
+                let cohort = envelope.predict_cohort.as_mut().unwrap();
+                cohort.target_names.reverse();
+                cohort.cohort_fingerprint = cohort.fingerprint().unwrap();
+                envelope.validate().unwrap();
+            }
+            assert!(matches!(
+                validate_replay_cohort_target_claims(
+                    &package.effective_plan,
+                    [&binding, &unselected],
+                    &request,
+                    &reversed,
+                    false
+                ),
+                Err(ReplayCohortTargetError::Mismatch { .. })
+            ));
+        }
+    }
+}
+
+#[cfg(test)]
+mod grouped_cohort_target_tests {
+    use super::*;
+
+    // Synthetic owner-unit target/topology edits only. These values are never
+    // represented as a valid trained package or used to mint an owner proof.
+    fn fixture() -> (
+        ExecutionPlan,
+        Vec<crate::OutputBinding>,
+        TrainingReplayRequest,
+        BTreeMap<String, ExternalDataPlanEnvelope>,
+    ) {
+        let package = PortablePredictorPackage::from_json(include_str!(
+            "../tests/fixtures/multi_output_target_claims/shared/package.json"
+        ))
+        .unwrap();
+        let mut request: TrainingReplayRequest = serde_json::from_str(include_str!(
+            "../tests/fixtures/multi_output_target_claims/shared/request.json"
+        ))
+        .unwrap();
+        request.output_binding_ids = package
+            .output_bindings
+            .iter()
+            .map(|b| b.binding_id.clone())
+            .collect();
+        let envelopes = serde_json::from_str(include_str!(
+            "../tests/fixtures/multi_output_target_claims/shared/envelopes.json"
+        ))
+        .unwrap();
+        (
+            package.effective_plan,
+            package.output_bindings,
+            request,
+            envelopes,
+        )
+    }
+
+    fn names(value: &str) -> Vec<String> {
+        value.split(',').map(str::to_string).collect()
+    }
+
+    fn claim(
+        envelopes: &mut BTreeMap<String, ExternalDataPlanEnvelope>,
+        key: &str,
+        targets: &str,
+        external: bool,
+    ) {
+        let envelope = envelopes.get_mut(key).unwrap();
+        let old = envelope.predict_cohort.as_ref().unwrap();
+        let cohort = crate::PredictCohort::from_relations(
+            if external {
+                crate::PredictCohortRole::ExternalTest
+            } else {
+                crate::PredictCohortRole::Inference
+            },
+            old.relations.clone(),
+            names(targets),
+            old.data_content_fingerprint.clone(),
+            external.then(|| "d".repeat(64)),
+        )
+        .unwrap();
+        if external {
+            let relations = crate::SampleRelationSet {
+                records: (1..=4)
+                    .map(|i| {
+                        crate::SampleRelation::new(
+                            crate::ObservationId::new(format!("observation:{i}")).unwrap(),
+                            crate::SampleId::new(format!("sample:{i}")).unwrap(),
+                        )
+                    })
+                    .collect(),
+            };
+            envelope.relation_fingerprint = Some(relations.fingerprint().unwrap());
+            envelope.coordinator_relations = Some(relations);
+        }
+        envelope.target_content_fingerprint = cohort.target_content_fingerprint.clone();
+        envelope.predict_cohort = Some(cohort);
+        envelope.validate().unwrap();
+    }
+
+    #[test]
+    fn grouped_coverage_and_order_matrix() {
+        for (a, b, targets, failure) in [
+            ("protein", "fat", "protein,fat", None),
+            ("protein", "fat", "fat,protein", None),
+            ("protein,fat", "protein,fat", "protein,fat", None),
+            ("protein,fat", "fat,water", "protein,fat,water", None),
+            (
+                "protein,fat",
+                "fat,water",
+                "fat,protein,water",
+                Some("ordered subsequence"),
+            ),
+            (
+                "protein,fat",
+                "fat,protein",
+                "protein,fat",
+                Some("ordered subsequence"),
+            ),
+            (
+                "protein,fat",
+                "fat,protein",
+                "fat,protein",
+                Some("ordered subsequence"),
+            ),
+            ("protein", "fat", "protein", Some("coverage")),
+            ("protein", "fat", "protein,fat,extra", Some("coverage")),
+        ] {
+            let (plan, mut bindings, request, mut envelopes) = fixture();
+            bindings[0].target_names = names(a);
+            bindings[1].target_names = names(b);
+            claim(&mut envelopes, "transform:snv.x", targets, false);
+            for phase in [Phase::Predict, Phase::Explain] {
+                let mut request = request.clone();
+                request.phase = phase;
+                let result = validate_replay_cohort_target_claims(
+                    &plan, &bindings, &request, &envelopes, false,
+                );
+                match failure {
+                    None => result.unwrap(),
+                    Some(expected) => match result.unwrap_err() {
+                        ReplayCohortTargetError::Mismatch {
+                            input_key,
+                            binding_id,
+                            reason,
+                        } => {
+                            assert_eq!(input_key, "transform:snv.x");
+                            assert!(bindings.iter().any(|b| b.binding_id == binding_id));
+                            assert!(reason.contains(expected));
+                        }
+                        other => panic!("unexpected refusal: {other:?}"),
+                    },
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn selected_single_binding_remains_exact_and_external_union_is_supported() {
+        let (plan, mut bindings, mut request, mut envelopes) = fixture();
+        claim(&mut envelopes, "transform:snv.x", "protein,fat", true);
+        validate_replay_cohort_target_claims(&plan, &bindings, &request, &envelopes, true).unwrap();
+        bindings[0].target_names = names("protein,fat");
+        request.output_binding_ids = vec![bindings[0].binding_id.clone()];
+        for (targets, accepted) in [
+            ("protein,fat", true),
+            ("fat,protein", false),
+            ("protein", false),
+            ("other", false),
+            ("protein,fat,extra", false),
+        ] {
+            claim(&mut envelopes, "transform:snv.x", targets, false);
+            assert_eq!(
+                validate_replay_cohort_target_claims(&plan, &bindings, &request, &envelopes, false)
+                    .is_ok(),
+                accepted
+            );
+        }
+        // B is not selected and must not enlarge the union.
+        bindings[0].target_names = names("protein");
+        bindings[1].target_names = names("water");
+        claim(&mut envelopes, "transform:snv.x", "protein", false);
+        validate_replay_cohort_target_claims(&plan, &bindings, &request, &envelopes, true).unwrap();
+        for envelope in envelopes.values_mut() {
+            envelope.schema_version = 1;
+            envelope.predict_cohort = None;
+        }
+        validate_replay_cohort_target_claims(&plan, &bindings, &request, &envelopes, false)
+            .unwrap();
+        assert!(matches!(
+            validate_replay_cohort_target_claims(&plan, &bindings, &request, &envelopes, true),
+            Err(ReplayCohortTargetError::Missing { .. })
+        ));
+    }
+
+    #[test]
+    fn actual_keys_constrain_distinct_and_partially_shared_closures_independently() {
+        let (mut plan, bindings, request, mut envelopes) = fixture();
+        let base = bindings[0].node_id.clone();
+        let second = bindings[1].node_id.clone();
+        let mut data =
+            plan.node_plans[&crate::NodeId::new("transform:snv").unwrap()].data_bindings[0].clone();
+        data.node_id = base.clone();
+        data.input_name = "aux".into();
+        plan.node_plans
+            .get_mut(&base)
+            .unwrap()
+            .data_bindings
+            .push(data.clone());
+        let mut extra = envelopes["transform:snv.x"].clone();
+        envelopes.insert("model:base.aux".into(), extra.clone());
+        claim(&mut envelopes, "model:base.aux", "protein", false);
+        // A reads K1+K2, B only K1. K2 must not require B's target.
+        validate_replay_cohort_target_claims(&plan, &bindings, &request, &envelopes, true).unwrap();
+        claim(&mut envelopes, "model:base.aux", "protein,fat", false);
+        assert!(
+            matches!(validate_replay_cohort_target_claims(&plan, &bindings, &request, &envelopes, false), Err(ReplayCohortTargetError::Mismatch { input_key, .. }) if input_key == "model:base.aux")
+        );
+        plan.node_plans
+            .get_mut(&crate::NodeId::new("transform:snv").unwrap())
+            .unwrap()
+            .data_bindings
+            .clear();
+        claim(&mut envelopes, "model:base.aux", "protein", false);
+        data.node_id = second.clone();
+        plan.node_plans
+            .get_mut(&second)
+            .unwrap()
+            .data_bindings
+            .push(data);
+        extra.predict_cohort = envelopes["transform:snv.x"].predict_cohort.clone();
+        envelopes.insert("model:second.aux".into(), extra);
+        claim(&mut envelopes, "model:second.aux", "fat", false);
+        validate_replay_cohort_target_claims(&plan, &bindings, &request, &envelopes, true).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod contextual_row_units {
+    use super::*;
+    use crate::{PredictionLevel, PredictionUnitId, SampleId};
+    // Synthetic relation/topology edits, no genuine observation/aggregate fixture.
+    fn fixture() -> (
+        PortablePredictorPackage,
+        TrainingReplayRequest,
+        BTreeMap<String, ExternalDataPlanEnvelope>,
+        Vec<BoundTrainingOutput>,
+    ) {
+        let package = PortablePredictorPackage::from_json(include_str!(
+            "../tests/fixtures/multi_output_target_claims/shared/package.json"
+        ))
+        .unwrap();
+        let source = TrainingOutcome::from_json(include_str!(
+            "../tests/fixtures/multi_output_target_claims/shared/outcome.json"
+        ))
+        .unwrap();
+        let request = TrainingReplayRequest::from_json(include_str!(
+            "../tests/fixtures/multi_output_target_claims/shared/request.json"
+        ))
+        .unwrap();
+        let envelopes = serde_json::from_str(include_str!(
+            "../tests/fixtures/multi_output_target_claims/shared/envelopes.json"
+        ))
+        .unwrap();
+        let mut outputs = source.outputs;
+        for o in &mut outputs {
+            o.predictions[0].sample_ids = (11..=14)
+                .map(|i| SampleId::new(format!("sample:{i}")).unwrap())
+                .collect();
+        }
+        (package, request, envelopes, outputs)
+    }
+    fn refresh(e: &mut ExternalDataPlanEnvelope) {
+        let c = e.predict_cohort.as_mut().unwrap();
+        c.relation_fingerprint = c.relations.fingerprint().unwrap();
+        c.cohort_fingerprint = c.fingerprint().unwrap();
+    }
+    fn check(
+        p: &PortablePredictorPackage,
+        r: &TrainingReplayRequest,
+        e: &BTreeMap<String, ExternalDataPlanEnvelope>,
+        o: &[BoundTrainingOutput],
+    ) -> std::result::Result<(), ReplayCurrentCohortError> {
+        let ids = replay_input_data_identities(&p.execution_bundle, r, e).unwrap();
+        validate_replay_current_rows(
+            &p.effective_plan,
+            &p.output_bindings,
+            &p.execution_bundle,
+            r,
+            &ids,
+            o,
+            e,
+        )
+    }
+    #[test]
+    fn raw_units_exclusion_origins_and_grouping_authority() {
+        let (mut p, r, mut e, mut o) = fixture();
+        let c = e
+            .values_mut()
+            .next()
+            .unwrap()
+            .predict_cohort
+            .as_mut()
+            .unwrap();
+        c.relations.records[0].unit_id = Some("sample:99".into());
+        c.relations.records[0].excluded = true;
+        c.relations.records[0].origin_sample_id = Some(SampleId::new("sample:origin").unwrap());
+        c.origin_sample_ids = c
+            .relations
+            .records
+            .iter()
+            .map(|r| {
+                r.origin_sample_id
+                    .clone()
+                    .unwrap_or_else(|| r.sample_id.clone())
+            })
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        refresh(e.values_mut().next().unwrap());
+        check(&p, &r, &e, &o).unwrap();
+        for bad in ["sample:99", "sample:origin", "sample:11::nir"] {
+            o[0].predictions[0].sample_ids[0] = SampleId::new(bad).unwrap();
+            assert!(matches!(
+                check(&p, &r, &e, &o),
+                Err(ReplayCurrentCohortError::Mismatch { .. })
+            ));
+        }
+        o[0].predictions.clear();
+        o[0].observation_predictions=vec![serde_json::from_value(serde_json::json!({"producer_node":o[0].binding.node_id,"producer_port":"oof","partition":"final","fold_id":null,"observation_ids":["observation:11"],"values":[[0.0]],"target_names":["protein"]})).unwrap()];
+        let c = e
+            .values_mut()
+            .next()
+            .unwrap()
+            .predict_cohort
+            .as_mut()
+            .unwrap();
+        let mut component = c.relations.records[0].clone();
+        component.observation_id = crate::ObservationId::new("observation:component").unwrap();
+        component.unit_id = None;
+        component.origin_sample_id = None;
+        c.relations.records.push(component);
+        c.relations.records[0].origin_sample_id = None;
+        c.relations.records[0].component_observation_ids =
+            vec![crate::ObservationId::new("observation:component").unwrap()];
+        c.origin_sample_ids = c
+            .relations
+            .records
+            .iter()
+            .map(|r| {
+                r.origin_sample_id
+                    .clone()
+                    .unwrap_or_else(|| r.sample_id.clone())
+            })
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        c.relations.records[0].unit_level = crate::EntityUnitLevel::Combo;
+        c.relations.records[0].derived_unit_id = Some("combo:1".into());
+        refresh(e.values_mut().next().unwrap());
+        check(&p, &r, &e, &o).unwrap();
+        o[0].observation_predictions[0].observation_ids[0] =
+            crate::ObservationId::new("combo:1").unwrap();
+        assert!(check(&p, &r, &e, &o).is_err());
+        o[0].observation_predictions.clear();
+        let c = e
+            .values_mut()
+            .next()
+            .unwrap()
+            .predict_cohort
+            .as_mut()
+            .unwrap();
+        c.relations.records[0].group_id = Some(crate::GroupId::new("group:raw").unwrap());
+        c.relations.records[0].target_id = Some(crate::TargetId::new("target:1").unwrap());
+        c.relations.records[0].metadata.insert(
+            "independent_unit_id".into(),
+            serde_json::json!("group:metadata"),
+        );
+        refresh(e.values_mut().next().unwrap());
+        let mut block = crate::AggregatedPredictionBlock {
+            prediction_id: None,
+            producer_node: o[0].binding.node_id.clone(),
+            producer_port: Some("oof".into()),
+            partition: crate::PredictionPartition::Final,
+            fold_id: None,
+            level: PredictionLevel::Group,
+            unit_ids: vec![PredictionUnitId::Group(
+                crate::GroupId::new("group:raw").unwrap(),
+            )],
+            values: vec![vec![0.0]],
+            target_names: vec!["protein".into()],
+        };
+        o[0].aggregated_predictions = vec![block.clone()];
+        check(&p, &r, &e, &o).unwrap();
+        p.effective_plan
+            .node_plans
+            .get_mut(&o[0].binding.node_id)
+            .unwrap()
+            .shape_plan
+            .as_mut()
+            .unwrap()
+            .aggregation_policy
+            .grouping_key = Some(crate::AggregationGroupingKey::RelationMetadata {
+            key: "independent_unit_id".into(),
+        });
+        assert!(check(&p, &r, &e, &o).is_err());
+        block.unit_ids = vec![PredictionUnitId::Group(
+            crate::GroupId::new("group:metadata").unwrap(),
+        )];
+        o[0].aggregated_predictions = vec![block.clone()];
+        check(&p, &r, &e, &o).unwrap();
+        block.level = PredictionLevel::Target;
+        block.unit_ids = vec![PredictionUnitId::Target(
+            crate::TargetId::new("target:1").unwrap(),
+        )];
+        o[0].aggregated_predictions = vec![block];
+        check(&p, &r, &e, &o).unwrap();
+        // Uniqueness is intrinsic even for stored observation/aggregate blocks.
+        let duplicate = o[0].aggregated_predictions[0].clone();
+        o[0].aggregated_predictions.push(duplicate);
+        assert!(validate_replay_bound_output_blocks(&o[0]).is_err());
+    }
+    #[test]
+    fn binding_closures_and_no_key_tolerance_cannot_hide_other_refusals() {
+        let (mut p, mut r, mut e, mut o) = fixture();
+        let ancestor = crate::NodeId::new("transform:snv").unwrap();
+        let raw = p
+            .effective_plan
+            .node_plans
+            .get_mut(&ancestor)
+            .unwrap()
+            .data_bindings
+            .remove(0);
+        let prototype = e.values().next().unwrap().clone();
+        e.clear();
+        let requirement = p.execution_bundle.data_requirements[0].clone();
+        p.execution_bundle.data_requirements.clear();
+        for b in &p.output_bindings {
+            let mut data = raw.clone();
+            data.node_id = b.node_id.clone();
+            let key = crate::data_binding_requirement_key(&data.node_id, &data.input_name);
+            p.effective_plan
+                .node_plans
+                .get_mut(&b.node_id)
+                .unwrap()
+                .data_bindings
+                .push(data);
+            let mut req = requirement.clone();
+            req.node_id = b.node_id.clone();
+            p.execution_bundle.data_requirements.push(req);
+            e.insert(key, prototype.clone());
+        }
+        r.data_envelope_keys = e.keys().cloned().collect();
+        let b = e.get_mut("model:second.x").unwrap();
+        let rel = SampleRelationSet {
+            records: vec![crate::SampleRelation::new(
+                crate::ObservationId::new("observation:99").unwrap(),
+                SampleId::new("sample:99").unwrap(),
+            )],
+        };
+        b.schema_version = 1;
+        b.predict_cohort = None;
+        b.relation_fingerprint = Some(rel.fingerprint().unwrap());
+        b.coordinator_relations = Some(rel);
+        o[1].predictions[0].sample_ids = vec![SampleId::new("sample:99").unwrap()];
+        o[1].predictions[0].values = vec![vec![0.0]];
+        check(&p, &r, &e, &o).unwrap();
+        o[0].predictions[0].sample_ids[0] = SampleId::new("sample:99").unwrap();
+        assert!(check(&p, &r, &e, &o).is_err());
+        p.effective_plan
+            .node_plans
+            .get_mut(&o[0].binding.node_id)
+            .unwrap()
+            .data_bindings
+            .clear();
+        p.effective_plan
+            .node_plans
+            .get_mut(&o[0].binding.node_id)
+            .unwrap()
+            .input_nodes
+            .clear();
+        assert!(matches!(
+            check(&p, &r, &e, &o),
+            Err(ReplayCurrentCohortError::Missing(
+                ReplayCurrentCohortMissing::NoClosureDataKey { .. }
+            ))
+        ));
+        o[1].predictions[0].sample_ids[0] = SampleId::new("sample:alien").unwrap();
+        assert!(matches!(
+            check(&p, &r, &e, &o),
+            Err(ReplayCurrentCohortError::Mismatch { .. })
+        ));
+    }
+    #[test]
+    fn explanation_coordinate_ambiguity_and_legacy_port_resolution() {
+        let (p, mut request, _, _) = fixture();
+        request.phase = Phase::Explain;
+        let block = ExplanationBlock {
+            producer_node: p.output_bindings[0].node_id.clone(),
+            producer_port: None,
+            method: "synthetic".into(),
+            target_name: Some("protein".into()),
+            payload: serde_json::json!({"X":[[0.0]]}),
+        };
+        validate_replay_explanations(
+            &p.effective_plan,
+            &p.output_bindings,
+            &request,
+            std::slice::from_ref(&block),
+        )
+        .unwrap();
+        let mut bindings = p.output_bindings.clone();
+        let mut duplicate = bindings[0].clone();
+        duplicate.binding_id = "output:duplicate".into();
+        bindings.push(duplicate);
+        assert!(
+            validate_replay_explanations(&p.effective_plan, &bindings, &request, &[block])
+                .unwrap_err()
+                .to_string()
+                .contains("ambiguous")
+        );
+    }
+    #[test]
+    fn stored_duplicates_are_intrinsic_for_each_block_family() {
+        let (_, _, _, outputs) = fixture();
+        let mut output = outputs[0].clone();
+        output.predictions.push(output.predictions[0].clone());
+        assert!(validate_replay_bound_output_blocks(&output)
+            .unwrap_err()
+            .to_string()
+            .contains("duplicate sample"));
+        output.predictions.clear();
+        let observation: crate::ObservationPredictionBlock =
+            serde_json::from_value(serde_json::json!({
+                "producer_node": output.binding.node_id, "producer_port": "oof",
+                "partition": "final", "fold_id": null,
+                "observation_ids": ["observation:11", "observation:11"],
+                "values": [[0.0], [0.0]], "target_names": ["protein"]
+            }))
+            .unwrap();
+        output.observation_predictions = vec![observation];
+        assert!(validate_replay_bound_output_blocks(&output)
+            .unwrap_err()
+            .to_string()
+            .contains("duplicate observation"));
+        output.observation_predictions[0].observation_ids.pop();
+        output.observation_predictions[0].values.pop();
+        output
+            .observation_predictions
+            .push(output.observation_predictions[0].clone());
+        assert!(validate_replay_bound_output_blocks(&output)
+            .unwrap_err()
+            .to_string()
+            .contains("duplicate observation"));
+        output.observation_predictions.clear();
+        output.aggregated_predictions = vec![crate::AggregatedPredictionBlock {
+            prediction_id: None,
+            producer_node: output.binding.node_id.clone(),
+            producer_port: Some("oof".into()),
+            partition: crate::PredictionPartition::Final,
+            fold_id: None,
+            level: PredictionLevel::Sample,
+            unit_ids: vec![PredictionUnitId::Sample(SampleId::new("sample:11").unwrap()); 2],
+            values: vec![vec![0.0]; 2],
+            target_names: vec!["protein".into()],
+        }];
+        assert!(validate_replay_bound_output_blocks(&output)
+            .unwrap_err()
+            .to_string()
+            .contains("duplicate aggregate"));
     }
 }

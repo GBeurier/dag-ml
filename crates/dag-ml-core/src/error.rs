@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use thiserror::Error;
 
+use crate::realization_evidence::FailedAttempt;
+
 /// A stable ADR-11 error payload that can be serialized across bindings.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DagMlErrorDescriptor {
@@ -87,6 +89,57 @@ pub struct TargetMissingReport {
     pub detail: String,
 }
 
+/// What a propagated captured search left behind.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HostHpoCaptureDisposition {
+    /// Nothing new was sealed for the failure, or cleanup moved the owner beyond
+    /// the last publication, so its pair no longer holds.
+    Aborted,
+    /// The failing trial reached an ordinary sealed Failed publication, no
+    /// cleanup ran, and every observation lies inside it.
+    PublishedFailedPrefix,
+    /// The search itself returned, but its evidence could not be completed.
+    EvidenceIncomplete,
+}
+
+/// Outcome of the single refusal flush of the evidence stream.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HostHpoCaptureFlush {
+    NotAttempted,
+    Flushed,
+    Failed,
+}
+
+/// State of the evidence stream at abort. There is never a completion here.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct HostHpoCaptureEvidence {
+    /// Stable closed-gate code of the refusal that ended the stream.
+    pub refusal_code: Option<String>,
+    pub flush: HostHpoCaptureFlush,
+}
+
+/// A captured host HPO search that propagated an error. The primary failure and
+/// every other observation stay separate; this report carries no score, no
+/// completion and no commitment.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct HostHpoCaptureAbortReport {
+    pub disposition: HostHpoCaptureDisposition,
+    pub primary_error: DagMlErrorDescriptor,
+    pub failed_attempt: FailedAttempt,
+    /// Further failures of the search itself, beside the primary.
+    pub secondary_errors: Vec<DagMlErrorDescriptor>,
+    /// Owner cleanup failures.
+    pub cleanup_errors: Vec<DagMlErrorDescriptor>,
+    /// Recorder and sink failures.
+    pub evidence_errors: Vec<DagMlErrorDescriptor>,
+    pub evidence: HostHpoCaptureEvidence,
+    /// Restored trials the owner still holds RUNNING. They lie outside the failed
+    /// window, so they were not touched, and no stream closed them.
+    pub uncaptured_pending: Vec<u32>,
+}
+
 #[derive(Debug, Error)]
 pub enum DagMlError {
     #[error("invalid identifier `{value}`: {reason}")]
@@ -118,6 +171,12 @@ pub enum DagMlError {
 
     #[error("serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
+
+    #[error("host HPO capture aborted: {}", .0.primary_error.message)]
+    HostHpoCaptureAbort(Box<HostHpoCaptureAbortReport>),
+
+    #[error("host HPO predecessor refused: {0}")]
+    HostHpoPredecessorRefused(String),
 }
 
 impl DagMlError {
@@ -176,6 +235,14 @@ impl DagMlError {
                 "Check that the JSON or YAML payload matches the supported dag-ml contract version."
                     .to_string()
             }
+            Self::HostHpoCaptureAbort(_) => {
+                "Fix the primary failure, then resume only from the last paired publication under a new capture lineage."
+                    .to_string()
+            }
+            Self::HostHpoPredecessorRefused(_) => {
+                "Supply the exact sealed publication, the matching owner state and its derived provenance, or start a new search."
+                    .to_string()
+            }
         }
     }
 
@@ -192,7 +259,8 @@ impl DagMlError {
             | Self::CampaignValidation(detail)
             | Self::Planning(detail)
             | Self::RuntimeValidation(detail)
-            | Self::OofValidation(detail) => {
+            | Self::OofValidation(detail)
+            | Self::HostHpoPredecessorRefused(detail) => {
                 context.insert("detail".to_string(), json!(detail));
             }
             Self::OofLeakage(report) => {
@@ -217,6 +285,22 @@ impl DagMlError {
             }
             Self::Serialization(error) => {
                 context.insert("detail".to_string(), json!(error.to_string()));
+            }
+            Self::HostHpoCaptureAbort(report) => {
+                context.insert("disposition".to_string(), json!(report.disposition));
+                context.insert("primary_error".to_string(), json!(report.primary_error));
+                context.insert("failed_attempt".to_string(), json!(report.failed_attempt));
+                context.insert(
+                    "secondary_errors".to_string(),
+                    json!(report.secondary_errors),
+                );
+                context.insert("cleanup_errors".to_string(), json!(report.cleanup_errors));
+                context.insert("evidence_errors".to_string(), json!(report.evidence_errors));
+                context.insert("evidence".to_string(), json!(report.evidence));
+                context.insert(
+                    "uncaptured_pending".to_string(),
+                    json!(report.uncaptured_pending),
+                );
             }
         }
         context
@@ -259,6 +343,10 @@ impl DagMlError {
             Self::OofLeakage(_) => ("validation", "oof_leakage", "error"),
             Self::TargetMissing(_) => ("validation", "target_missing_exclusion", "error"),
             Self::Serialization(_) => ("compatibility", "serialization_error", "error"),
+            Self::HostHpoCaptureAbort(_) => ("runtime", "host_hpo_capture_abort", "error"),
+            Self::HostHpoPredecessorRefused(_) => {
+                ("runtime", "host_hpo_predecessor_refused", "error")
+            }
         }
     }
 
@@ -280,6 +368,8 @@ impl DagMlError {
             Self::ControllerValidation(_) => (3, 1),
             Self::Planning(_) => (1, 1),
             Self::RuntimeValidation(_) => (1, 2),
+            Self::HostHpoCaptureAbort(_) => (1, 3),
+            Self::HostHpoPredecessorRefused(_) => (1, 4),
             Self::Serialization(_) => (8, 1),
         }
     }
@@ -376,6 +466,46 @@ mod tests {
         assert_eq!(
             DagMlError::Serialization(serde_error).error_code(),
             0x0008_0001
+        );
+    }
+
+    #[test]
+    fn host_hpo_capture_abort_keeps_primary_and_cleanup_evidence_apart() {
+        let primary = DagMlError::RuntimeValidation("primary".to_string()).descriptor();
+        let cleanup = DagMlError::RuntimeValidation("cleanup".to_string()).descriptor();
+        let error = DagMlError::HostHpoCaptureAbort(Box::new(HostHpoCaptureAbortReport {
+            disposition: HostHpoCaptureDisposition::Aborted,
+            primary_error: primary.clone(),
+            failed_attempt: FailedAttempt {
+                failed_capture_id: None,
+                failed_scope_id: None,
+                failure_stage: None,
+                causal_diagnostic_hex: String::new(),
+                owned_attempts: Vec::new(),
+                trusted_prefix_ref: None,
+            },
+            secondary_errors: Vec::new(),
+            cleanup_errors: vec![cleanup.clone()],
+            evidence_errors: Vec::new(),
+            evidence: HostHpoCaptureEvidence {
+                refusal_code: None,
+                flush: HostHpoCaptureFlush::NotAttempted,
+            },
+            uncaptured_pending: vec![2],
+        }));
+
+        let descriptor = error.descriptor();
+
+        assert_eq!(descriptor.category, "runtime");
+        assert_eq!(descriptor.code, "host_hpo_capture_abort");
+        assert!(descriptor.message.contains("primary"));
+        assert_eq!(descriptor.context["primary_error"], json!(primary));
+        assert_eq!(descriptor.context["cleanup_errors"], json!([cleanup]));
+        assert_eq!(descriptor.context["uncaptured_pending"], json!([2]));
+        assert_eq!(error.error_code(), 0x0001_0003);
+        assert_eq!(
+            DagMlError::HostHpoPredecessorRefused("x".to_string()).error_code(),
+            0x0001_0004
         );
     }
 

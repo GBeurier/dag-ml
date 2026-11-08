@@ -2319,8 +2319,7 @@ impl RuntimeController for ExpectedRefitOofController {
                 || prediction_input.target_names != self.expected_target_names
             {
                 return Err(DagMlError::RuntimeValidation(format!(
-                    "meta node received invalid grouped refit OOF spec: {:?}",
-                    prediction_input
+                    "meta node received invalid grouped refit OOF spec: {prediction_input:?}"
                 )));
             }
         }
@@ -2565,8 +2564,7 @@ fn validate_group_oof_prediction_input(task: &NodeTask) -> Result<()> {
         || prediction_input.target_names != vec!["y".to_string()]
     {
         return Err(DagMlError::RuntimeValidation(format!(
-            "meta node received invalid group OOF spec: {:?}",
-            prediction_input
+            "meta node received invalid group OOF spec: {prediction_input:?}"
         )));
     }
     Ok(())
@@ -13714,6 +13712,85 @@ fn native_scoring_collects_reports_and_builds_score_set() {
     assert_eq!(set.reports.len(), 1);
     set.validate().unwrap();
 
+    // Reuse this result's deterministic values on every directly scored surface.
+    // The operation supplies the output kind, even with no categorical target domain.
+    let truth = make(vec![RegressionTargetBlock {
+        validity_masks: None,
+        level: PredictionLevel::Sample,
+        unit_ids: predictions
+            .sample_ids
+            .iter()
+            .cloned()
+            .map(PredictionUnitId::Sample)
+            .collect(),
+        values: predictions.values.clone(),
+        target_names: predictions.target_names.clone(),
+    }]);
+    for partition in [
+        PredictionPartition::Validation,
+        PredictionPartition::Train,
+        PredictionPartition::TrainPool,
+        PredictionPartition::Test,
+        PredictionPartition::Final,
+    ] {
+        let mut result = truth.clone();
+        result.predictions[0].partition = partition;
+        let mut bound = RunContext::new(RunId::new("run:t.bound").unwrap(), None);
+        bound.training_score_kinds.insert(
+            (node.clone(), Some("pred".to_string())),
+            crate::training::PredictionKind::RegressionPoint,
+        );
+        apply_result_scoring(
+            &result,
+            &BTreeSet::new(),
+            &mut bound.score_collector,
+            &mut bound.regression_target_records,
+        )
+        .unwrap();
+        retain_metric_families(&bound.training_score_kinds, &mut bound.score_collector);
+        let mut expected = score_regression_prediction_block(
+            &result.predictions[0],
+            &result.regression_targets[0],
+            &[
+                RegressionMetricKind::Mse,
+                RegressionMetricKind::Rmse,
+                RegressionMetricKind::Mae,
+                RegressionMetricKind::R2,
+            ],
+        )
+        .unwrap();
+        expected.variant_id = result.lineage.variant_id.clone();
+        assert_eq!(bound.score_collector, vec![expected]);
+        assert!(bound.score_collector[0].target_domain.is_none());
+        assert_eq!(bound.regression_target_records.len(), 1);
+        assert_eq!(
+            bound.regression_target_records[0].partition,
+            result.predictions[0].partition
+        );
+        for kind in [
+            crate::training::PredictionKind::ClassProbability,
+            crate::training::PredictionKind::DecisionScore,
+        ] {
+            let mut generic = RunContext::new(RunId::new("run:t.generic").unwrap(), None);
+            generic
+                .training_score_kinds
+                .insert((node.clone(), Some("pred".into())), kind);
+            apply_result_scoring(
+                &result,
+                &BTreeSet::new(),
+                &mut generic.score_collector,
+                &mut generic.regression_target_records,
+            )
+            .unwrap();
+            retain_metric_families(&generic.training_score_kinds, &mut generic.score_collector);
+            let mut expected = Vec::new();
+            apply_result_scoring(&result, &BTreeSet::new(), &mut expected, &mut Vec::new())
+                .unwrap();
+            assert_eq!(generic.score_collector, expected);
+            assert!(!generic.score_collector[0].metrics.is_empty());
+        }
+    }
+
     // No targets -> nothing collected, no ScoreSet (existing runs are unaffected).
     let mut empty = RunContext::new(RunId::new("run:t").unwrap(), None);
     apply_result_scoring(
@@ -23086,6 +23163,146 @@ fn select_best_operator_variant_runs_both_pruned_candidates_and_picks_winner() {
             .all(|report| report.partition == PredictionPartition::Validation),
         "operator-SELECT retains only Validation (OOF) reports"
     );
+}
+
+#[test]
+fn bound_operator_union_filters_every_candidate_by_declared_source_and_port() {
+    let spec: crate::PipelineDslSpec = serde_json::from_value(json!({
+        "id": "family:operator-union",
+        "metadata": {"by_source_source_order": ["spectra"]},
+        "steps": [{"kind": "generator", "id": "generator:choices", "mode": "or", "pick": 1,
+            "branches": [
+                {"id": "pls", "steps": [{"kind": "model", "id": "model:pls",
+                    "operator": {"class": "PLS"}, "metadata": {"source_index": 0}}]},
+                {"id": "ridge", "steps": [{"kind": "model", "id": "model:ridge",
+                    "operator": {"class": "Ridge"}, "metadata": {"source_index": 0}}]}
+            ]}]
+    }))
+    .unwrap();
+    let mut graph =
+        crate::compile_pipeline_dsl_with_controller_registry(&spec, &operator_select_manifests())
+            .unwrap();
+    graph.metadata.insert(
+        "training_operator_source_dsl".into(),
+        serde_json::to_value(&spec).unwrap(),
+    );
+    let models = crate::compile_operator_variant_models(&spec).unwrap();
+    let producers = graph
+        .nodes
+        .iter()
+        .filter(|node| node.kind == NodeKind::Model)
+        .map(|node| node.id.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(producers.len(), 2);
+    let output = crate::training::TrainingOutputRequest {
+        output_id: "output:source_0".into(),
+        node_id: producers[0].clone(),
+        port_name: None,
+        prediction_level: PredictionLevel::Sample,
+        unit_level: Some(crate::relation::EntityUnitLevel::PhysicalSample),
+        prediction_kind: crate::training::PredictionKind::RegressionPoint,
+        target_names: vec!["y".into()],
+        target_units: vec![None],
+        class_labels: vec![vec![]],
+        output_order: crate::training::OutputOrder::TargetOrder,
+        target_space: "raw".into(),
+    }
+    .resolve(&graph)
+    .unwrap();
+    let kinds = training_score_kinds(&graph, std::slice::from_ref(&output));
+    let mut multiple_ports = graph.clone();
+    multiple_ports
+        .nodes
+        .iter_mut()
+        .find(|node| node.id == output.node_id)
+        .unwrap()
+        .ports
+        .outputs
+        .push(port("auxiliary", PortKind::Prediction));
+    let explicit = training_score_kinds(&multiple_ports, std::slice::from_ref(&output));
+    assert!(!explicit.contains_key(&(output.node_id.clone(), None)));
+    assert!(explicit.contains_key(&(output.node_id.clone(), Some(output.port_name.clone()))));
+    for kind in [
+        crate::training::PredictionKind::ClassProbability,
+        crate::training::PredictionKind::DecisionScore,
+    ] {
+        let mut unsupported = output.clone();
+        unsupported.prediction_kind = kind;
+        assert!(training_score_kinds(&graph, &[unsupported]).is_empty());
+    }
+    for producer in &producers {
+        assert_eq!(
+            kinds.get(&(producer.clone(), Some(output.port_name.clone()))),
+            Some(&crate::training::PredictionKind::RegressionPoint)
+        );
+        assert_eq!(
+            kinds.get(&(producer.clone(), None)),
+            Some(&crate::training::PredictionKind::RegressionPoint)
+        );
+        assert!(!kinds.contains_key(&(producer.clone(), Some("other".into()))));
+    }
+    let (base, _) = operator_select_union();
+    let plan = build_execution_plan(
+        "plan:family.union",
+        graph.clone(),
+        base.campaign,
+        &operator_select_manifests(),
+    )
+    .unwrap();
+    crate::training::training_operator_union_plan(&plan)
+        .unwrap()
+        .unwrap();
+    let mut controllers = RuntimeControllerRegistry::new();
+    // Reuse the existing operator fixture's exact 0/1 residuals and controller.
+    controllers
+        .register(Box::new(OperatorScoringController {
+            id: ControllerId::new("controller:model").unwrap(),
+            handle: 3,
+            offsets: producers.iter().cloned().zip([0.0, 1.0]).collect(),
+        }))
+        .unwrap();
+    let outcome = select_best_operator_variant_outcome_by_cv(
+        &plan,
+        &models[0],
+        &RunId::new("run:family.union").unwrap(),
+        Some(7),
+        RegressionMetricKind::Rmse,
+        |pruned, ctx| {
+            ctx.training_score_kinds = kinds.clone();
+            SequentialScheduler.execute_campaign_phase(pruned, &controllers, ctx, Phase::FitCv)?;
+            assert!(
+                ctx.score_collector.iter().all(|report| {
+                    report.metrics.contains_key("accuracy") && report.metrics.contains_key("rmse")
+                }),
+                "calculation reports stay generic before report retention"
+            );
+            Ok(())
+        },
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(outcome.decision.selected_score.to_bits(), 0.0_f64.to_bits());
+    let seen = outcome
+        .selection
+        .validation_reports
+        .iter()
+        .map(|report| {
+            assert_eq!(
+                report.producer_port.as_deref(),
+                Some(output.port_name.as_str())
+            );
+            assert_eq!(
+                report
+                    .metrics
+                    .keys()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
+                ["mae", "mae:y", "mse", "mse:y", "r2", "r2:y", "rmse", "rmse:y"]
+            );
+            report.producer_node.clone()
+        })
+        .collect::<BTreeSet<_>>();
+    assert_eq!(seen, producers.into_iter().collect());
 }
 
 /// Phase 5: when the operator model carries `variant_labels`, `select_best_operator_variant_by_cv`

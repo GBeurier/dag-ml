@@ -55,7 +55,6 @@ pub fn validate_methods_classifier_payload(
         || artifact.native_predictor_descriptor.is_some()
         || artifact.native_estimator_descriptor.is_some()
         || bytes.is_empty()
-        || bytes.len() > 134_217_728
         || artifact.content_fingerprint.as_deref() != Some(hash.as_str())
         || artifact.size_bytes != Some(bytes.len() as u64)
         || artifact.uri.as_deref() != Some(format!("artifacts/{hash}.json").as_str())
@@ -183,4 +182,50 @@ pub fn validate_methods_classifier_payload(
         )?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "explicit 128 MiB materialized-input regression; rejects before state import"]
+    fn large_classifier_wrappers_still_reach_utf8_validation_for_both_kinds() {
+        let outcome: crate::TrainingOutcome = serde_json::from_str(include_str!(
+            "../tests/fixtures/artifact_facets/native_role/training_outcome.json"
+        ))
+        .unwrap();
+        // No fitted-state wire is fabricated. Exact owners and byte identities
+        // must pass before this intentionally invalid UTF-8 is refused.
+        let mut bytes = vec![b' '; 128 * 1024 * 1024 + 1];
+        bytes[0] = 0xff;
+        let hash = format!("{:x}", Sha256::digest(&bytes));
+        for (kind, owner, plugin) in [
+            (
+                "methods_role_classifier_pipeline",
+                "controller:methods.python.classification",
+                "dagml.methods.python.classification",
+            ),
+            (
+                "methods_multimodal_classifier_pipeline",
+                "controller:methods.python.multimodal.classification",
+                "dagml.methods.python.multimodal.classification",
+            ),
+        ] {
+            let mut record = outcome.execution_bundle.refit_artifacts[0].clone();
+            record.controller_id = crate::ControllerId::new(owner).unwrap();
+            record.artifact.controller_id = record.controller_id.clone();
+            record.artifact.kind = kind.into();
+            record.artifact.plugin = Some(plugin.into());
+            record.artifact.content_fingerprint = Some(hash.clone());
+            record.artifact.uri = Some(format!("artifacts/{hash}.json"));
+            record.artifact.size_bytes = Some(bytes.len() as u64);
+            let error =
+                validate_methods_classifier_payload(&record, &bytes, &outcome.effective_plan)
+                    .unwrap_err();
+            assert!(error
+                .to_string()
+                .contains("classifier wrapper is not UTF-8"));
+        }
+    }
 }

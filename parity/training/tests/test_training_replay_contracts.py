@@ -49,15 +49,15 @@ def _sha256(path: Path) -> str:
 
 
 def test_base_pack_remains_byte_current() -> None:
-    # Current W1 bytes and its 124 artifacts are pinned independently of D4.
+    # Current W1 bytes and its 131 artifacts are pinned independently of D4.
     pack = load_json(BASE_PACK)
     assert _sha256(BASE_PACK) == (
-        "eca20d4bc8d13e8c56085114f537c45684d2e0d9998e9dd7331b7ccf3f0aaab3"
+        "d2dc8f9b60ac35107c66ddaad2b622693720638b87e1da532732a9b3d165ff23"
     )
     assert pack["pack_checksum"] == (
-        "1aaff7199f2968f74c231f58b0f1a61005d6a9448a77389cc1d58cea342e5a9b"
+        "c23855620a69811841c48f288450e258f647ecd7be111a1645a374dd6f540f97"
     )
-    assert len(pack["artifacts"]) == 124
+    assert len(pack["artifacts"]) == 131
     assert all(
         _sha256(ROOT / artifact["path"]) == artifact["sha256"]
         for artifact in pack["artifacts"]
@@ -632,9 +632,11 @@ def test_training_exclusion_does_not_remove_replay_membership() -> None:
     envelopes = load_json(FIXTURES / "training_replay_input_envelopes.v1.json")
     for envelope in envelopes["envelopes"].values():
         envelope["coordinator_relations"]["records"][0]["excluded"] = True
+        envelope["relation_fingerprint"] = production.replay_relation_fingerprint(envelope["coordinator_relations"], "excluded.relations")
+    plan = load_json(TRAINING_FIXTURES / "training_outcome_refit.v1.json")["effective_plan"]
     outputs = load_json(FIXTURES / "training_replay_outcome_predict.v1.json")["outputs"]
-    production.validate_replay_output_cohort(outputs, envelopes, "excluded.production")
-    oracle._validate_output_cohort(outputs, envelopes, "excluded.oracle")
+    production.validate_replay_output_cohort(outputs, envelopes, "excluded.production", plan)
+    oracle._validate_output_cohort(outputs, envelopes, "excluded.oracle", plan)
 
 
 def test_pack_paths_reject_traversal() -> None:

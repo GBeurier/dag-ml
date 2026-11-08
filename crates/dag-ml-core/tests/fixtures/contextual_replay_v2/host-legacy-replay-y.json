@@ -1,0 +1,35 @@
+{
+  "sample_ids": [
+    "sample:contextual:11",
+    "sample:contextual:12",
+    "sample:contextual:13",
+    "sample:contextual:14"
+  ],
+  "target_names": [
+    "protein",
+    "fat",
+    "water"
+  ],
+  "y": [
+    [
+      0.0,
+      0.0,
+      0.0
+    ],
+    [
+      0.0,
+      0.0,
+      0.0
+    ],
+    [
+      0.0,
+      0.0,
+      0.0
+    ],
+    [
+      0.0,
+      0.0,
+      0.0
+    ]
+  ]
+}

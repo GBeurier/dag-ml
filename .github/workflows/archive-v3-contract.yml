@@ -1,0 +1,49 @@
+name: Archive V3 storage contract
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  storage-contract:
+    name: Synthetic storage fixtures and refusal corpus
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Contract validator dependencies
+        run: python -m pip install -r scripts/requirements-contracts.txt
+      - name: Archive V3 storage contract
+        run: python scripts/validate_archive_v3_contract.py
+      - name: Archive V3 regression tests
+        run: python -m unittest discover -s tests -p test_archive_v3_contract.py -v
+      - name: Compare Core fixture mirror when a peer checkout is available
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          owner = Path("docs/contracts/archive-v3")
+          peer = Path(os.environ.get("NIRS4ALL_CORE_REPO", "../nirs4all-core"))
+          mirror = peer / "bindings/rust/nirs4all/src/archive_v3_fixtures"
+          if not mirror.is_dir():
+              print(f"Archive V3 mirror comparison: unavailable (no Core checkout at {peer})")
+          else:
+              pairs = [
+                  ("archive_workspace_manifest.v3.schema.json", "archive_workspace_manifest.v3.schema.json"),
+                  ("fixtures/positive/storage_only_native_refit.json", "positive/storage_only_native_refit.json"),
+                  ("fixtures/positive/synthetic_members.v3.json", "positive/synthetic_members.v3.json"),
+                  ("fixtures/negative/refusals.v3.json", "negative/refusals.v3.json"),
+              ]
+              for source, target in pairs:
+                  if (owner / source).read_bytes() != (mirror / target).read_bytes():
+                      raise SystemExit(f"Archive V3 mirror drift: {source}")
+              print("Archive V3 mirror comparison: executed (four byte-exact owner files)")
+          PY

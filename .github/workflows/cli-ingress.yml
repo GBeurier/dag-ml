@@ -1,0 +1,26 @@
+name: CLI ingress
+
+on:
+  push:
+    branches: [main, 'rc/**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cli-ingress:
+    runs-on: ubuntu-latest
+    env:
+      DAG_ML_REQUIRE_SKLEARN_TEST: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Install focused adapter dependencies
+        run: python -m pip install numpy scikit-learn
+      - name: Test process ingress
+        run: cargo test --locked -p dag-ml-cli --test node_result_ingress --test process_description_ingress

@@ -148,6 +148,12 @@ BASE_PACK_ARTIFACTS = {
     "scripts/validate_contracts.py": "production_validator",
     "scripts/test_methods_optimizer_local.sh": "native_hpo_integration_helper",
     "tests/test_predict_cohort_envelope_v2_contract.py": "contract_test",
+    "docs/contracts/host_hpo_search_request.v2.schema.json": "host_hpo_search_schema",
+    "docs/contracts/host_hpo_checkpoint.v2.schema.json": "host_hpo_checkpoint_schema",
+    "docs/contracts/host_hpo_proposal_evidence.v1.schema.json": "schema",
+    "examples/fixtures/training/host_hpo_capture.v1.json": "fixture",
+    "crates/dag-ml-core/tests/host_hpo_capture.rs": "native_integration_test",
+    "crates/dag-ml-core/tests/host_hpo_capture_stream.rs": "native_integration_test",
 }
 
 PACK_ARTIFACTS = with_transitive_schema_dependencies(ROOT, BASE_PACK_ARTIFACTS)

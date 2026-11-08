@@ -715,8 +715,7 @@ fn cli_selects_builds_and_validates_replay_bundle() {
             && schedule_json.contains("transform:snv")
             && schedule_json.contains("model:base")
             && schedule_json.contains("fold:0"),
-        "unexpected print-execution-schedule JSON: {}",
-        schedule_json
+        "unexpected print-execution-schedule JSON: {schedule_json}"
     );
 
     let build = Command::new(cli())
@@ -777,8 +776,7 @@ fn cli_selects_builds_and_validates_replay_bundle() {
     assert!(
         refit_bundle_json.contains("artifact:model:base:refit")
             && refit_bundle_json.contains("refit_result_count"),
-        "unexpected run-mock-refit-bundle JSON: {}",
-        refit_bundle_json
+        "unexpected run-mock-refit-bundle JSON: {refit_bundle_json}"
     );
     std::fs::write(
         &temp_refit_request,
@@ -827,8 +825,7 @@ fn cli_selects_builds_and_validates_replay_bundle() {
     assert!(
         process_refit_bundle_json.contains("artifact:model:base:refit")
             && process_refit_bundle_json.contains("refit_result_count"),
-        "unexpected run-process-refit-bundle JSON: {}",
-        process_refit_bundle_json
+        "unexpected run-process-refit-bundle JSON: {process_refit_bundle_json}"
     );
     std::fs::write(
         &temp_process_refit_request,
@@ -870,8 +867,7 @@ fn cli_selects_builds_and_validates_replay_bundle() {
         process_campaign_stdout.contains("process campaign run: 8 result(s)")
             && process_campaign_stdout.contains("4 prediction block(s)")
             && process_campaign_stdout.contains("4 data handle(s)"),
-        "unexpected run-process-campaign output: {}",
-        process_campaign_stdout
+        "unexpected run-process-campaign output: {process_campaign_stdout}"
     );
 
     let persistent_process_campaign = Command::new(cli())
@@ -905,8 +901,7 @@ fn cli_selects_builds_and_validates_replay_bundle() {
         persistent_process_campaign_stdout.contains("process campaign run: 8 result(s)")
             && persistent_process_campaign_stdout.contains("4 prediction block(s)")
             && persistent_process_campaign_stdout.contains("4 data handle(s)"),
-        "unexpected run-process-campaign --persistent output: {}",
-        persistent_process_campaign_stdout
+        "unexpected run-process-campaign --persistent output: {persistent_process_campaign_stdout}"
     );
 
     let process_campaign_with_param_overrides = Command::new(cli())
@@ -942,8 +937,7 @@ fn cli_selects_builds_and_validates_replay_bundle() {
         process_campaign_with_param_overrides_stdout.contains("process campaign run: 8 result(s)")
             && process_campaign_with_param_overrides_stdout.contains("4 prediction block(s)")
             && process_campaign_with_param_overrides_stdout.contains("4 data handle(s)"),
-        "unexpected generated-param override process campaign output: {}",
-        process_campaign_with_param_overrides_stdout
+        "unexpected generated-param override process campaign output: {process_campaign_with_param_overrides_stdout}"
     );
 
     let branch_merge_campaign = Command::new(cli())
@@ -983,8 +977,7 @@ fn cli_selects_builds_and_validates_replay_bundle() {
             && branch_merge_stdout.contains("12 data view(s)")
             && branch_merge_stdout.contains("configured process worker(s)=2")
             && branch_merge_stdout.contains("observed process worker(s)=2"),
-        "unexpected branch/merge process campaign output: {}",
-        branch_merge_stdout
+        "unexpected branch/merge process campaign output: {branch_merge_stdout}"
     );
 
     let branch_merge_refit_without_cv = Command::new(cli())
@@ -1080,8 +1073,7 @@ fn cli_selects_builds_and_validates_replay_bundle() {
             && branch_merge_cv_refit_stdout.contains("2 prediction cache(s)")
             && branch_merge_cv_refit_stdout.contains("configured process worker(s)=2")
             && branch_merge_cv_refit_stdout.contains("observed process worker(s)=2"),
-        "unexpected branch/merge CV+refit process bundle output: {}",
-        branch_merge_cv_refit_stdout
+        "unexpected branch/merge CV+refit process bundle output: {branch_merge_cv_refit_stdout}"
     );
     let branch_merge_cv_refit_bundle_json =
         std::fs::read_to_string(&temp_branch_merge_cv_refit_bundle)
@@ -1111,8 +1103,7 @@ fn cli_selects_builds_and_validates_replay_bundle() {
             && branch_merge_cv_refit_bundle_json.contains("oof_prediction_summary")
             && branch_merge_cv_refit_bundle_json.contains("\"block_count\": 2")
             && branch_merge_cv_refit_bundle_json.contains("refit_prediction_block_count"),
-        "unexpected branch/merge CV+refit bundle JSON: {}",
-        branch_merge_cv_refit_bundle_json
+        "unexpected branch/merge CV+refit bundle JSON: {branch_merge_cv_refit_bundle_json}"
     );
     let branch_merge_lineage_json = std::fs::read_to_string(&temp_branch_merge_lineage)
         .expect("branch/merge lineage records were written");
@@ -1136,8 +1127,7 @@ fn cli_selects_builds_and_validates_replay_bundle() {
                     .as_array()
                     .is_some_and(|lineage| lineage.len() == 2)
         }),
-        "unexpected branch/merge lineage JSON: {}",
-        branch_merge_lineage_json
+        "unexpected branch/merge lineage JSON: {branch_merge_lineage_json}"
     );
     let branch_merge_prediction_cache_json =
         std::fs::read_to_string(&temp_branch_merge_prediction_cache)
@@ -1156,8 +1146,7 @@ fn cli_selects_builds_and_validates_replay_bundle() {
             && branch_merge_prediction_cache_json.contains(
                 "prediction-cache:branch:b1.model:rf.oof->merge:stack.pred_plus_original.meta:ridge.b1_oof"
             ),
-        "unexpected branch/merge prediction cache payload JSON: {}",
-        branch_merge_prediction_cache_json
+        "unexpected branch/merge prediction cache payload JSON: {branch_merge_prediction_cache_json}"
     );
 
     let dsl_branch_merge_cv_refit_bundle = Command::new(cli())
@@ -1212,8 +1201,7 @@ fn cli_selects_builds_and_validates_replay_bundle() {
             && dsl_branch_merge_stdout.contains("2 prediction cache(s)")
             && dsl_branch_merge_stdout.contains("configured process worker(s)=2")
             && dsl_branch_merge_stdout.contains("observed process worker(s)=2"),
-        "unexpected DSL branch/merge CV+refit process bundle output: {}",
-        dsl_branch_merge_stdout
+        "unexpected DSL branch/merge CV+refit process bundle output: {dsl_branch_merge_stdout}"
     );
     let dsl_branch_merge_bundle_json =
         std::fs::read_to_string(&temp_dsl_branch_merge_cv_refit_bundle)
@@ -1231,8 +1219,7 @@ fn cli_selects_builds_and_validates_replay_bundle() {
             && dsl_branch_merge_bundle_json.contains(
                 "branch:b1.model:rf.oof->merge:stack.pred_plus_original.meta:ridge.b1_oof"
             ),
-        "unexpected DSL branch/merge CV+refit bundle JSON: {}",
-        dsl_branch_merge_bundle_json
+        "unexpected DSL branch/merge CV+refit bundle JSON: {dsl_branch_merge_bundle_json}"
     );
     let dsl_branch_merge_lineage_json = std::fs::read_to_string(&temp_dsl_branch_merge_lineage)
         .expect("DSL branch/merge lineage records were written");
@@ -1241,8 +1228,7 @@ fn cli_selects_builds_and_validates_replay_bundle() {
             && dsl_branch_merge_lineage_json.contains("branch:b1.augment:noise")
             && dsl_branch_merge_lineage_json.contains("merge:stack.pred_plus_original.meta:ridge")
             && dsl_branch_merge_lineage_json.contains("input_lineage"),
-        "unexpected DSL branch/merge lineage JSON: {}",
-        dsl_branch_merge_lineage_json
+        "unexpected DSL branch/merge lineage JSON: {dsl_branch_merge_lineage_json}"
     );
     let dsl_branch_merge_prediction_cache_json =
         std::fs::read_to_string(&temp_dsl_branch_merge_prediction_cache)
@@ -1255,8 +1241,7 @@ fn cli_selects_builds_and_validates_replay_bundle() {
             && dsl_branch_merge_prediction_cache_json.contains("\"producer_port\": \"oof\"")
             && dsl_branch_merge_prediction_cache_json.contains("prediction-cache:branch:b0")
             && dsl_branch_merge_prediction_cache_json.contains("prediction-cache:branch:b1"),
-        "unexpected DSL branch/merge prediction cache payload JSON: {}",
-        dsl_branch_merge_prediction_cache_json
+        "unexpected DSL branch/merge prediction cache payload JSON: {dsl_branch_merge_prediction_cache_json}"
     );
 
     let validate_prediction_cache = Command::new(cli())
@@ -1457,8 +1442,7 @@ fn cli_selects_builds_and_validates_replay_bundle() {
             && branch_merge_prov_json.contains("dagml:oof_dependency")
             && branch_merge_prov_json.contains("dagml:lineage_dependency")
             && branch_merge_prov_json.contains("merge:stack.pred_plus_original.meta:ridge"),
-        "unexpected branch/merge PROV JSON-LD: {}",
-        branch_merge_prov_json
+        "unexpected branch/merge PROV JSON-LD: {branch_merge_prov_json}"
     );
     let branch_merge_ro_crate_json =
         std::fs::read_to_string(temp_branch_merge_provenance_dir.join("ro-crate-metadata.json"))
@@ -1488,8 +1472,7 @@ fn cli_selects_builds_and_validates_replay_bundle() {
             && branch_merge_ro_crate_json.contains("lineage.prov.jsonld")
             && branch_merge_ro_crate_json.contains("\"sha256\"")
             && branch_merge_ro_crate_json.contains("\"contentSize\""),
-        "unexpected branch/merge RO-Crate metadata: {}",
-        branch_merge_ro_crate_json
+        "unexpected branch/merge RO-Crate metadata: {branch_merge_ro_crate_json}"
     );
     let mut tampered_prediction_cache: serde_json::Value =
         serde_json::from_str(&branch_merge_prediction_cache_json)
@@ -1589,8 +1572,7 @@ fn cli_selects_builds_and_validates_replay_bundle() {
             && branch_merge_replay_stdout.contains("3 data handle(s)")
             && branch_merge_replay_stdout.contains("3 data view(s)")
             && branch_merge_replay_stdout.contains("3 artifact handle(s)"),
-        "unexpected branch/merge process replay output: {}",
-        branch_merge_replay_stdout
+        "unexpected branch/merge process replay output: {branch_merge_replay_stdout}"
     );
 
     std::fs::write(
@@ -1741,8 +1723,7 @@ fn cli_selects_builds_and_validates_replay_bundle() {
         branch_merge_refit_mock_replay_with_store_stdout.contains("mock replay run: 3 result(s)")
             && branch_merge_refit_mock_replay_with_store_stdout
                 .contains("2 prediction cache handle(s)"),
-        "unexpected branch/merge REFIT mock replay with store output: {}",
-        branch_merge_refit_mock_replay_with_store_stdout
+        "unexpected branch/merge REFIT mock replay with store output: {branch_merge_refit_mock_replay_with_store_stdout}"
     );
 
     let branch_merge_refit_replay_with_payload = Command::new(cli())
@@ -1798,8 +1779,7 @@ fn cli_selects_builds_and_validates_replay_bundle() {
             && branch_merge_refit_replay_with_payload_stdout.contains("3 artifact handle(s)")
             && branch_merge_refit_replay_with_payload_stdout
                 .contains("2 prediction cache handle(s)"),
-        "unexpected branch/merge REFIT replay with payload output: {}",
-        branch_merge_refit_replay_with_payload_stdout
+        "unexpected branch/merge REFIT replay with payload output: {branch_merge_refit_replay_with_payload_stdout}"
     );
 
     let branch_merge_sklearn_cv_refit_replay = Command::new(cli())
@@ -1846,8 +1826,7 @@ fn cli_selects_builds_and_validates_replay_bundle() {
             && branch_merge_sklearn_stdout.contains("2 prediction cache(s)")
             && branch_merge_sklearn_stdout.contains("configured process worker(s)=2")
             && branch_merge_sklearn_stdout.contains("observed process worker(s)=2"),
-        "unexpected branch/merge sklearn CV+refit+replay output: {}",
-        branch_merge_sklearn_stdout
+        "unexpected branch/merge sklearn CV+refit+replay output: {branch_merge_sklearn_stdout}"
     );
 
     let dsl_branch_merge_sklearn_cv_refit_replay = Command::new(cli())
@@ -1893,8 +1872,7 @@ fn cli_selects_builds_and_validates_replay_bundle() {
             && dsl_branch_merge_sklearn_stdout.contains("2 prediction cache(s)")
             && dsl_branch_merge_sklearn_stdout.contains("configured process worker(s)=2")
             && dsl_branch_merge_sklearn_stdout.contains("observed process worker(s)=2"),
-        "unexpected DSL branch/merge sklearn CV+refit+replay output: {}",
-        dsl_branch_merge_sklearn_stdout
+        "unexpected DSL branch/merge sklearn CV+refit+replay output: {dsl_branch_merge_sklearn_stdout}"
     );
 
     let validate = Command::new(cli())
@@ -1927,8 +1905,7 @@ fn cli_selects_builds_and_validates_replay_bundle() {
     assert!(
         validate_stdout.contains("valid bundle: bundle:cli.demo")
             && validate_stdout.contains("prediction requirement(s)=0, prediction cache(s)=0"),
-        "unexpected validate-bundle output: {}",
-        validate_stdout
+        "unexpected validate-bundle output: {validate_stdout}"
     );
 
     let validate_refit = Command::new(cli())
@@ -1965,8 +1942,7 @@ fn cli_selects_builds_and_validates_replay_bundle() {
     assert!(
         validate_refit_stdout.contains("valid bundle: bundle:cli.refit.capture")
             && validate_refit_stdout.contains("prediction requirement(s)=0, prediction cache(s)=0"),
-        "unexpected validate refit bundle output: {}",
-        validate_refit_stdout
+        "unexpected validate refit bundle output: {validate_refit_stdout}"
     );
 
     let validate_process_refit = Command::new(cli())
@@ -2004,8 +1980,7 @@ fn cli_selects_builds_and_validates_replay_bundle() {
         validate_process_refit_stdout.contains("valid bundle: bundle:cli.process.refit.capture")
             && validate_process_refit_stdout
                 .contains("prediction requirement(s)=0, prediction cache(s)=0"),
-        "unexpected validate process refit bundle output: {}",
-        validate_process_refit_stdout
+        "unexpected validate process refit bundle output: {validate_process_refit_stdout}"
     );
 
     let replay = Command::new(cli())
@@ -2072,8 +2047,7 @@ fn cli_selects_builds_and_validates_replay_bundle() {
     assert!(
         process_stdout.contains("process replay run: 2 result(s)")
             && process_stdout.contains("1 artifact handle(s)"),
-        "unexpected run-process-replay output: {}",
-        process_stdout
+        "unexpected run-process-replay output: {process_stdout}"
     );
 
     if python_has_sklearn(&root) {
@@ -2108,8 +2082,7 @@ fn cli_selects_builds_and_validates_replay_bundle() {
             sklearn_stdout.contains("process refit replay run: 2 refit result(s)")
                 && sklearn_stdout.contains("1 replay prediction block(s)")
                 && sklearn_stdout.contains("1 captured artifact handle(s)"),
-            "unexpected run-process-refit-replay output: {}",
-            sklearn_stdout
+            "unexpected run-process-refit-replay output: {sklearn_stdout}"
         );
 
         let sklearn_demo = Command::new("python3")
@@ -2158,8 +2131,7 @@ fn cli_selects_builds_and_validates_replay_bundle() {
                 && validate_sklearn_stdout.contains("9 OOF column(s)")
                 && validate_sklearn_stdout.contains("3 branch selection(s)")
                 && validate_sklearn_stdout.contains("merge:m1.pred_meta_original.meta:ridge"),
-            "unexpected validate-sklearn-complex-demo output: {}",
-            validate_sklearn_stdout
+            "unexpected validate-sklearn-complex-demo output: {validate_sklearn_stdout}"
         );
     }
 
@@ -2182,6 +2154,234 @@ fn cli_selects_builds_and_validates_replay_bundle() {
     let _ = std::fs::remove_file(temp_selection);
     let _ = std::fs::remove_file(temp_schedule);
     let _ = std::fs::remove_dir_all(temp_sklearn_demo_dir);
+}
+
+#[test]
+fn cli_process_replay_refuses_external_test_relations_that_only_match_by_string() {
+    use std::collections::BTreeMap;
+
+    use dag_ml_core::{
+        build_execution_bundle, build_execution_plan, CampaignSpec, ControllerManifest,
+        ControllerRegistry, ExternalDataPlanEnvelope, GraphSpec, PredictCohort, PredictCohortRole,
+        SampleRelationSet, EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION_V2,
+    };
+
+    let root = repo_root();
+    let read_json = |path: &str| -> serde_json::Value {
+        serde_json::from_slice(&std::fs::read(root.join(path)).expect("read replay fixture"))
+            .expect("replay fixture is JSON")
+    };
+    let mut original: ExternalDataPlanEnvelope = serde_json::from_value(read_json(
+        "examples/fixtures/data/coordinator_data_plan_envelope_sample12.json",
+    ))
+    .expect("decode original training envelope");
+    let training_relations = original.coordinator_relations.as_ref().unwrap().clone();
+    // The saved sample12 fingerprint is a historical placeholder. Bind the
+    // campaign and bundle to the real, unchanged relation records in memory.
+    let training_fingerprint = training_relations.fingerprint().unwrap();
+    original.relation_fingerprint = Some(training_fingerprint.clone());
+    original.validate().unwrap();
+    let mut campaign = read_json("examples/campaign_oof_generation.json");
+    campaign["data_bindings"]["model:base"][0]["relation_fingerprint"] =
+        json!(training_fingerprint);
+    let campaign: CampaignSpec = serde_json::from_value(campaign).unwrap();
+    let manifests: Vec<ControllerManifest> =
+        serde_json::from_value(read_json("examples/controller_manifests.json")).unwrap();
+    let mut registry = ControllerRegistry::new();
+    for manifest in manifests {
+        registry.register(manifest).unwrap();
+    }
+    let graph: GraphSpec =
+        serde_json::from_value(read_json("examples/minimal_graph.json")).unwrap();
+    let plan = build_execution_plan(
+        "plan:cli.external.test.authority",
+        graph,
+        campaign,
+        &registry,
+    )
+    .expect("build the existing replay plan with genuine training authority");
+    let spec = read_json("examples/fixtures/bundle/bundle_build_spec_minimal.json");
+    let bundle = build_execution_bundle(
+        serde_json::from_value(spec["bundle_id"].clone()).unwrap(),
+        &plan,
+        serde_json::from_value(spec["selected_variant_id"].clone()).unwrap(),
+        serde_json::from_value(spec["selections"].clone()).unwrap(),
+        serde_json::from_value(spec["refit_artifacts"].clone()).unwrap(),
+    )
+    .expect("build the accepted replay bundle against the regenerated plan");
+    bundle.validate_against_plan(&plan).unwrap();
+    assert_eq!(bundle.data_requirements.len(), 1);
+    let requirement = &bundle.data_requirements[0];
+    assert_eq!(requirement.key(), "model:base.x");
+    assert_eq!(
+        requirement.relation_fingerprint.as_deref(),
+        Some(training_fingerprint.as_str())
+    );
+
+    let relations_for = |sample_id: &str| -> SampleRelationSet {
+        serde_json::from_value(json!({"records": [{
+            "observation_id": format!("obs:{sample_id}"),
+            "sample_id": sample_id,
+            "target_id": format!("target:{sample_id}"),
+            "group_id": format!("group:{sample_id}"),
+            "origin_sample_id": null,
+            "source_id": "nir",
+            "is_augmented": false
+        }]}))
+        .unwrap()
+    };
+    let cohort_for = |sample_id: &str| {
+        PredictCohort::from_relations(
+            PredictCohortRole::ExternalTest,
+            relations_for(sample_id),
+            vec!["y".into()],
+            "a".repeat(64),
+            Some("b".repeat(64)),
+        )
+        .unwrap()
+    };
+    let folds = plan.fold_set.as_ref().expect("real CV fold authority");
+    assert!(folds.folds.iter().any(|fold| fold
+        .train_sample_ids
+        .iter()
+        .any(|id| id.as_str() == "sample:1")));
+    assert!(training_relations
+        .records
+        .iter()
+        .any(|row| row.sample_id.as_str() == "sample:1"));
+
+    let mut good = original.clone();
+    good.schema_version = EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION_V2;
+    good.predict_cohort = Some(cohort_for("sample:external:heldout"));
+    good.validate().unwrap();
+    good.predict_cohort
+        .as_ref()
+        .unwrap()
+        .validate_against_cv_fold_set(folds)
+        .expect("positive cohort is genuinely outside the CV universe");
+
+    let mut bad = good.clone();
+    bad.coordinator_relations = Some(relations_for("sample:unrelated:authority"));
+    bad.predict_cohort = Some(cohort_for("sample:1"));
+    assert_eq!(bad.relation_fingerprint, requirement.relation_fingerprint);
+    assert_ne!(
+        bad.coordinator_relations
+            .as_ref()
+            .unwrap()
+            .fingerprint()
+            .unwrap(),
+        training_fingerprint
+    );
+    // This must pass the ordinary contract: its cohort is disjoint from the
+    // substituted relations, despite overlapping the owner's actual fold.
+    bad.validate()
+        .expect("wrong-set envelope must pass generic validation");
+    for envelope in [&good, &bad] {
+        bundle
+            .validate_replay_envelopes(&BTreeMap::from([(requirement.key(), envelope.clone())]))
+            .expect("both envelopes must pass the existing string-only bundle contract");
+    }
+
+    let temp = std::env::temp_dir().join(format!(
+        "dag_ml_cli_external_test_authority_{}_{}",
+        std::process::id(),
+        unique_suffix()
+    ));
+    std::fs::create_dir(&temp).expect("create fresh replay test directory");
+    let campaign_path = temp.join("campaign.json");
+    let bundle_path = temp.join("bundle.json");
+    let good_path = temp.join("good.json");
+    let bad_path = temp.join("bad.json");
+    let adapter_path = temp.join("counting_adapter.py");
+    for (path, value) in [
+        (
+            &campaign_path,
+            serde_json::to_value(&plan.campaign).unwrap(),
+        ),
+        (&bundle_path, serde_json::to_value(&bundle).unwrap()),
+        (&good_path, serde_json::to_value(&good).unwrap()),
+        (&bad_path, serde_json::to_value(&bad).unwrap()),
+    ] {
+        std::fs::write(path, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+    }
+    // One-shot mode invokes this once per NodeTask. Description probes must
+    // not count as callbacks. Delegate stdin/stdout and all result validation
+    // to the actual shipped adapter, without synthesizing any NodeResult.
+    std::fs::write(
+        &adapter_path,
+        r#"import os
+import runpy
+import sys
+
+if "--describe" not in sys.argv[1:]:
+    with open(os.environ["DAG_ML_AUTHORITY_CALLBACK_LOG"], "a", encoding="utf-8") as marker:
+        marker.write("task\n")
+runpy.run_path(os.environ["DAG_ML_AUTHORITY_REAL_ADAPTER"], run_name="__main__")
+"#,
+    )
+    .unwrap();
+    let run_replay = |envelope_path: &Path, label: &str| {
+        let marker_path = temp.join(format!("{label}.callbacks"));
+        std::fs::write(&marker_path, "").unwrap();
+        let envelope_arg = format!("{}={}", requirement.key(), envelope_path.display());
+        let output = Command::new(cli())
+            .current_dir(&root)
+            .args([
+                "run-process-replay",
+                "--bundle",
+                bundle_path.to_str().unwrap(),
+                "--graph",
+                "examples/minimal_graph.json",
+                "--campaign",
+                campaign_path.to_str().unwrap(),
+                "--controllers",
+                "examples/controller_manifests.json",
+                "--envelope",
+                &envelope_arg,
+                "--replay-request",
+                "examples/fixtures/bundle/replay_request_predict.json",
+                "--adapter",
+                adapter_path.to_str().unwrap(),
+                "--plan-id",
+                &plan.id,
+            ])
+            .env("DAG_ML_AUTHORITY_CALLBACK_LOG", &marker_path)
+            .env(
+                "DAG_ML_AUTHORITY_REAL_ADAPTER",
+                root.join("examples/adapters/python_process_controller.py"),
+            )
+            .output()
+            .expect("invoke real CLI process replay");
+        let callbacks = std::fs::read_to_string(&marker_path).expect("read callback log");
+        let callback_count = callbacks.lines().count();
+        let diagnostics = format!(
+            "{label}: exit={:?}, status={}, callback_count={callback_count}, artifacts={}\nstdout:\n{}\nstderr:\n{}\ncallback log:\n{callbacks}",
+            output.status.code(),
+            output.status,
+            temp.display(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        (output, callback_count, diagnostics)
+    };
+
+    let (positive, positive_count, positive_diagnostics) = run_replay(&good_path, "positive");
+    assert!(
+        positive.status.success()
+            && String::from_utf8_lossy(&positive.stdout)
+                .contains("process replay run: 2 result(s)")
+            && positive_count > 0,
+        "valid original authority and disjoint cohort must execute: {positive_diagnostics}"
+    );
+    let (refusal, callback_count, diagnostics) = run_replay(&bad_path, "wrong-set");
+    assert!(
+        !refusal.status.success()
+            && String::from_utf8_lossy(&refusal.stderr)
+                .contains("external_test training relations do not match owner authority")
+            && callback_count == 0,
+        "replay must refuse wrong training authority before any task callback\n{diagnostics}\npositive control:\n{positive_diagnostics}"
+    );
+    std::fs::remove_dir_all(temp).unwrap();
 }
 
 #[test]
@@ -2299,8 +2499,7 @@ fn cli_exports_and_validates_artifact_manifest() {
             && manifest_json.contains("artifact:model:base:refit")
             && manifest_json.contains("\"backend\": \"joblib\"")
             && manifest_json.contains("\"content_fingerprint\""),
-        "unexpected artifact manifest JSON: {}",
-        manifest_json
+        "unexpected artifact manifest JSON: {manifest_json}"
     );
 
     let validate_manifest = Command::new(cli())
@@ -2699,8 +2898,7 @@ fn cli_exports_research_provenance_bundle() {
             && openlineage_json.contains("\"schemaURL\"")
             && openlineage_json.contains("\"dagml_reproducibility\"")
             && openlineage_json.contains("\"dag-ml-cli-test\""),
-        "unexpected OpenLineage export: {}",
-        openlineage_json
+        "unexpected OpenLineage export: {openlineage_json}"
     );
 
     let prov_json = std::fs::read_to_string(temp_provenance_dir.join("lineage.prov.jsonld"))
@@ -2710,8 +2908,7 @@ fn cli_exports_research_provenance_bundle() {
             && prov_json.contains("\"wasDerivedFrom\"")
             && prov_json.contains("dagml:ExecutionBundle")
             && prov_json.contains("dagml:ArtifactManifest"),
-        "unexpected PROV JSON-LD export: {}",
-        prov_json
+        "unexpected PROV JSON-LD export: {prov_json}"
     );
     let ro_crate_json = std::fs::read_to_string(temp_provenance_dir.join("ro-crate-metadata.json"))
         .expect("RO-Crate metadata export was written");
@@ -2734,8 +2931,7 @@ fn cli_exports_research_provenance_bundle() {
             && ro_crate_json.contains("artifact_manifest.json")
             && ro_crate_json.contains("lineage.prov.jsonld")
             && ro_crate_json.contains("\"sha256\""),
-        "unexpected RO-Crate metadata export: {}",
-        ro_crate_json
+        "unexpected RO-Crate metadata export: {ro_crate_json}"
     );
 
     let _ = std::fs::remove_file(temp_bundle);
@@ -2777,8 +2973,7 @@ fn process_adapters_describe_supported_protocol_modes() {
                 && stdout.contains("\"parallel_invocation_v1\"")
                 && stdout.contains("\"persistent_workers\"")
                 && stdout.contains("\"worker_env\""),
-            "unexpected adapter `{adapter}` describe output: {}",
-            stdout
+            "unexpected adapter `{adapter}` describe output: {stdout}"
         );
         if adapter == "examples/adapters/python_process_controller.py" {
             let fixture: serde_json::Value = serde_json::from_str(include_str!(
@@ -2791,8 +2986,7 @@ fn process_adapters_describe_supported_protocol_modes() {
             assert!(
                 stdout.contains("\"dag-ml-sklearn-production-controller\"")
                     && stdout.contains("\"sklearn_production\""),
-                "production adapter description missing production capability: {}",
-                stdout
+                "production adapter description missing production capability: {stdout}"
             );
         }
     }
@@ -2840,8 +3034,7 @@ fn prospectr_process_controller_describes_supported_protocol_modes() {
     ] {
         assert!(
             stdout.contains(&format!("\"{required}\"")),
-            "prospectr adapter description missing capability `{required}`: {}",
-            stdout
+            "prospectr adapter description missing capability `{required}`: {stdout}"
         );
     }
 }
@@ -2983,8 +3176,7 @@ fn prospectr_process_controller_one_shot_unknown_operator_exits_nonzero() {
     let stderr_text = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr_text.contains("unknown_operator"),
-        "expected `unknown_operator` code in stderr: {}",
-        stderr_text
+        "expected `unknown_operator` code in stderr: {stderr_text}"
     );
 }
 
@@ -3128,8 +3320,7 @@ fn prospectr_process_controller_jsonl_emits_error_frame_and_survives() {
     assert_eq!(
         frames.len(),
         3,
-        "expected exactly 3 frames (error + result + close ack), got: {:#?}",
-        frames
+        "expected exactly 3 frames (error + result + close ack), got: {frames:#?}"
     );
     assert_eq!(error_frames.len(), 1, "expected one error frame");
     assert_eq!(
@@ -3360,8 +3551,7 @@ fn mdatools_process_controller_describes_supported_protocol_modes() {
     ] {
         assert!(
             stdout.contains(&format!("\"{required}\"")),
-            "mdatools adapter description missing capability `{required}`: {}",
-            stdout
+            "mdatools adapter description missing capability `{required}`: {stdout}"
         );
     }
 }
@@ -3670,8 +3860,7 @@ fn mdatools_process_controller_rejects_artifact_uri_outside_artifact_dir() {
         stderr_text.contains("resolved under artifact dir")
             && stderr_text.contains(artifact_dir_str)
             && !stderr_text.contains("/etc/passwd readRDS"),
-        "mdatools adapter did not confine the traversal URI under artifact dir: {}",
-        stderr_text
+        "mdatools adapter did not confine the traversal URI under artifact dir: {stderr_text}"
     );
 
     let _ = std::fs::remove_dir_all(artifact_dir);
@@ -4369,14 +4558,12 @@ fn sklearn_production_controller_jsonl_emits_error_frame_and_survives() {
     assert_eq!(
         frames.len(),
         3,
-        "expected exactly 3 frames (error + result + close ack), got: {:#?}",
-        frames
+        "expected exactly 3 frames (error + result + close ack), got: {frames:#?}"
     );
     assert_eq!(
         error_frames.len(),
         1,
-        "expected exactly one error frame, got: {:#?}",
-        frames
+        "expected exactly one error frame, got: {frames:#?}"
     );
     assert_eq!(
         error_frames[0]["error"]["code"].as_str(),
@@ -4388,8 +4575,7 @@ fn sklearn_production_controller_jsonl_emits_error_frame_and_survives() {
     assert_eq!(
         result_frames.len(),
         1,
-        "worker should still produce one result after the error, frames: {:#?}",
-        frames
+        "worker should still produce one result after the error, frames: {frames:#?}"
     );
     assert_eq!(
         result_frames[0]["result"]["node_id"].as_str(),
@@ -4398,8 +4584,7 @@ fn sklearn_production_controller_jsonl_emits_error_frame_and_survives() {
     assert_eq!(
         ack_frames.len(),
         1,
-        "expected one close ack frame, got: {:#?}",
-        frames
+        "expected one close ack frame, got: {frames:#?}"
     );
     assert_eq!(ack_frames[0]["status"].as_str(), Some("closed"));
 
@@ -4539,8 +4724,7 @@ except mod.AdapterTaskError as exc:
     let stdout_text = String::from_utf8_lossy(&probe.stdout);
     assert!(
         stdout_text.contains("OK:fit_timeout:1"),
-        "expected `OK:fit_timeout:1` in timeout probe stdout, got: {}",
-        stdout_text
+        "expected `OK:fit_timeout:1` in timeout probe stdout, got: {stdout_text}"
     );
 }
 
@@ -4705,8 +4889,7 @@ fn sklearn_production_controller_rejects_artifact_uri_outside_artifact_dir() {
             && stderr_text.contains(artifact_dir_str)
             && !stderr_text.contains("loaded /etc/passwd")
             && !stderr_text.contains("UnpicklingError"),
-        "production adapter did not confine the traversal URI under artifact dir: {}",
-        stderr_text
+        "production adapter did not confine the traversal URI under artifact dir: {stderr_text}"
     );
 
     let _ = std::fs::remove_dir_all(artifact_dir);
@@ -4844,8 +5027,7 @@ fn cli_executes_mixed_branch_merge_with_minimal_aliases() {
                     .as_array()
                     .is_some_and(|inputs| inputs.len() == 2)
         }),
-        "unexpected mixed branch merge plan JSON: {}",
-        plan_json
+        "unexpected mixed branch merge plan JSON: {plan_json}"
     );
     assert_eq!(
         plan_json["node_plans"]["branch:scaled.transform"]["controller_id"],
@@ -4922,8 +5104,7 @@ fn cli_executes_mixed_branch_merge_with_minimal_aliases() {
             && stdout.contains("1 prediction cache(s)")
             && stdout.contains("configured process worker(s)=2")
             && stdout.contains("observed process worker(s)=2"),
-        "unexpected mixed branch merge DSL bundle output: {}",
-        stdout
+        "unexpected mixed branch merge DSL bundle output: {stdout}"
     );
 
     let bundle_json =
@@ -4934,8 +5115,7 @@ fn cli_executes_mixed_branch_merge_with_minimal_aliases() {
             && bundle_json.contains("merge:mixed")
             && bundle_json.contains("model:final.ridge")
             && bundle_json.contains("artifact:model:final.ridge:sklearn:refit"),
-        "unexpected mixed branch merge bundle JSON: {}",
-        bundle_json
+        "unexpected mixed branch merge bundle JSON: {bundle_json}"
     );
     let lineage_json =
         std::fs::read_to_string(&temp_lineage).expect("mixed branch merge lineage was written");
@@ -4943,8 +5123,7 @@ fn cli_executes_mixed_branch_merge_with_minimal_aliases() {
         lineage_json.contains("merge:mixed")
             && lineage_json.contains("model:final.ridge")
             && lineage_json.contains("input_lineage"),
-        "unexpected mixed branch merge lineage JSON: {}",
-        lineage_json
+        "unexpected mixed branch merge lineage JSON: {lineage_json}"
     );
     let prediction_cache_json = std::fs::read_to_string(&temp_prediction_cache)
         .expect("mixed branch merge prediction cache was written");
@@ -4952,8 +5131,7 @@ fn cli_executes_mixed_branch_merge_with_minimal_aliases() {
         prediction_cache_json.contains(&format!("\"bundle_id\": \"{bundle_id}\""))
             && prediction_cache_json
                 .contains("prediction-cache:branch:scaled.model:ridge.oof->merge:mixed.scaled_oof"),
-        "unexpected mixed branch merge prediction cache JSON: {}",
-        prediction_cache_json
+        "unexpected mixed branch merge prediction cache JSON: {prediction_cache_json}"
     );
 
     let _ = std::fs::remove_file(temp_plan);
@@ -5217,24 +5395,21 @@ fn cli_executes_runtime_data_generation_operator() {
             && stdout.contains("0 prediction cache(s)")
             && stdout.contains("configured process worker(s)=2")
             && stdout.contains("observed process worker(s)=2"),
-        "unexpected runtime generation DSL bundle output: {}",
-        stdout
+        "unexpected runtime generation DSL bundle output: {stdout}"
     );
     let bundle_json =
         std::fs::read_to_string(&temp_bundle).expect("runtime generation bundle was written");
     assert!(
         bundle_json.contains("generator:synthetic.train")
             && bundle_json.contains("model:ridge.after-generation"),
-        "unexpected runtime generation bundle JSON: {}",
-        bundle_json
+        "unexpected runtime generation bundle JSON: {bundle_json}"
     );
     let lineage_json =
         std::fs::read_to_string(&temp_lineage).expect("runtime generation lineage was written");
     assert!(
         lineage_json.contains("generator:synthetic.train")
             && lineage_json.contains("model:ridge.after-generation"),
-        "unexpected runtime generation lineage JSON: {}",
-        lineage_json
+        "unexpected runtime generation lineage JSON: {lineage_json}"
     );
 
     let _ = std::fs::remove_file(temp_plan);
@@ -5323,8 +5498,7 @@ fn cli_enforces_process_timeouts_and_restarts_persistent_workers() {
     assert!(
         timeout_stderr.contains("timed out after 750 ms")
             && timeout_stderr.contains("after 1 attempt(s)"),
-        "unexpected flaky timeout error: {}",
-        timeout_stderr
+        "unexpected flaky timeout error: {timeout_stderr}"
     );
 
     let retry_run_id = format!("run:cli.process.retry.{}", unique_suffix());
@@ -5367,8 +5541,7 @@ fn cli_enforces_process_timeouts_and_restarts_persistent_workers() {
         retry_stdout.contains("process campaign run: 8 result(s)")
             && retry_stdout.contains("4 prediction block(s)")
             && retry_stdout.contains("4 data handle(s)"),
-        "unexpected flaky retry output: {}",
-        retry_stdout
+        "unexpected flaky retry output: {retry_stdout}"
     );
     assert!(
         lifecycle_marker_count(&retry_lifecycle_dir, "init") >= 2
@@ -5414,8 +5587,7 @@ fn cli_enforces_process_timeouts_and_restarts_persistent_workers() {
     assert!(
         error_no_retry_stderr.contains("adapter task returned error `retryable_test_error`")
             && error_no_retry_stderr.contains("after 1 attempt(s)"),
-        "unexpected retryable adapter error without retry: {}",
-        error_no_retry_stderr
+        "unexpected retryable adapter error without retry: {error_no_retry_stderr}"
     );
 
     let error_retry_run_id = format!("run:cli.process.retryable-error-retry.{}", unique_suffix());
@@ -5493,8 +5665,7 @@ fn cli_enforces_process_timeouts_and_restarts_persistent_workers() {
     let one_shot_timeout_stderr = String::from_utf8_lossy(&one_shot_timeout.stderr);
     assert!(
         one_shot_timeout_stderr.contains("timed out after 750 ms"),
-        "unexpected flaky one-shot timeout error: {}",
-        one_shot_timeout_stderr
+        "unexpected flaky one-shot timeout error: {one_shot_timeout_stderr}"
     );
 
     let unbounded_timeout = Command::new(cli())
@@ -5615,8 +5786,7 @@ fn cli_parallel_scheduler_runs_branch_merge_process_campaign() {
             && stdout.contains("scheduler worker(s)=2")
             && stdout.contains("configured process worker(s)=2")
             && stdout.contains("observed process worker(s)=2"),
-        "unexpected parallel branch/merge process campaign output: {}",
-        stdout
+        "unexpected parallel branch/merge process campaign output: {stdout}"
     );
 }
 

@@ -10,6 +10,7 @@
 
 use serde::de::DeserializeOwned;
 use wasm_bindgen::prelude::*;
+use wasm_bindgen::JsCast;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -33,8 +34,10 @@ use dag_ml_core::{
 
 mod host_hpo;
 mod initial_refit;
+mod js_text;
 mod local_implementation;
 mod nested_selection;
+mod observation_scoring;
 mod training;
 
 pub use host_hpo::{
@@ -44,12 +47,27 @@ pub use host_hpo::{
 pub use initial_refit::{execute_initial_full_refit_json, replay_initial_full_refit_json};
 pub use local_implementation::{loss_execution_attestation_json, LocalImplementationRegistry};
 pub use nested_selection::execute_nested_selection_json;
-pub use training::{
-    attach_predict_cohort_to_envelope_json, build_archive_v2_native_portable_payloads_json,
-    execute_training_json, replay_training_package_json, sample_relation_set_fingerprint_json,
-    sign_training_replay_request_json, sign_training_request_json, training_data_identity_json,
-    validate_archive_v2_portable_payloads_json,
+pub use observation_scoring::{
+    aggregate_observation_predictions_json, execute_execution_plan_phase_with_envelope_json,
+    score_regression_prediction_block_json,
 };
+pub use training::{
+    attach_predict_cohort_to_envelope_json, execute_training_json, replay_training_package_json,
+    sample_relation_set_fingerprint_json, sign_training_replay_request_json,
+    sign_training_request_json, training_data_identity_json,
+};
+
+// The fast path avoids scanning the original JS string unless conversion may
+// have replaced an unpaired surrogate. A literal U+FFFD remains valid.
+fn callback_utf16_string(value: &JsValue) -> Result<Option<String>, ()> {
+    let Some(text) = value.as_string() else {
+        return Ok(None);
+    };
+    if text.contains('\u{fffd}') && !value.unchecked_ref::<js_sys::JsString>().is_valid_utf16() {
+        return Err(());
+    }
+    Ok(Some(text))
+}
 
 const SHARED_FOLD_SET_FINGERPRINT: &str =
     "54d3185d6c628ef0df848828a8d8ae650222a283a78bbd3ab3bc2256f222c05c";
@@ -65,31 +83,61 @@ pub fn contract_manifest_json() -> Result<String, JsValue> {
 }
 
 #[wasm_bindgen]
-pub fn validate_graph_json(json: &str) -> Result<(), JsValue> {
+pub fn validate_graph_json(json: &js_sys::JsString) -> Result<(), JsValue> {
+    let json = crate::js_text::text_argument(json, "json")?;
+    validate_graph_json_impl(&json)
+}
+
+fn validate_graph_json_impl(json: &str) -> Result<(), JsValue> {
     GraphSpec::from_json(json)
         .map(|_| ())
         .map_err(js_core_error)
 }
 
 #[wasm_bindgen]
-pub fn validate_campaign_json(json: &str) -> Result<(), JsValue> {
+pub fn validate_campaign_json(json: &js_sys::JsString) -> Result<(), JsValue> {
+    let json = crate::js_text::text_argument(json, "json")?;
+    validate_campaign_json_impl(&json)
+}
+
+fn validate_campaign_json_impl(json: &str) -> Result<(), JsValue> {
     CampaignSpec::from_json(json)
         .map(|_| ())
         .map_err(js_core_error)
 }
 
 #[wasm_bindgen]
-pub fn validate_controller_manifest_json(json: &str) -> Result<(), JsValue> {
+pub fn validate_controller_manifest_json(json: &js_sys::JsString) -> Result<(), JsValue> {
+    let json = crate::js_text::text_argument(json, "json")?;
+    validate_controller_manifest_json_impl(&json)
+}
+
+fn validate_controller_manifest_json_impl(json: &str) -> Result<(), JsValue> {
     validate_json::<ControllerManifest>(json, ControllerManifest::validate)
 }
 
 #[wasm_bindgen]
-pub fn validate_controller_manifest_list_json(json: &str) -> Result<(), JsValue> {
+pub fn validate_controller_manifest_list_json(json: &js_sys::JsString) -> Result<(), JsValue> {
+    let json = crate::js_text::text_argument(json, "json")?;
+    validate_controller_manifest_list_json_impl(&json)
+}
+
+fn validate_controller_manifest_list_json_impl(json: &str) -> Result<(), JsValue> {
     controller_registry_from_json(json).map(|_| ())
 }
 
 #[wasm_bindgen]
-pub fn derive_controller_manifest_json(host_controller_spec_json: &str) -> Result<String, JsValue> {
+pub fn derive_controller_manifest_json(
+    host_controller_spec_json: &js_sys::JsString,
+) -> Result<String, JsValue> {
+    let host_controller_spec_json =
+        crate::js_text::text_argument(host_controller_spec_json, "host_controller_spec_json")?;
+    derive_controller_manifest_json_impl(&host_controller_spec_json)
+}
+
+fn derive_controller_manifest_json_impl(
+    host_controller_spec_json: &str,
+) -> Result<String, JsValue> {
     let spec: HostControllerSpec =
         serde_json::from_str(host_controller_spec_json).map_err(js_serde_error)?;
     let manifest = spec.derive().map_err(js_core_error)?;
@@ -98,6 +146,14 @@ pub fn derive_controller_manifest_json(host_controller_spec_json: &str) -> Resul
 
 #[wasm_bindgen]
 pub fn derive_controller_manifest_list_json(
+    host_controller_specs_json: &js_sys::JsString,
+) -> Result<String, JsValue> {
+    let host_controller_specs_json =
+        crate::js_text::text_argument(host_controller_specs_json, "host_controller_specs_json")?;
+    derive_controller_manifest_list_json_impl(&host_controller_specs_json)
+}
+
+fn derive_controller_manifest_list_json_impl(
     host_controller_specs_json: &str,
 ) -> Result<String, JsValue> {
     let specs = serde_json::from_str::<Vec<HostControllerSpec>>(host_controller_specs_json)
@@ -109,7 +165,12 @@ pub fn derive_controller_manifest_list_json(
 /// Sign a descriptor whose native facts were inspected by the owning bridge.
 /// Consumers must reinspect N4ME bytes before accepting this descriptor.
 #[wasm_bindgen]
-pub fn native_estimator_descriptor_json(json: &str) -> Result<String, JsValue> {
+pub fn native_estimator_descriptor_json(json: &js_sys::JsString) -> Result<String, JsValue> {
+    let json = crate::js_text::text_argument(json, "json")?;
+    native_estimator_descriptor_json_impl(&json)
+}
+
+fn native_estimator_descriptor_json_impl(json: &str) -> Result<String, JsValue> {
     let mut descriptor: dag_ml_core::NativeEstimatorDescriptorV1 =
         serde_json::from_str(json).map_err(js_serde_error)?;
     descriptor.descriptor_fingerprint = descriptor.compute_fingerprint().map_err(js_core_error)?;
@@ -120,13 +181,23 @@ pub fn native_estimator_descriptor_json(json: &str) -> Result<String, JsValue> {
 /// One HostControllerSpec per graph role of an n4m method manifest
 /// (`n4m_method_manifest_json`).
 #[wasm_bindgen]
-pub fn n4m_host_controller_specs_json(manifest_json: &str) -> Result<String, JsValue> {
+pub fn n4m_host_controller_specs_json(manifest_json: &js_sys::JsString) -> Result<String, JsValue> {
+    let manifest_json = crate::js_text::text_argument(manifest_json, "manifest_json")?;
+    n4m_host_controller_specs_json_impl(&manifest_json)
+}
+
+fn n4m_host_controller_specs_json_impl(manifest_json: &str) -> Result<String, JsValue> {
     let specs = n4m_host_controller_specs(manifest_json).map_err(js_core_error)?;
     serde_json::to_string(&specs).map_err(js_serde_error)
 }
 
 #[wasm_bindgen]
-pub fn validate_pipeline_dsl_json(json: &str) -> Result<(), JsValue> {
+pub fn validate_pipeline_dsl_json(json: &js_sys::JsString) -> Result<(), JsValue> {
+    let json = crate::js_text::text_argument(json, "json")?;
+    validate_pipeline_dsl_json_impl(&json)
+}
+
+fn validate_pipeline_dsl_json_impl(json: &str) -> Result<(), JsValue> {
     let spec = parse_pipeline_dsl_json(json.as_bytes()).map_err(js_core_error)?;
     compile_pipeline_dsl_with_generation(&spec)
         .map(|_| ())
@@ -134,34 +205,54 @@ pub fn validate_pipeline_dsl_json(json: &str) -> Result<(), JsValue> {
 }
 
 #[wasm_bindgen]
-pub fn validate_execution_plan_json(json: &str) -> Result<(), JsValue> {
+pub fn validate_execution_plan_json(json: &js_sys::JsString) -> Result<(), JsValue> {
+    let json = crate::js_text::text_argument(json, "json")?;
+    validate_execution_plan_json_impl(&json)
+}
+
+fn validate_execution_plan_json_impl(json: &str) -> Result<(), JsValue> {
     ExecutionPlan::from_json(json)
         .map(|_| ())
         .map_err(js_core_error)
 }
 
 #[wasm_bindgen]
-pub fn validate_execution_bundle_json(json: &str) -> Result<(), JsValue> {
+pub fn validate_execution_bundle_json(json: &js_sys::JsString) -> Result<(), JsValue> {
+    let json = crate::js_text::text_argument(json, "json")?;
+    validate_execution_bundle_json_impl(&json)
+}
+
+fn validate_execution_bundle_json_impl(json: &str) -> Result<(), JsValue> {
     ExecutionBundle::from_json(json)
         .map(|_| ())
         .map_err(js_core_error)
 }
 
 #[wasm_bindgen]
-pub fn validate_fold_set_json(json: &str) -> Result<(), JsValue> {
+pub fn validate_fold_set_json(json: &js_sys::JsString) -> Result<(), JsValue> {
+    let json = crate::js_text::text_argument(json, "json")?;
+    validate_fold_set_json_impl(&json)
+}
+
+fn validate_fold_set_json_impl(json: &str) -> Result<(), JsValue> {
     validate_json::<FoldSet>(json, FoldSet::validate)
 }
 
 #[wasm_bindgen]
-pub fn fold_set_fingerprint_json(json: &str) -> Result<String, JsValue> {
+pub fn fold_set_fingerprint_json(json: &js_sys::JsString) -> Result<String, JsValue> {
+    let json = crate::js_text::text_argument(json, "json")?;
+    fold_set_fingerprint_json_impl(&json)
+}
+
+fn fold_set_fingerprint_json_impl(json: &str) -> Result<String, JsValue> {
     let fold_set = parse_and_validate::<FoldSet>(json, FoldSet::validate)?;
     fold_set_fingerprint(&fold_set).map_err(js_core_error)
 }
 
 /// Parse the optional JSON array of target-missing sample ids accepted by the splitters.
-fn target_missing_from_json(json: Option<String>) -> Result<BTreeSet<SampleId>, JsValue> {
+fn target_missing_from_json(json: Option<&str>) -> Result<BTreeSet<SampleId>, JsValue> {
     match json {
-        Some(json) => serde_json::from_str(&json).map_err(js_serde_error),
+        Some(json) => serde_json::from_str(json).map_err(js_serde_error),
         None => Ok(BTreeSet::new()),
     }
 }
@@ -175,10 +266,29 @@ fn target_missing_from_json(json: Option<String>) -> Result<BTreeSet<SampleId>, 
 /// PREDICT. Too few target-observed samples is refused with a `target_missing_exclusion` error.
 #[wasm_bindgen]
 pub fn kfold_split_json(
+    spec_json: &js_sys::JsString,
+    sample_ids_json: &js_sys::JsString,
+    id: &js_sys::JsString,
+    target_missing_json: Option<js_sys::JsString>,
+) -> Result<String, JsValue> {
+    let spec_json = crate::js_text::text_argument(spec_json, "spec_json")?;
+    let sample_ids_json = crate::js_text::text_argument(sample_ids_json, "sample_ids_json")?;
+    let id = crate::js_text::text_argument(id, "id")?;
+    let target_missing_json =
+        crate::js_text::optional_text_argument(target_missing_json, "target_missing_json")?;
+    kfold_split_json_impl(
+        &spec_json,
+        &sample_ids_json,
+        &id,
+        target_missing_json.as_deref(),
+    )
+}
+
+fn kfold_split_json_impl(
     spec_json: &str,
     sample_ids_json: &str,
     id: &str,
-    target_missing_json: Option<String>,
+    target_missing_json: Option<&str>,
 ) -> Result<String, JsValue> {
     let spec: KFoldSpec = serde_json::from_str(spec_json).map_err(js_serde_error)?;
     let samples: Vec<SampleId> = serde_json::from_str(sample_ids_json).map_err(js_serde_error)?;
@@ -189,22 +299,49 @@ pub fn kfold_split_json(
     serde_json::to_string(&fold_set).map_err(js_serde_error)
 }
 
-/// Build a native group-disjoint FoldSet from explicit sample -> group identities.
+/// Build a native group-disjoint FoldSet from explicit candidate ids and sample -> group identities.
 /// No group inference, clipping, randomization or feature values occur in the binding.
-/// `target_missing_json` behaves as in [`kfold_split_json`].
+/// `sample_ids_json` is a JSON array of candidate ids. Groups are required only for target-observed
+/// candidates; groups outside the candidates are refused. `target_missing_json` behaves as in
+/// [`kfold_split_json`]; any groups supplied for those missing candidates are ignored.
 #[wasm_bindgen]
 pub fn group_kfold_split_json(
+    spec_json: &js_sys::JsString,
+    sample_ids_json: &js_sys::JsString,
+    sample_groups_json: &js_sys::JsString,
+    id: &js_sys::JsString,
+    target_missing_json: Option<js_sys::JsString>,
+) -> Result<String, JsValue> {
+    let spec_json = crate::js_text::text_argument(spec_json, "spec_json")?;
+    let sample_ids_json = crate::js_text::text_argument(sample_ids_json, "sample_ids_json")?;
+    let sample_groups_json =
+        crate::js_text::text_argument(sample_groups_json, "sample_groups_json")?;
+    let id = crate::js_text::text_argument(id, "id")?;
+    let target_missing_json =
+        crate::js_text::optional_text_argument(target_missing_json, "target_missing_json")?;
+    group_kfold_split_json_impl(
+        &spec_json,
+        &sample_ids_json,
+        &sample_groups_json,
+        &id,
+        target_missing_json.as_deref(),
+    )
+}
+
+fn group_kfold_split_json_impl(
     spec_json: &str,
+    sample_ids_json: &str,
     sample_groups_json: &str,
     id: &str,
-    target_missing_json: Option<String>,
+    target_missing_json: Option<&str>,
 ) -> Result<String, JsValue> {
     let spec: GroupKFoldSpec = serde_json::from_str(spec_json).map_err(js_serde_error)?;
+    let samples: Vec<SampleId> = serde_json::from_str(sample_ids_json).map_err(js_serde_error)?;
     let groups: BTreeMap<SampleId, GroupId> =
         serde_json::from_str(sample_groups_json).map_err(js_serde_error)?;
     let target_missing = target_missing_from_json(target_missing_json)?;
     let fold_set = spec
-        .split_with_target_missing(id, &groups, &target_missing)
+        .split_with_target_missing(id, &samples, &groups, &target_missing)
         .map_err(js_core_error)?;
     serde_json::to_string(&fold_set).map_err(js_serde_error)
 }
@@ -215,11 +352,33 @@ pub fn group_kfold_split_json(
 /// `target_missing_json` behaves as in [`kfold_split_json`]; those samples need no label.
 #[wasm_bindgen]
 pub fn stratified_kfold_split_json(
+    spec_json: &js_sys::JsString,
+    sample_ids_json: &js_sys::JsString,
+    strata_json: &js_sys::JsString,
+    id: &js_sys::JsString,
+    target_missing_json: Option<js_sys::JsString>,
+) -> Result<String, JsValue> {
+    let spec_json = crate::js_text::text_argument(spec_json, "spec_json")?;
+    let sample_ids_json = crate::js_text::text_argument(sample_ids_json, "sample_ids_json")?;
+    let strata_json = crate::js_text::text_argument(strata_json, "strata_json")?;
+    let id = crate::js_text::text_argument(id, "id")?;
+    let target_missing_json =
+        crate::js_text::optional_text_argument(target_missing_json, "target_missing_json")?;
+    stratified_kfold_split_json_impl(
+        &spec_json,
+        &sample_ids_json,
+        &strata_json,
+        &id,
+        target_missing_json.as_deref(),
+    )
+}
+
+fn stratified_kfold_split_json_impl(
     spec_json: &str,
     sample_ids_json: &str,
     strata_json: &str,
     id: &str,
-    target_missing_json: Option<String>,
+    target_missing_json: Option<&str>,
 ) -> Result<String, JsValue> {
     let spec: StratifiedKFoldSpec = serde_json::from_str(spec_json).map_err(js_serde_error)?;
     let samples: Vec<SampleId> = serde_json::from_str(sample_ids_json).map_err(js_serde_error)?;
@@ -238,6 +397,16 @@ pub fn stratified_kfold_split_json(
 /// error instead of being emitted.
 #[wasm_bindgen]
 pub fn exclude_target_missing_json(
+    fold_set_json: &js_sys::JsString,
+    target_missing_json: &js_sys::JsString,
+) -> Result<String, JsValue> {
+    let fold_set_json = crate::js_text::text_argument(fold_set_json, "fold_set_json")?;
+    let target_missing_json =
+        crate::js_text::text_argument(target_missing_json, "target_missing_json")?;
+    exclude_target_missing_json_impl(&fold_set_json, &target_missing_json)
+}
+
+fn exclude_target_missing_json_impl(
     fold_set_json: &str,
     target_missing_json: &str,
 ) -> Result<String, JsValue> {
@@ -257,9 +426,20 @@ pub fn exclude_target_missing_json(
 /// {group → SelectionDecision} map; otherwise a single SelectionDecision.
 #[wasm_bindgen]
 pub fn select_candidates_json(
+    policy_json: &js_sys::JsString,
+    candidates_json: &js_sys::JsString,
+    groups_json: Option<js_sys::JsString>,
+) -> Result<String, JsValue> {
+    let policy_json = crate::js_text::text_argument(policy_json, "policy_json")?;
+    let candidates_json = crate::js_text::text_argument(candidates_json, "candidates_json")?;
+    let groups_json = crate::js_text::optional_text_argument(groups_json, "groups_json")?;
+    select_candidates_json_impl(&policy_json, &candidates_json, groups_json.as_deref())
+}
+
+fn select_candidates_json_impl(
     policy_json: &str,
     candidates_json: &str,
-    groups_json: Option<String>,
+    groups_json: Option<&str>,
 ) -> Result<String, JsValue> {
     let policy: SelectionPolicy = serde_json::from_str(policy_json).map_err(js_serde_error)?;
     let candidates: Vec<CandidateScore> =
@@ -267,7 +447,7 @@ pub fn select_candidates_json(
     match groups_json {
         Some(groups_json) => {
             let groups: BTreeMap<String, Vec<String>> =
-                serde_json::from_str(&groups_json).map_err(js_serde_error)?;
+                serde_json::from_str(groups_json).map_err(js_serde_error)?;
             let decisions =
                 select_candidate_groups(&policy, &candidates, &groups).map_err(js_core_error)?;
             serde_json::to_string(&decisions).map_err(js_serde_error)
@@ -282,6 +462,15 @@ pub fn select_candidates_json(
 /// Resolve one explicitly named output of a signed portable package.
 #[wasm_bindgen]
 pub fn select_portable_output_json(
+    package_json: &js_sys::JsString,
+    binding_id: &js_sys::JsString,
+) -> Result<String, JsValue> {
+    let package_json = crate::js_text::text_argument(package_json, "package_json")?;
+    let binding_id = crate::js_text::text_argument(binding_id, "binding_id")?;
+    select_portable_output_json_impl(&package_json, &binding_id)
+}
+
+fn select_portable_output_json_impl(
     package_json: &str,
     binding_id: &str,
 ) -> Result<String, JsValue> {
@@ -292,7 +481,12 @@ pub fn select_portable_output_json(
 
 /// Select stacking producers from validation scores with the native policy.
 #[wasm_bindgen]
-pub fn select_stacking_producers_json(request_json: &str) -> Result<String, JsValue> {
+pub fn select_stacking_producers_json(request_json: &js_sys::JsString) -> Result<String, JsValue> {
+    let request_json = crate::js_text::text_argument(request_json, "request_json")?;
+    select_stacking_producers_json_impl(&request_json)
+}
+
+fn select_stacking_producers_json_impl(request_json: &str) -> Result<String, JsValue> {
     let request: StackingProducerSelectionRequest = deserialize_external_contract(
         request_json,
         "stacking producer selection",
@@ -305,7 +499,12 @@ pub fn select_stacking_producers_json(request_json: &str) -> Result<String, JsVa
 
 /// Select a CV fold for stacking test predictions from validation scores.
 #[wasm_bindgen]
-pub fn select_stacking_fold_json(request_json: &str) -> Result<String, JsValue> {
+pub fn select_stacking_fold_json(request_json: &js_sys::JsString) -> Result<String, JsValue> {
+    let request_json = crate::js_text::text_argument(request_json, "request_json")?;
+    select_stacking_fold_json_impl(&request_json)
+}
+
+fn select_stacking_fold_json_impl(request_json: &str) -> Result<String, JsValue> {
     let request: StackingFoldSelectionRequest = deserialize_external_contract(
         request_json,
         "stacking fold selection",
@@ -318,7 +517,12 @@ pub fn select_stacking_fold_json(request_json: &str) -> Result<String, JsValue> 
 
 /// Objective-aware normalized CV-fold weights for stacking test predictions.
 #[wasm_bindgen]
-pub fn stacking_fold_weights_json(request_json: &str) -> Result<String, JsValue> {
+pub fn stacking_fold_weights_json(request_json: &js_sys::JsString) -> Result<String, JsValue> {
+    let request_json = crate::js_text::text_argument(request_json, "request_json")?;
+    stacking_fold_weights_json_impl(&request_json)
+}
+
+fn stacking_fold_weights_json_impl(request_json: &str) -> Result<String, JsValue> {
     let request: StackingFoldSelectionRequest = deserialize_external_contract(
         request_json,
         "stacking fold weights",
@@ -331,7 +535,14 @@ pub fn stacking_fold_weights_json(request_json: &str) -> Result<String, JsValue>
 
 /// Validate a signed no-splitter REFIT package before any host operator callback.
 #[wasm_bindgen]
-pub fn validate_initial_full_refit_package_json(package_json: &str) -> Result<(), JsValue> {
+pub fn validate_initial_full_refit_package_json(
+    package_json: &js_sys::JsString,
+) -> Result<(), JsValue> {
+    let package_json = crate::js_text::text_argument(package_json, "package_json")?;
+    validate_initial_full_refit_package_json_impl(&package_json)
+}
+
+fn validate_initial_full_refit_package_json_impl(package_json: &str) -> Result<(), JsValue> {
     InitialFullRefitPackage::from_json(package_json)
         .map(|_| ())
         .map_err(js_core_error)
@@ -340,6 +551,15 @@ pub fn validate_initial_full_refit_package_json(package_json: &str) -> Result<()
 /// Attach a new V2 PREDICT cohort to the package's signed training envelope.
 #[wasm_bindgen]
 pub fn initial_full_refit_predict_envelope_json(
+    package_json: &js_sys::JsString,
+    cohort_json: &js_sys::JsString,
+) -> Result<String, JsValue> {
+    let package_json = crate::js_text::text_argument(package_json, "package_json")?;
+    let cohort_json = crate::js_text::text_argument(cohort_json, "cohort_json")?;
+    initial_full_refit_predict_envelope_json_impl(&package_json, &cohort_json)
+}
+
+fn initial_full_refit_predict_envelope_json_impl(
     package_json: &str,
     cohort_json: &str,
 ) -> Result<String, JsValue> {
@@ -358,7 +578,12 @@ pub fn initial_full_refit_predict_envelope_json(
 
 /// Validate named source/sample coverage and return identity-only row indices.
 #[wasm_bindgen]
-pub fn align_named_source_rows_json(request_json: &str) -> Result<String, JsValue> {
+pub fn align_named_source_rows_json(request_json: &js_sys::JsString) -> Result<String, JsValue> {
+    let request_json = crate::js_text::text_argument(request_json, "request_json")?;
+    align_named_source_rows_json_impl(&request_json)
+}
+
+fn align_named_source_rows_json_impl(request_json: &str) -> Result<String, JsValue> {
     let request: dag_ml_core::NamedSourceAlignmentRequest =
         serde_json::from_str(request_json).map_err(js_serde_error)?;
     let alignment = dag_ml_core::align_named_source_rows(&request).map_err(js_core_error)?;
@@ -366,14 +591,24 @@ pub fn align_named_source_rows_json(request_json: &str) -> Result<String, JsValu
 }
 
 #[wasm_bindgen]
-pub fn compile_pipeline_dsl_graph_json(json: &str) -> Result<String, JsValue> {
+pub fn compile_pipeline_dsl_graph_json(json: &js_sys::JsString) -> Result<String, JsValue> {
+    let json = crate::js_text::text_argument(json, "json")?;
+    compile_pipeline_dsl_graph_json_impl(&json)
+}
+
+fn compile_pipeline_dsl_graph_json_impl(json: &str) -> Result<String, JsValue> {
     let spec = parse_pipeline_dsl_json(json.as_bytes()).map_err(js_core_error)?;
     let graph = compile_pipeline_dsl(&spec).map_err(js_core_error)?;
     serde_json::to_string(&graph).map_err(js_serde_error)
 }
 
 #[wasm_bindgen]
-pub fn compile_pipeline_dsl_artifact_json(json: &str) -> Result<String, JsValue> {
+pub fn compile_pipeline_dsl_artifact_json(json: &js_sys::JsString) -> Result<String, JsValue> {
+    let json = crate::js_text::text_argument(json, "json")?;
+    compile_pipeline_dsl_artifact_json_impl(&json)
+}
+
+fn compile_pipeline_dsl_artifact_json_impl(json: &str) -> Result<String, JsValue> {
     let spec = parse_pipeline_dsl_json(json.as_bytes()).map_err(js_core_error)?;
     let artifact = compile_pipeline_dsl_with_generation(&spec).map_err(js_core_error)?;
     serde_json::to_string(&artifact).map_err(js_serde_error)
@@ -381,6 +616,16 @@ pub fn compile_pipeline_dsl_artifact_json(json: &str) -> Result<String, JsValue>
 
 #[wasm_bindgen]
 pub fn compile_pipeline_dsl_artifact_with_controllers_json(
+    dsl_json: &js_sys::JsString,
+    controller_manifests_json: &js_sys::JsString,
+) -> Result<String, JsValue> {
+    let dsl_json = crate::js_text::text_argument(dsl_json, "dsl_json")?;
+    let controller_manifests_json =
+        crate::js_text::text_argument(controller_manifests_json, "controller_manifests_json")?;
+    compile_pipeline_dsl_artifact_with_controllers_json_impl(&dsl_json, &controller_manifests_json)
+}
+
+fn compile_pipeline_dsl_artifact_with_controllers_json_impl(
     dsl_json: &str,
     controller_manifests_json: &str,
 ) -> Result<String, JsValue> {
@@ -393,6 +638,25 @@ pub fn compile_pipeline_dsl_artifact_with_controllers_json(
 
 #[wasm_bindgen]
 pub fn build_execution_plan_json(
+    plan_id: &js_sys::JsString,
+    graph_json: &js_sys::JsString,
+    campaign_json: &js_sys::JsString,
+    controller_manifests_json: &js_sys::JsString,
+) -> Result<String, JsValue> {
+    let plan_id = crate::js_text::text_argument(plan_id, "plan_id")?;
+    let graph_json = crate::js_text::text_argument(graph_json, "graph_json")?;
+    let campaign_json = crate::js_text::text_argument(campaign_json, "campaign_json")?;
+    let controller_manifests_json =
+        crate::js_text::text_argument(controller_manifests_json, "controller_manifests_json")?;
+    build_execution_plan_json_impl(
+        &plan_id,
+        &graph_json,
+        &campaign_json,
+        &controller_manifests_json,
+    )
+}
+
+fn build_execution_plan_json_impl(
     plan_id: &str,
     graph_json: &str,
     campaign_json: &str,
@@ -410,6 +674,29 @@ pub fn build_execution_plan_json(
 /// roles into its node plans. The supplied set replaces every node's roles.
 #[wasm_bindgen]
 pub fn build_execution_plan_with_training_losses_json(
+    plan_id: &js_sys::JsString,
+    graph_json: &js_sys::JsString,
+    campaign_json: &js_sys::JsString,
+    controller_manifests_json: &js_sys::JsString,
+    training_loss_roles_json: &js_sys::JsString,
+) -> Result<String, JsValue> {
+    let plan_id = crate::js_text::text_argument(plan_id, "plan_id")?;
+    let graph_json = crate::js_text::text_argument(graph_json, "graph_json")?;
+    let campaign_json = crate::js_text::text_argument(campaign_json, "campaign_json")?;
+    let controller_manifests_json =
+        crate::js_text::text_argument(controller_manifests_json, "controller_manifests_json")?;
+    let training_loss_roles_json =
+        crate::js_text::text_argument(training_loss_roles_json, "training_loss_roles_json")?;
+    build_execution_plan_with_training_losses_json_impl(
+        &plan_id,
+        &graph_json,
+        &campaign_json,
+        &controller_manifests_json,
+        &training_loss_roles_json,
+    )
+}
+
+fn build_execution_plan_with_training_losses_json_impl(
     plan_id: &str,
     graph_json: &str,
     campaign_json: &str,
@@ -507,6 +794,9 @@ fn contract_manifest() -> serde_json::Value {
             "build_execution_plan",
             "bind_training_losses_to_execution_plan",
             "execute_execution_plan_phase",
+            "execute_execution_plan_phase_with_envelope",
+            "observation_to_sample_aggregation",
+            "sample_regression_scoring",
             "host_hpo_search_sequential",
             "host_hpo_search_parallel_workers",
             "host_hpo_search_parallel_pruning",
@@ -578,6 +868,9 @@ fn contract_manifest() -> serde_json::Value {
             "loss_execution_attestation_json",
             "execute_campaign_phase_json",
             "execute_execution_plan_phase_json",
+            "execute_execution_plan_phase_with_envelope_json",
+            "aggregate_observation_predictions_json",
+            "score_regression_prediction_block_json",
             "host_hpo_search_json",
             "host_hpo_search_parallel_json",
             "host_hpo_evaluate_worker_fold_json",
@@ -643,18 +936,28 @@ impl RuntimeController for JsRuntimeController {
             )
             .map_err(|err| {
                 CoreDagMlError::RuntimeValidation(format!(
-                    "JS controller `{}` threw: {err:?}",
+                    "JS controller `{}` threw: {}",
+                    self.id,
+                    crate::js_text::js_failure_text(&err)
+                ))
+            })?;
+        let result_json = callback_utf16_string(&returned)
+            .map_err(|()| {
+                CoreDagMlError::RuntimeValidation(
+                    "JS controller NodeResult is not valid UTF-16".into(),
+                )
+            })?
+            .ok_or_else(|| {
+                CoreDagMlError::RuntimeValidation(format!(
+                    "JS controller `{}` must return a NodeResult JSON string",
                     self.id
                 ))
             })?;
-        let result_json = returned.as_string().ok_or_else(|| {
-            CoreDagMlError::RuntimeValidation(format!(
-                "JS controller `{}` must return a NodeResult JSON string",
-                self.id
-            ))
-        })?;
-        let mut result = serde_json::from_str::<NodeResult>(&result_json)
-            .map_err(CoreDagMlError::Serialization)?;
+        let mut result: NodeResult = deserialize_external_contract(
+            &result_json,
+            "JS controller NodeResult",
+            CoreDagMlError::RuntimeValidation,
+        )?;
         if let Some(returned_seed) = result.lineage.seed {
             if Some(returned_seed) != task.seed {
                 return Err(CoreDagMlError::RuntimeValidation(format!(
@@ -737,15 +1040,22 @@ impl JsRuntimeController {
             )
             .map_err(|error| {
                 CoreDagMlError::RuntimeValidation(format!(
-                    "JS controller `{}` rejected portable artifact operation: {error:?}",
-                    self.id
+                    "JS controller `{}` rejected portable artifact operation: {}",
+                    self.id,
+                    crate::js_text::js_failure_text(&error)
                 ))
             })?;
-        let result_json = returned.as_string().ok_or_else(|| {
-            CoreDagMlError::RuntimeValidation(
-                "JS controller must return a portable artifact result JSON string".into(),
-            )
-        })?;
+        let result_json = callback_utf16_string(&returned)
+            .map_err(|()| {
+                CoreDagMlError::RuntimeValidation(
+                    "portable artifact result is not valid UTF-16".into(),
+                )
+            })?
+            .ok_or_else(|| {
+                CoreDagMlError::RuntimeValidation(
+                    "JS controller must return a portable artifact result JSON string".into(),
+                )
+            })?;
         deserialize_external_contract(
             &result_json,
             "portable artifact result",
@@ -802,6 +1112,36 @@ fn execute_plan_phase(
 #[wasm_bindgen]
 #[allow(clippy::too_many_arguments)]
 pub fn execute_campaign_phase_json(
+    plan_id: &js_sys::JsString,
+    graph_json: &js_sys::JsString,
+    campaign_json: &js_sys::JsString,
+    controller_manifests_json: &js_sys::JsString,
+    run_id: &js_sys::JsString,
+    root_seed: u32,
+    phase: &js_sys::JsString,
+    js_invoke: &js_sys::Function,
+) -> Result<String, JsValue> {
+    let plan_id = crate::js_text::text_argument(plan_id, "plan_id")?;
+    let graph_json = crate::js_text::text_argument(graph_json, "graph_json")?;
+    let campaign_json = crate::js_text::text_argument(campaign_json, "campaign_json")?;
+    let controller_manifests_json =
+        crate::js_text::text_argument(controller_manifests_json, "controller_manifests_json")?;
+    let run_id = crate::js_text::text_argument(run_id, "run_id")?;
+    let phase = crate::js_text::text_argument(phase, "phase")?;
+    execute_campaign_phase_json_impl(
+        &plan_id,
+        &graph_json,
+        &campaign_json,
+        &controller_manifests_json,
+        &run_id,
+        root_seed,
+        &phase,
+        js_invoke,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_campaign_phase_json_impl(
     plan_id: &str,
     graph_json: &str,
     campaign_json: &str,
@@ -838,6 +1178,32 @@ pub fn execute_campaign_phase_json(
 /// runtime registry before any callback is dispatched.
 #[wasm_bindgen]
 pub fn execute_execution_plan_phase_json(
+    execution_plan_json: &js_sys::JsString,
+    trusted_controller_manifests_json: &js_sys::JsString,
+    run_id: &js_sys::JsString,
+    root_seed: u32,
+    phase: &js_sys::JsString,
+    js_invoke: &js_sys::Function,
+) -> Result<String, JsValue> {
+    let execution_plan_json =
+        crate::js_text::text_argument(execution_plan_json, "execution_plan_json")?;
+    let trusted_controller_manifests_json = crate::js_text::text_argument(
+        trusted_controller_manifests_json,
+        "trusted_controller_manifests_json",
+    )?;
+    let run_id = crate::js_text::text_argument(run_id, "run_id")?;
+    let phase = crate::js_text::text_argument(phase, "phase")?;
+    execute_execution_plan_phase_json_impl(
+        &execution_plan_json,
+        &trusted_controller_manifests_json,
+        &run_id,
+        root_seed,
+        &phase,
+        js_invoke,
+    )
+}
+
+fn execute_execution_plan_phase_json_impl(
     execution_plan_json: &str,
     trusted_controller_manifests_json: &str,
     run_id: &str,
@@ -863,6 +1229,33 @@ pub fn execute_execution_plan_phase_json(
 /// Full-width seed variant for JavaScript hosts. Pass an exact decimal u64 string.
 #[wasm_bindgen]
 pub fn execute_execution_plan_phase_u64_json(
+    execution_plan_json: &js_sys::JsString,
+    trusted_controller_manifests_json: &js_sys::JsString,
+    run_id: &js_sys::JsString,
+    root_seed: &js_sys::JsString,
+    phase: &js_sys::JsString,
+    js_invoke: &js_sys::Function,
+) -> Result<String, JsValue> {
+    let execution_plan_json =
+        crate::js_text::text_argument(execution_plan_json, "execution_plan_json")?;
+    let trusted_controller_manifests_json = crate::js_text::text_argument(
+        trusted_controller_manifests_json,
+        "trusted_controller_manifests_json",
+    )?;
+    let run_id = crate::js_text::text_argument(run_id, "run_id")?;
+    let root_seed = crate::js_text::text_argument(root_seed, "root_seed")?;
+    let phase = crate::js_text::text_argument(phase, "phase")?;
+    execute_execution_plan_phase_u64_json_impl(
+        &execution_plan_json,
+        &trusted_controller_manifests_json,
+        &run_id,
+        &root_seed,
+        &phase,
+        js_invoke,
+    )
+}
+
+fn execute_execution_plan_phase_u64_json_impl(
     execution_plan_json: &str,
     trusted_controller_manifests_json: &str,
     run_id: &str,
@@ -890,6 +1283,37 @@ pub fn execute_execution_plan_phase_u64_json(
 #[wasm_bindgen]
 #[allow(clippy::too_many_arguments)]
 pub fn execute_campaign_phase_u64_json(
+    plan_id: &js_sys::JsString,
+    graph_json: &js_sys::JsString,
+    campaign_json: &js_sys::JsString,
+    controller_manifests_json: &js_sys::JsString,
+    run_id: &js_sys::JsString,
+    root_seed: &js_sys::JsString,
+    phase: &js_sys::JsString,
+    js_invoke: &js_sys::Function,
+) -> Result<String, JsValue> {
+    let plan_id = crate::js_text::text_argument(plan_id, "plan_id")?;
+    let graph_json = crate::js_text::text_argument(graph_json, "graph_json")?;
+    let campaign_json = crate::js_text::text_argument(campaign_json, "campaign_json")?;
+    let controller_manifests_json =
+        crate::js_text::text_argument(controller_manifests_json, "controller_manifests_json")?;
+    let run_id = crate::js_text::text_argument(run_id, "run_id")?;
+    let root_seed = crate::js_text::text_argument(root_seed, "root_seed")?;
+    let phase = crate::js_text::text_argument(phase, "phase")?;
+    execute_campaign_phase_u64_json_impl(
+        &plan_id,
+        &graph_json,
+        &campaign_json,
+        &controller_manifests_json,
+        &run_id,
+        &root_seed,
+        &phase,
+        js_invoke,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_campaign_phase_u64_json_impl(
     plan_id: &str,
     graph_json: &str,
     campaign_json: &str,
@@ -904,7 +1328,7 @@ pub fn execute_campaign_phase_u64_json(
     let registry = controller_registry_from_json(controller_manifests_json)?;
     let plan = build_execution_plan(plan_id.to_string(), graph, campaign, &registry)
         .map_err(js_core_error)?;
-    execute_execution_plan_phase_u64_json(
+    execute_execution_plan_phase_u64_json_impl(
         &serde_json::to_string(&plan).map_err(js_serde_error)?,
         controller_manifests_json,
         run_id,
@@ -924,8 +1348,14 @@ mod tests {
             "sample:1": "group:A", "sample:2": "group:A", "sample:3": "group:A",
             "sample:4": "group:B", "sample:5": "group:C", "sample:6": "group:C"
         });
-        let json = group_kfold_split_json("{\"n_splits\":3}", &groups.to_string(), "outer", None)
-            .expect("native group split");
+        let json = group_kfold_split_json_impl(
+            "{\"n_splits\":3}",
+            r#"["sample:1","sample:2","sample:3","sample:4","sample:5","sample:6"]"#,
+            &groups.to_string(),
+            "outer",
+            None,
+        )
+        .expect("native group split");
         let folds: FoldSet = serde_json::from_str(&json).unwrap();
         folds.validate().unwrap();
         let mut validated = std::collections::BTreeSet::new();
@@ -954,11 +1384,40 @@ mod tests {
     }
 
     #[test]
+    fn group_kfold_binding_accepts_target_missing_without_group() {
+        let json = group_kfold_split_json_impl(
+            r#"{"n_splits":2}"#,
+            r#"["s0","s1","missing"]"#,
+            r#"{"s0":"g0","s1":"g1"}"#,
+            "outer",
+            Some(r#"["missing"]"#),
+        )
+        .expect("target-missing candidate needs no group");
+        let folds: FoldSet = serde_json::from_str(&json).unwrap();
+        let missing = SampleId::new("missing").unwrap();
+        folds.validate().unwrap();
+        assert_eq!(folds.target_missing_sample_ids, vec![missing.clone()]);
+        assert_eq!(folds.sample_ids.len(), 2);
+        assert!(!folds.sample_ids.contains(&missing));
+        assert!(!folds.sample_groups.contains_key(&missing));
+        for fold in &folds.folds {
+            assert!(!fold.train_sample_ids.contains(&missing));
+            assert!(!fold.validation_sample_ids.contains(&missing));
+        }
+    }
+
+    #[test]
     fn splitters_declare_target_missing_samples_outside_cv() {
         let ids = r#"["s0","s1","s2","s3","s4","s5"]"#;
         let missing = Some(r#"["s2"]"#.to_string());
         let folds: FoldSet = serde_json::from_str(
-            &kfold_split_json(r#"{"n_splits":3,"seed":null}"#, ids, "outer", missing).unwrap(),
+            &kfold_split_json_impl(
+                r#"{"n_splits":3,"seed":null}"#,
+                ids,
+                "outer",
+                missing.as_deref(),
+            )
+            .unwrap(),
         )
         .unwrap();
         assert_eq!(
@@ -967,12 +1426,15 @@ mod tests {
         );
         assert_eq!(folds.sample_ids.len(), 5);
         let legacy: FoldSet = serde_json::from_str(
-            &kfold_split_json(r#"{"n_splits":3,"seed":null}"#, ids, "outer", None).unwrap(),
+            &kfold_split_json_impl(r#"{"n_splits":3,"seed":null}"#, ids, "outer", None).unwrap(),
         )
         .unwrap();
         let narrowed: FoldSet = serde_json::from_str(
-            &exclude_target_missing_json(&serde_json::to_string(&legacy).unwrap(), r#"["s2"]"#)
-                .unwrap(),
+            &exclude_target_missing_json_impl(
+                &serde_json::to_string(&legacy).unwrap(),
+                r#"["s2"]"#,
+            )
+            .unwrap(),
         )
         .unwrap();
         assert_eq!(
@@ -994,9 +1456,9 @@ mod tests {
             "operator_kind": "model",
             "priority": 20
         }"#;
-        let manifest_json =
-            derive_controller_manifest_json(spec_json).expect("host spec derives manifest JSON");
-        validate_controller_manifest_json(&manifest_json).expect("derived manifest validates");
+        let manifest_json = derive_controller_manifest_json_impl(spec_json)
+            .expect("host spec derives manifest JSON");
+        validate_controller_manifest_json_impl(&manifest_json).expect("derived manifest validates");
         let manifest: ControllerManifest =
             serde_json::from_str(&manifest_json).expect("manifest JSON decodes");
         assert_eq!(manifest.controller_id.as_str(), "controller:nirs4all.model");
@@ -1017,9 +1479,9 @@ mod tests {
                 "operator_kind": "model"
             }
         ]"#;
-        let manifests_json = derive_controller_manifest_list_json(specs_json)
+        let manifests_json = derive_controller_manifest_list_json_impl(specs_json)
             .expect("host specs derive manifest list JSON");
-        validate_controller_manifest_list_json(&manifests_json)
+        validate_controller_manifest_list_json_impl(&manifests_json)
             .expect("derived manifest list validates");
         let manifests: Vec<ControllerManifest> =
             serde_json::from_str(&manifests_json).expect("manifest list decodes");
@@ -1043,9 +1505,9 @@ mod tests {
             {"method_id": "filters.y_outlier", "roles": ["sample_filter"], "node_kinds": ["exclude"]}
         ]}"#;
         let specs_json =
-            n4m_host_controller_specs_json(manifest_json).expect("n4m manifest derives specs");
+            n4m_host_controller_specs_json_impl(manifest_json).expect("n4m manifest derives specs");
         let manifests_json =
-            derive_controller_manifest_list_json(&specs_json).expect("specs derive manifests");
+            derive_controller_manifest_list_json_impl(&specs_json).expect("specs derive manifests");
         let manifests: Vec<ControllerManifest> =
             serde_json::from_str(&manifests_json).expect("manifest list decodes");
         assert_eq!(
@@ -1091,7 +1553,7 @@ mod tests {
     fn initial_full_refit_package_predict_envelope_is_exposed() {
         let package =
             include_str!("../../dag-ml-core/tests/fixtures/initial_full_refit/package.json");
-        validate_initial_full_refit_package_json(package).unwrap();
+        validate_initial_full_refit_package_json_impl(package).unwrap();
         let parsed = InitialFullRefitPackage::from_json(package).unwrap();
         let heldout: dag_ml_core::SampleRelationSet =
             serde_json::from_value(serde_json::json!({"records": [{
@@ -1115,7 +1577,7 @@ mod tests {
             data_content_fingerprint: "a".repeat(64),
             target_content_fingerprint: Some("b".repeat(64)),
         };
-        let envelope_json = initial_full_refit_predict_envelope_json(
+        let envelope_json = initial_full_refit_predict_envelope_json_impl(
             package,
             &serde_json::to_string(&request).unwrap(),
         )
@@ -1146,7 +1608,7 @@ mod tests {
     fn portable_package_output_requires_explicit_binding_id() {
         let package =
             include_str!("../../../examples/fixtures/training/portable_predictor_package.v1.json");
-        let selected = select_portable_output_json(package, "output:meta.final").unwrap();
+        let selected = select_portable_output_json_impl(package, "output:meta.final").unwrap();
         let selected: serde_json::Value = serde_json::from_str(&selected).unwrap();
         assert_eq!(
             selected["output_binding"]["binding_id"],
@@ -1169,7 +1631,7 @@ mod tests {
                  "level": "sample", "row_count": 1, "target_width": 1, "metrics": {"rmse": 2.0}}
             ]
         });
-        let selected = select_stacking_producers_json(&request.to_string()).unwrap();
+        let selected = select_stacking_producers_json_impl(&request.to_string()).unwrap();
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&selected).unwrap(),
             serde_json::json!(["model:b"])
@@ -1191,7 +1653,7 @@ mod tests {
                  "level": "sample", "row_count": 1, "target_width": 1, "metrics": {"rmse": 2.0}}
             ]
         });
-        let selected = select_stacking_fold_json(&request.to_string()).unwrap();
+        let selected = select_stacking_fold_json_impl(&request.to_string()).unwrap();
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&selected).unwrap(),
             serde_json::json!("fold:1")
@@ -1201,7 +1663,7 @@ mod tests {
             .unwrap()
             .contains(&serde_json::json!("select_stacking_fold_json")));
         let weights: Vec<f64> =
-            serde_json::from_str(&stacking_fold_weights_json(&request.to_string()).unwrap())
+            serde_json::from_str(&stacking_fold_weights_json_impl(&request.to_string()).unwrap())
                 .unwrap();
         assert_eq!(weights.len(), 2);
         assert!(weights[1] > weights[0]);
@@ -1215,7 +1677,7 @@ mod tests {
     fn aligns_named_source_rows_for_browser_hosts() {
         let request = r#"{"sample_ids":["s1","s2"],"required_source_ids":["source_0"],"sources":[{"source_id":"source_0","sample_ids":["s2","s1"]}]}"#;
         let aligned: serde_json::Value =
-            serde_json::from_str(&align_named_source_rows_json(request).unwrap()).unwrap();
+            serde_json::from_str(&align_named_source_rows_json_impl(request).unwrap()).unwrap();
         assert_eq!(
             aligned["sources"][0]["row_indices"],
             serde_json::json!([1, 0])

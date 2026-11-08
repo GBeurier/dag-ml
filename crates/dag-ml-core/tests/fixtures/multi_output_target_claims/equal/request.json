@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "request_id": "replay:both-a-order",
+  "source_outcome_fingerprint": "27b9bbb868e130c65a8c0126d6821aa15cb9e2649eca306d30b637edd5245015",
+  "phase": "PREDICT",
+  "data_envelope_keys": [
+    "transform:snv.x"
+  ],
+  "output_binding_ids": [
+    "output:a",
+    "output:b"
+  ],
+  "request_fingerprint": "0b7795ae9a01654d4418cf164fb425ee014fae6ae0350052b85394aa6e2a2e8c"
+}

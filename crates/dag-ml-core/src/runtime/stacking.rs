@@ -533,8 +533,7 @@ pub(crate) fn nested_stacking_campaign_plan_for_node(
             && (kind == NestedMetaKind::Stacking || edge.contract.kind != PortKind::Data)
     }) {
         return Err(DagMlError::RuntimeValidation(format!(
-            "nested {:?} meta node `{meta_node_id}` has an unsupported non-OOF graph input",
-            kind,
+            "nested {kind:?} meta node `{meta_node_id}` has an unsupported non-OOF graph input"
         )));
     }
     let base_node_ids = dependency_closure(plan, &oof_sources);

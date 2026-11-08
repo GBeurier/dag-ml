@@ -1372,8 +1372,7 @@ fn validate_ro_crate_package_checksums(
         != Some(RESEARCH_PROVENANCE_SCHEMA_VERSION as u64)
     {
         return Err(DagMlError::RuntimeValidation(format!(
-            "RO-Crate root has unsupported dagml:schema_version, expected {}",
-            RESEARCH_PROVENANCE_SCHEMA_VERSION
+            "RO-Crate root has unsupported dagml:schema_version, expected {RESEARCH_PROVENANCE_SCHEMA_VERSION}"
         )));
     }
     let root_has_part = root

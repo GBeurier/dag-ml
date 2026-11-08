@@ -926,8 +926,7 @@ impl N4moptCheckpointReference {
         {
             return Err(HpoError::InvalidCheckpoint {
                 reason: format!(
-                    "checkpoint reference must declare Methods ABI {}.{}+ on both envelope and artifact",
-                    METHODS_ABI_MAJOR, METHODS_N4MOPT_MIN_ABI_MINOR
+                    "checkpoint reference must declare Methods ABI {METHODS_ABI_MAJOR}.{METHODS_N4MOPT_MIN_ABI_MINOR}+ on both envelope and artifact"
                 ),
             });
         }
@@ -2961,8 +2960,8 @@ pub use pls_controller::{MethodsPlsController, MethodsRidgeController};
 
 /// Controller ids of every callback-free native Methods controller: the
 /// Methods PLS and Ridge models plus one n4m estimator controller per
-/// executable role.
-#[cfg(feature = "methods-optimizer")]
+/// executable role. These identities are available without `methods-optimizer`;
+/// controller registration still requires that feature.
 pub fn methods_native_controller_ids() -> Vec<crate::ControllerId> {
     [
         METHODS_PLS_CONTROLLER_ID,
@@ -2971,7 +2970,7 @@ pub fn methods_native_controller_ids() -> Vec<crate::ControllerId> {
     ]
     .into_iter()
     .chain(
-        crate::methods_estimator::METHODS_ESTIMATOR_EXECUTABLE_ROLES
+        crate::n4m_roles::METHODS_ESTIMATOR_EXECUTABLE_ROLES
             .iter()
             .filter_map(|role| role.controller_id()),
     )

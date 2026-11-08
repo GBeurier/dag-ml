@@ -161,7 +161,12 @@ class ProcessWorker:
     def artifact(self, message: dict[str, Any]) -> Any:
         operation = message["operation"]
         names = {"export": "export_artifact_payload", "hydrate": "hydrate_artifact_payload", "release": "release_hydrated_artifact_payload"}
-        reply = self.frame("portable_artifact", task={**message, "operation": names[operation], "schema_version": 1})["result"]
+        task = {**message, "operation": names[operation], "schema_version": 1}
+        # Native callbacks hydrate the opaque payload as bytes; the JSON process wire carries a uint8 array.
+        # Transport framing only: the owner message and every other field stay untouched.
+        if isinstance(task.get("payload"), (bytes, bytearray, memoryview)):
+            task["payload"] = list(bytes(task["payload"]))
+        reply = self.frame("portable_artifact", task=task)["result"]
         self.calls.append({"operation": operation})
         return reply.get("payload") if operation == "export" else reply.get("handle") if operation == "hydrate" else None
 
@@ -211,6 +216,7 @@ def prepare_worker(capture: dict[str, Any], work: Path, host: str, *, sources: A
 
 def qualify(capture: dict[str, Any], work: Path, host: str, tolerance: float = 1e-7) -> dict[str, Any]:
     import dag_ml
+    import nirs4all_core
     from dag_ml.multimodal_methods import manifest_for_host
     require(math.isfinite(tolerance) and tolerance > 0, "Positive finite tolerance required")
     request = replace_owner(copy.deepcopy(capture["training_request"]), host)
@@ -222,20 +228,30 @@ def qualify(capture: dict[str, Any], work: Path, host: str, tolerance: float = 1
     with ProcessWorker(command, config, work / "training", host) as worker:
         training = dag_ml.execute_training(signed, inputs["data_envelopes"], inputs["relations"], inputs["training_influence"], worker.operator,
                                          outcome_id=f"outcome:u07.{host}", run_id=f"run:u07.{host}", bundle_id=f"bundle:u07.{host}", artifact_callback=worker.artifact)
-        outcome = training.outcome.to_dict()
-        package = training.export_portable_predictor_package(f"package:u07.{host}", fitted_artifact_mode="portable_required", artifact_load_mode="native_portable").to_dict()
+        # Keep the owner-serialized strings: Core stores these exact bytes, never a re-serialized dict.
+        outcome_json = training.outcome_json()
+        outcome = dag_ml.TrainingOutcome(outcome_json).to_dict()
+        package_json = training.portable_predictor_package_json(f"package:u07.{host}", fitted_artifact_mode="portable_required", artifact_load_mode="native_portable")
+        package = dag_ml.PortablePredictorPackage(package_json).to_dict()
         training.detach()
         calls, runtime = worker.calls, worker.runtime
     compare_scores(outcome["score_set"], capture["training_outcome"]["score_set"], tolerance)
     require(len(package["artifact_bindings"]) == len(package["execution_bundle"]["refit_artifacts"]) == 1, "One complete early-fusion predictor required")
     require(package["execution_bundle"]["refit_artifacts"][0]["artifact"]["kind"] == "methods_multimodal_pipeline", "Historical projected fixture cannot qualify U07")
     require(outcome["selected_variant_id"] == capture["training_outcome"]["selected_variant_id"], "Native SELECT changed across hosts")
-    manifest, members = dag_ml.build_archive_v2_native_portable_payloads(f"archive:u07.{host}", outcome, package)
-    require(len(manifest["payloads"]["methods"]["multimodal_pipelines"]) == 1, "Archive must carry one complete native predictor")
-    from nirs4all import write_portable_predictor_archive_v2, read_portable_predictor_archive_v2
-    archive = work / "complete.n4a"
-    write_portable_predictor_archive_v2(archive, outcome=outcome, package=package, archive_id=f"archive:u07.{host}")
-    loaded = read_portable_predictor_archive_v2(archive).to_dict()
+    # Core owns the native container, its selected scientific closure and raw integrity.
+    outcome_bytes, package_bytes = outcome_json.encode("utf-8"), package_json.encode("utf-8")
+    archive, container_id = work / "complete.n4a", f"archive:u07.{host}"
+    written_id, written_sha256 = nirs4all_core.write_native_predictor_package(archive, outcome_bytes, package_bytes, container_id=container_id)
+    archive_sha256 = hashlib.sha256(archive.read_bytes()).hexdigest()
+    payloads = nirs4all_core.open_native_package(archive).payloads()
+    view = payloads["view"]
+    require(written_id == container_id == view["archive_id"] and written_sha256 == archive_sha256 == view["archive_sha256"], "Core container identity changed")
+    require(view["profile"] == "native-methods-package" and view["package_schema_version"] == 2, "Core must admit one native Package2 predictor")
+    require(payloads["package"] == package_bytes and payloads["training_outcome"] == outcome_bytes and payloads["members"][view["package_member"]] == package_bytes, "Core did not retain the exact owner package/outcome bytes")
+    loaded_package_json = payloads["package"].decode("utf-8")
+    loaded = json.loads(loaded_package_json)
+    require(loaded == package, "Core container changed the captured package")
     search_args = replace_owner(copy.deepcopy(capture["search_request"]), host)
     search_args["controller_manifests"] = [manifest_for_host(host)]
     proposals = [trial["params"] for trial in capture["search_result"]["trials"]]
@@ -266,7 +282,7 @@ def qualify(capture: dict[str, Any], work: Path, host: str, tolerance: float = 1
     replay_request["source_outcome_fingerprint"] = loaded["training_outcome"]["outcome_fingerprint"]
     replay_request = dag_ml.sign_training_replay_request(replay_request)
     with ProcessWorker(command, config, work / "replay", host) as worker:
-        replay = json.loads(dag_ml.replay_loaded_predictor_package_json(loaded, replay_request, capture["prediction_envelopes"], {}, worker.operator,
+        replay = json.loads(dag_ml.replay_loaded_predictor_package_json(loaded_package_json, replay_request, capture["prediction_envelopes"], {}, worker.operator,
                             outcome_id=f"outcome:u07.{host}.replay", run_id=f"run:u07.{host}.replay", artifact_callback=worker.artifact, trusted_controller_manifests=[manifest_for_host(host)]))
         replay_calls = Counter(row["operation"] for row in worker.calls)
     require(replay_calls == Counter({"hydrate": 1, "PREDICT": 1, "release": 1}), "Fresh replay must hydrate/predict/release exactly one state with no fit or HPO")
@@ -276,10 +292,14 @@ def qualify(capture: dict[str, Any], work: Path, host: str, tolerance: float = 1
     require(Counter(row["operation"] for row in lifecycle) == Counter({"hydrate": 1, "PREDICT": 1, "release": 1, "dispose": 1}), "Actual native host leaked a replay state or fitted")
     # Consume the exact original Python producer archive in a new host process.
     # Signed owner, package, SELECT and learned state remain byte-identical.
-    producer_package = read_portable_predictor_archive_v2(capture["archive"]).to_dict()
+    producer = nirs4all_core.open_native_package(capture["archive"])
+    producer_view = producer.view()
+    producer_archive_sha256 = hashlib.sha256(Path(capture["archive"]).read_bytes()).hexdigest()
+    require(producer_view["profile"] == "native-methods-package" and producer_view["package_schema_version"] == 2 and producer_view["archive_sha256"] == producer_archive_sha256, "Producer archive must be one native Package2 container")
+    producer_package_json = producer.package_bytes().decode("utf-8")
     command, config = prepare_worker(capture, work / "python-archive-replay", host, sources=capture["prediction_sources"], allow_fit=False, producer_host="python")
     with ProcessWorker(command, config, work / "python-archive-replay", host) as worker:
-        cross_replay = json.loads(dag_ml.replay_loaded_predictor_package_json(producer_package, capture["prediction_request"], capture["prediction_envelopes"], {}, worker.operator,
+        cross_replay = json.loads(dag_ml.replay_loaded_predictor_package_json(producer_package_json, capture["prediction_request"], capture["prediction_envelopes"], {}, worker.operator,
                             outcome_id=f"outcome:u07.python-in-{host}", run_id=f"run:u07.python-in-{host}", artifact_callback=worker.artifact, trusted_controller_manifests=[manifest_for_host("python")]))
         cross_calls = Counter(row["operation"] for row in worker.calls)
         cross_runtime = worker.runtime
@@ -289,8 +309,8 @@ def qualify(capture: dict[str, Any], work: Path, host: str, tolerance: float = 1
     write_json(work / "portable-package.json", package)
     write_json(work / "training-callbacks.json", calls)
     write_json(work / "hpo-result.json", search)
-    receipt = {"host": host, "runtime": runtime, "training_callbacks": dict(Counter(row["operation"] for row in calls)), "replay_callbacks": dict(replay_calls), "producer_archive_replay": {"runtime": cross_runtime, "callbacks": dict(cross_calls), "source_archive_sha256": hashlib.sha256(Path(capture["archive"]).read_bytes()).hexdigest()},
-               "state_count": 1, "archive_sha256": hashlib.sha256(archive.read_bytes()).hexdigest(), "manifest": manifest, "member_sha256": {name: hashlib.sha256(raw).hexdigest() for name, raw in members.items()}, "source_shapes": {name: source["shape"] for name, source in capture["sources"].items()}}
+    receipt = {"host": host, "runtime": runtime, "training_callbacks": dict(Counter(row["operation"] for row in calls)), "replay_callbacks": dict(replay_calls), "producer_archive_replay": {"runtime": cross_runtime, "callbacks": dict(cross_calls), "source_archive_sha256": producer_archive_sha256, "source_archive_view": producer_view},
+               "state_count": 1, "archive_sha256": archive_sha256, "archive_view": view, "neutral_manifest": payloads["manifest"], "package_sha256": hashlib.sha256(package_bytes).hexdigest(), "training_outcome_sha256": hashlib.sha256(outcome_bytes).hexdigest(), "selected_member_sha256": {name: hashlib.sha256(raw).hexdigest() for name, raw in payloads["members"].items()}, "source_shapes": {name: source["shape"] for name, source in capture["sources"].items()}}
     write_json(work / "qualification.json", receipt)
     return receipt
 

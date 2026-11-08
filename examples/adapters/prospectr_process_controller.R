@@ -426,7 +426,7 @@ run_jsonl <- function() {
           if (!handle_control_frame(payload)) return(invisible(NULL))
           TRUE
         } else {
-          emit_result(payload)
+          emit_error("unsupported_frame", "expected a control frame")
           TRUE
         }
       },

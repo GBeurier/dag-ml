@@ -1,0 +1,78 @@
+{
+  "schema": "b1.calibration-fixture.provenance.v1",
+  "recorded_at": "2026-11-03T14:09:02Z",
+  "generator_model": {
+    "name": "Claude Sonnet 5.5",
+    "id": "claude-sonnet-5-5",
+    "effort": "high",
+    "raw_cli_receipt": "modelreceipt/ (controller copies raw CLI result; none fabricated)"
+  },
+  "scope": "controlled synthetic calibration fixture; inner schema2 ConformalCalibration only; no real-measurement or coverage-generalization claim",
+  "dataset_kind": "controlled synthetic (stdlib deterministic generator source/generate_controlled_synthetic.py; documented data-generating rule in its docstring); NOT real measurements; no coverage-generalization claim",
+  "dependency_mode": "published crates only, Core-free: dag-ml-core =0.3.44 (methods-optimizer), dag-ml-data/-provider =0.2.16, n4m =0.4.1 (dynamic), nirs4all-io/-core/-dagml =0.2.14; no path/patch deps; built --offline --locked with Cargo.lock retained",
+  "crate_sources_retained": "source/crates/*.crate (sha256 == Cargo.lock checksums)",
+  "host_adapter_derivation": "harness/src/host_provider.rs is a mechanically edited copy of nirs4all-core io_training.rs lines 1-985 (blob 830f5b9eab63..., file sha256 5d8221768a5a9ea0..., Core commit d5533fd6, file clean in git at copy time); original retained at source/reference/core_io_training.rs.reference-copy. Copied as host glue only: no Core crate linked, Core worktree (dirty, root B3 mutates n4a.rs) not read otherwise.",
+  "source_state_caveat": {
+    "dag-ml": "HEAD 963abc4531789d6483e9d60d8d2e30549fc5ca9e with 49 dirty files (concurrent B writer) - NOT used; owner code is the published dag-ml-core 0.3.44 crate (registry sha256 e4f4fd80...)",
+    "nirs4all-methods": "HEAD 6a6ba8cf5e4930953d2fc10c80748547805fc87d with 14 dirty files; libn4m.so.2.20.0 is a prebuilt binary (mtime 2026-11-03T10:48:39+01:00); its exact build-time source state is not reconstructable here, only the binary sha256 is authoritative",
+    "nirs4all-core": "HEAD 1dffd9f4472551cc09ad9d99ed9d40814bd003cc, 59 dirty files; not a dependency",
+    "frozen_source_qualification": "NOT claimed: this is a published-crate + prebuilt-library fixture, not a frozen-source qualification of any dirty worktree"
+  },
+  "toolchain": {
+    "cargo": "1.88.0 (873a06493 2025-05-10)",
+    "rustc": "1.88.0 (6b00bc388 2025-06-23)",
+    "host": "Linux 6.18.54.1-microsoft-standard-WSL2 x86_64",
+    "cargo_target_dir": "/tmp/phase2a-b-calibration-fixture-staging/target",
+    "env": {
+      "CARGO_BUILD_JOBS": "4",
+      "CARGO_PROFILE_DEV_DEBUG": "0",
+      "N4M_LIB_PATH": "/home/delete/nirs4all/nirs4all-methods/build/dev-release/cpp/src/libn4m.so.2.20.0",
+      "N4M_LIBRARY_PATH": "/home/delete/nirs4all/nirs4all-methods/build/dev-release/cpp/src/libn4m.so.2.20.0",
+      "OMP_NUM_THREADS": "1",
+      "OPENBLAS_NUM_THREADS": "1"
+    }
+  },
+  "library": {
+    "path": "/home/delete/nirs4all/nirs4all-methods/build/dev-release/cpp/src/libn4m.so.2.20.0",
+    "sha256_expected": "05ae1a2e82491439f0e71ada0ea500ed79d03af227a11c4a2dbb317a99558529",
+    "sha256_before_produce": "05ae1a2e82491439f0e71ada0ea500ed79d03af227a11c4a2dbb317a99558529",
+    "sha256_after_produce": "05ae1a2e82491439f0e71ada0ea500ed79d03af227a11c4a2dbb317a99558529",
+    "sha256_in_process_before_after_produce": {
+      "before": "05ae1a2e82491439f0e71ada0ea500ed79d03af227a11c4a2dbb317a99558529",
+      "after": "05ae1a2e82491439f0e71ada0ea500ed79d03af227a11c4a2dbb317a99558529"
+    },
+    "sha256_in_process_verify": [
+      "05ae1a2e82491439f0e71ada0ea500ed79d03af227a11c4a2dbb317a99558529",
+      "05ae1a2e82491439f0e71ada0ea500ed79d03af227a11c4a2dbb317a99558529"
+    ],
+    "writer_abi": [
+      2,
+      20,
+      0
+    ]
+  },
+  "commands": [
+    "python3 -I source/generate_controlled_synthetic.py inputs",
+    "cd harness && CARGO_TARGET_DIR=<staging>/target CARGO_BUILD_JOBS=4 CARGO_PROFILE_DEV_DEBUG=0 cargo +1.88.0 generate-lockfile --offline",
+    "cargo +1.88.0 build --offline --locked   (logs/build.log; first attempt failed on missing direct serde dep, fixed in Cargo.toml, lock re-resolved offline)",
+    "N4M_LIB_PATH=N4M_LIBRARY_PATH=<lib> target/debug/b1-calibration-fixture produce inputs outputs <lib>   (logs/produce.log, exit 0)",
+    "cargo +1.88.0 build --offline --locked --bin verify; N4M_*=<lib> target/debug/verify outputs <lib> > outputs/fresh_process_verify.json (first run failed 'libn4m dynamic runtime is not configured' - verifier bug, runtime configure moved to start; second run exit 0)"
+  ],
+  "binary_sha256": {
+    "produce": "fc74f740e2704adfc80c72ef16204843e095004f72c7a28e0b2fdcf2e975c744",
+    "verify": "194aa497f1d39ed8393219b6503100b3f1b290b78569adce4c5f090bb38477fd"
+  },
+  "source_sha256": {
+    "harness/src/main.rs": "e17fcdb2c3bd17b3db3f1848f5346944a93290776b640beaa7f9f5efd3f02c1d",
+    "harness/src/host_provider.rs": "f7fdce76e27106fc1eb139adb70ab8fa1093ae5aaa219c9ebddf6415a211905f",
+    "harness/src/bin/verify.rs": "68a0595342daa0517999c7f2005441fe32361edd01812895ec699300404aabeb",
+    "harness/Cargo.toml": "79735aaab3f43691851a42d7ec9fd00d3e5fd85ee978599e7bc9115fcd6dbdb4",
+    "harness/Cargo.lock": "10409a7878d1e783273a99713173be1bf1aa7f9358cadfa8035e5619e74cd9ec",
+    "source/generate_controlled_synthetic.py": "51a11890d0f519b00b40ee13382531f8e4a09a399f0ba7003609cd0bc1918873"
+  },
+  "input_sha256": {
+    "inputs/source_dataset.json": "9d0010a8297401a0a36fb0bbabe946ad37e7dedd14b0a8433286db663879be5a",
+    "inputs/calibration_dataset.json": "db9ab5fc65cad7bc7747e29e0c29f9744589ec32851ef60af77db22beeed5508"
+  },
+  "note": "produce binary (logs/b1-calibration-fixture.produce-binary) was built from main.rs+host_provider.rs+Cargo.toml/Cargo.lock whose hashes are unchanged (logs/producer-hashes.txt); src/bin/verify.rs was added afterwards as a separate binary and does not alter the producer."
+}

@@ -46,7 +46,7 @@
     },
     {
       "path": "crates/dag-ml-capi/include/dag_ml.h",
-      "sha256": "0c139e5d9b4379e7c9f54917bd846235a7e00956263dd784ce7b8897c454d0a8",
+      "sha256": "d5bb1379748bbf709d112718be63b12442bd9afadf12be8f9c3d6f685bd59636",
       "kind": "c_abi_header"
     },
     {
@@ -61,12 +61,12 @@
     },
     {
       "path": "crates/dag-ml-cli/src/main.rs",
-      "sha256": "06902ae807999ddd986141e4dc4a1e9dc2539b039796bc95a680a74258a12ab1",
+      "sha256": "1dfb8607682383fc911bd60fed1320feee1d87389c09176e019042530334ec32",
       "kind": "cli_validator"
     },
     {
       "path": "crates/dag-ml-cli/tests/cli_contracts.rs",
-      "sha256": "a025d4e552ec8f02d3d1298436eba4d1db0644ad3ab90c0bc0fbbfac017335bf",
+      "sha256": "0a658d818f179819a21a77d33ec422bf1c3b61975d1387ba376f841c9d4b3f4e",
       "kind": "cli_test"
     },
     {
@@ -86,7 +86,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/metrics.rs",
-      "sha256": "fcbd0e8f478197c736ad7100411f6da232924ced9b0fcef4ccb2f1a5b1a76597",
+      "sha256": "3959cad67b1acac28c833b37807a0baba6cca1942f85547a7eae1f2699f4d134",
       "kind": "native_metric_adapter"
     },
     {
@@ -96,12 +96,12 @@
     },
     {
       "path": "crates/dag-ml-py/python/dag_ml/__init__.py",
-      "sha256": "7cf1590d32e3ec3cc6390a05b7ea8444810bf984d60723498ce74bd2ea72c34a",
+      "sha256": "326b8ae855b1411550a803ec1384874a447e3887545db5507f902bb08d47fe41",
       "kind": "python_facade"
     },
     {
       "path": "crates/dag-ml-py/python/dag_ml/__init__.pyi",
-      "sha256": "434feaeaeda35d7398b0ed9b650bfde86bb23963d171e495568a8922b7888e20",
+      "sha256": "bf0fb240d42f0b9a58f7c9b97b08037b1cbd6446959f872923d82caadddce52e",
       "kind": "python_types"
     },
     {
@@ -116,17 +116,17 @@
     },
     {
       "path": "crates/dag-ml-wasm/README.md",
-      "sha256": "235fc98b4aa19a29b365e88d9a76c23c8703ea2c413f7346cd7a8b7b47d2e25d",
+      "sha256": "5166e4693eaac8df11eb5b1ac747fef133feb47691b9d31e6535182ff918d1a8",
       "kind": "javascript_binding_documentation"
     },
     {
       "path": "crates/dag-ml-wasm/src/lib.rs",
-      "sha256": "be30958f97fc594da5717a3e52f9f8f4fe55cb286eea2830eefcc7dc0b05629c",
+      "sha256": "2351c6c8bed26206f6908088cd6fdb8322db87e9ad201bcf6172b7582e15c143",
       "kind": "javascript_binding"
     },
     {
       "path": "crates/dag-ml-wasm/src/local_implementation.rs",
-      "sha256": "1f22a60a9c74269fc5f2994c14cec31b3a3f9b356a7ab2f1a5c7fdd8096dcff1",
+      "sha256": "774737b3c30d51c6d9ae57c7be58de1f47dfc39d67ce304cf77f71b67efca272",
       "kind": "javascript_local_registry"
     },
     {
@@ -310,5 +310,5 @@
   "runtime_only_negative_cases": [
     "provider_result_non_finite"
   ],
-  "pack_checksum": "5e601544484d9e5edf99529236cad1120c07b87cb2107be24ee9603e8048420e"
+  "pack_checksum": "a82a8cbd90b7a6777b865788afaee0e3a9d33e161107f675ef32d6b89cc10c60"
 }

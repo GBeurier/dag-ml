@@ -5,10 +5,67 @@
  * using asynchronous storage must first use an async DAG-ML host HPO API.
  */
 
+import { strictJson } from "./n4m_multimodal_controller.mjs";
+
+function binary64Token(value) {
+  if (typeof value !== "number" || !Number.isFinite(value)) throw new RangeError("HPO float parameter must be finite");
+  if (Object.is(value, -0)) return "-0.0";
+  const token = JSON.stringify(value);
+  return /[.e]/u.test(token) ? token : `${token}.0`;
+}
+
+function integerToken(value) {
+  if (typeof value === "number" && (!Number.isInteger(value) || Math.abs(value) > 2 ** 53)) {
+    throw new RangeError("HPO integer parameter must be exactly representable");
+  }
+  if (typeof value !== "number" && typeof value !== "bigint") throw new TypeError("HPO integer parameter must be an integer");
+  return BigInt(value).toString();
+}
+
+function axisToken(axis, value) {
+  if (axis.kind === "int" || axis.kind === "log_int") return integerToken(value);
+  if (axis.kind === "float" || axis.kind === "log_float") return binary64Token(value);
+  if (axis.kind === "ordinal") return Number.isSafeInteger(value) && !Object.is(value, -0) ? String(value) : binary64Token(value);
+  if (axis.kind === "sorted_tuple") return `[${value.map(item => axis.integer ? integerToken(item) : binary64Token(item)).join(",")}]`;
+  if (axis.type === "float") return binary64Token(value);
+  if (axis.type === "integer") return integerToken(value);
+  return JSON.stringify(value);
+}
+
+function tokens(parameters, space) {
+  const members = [];
+  for (const [name, axis] of Object.entries(space)) {
+    if (axis.kind === "sorted_tuple") {
+      const value = Object.hasOwn(parameters, name) ? parameters[name]
+        : Object.hasOwn(parameters, `${name}#0`) ? Array.from({ length: axis.length }, (_, index) => parameters[`${name}#${index}`]) : null;
+      if (value !== null) members.push(`${JSON.stringify(name)}:${axisToken(axis, value)}`);
+    } else if (Object.hasOwn(parameters, name)) members.push(`${JSON.stringify(name)}:${axisToken(axis, parameters[name])}`);
+  }
+  return `{${members.join(",")}}`;
+}
+
+function hasUnpairedSurrogate(value) {
+  return /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(value);
+}
+
+function requireRepresentableSpace(space) {
+  const names = new Set();
+  for (const [name, axis] of Object.entries(space)) {
+    if (hasUnpairedSurrogate(name)) throw new RangeError("HPO axis name must be well-formed UTF-16");
+    const normalized = name.normalize("NFC");
+    if (names.has(normalized)) throw new RangeError("HPO axis names collide after NFC normalization");
+    names.add(normalized);
+    if (axis.kind === "categorical" && axis.type === "string" && !axis.choices.every(choice => !hasUnpairedSurrogate(choice))) {
+      throw new RangeError("HPO categorical choices must be well-formed UTF-16");
+    }
+
+  }
+}
+
 function jsonValue(value) {
   if (typeof value === "bigint") {
     const number = Number(value);
-    if (!Number.isSafeInteger(number)) throw new RangeError("DAG-ML JSON cannot represent this native integer exactly");
+    if (!Number.isInteger(number) || Math.abs(number) > 2 ** 53) throw new RangeError("DAG-ML JSON cannot represent this native integer exactly");
     return number;
   }
   if (Array.isArray(value)) return value.map(jsonValue);
@@ -20,6 +77,7 @@ function jsonValue(value) {
 }
 
 function contractValue(value) {
+  if (Object.is(value, -0)) return { negative_zero: true };
   if (typeof value === "bigint") return { bigint: value.toString() };
   if (Array.isArray(value)) return value.map(contractValue);
   if (value && typeof value === "object") {
@@ -56,21 +114,24 @@ function recordParams(record, space) {
 export class N4mWasmHostOptimizer {
   constructor({ Optimizer, dagMl, space, options, objective, persist, warmStart = null, state = null }) {
     if (typeof persist !== "function") throw new TypeError("A synchronous persist(snapshot) callback is required");
+    requireRepresentableSpace(space);
     this.dagMl = dagMl;
     this.space = space;
     this.persist = persist;
     this.contract = contractValue({ space, options, objective, warmStart });
-    this.committed = null;
-    this.prepared = null;
+    this.committedJson = null;
+    this.preparedJson = null;
     this.broken = false;
     if (state !== null) {
-      if (state.schema !== "dagml.n4m.wasm-hpo.v1" || !same(state.contract, this.contract)
-          || !Array.isArray(state.n4mopt) || state.n4mopt.length === 0) {
+      if (state.schema !== "dagml.n4m.wasm-hpo.v2" || !same(state.contract, this.contract)
+          || !Array.isArray(state.n4mopt) || state.n4mopt.length === 0
+          || !(state.committed_json === null || typeof state.committed_json === "string")
+          || !(state.prepared_json === null || typeof state.prepared_json === "string")) {
         throw new Error("Methods/WASM HPO snapshot contract mismatch");
       }
       this.optimizer = Optimizer.load(Uint8Array.from(state.n4mopt), space);
-      this.committed = state.committed;
-      this.prepared = state.prepared;
+      this.committedJson = state.committed_json;
+      this.preparedJson = state.prepared_json;
       try { this._recover(); }
       catch (error) { this.optimizer.dispose(); throw error; }
     } else {
@@ -83,10 +144,13 @@ export class N4mWasmHostOptimizer {
     }
   }
 
+  get committed() { return this.committedJson === null ? null : JSON.parse(this.committedJson); }
+  get prepared() { return this.preparedJson === null ? null : JSON.parse(this.preparedJson); }
+
   snapshot() {
     if (this.broken) throw new Error("Methods/WASM HPO session must be reloaded after a persistence failure");
-    return { schema: "dagml.n4m.wasm-hpo.v1", contract: this.contract,
-      committed: this.committed, prepared: this.prepared,
+    return { schema: "dagml.n4m.wasm-hpo.v2", contract: this.contract,
+      committed_json: this.committedJson, prepared_json: this.preparedJson,
       n4mopt: Array.from(this.optimizer.save()) };
   }
 
@@ -120,8 +184,8 @@ export class N4mWasmHostOptimizer {
 
   _recover() {
     const records = this.optimizer.trialRecords();
-    if (this.committed === null) {
-      if (this.prepared !== null || records.length) throw new Error("Methods state exists without a DAG-ML checkpoint");
+    if (this.committedJson === null) {
+      if (this.preparedJson !== null || records.length) throw new Error("Methods state exists without a DAG-ML checkpoint");
       this._save();
       return;
     }
@@ -147,15 +211,15 @@ export class N4mWasmHostOptimizer {
       if (record.id !== BigInt(paired + interrupted.length) || record.status !== "running") {
         throw new Error("Methods has an unpaired non-running trial");
       }
-      interrupted.push({ trial_index: Number(record.id), params: recordParams(record, this.space) });
+      interrupted.push(`{"trial_index":${Number(record.id)},"params":${tokens(record.parameters, this.space)}}`);
       this.optimizer.tell(record.id, "failed", undefined, "interrupted_before_native_evaluation");
     }
-    const recovered = JSON.parse(this.dagMl.recover_host_hpo_checkpoint_json(
-      JSON.stringify(this.committed), JSON.stringify(this.prepared), JSON.stringify(interrupted),
-    ));
-    this._history(recovered);
-    this.committed = recovered;
-    this.prepared = null;
+    const recovered = this.dagMl.recover_host_hpo_checkpoint_json(
+      this.committedJson, this.preparedJson ?? "null", `[${interrupted.join(",")}]`,
+    );
+    this._history(JSON.parse(recovered));
+    this.committedJson = recovered;
+    this.preparedJson = null;
     this._save();
   }
 
@@ -168,14 +232,14 @@ export class N4mWasmHostOptimizer {
       const trial = this.optimizer.ask();
       if (trial.id !== BigInt(payload.trial_index)) throw new Error("DAG-ML and Methods trial IDs disagree");
       this._save();
-      reply = { params: jsonValue(trial.parameters) };
+      return `{"params":${tokens(trial.parameters, this.space)}}`;
     } else if (operation === "report_intermediate") {
       reply = { prune: this.optimizer.intermediate(payload.trial_index, payload.step, payload.score) };
       // `intermediate()` may terminalize the Methods trial as pruned. Keep the
       // durable state at its last RUNNING ask until DAG-ML prepares that terminal.
       // A crash here then recovers the orphan as failed, not as an unpaired prune.
     } else if (operation === "prepare_terminal") {
-      this.prepared = payload.checkpoint;
+      this.preparedJson = strictJson(payloadJson, "checkpoint");
       this._save();
       reply = { ok: true };
     } else if (operation === "tell") {
@@ -193,8 +257,8 @@ export class N4mWasmHostOptimizer {
       reply = { ok: true };
     } else if (operation === "checkpoint") {
       this._history(payload.checkpoint);
-      this.committed = payload.checkpoint;
-      this.prepared = null;
+      this.committedJson = strictJson(payloadJson, "checkpoint");
+      this.preparedJson = null;
       this._save();
       reply = { continue: true };
     } else {

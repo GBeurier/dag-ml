@@ -1,0 +1,84 @@
+{
+  "authority": "diagnostic_only",
+  "links": [
+    {
+      "link_id": "link:0",
+      "verdict": {
+        "reason": "owner-fingerprinted outcome binds producer run, outputs and exact owner content (no independent evaluation claim)",
+        "status": "validated"
+      }
+    },
+    {
+      "link_id": "link:1",
+      "verdict": {
+        "reason": "compiled GraphSpec identity compared with owner target graph",
+        "status": "validated"
+      }
+    },
+    {
+      "link_id": "link:2",
+      "verdict": {
+        "reason": "compiled GraphSpec identity compared with owner target graph",
+        "status": "validated"
+      }
+    },
+    {
+      "link_id": "link:3",
+      "verdict": {
+        "reason": "compiled GraphSpec identity compared with owner target graph",
+        "status": "validated"
+      }
+    },
+    {
+      "link_id": "link:4",
+      "verdict": {
+        "reason": "compiled GraphSpec identity compared with owner target graph",
+        "status": "validated"
+      }
+    },
+    {
+      "link_id": "link:5",
+      "verdict": {
+        "reason": "owner-fingerprinted outcome binds producer run, outputs and exact owner content (no independent evaluation claim)",
+        "status": "validated"
+      }
+    },
+    {
+      "link_id": "link:6",
+      "verdict": {
+        "reason": "owner-fingerprinted outcome binds producer run, outputs and exact owner content (no independent evaluation claim)",
+        "status": "validated"
+      }
+    },
+    {
+      "link_id": "link:7",
+      "verdict": {
+        "reason": "owner-fingerprinted outcome binds producer run, outputs and exact owner content (no independent evaluation claim)",
+        "status": "validated"
+      }
+    },
+    {
+      "link_id": "link:8",
+      "verdict": {
+        "reason": "owner-fingerprinted outcome binds producer run, outputs and exact owner content (no independent evaluation claim)",
+        "status": "validated"
+      }
+    },
+    {
+      "link_id": "link:9",
+      "verdict": {
+        "reason": "current outcome/package selection, output, data and fitted-state closure",
+        "status": "validated"
+      }
+    },
+    {
+      "link_id": "link:10",
+      "verdict": {
+        "reason": "complete evaluation population, target/class and scope evidence is not established by ScoreSet alone",
+        "status": "unverified"
+      }
+    }
+  ],
+  "notice": "Non-authoritative diagnostics; recreate owner proofs from original bytes before use.",
+  "report_kind": "dagml.facet-link-diagnostics.v1"
+}

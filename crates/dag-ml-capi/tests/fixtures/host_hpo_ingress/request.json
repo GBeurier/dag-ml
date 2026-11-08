@@ -1,0 +1,1 @@
+{"target_node":"model:m","trial_budget":3,"metric":"rmse","direction":"minimize","optimizer_descriptor":{"owner":"capi-probe"},"progressive_pruning":false}

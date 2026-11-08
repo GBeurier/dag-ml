@@ -26,8 +26,8 @@ pub enum RegressionMetricKind {
     Mae,
     R2,
     /// Classification accuracy: fraction of predictions whose label matches the target (integer
-    /// label encoding, matched after rounding both labels). Meaningless on continuous regression targets (≈0) but
-    /// always emitted so the host can score classification natively without a separate code path.
+    /// label encoding, matched after rounding both labels). Explicit metric primitives accept this
+    /// metric; training reports for bound outputs retain only the declared prediction family.
     Accuracy,
     /// Balanced classification accuracy: the macro-average of per-class recall (mean over the
     /// classes *present in `y_true`* of `correct_in_class / count_in_class`), matching scikit-learn's
@@ -35,7 +35,7 @@ pub enum RegressionMetricKind {
     /// `_resolve_effective_metric` returns `balanced_accuracy` for a classification candidate), so it
     /// must be emitted natively for the dag-ml engine to reproduce the legacy classification
     /// `cv_best_score`. On a class-collapsed predictor it can be far below plain `accuracy`; on a
-    /// continuous regression target it is meaningless (≈ chance) but always emitted, like `accuracy`.
+    /// continuous regression target it is meaningless; bound regression output reports omit it.
     BalancedAccuracy,
     /// Support-weighted per-class F1, matching sklearn's `average="weighted"`.
     F1,
@@ -278,6 +278,7 @@ pub fn reassemble_merge_targets(
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RegressionMetricReport {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_domain: Option<crate::target_domain::TargetDomain>,
@@ -581,6 +582,7 @@ type ScoreReportKey = (
 );
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ScoreSet {
     #[serde(default = "default_score_set_schema_version")]
     pub schema_version: u32,
@@ -610,6 +612,13 @@ impl ScoreSet {
         let mut seen: BTreeSet<ScoreReportKey> = BTreeSet::new();
         for report in &self.reports {
             report.validate()?;
+            if self.schema_version == LEGACY_SCORE_SET_SCHEMA_VERSION
+                && report.grouping_key.is_some()
+            {
+                return Err(DagMlError::OofValidation(
+                    "score set V1 reports must not carry grouping_key".to_string(),
+                ));
+            }
             match (self.schema_version, report.producer_port.as_deref()) {
                 (LEGACY_SCORE_SET_SCHEMA_VERSION, Some(_)) => {
                     return Err(DagMlError::OofValidation(
@@ -1915,6 +1924,83 @@ mod tests {
         PredictionUnitId::Group(GroupId::new(value).unwrap())
     }
 
+    // Exercise the emission filter on reports produced by the existing deterministic
+    // scorers below. Full report equality checks identities, order and exact values.
+    fn assert_training_emission_family(reports: &[RegressionMetricReport], kind: PredictionKind) {
+        let first = reports.first().expect("fixture emits reports");
+        let port = first.producer_port.as_deref().unwrap_or("prediction");
+        let graph: crate::graph::GraphSpec = serde_json::from_value(serde_json::json!({
+            "id": "graph:metric-family", "nodes": [{
+                "id": first.producer_node, "kind": "model", "params": {},
+                "ports": {"outputs": [{"name": port, "kind": "prediction",
+                    "representation": null, "cardinality": "one", "description": ""}]}
+            }], "edges": [], "metadata": {}
+        }))
+        .unwrap();
+        let output = crate::training::ResolvedTrainingOutput {
+            output_id: "output:metric-family".into(),
+            node_id: first.producer_node.clone(),
+            port_name: port.into(),
+            prediction_level: first.level,
+            unit_level: None,
+            prediction_kind: kind,
+            target_names: first.target_names.clone(),
+            target_units: vec![None; first.target_width],
+            class_labels: vec![Vec::new(); first.target_width],
+            output_order: crate::training::OutputOrder::TargetOrder,
+            target_space: "raw".into(),
+        };
+        assert!(reports.iter().all(|report| report.target_domain.is_none()));
+        for report in reports {
+            assert_eq!(
+                report
+                    .metrics
+                    .keys()
+                    .filter(|name| !name.contains(':'))
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
+                [
+                    "accuracy",
+                    "balanced_accuracy",
+                    "f1",
+                    "mae",
+                    "mse",
+                    "r2",
+                    "rmse"
+                ],
+                "explicit primitive APIs still accept all seven requested metrics"
+            );
+        }
+        let allowed: &[&str] = match kind {
+            PredictionKind::RegressionPoint => &["mae", "mse", "r2", "rmse"],
+            PredictionKind::ClassLabel => &["accuracy", "balanced_accuracy", "f1"],
+            _ => unreachable!("these fixtures score points or labels"),
+        };
+        let mut expected = reports.to_vec();
+        for report in &mut expected {
+            report
+                .metrics
+                .retain(|name, _| allowed.contains(&name.split(':').next().unwrap()));
+            assert_eq!(
+                report
+                    .metrics
+                    .keys()
+                    .filter(|name| !name.contains(':'))
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
+                allowed
+            );
+        }
+        let mut actual = reports.to_vec();
+        crate::runtime::retain_training_metric_families(&graph, &[output], &mut actual);
+        assert_eq!(actual, expected);
+        for (actual, expected) in actual.iter().zip(&expected) {
+            for (name, value) in &actual.metrics {
+                assert_eq!(value.to_bits(), expected.metrics[name].to_bits());
+            }
+        }
+    }
+
     fn assert_close(left: f64, right: f64) {
         assert!((left - right).abs() < 1e-12, "expected {right}, got {left}");
     }
@@ -1992,6 +2078,14 @@ mod tests {
         assert_close(scored.metrics["accuracy"], 1.0);
         assert_close(scored.metrics["balanced_accuracy"], 1.0);
         assert_eq!(projected.values, vec![vec![0.1], vec![0.2], vec![0.7]]);
+        let all_metrics = score_prediction_with_class_probabilities(
+            &projected,
+            &probabilities,
+            &targets,
+            crate::runtime::SCORE_METRICS,
+        )
+        .unwrap();
+        assert_training_emission_family(&[all_metrics], PredictionKind::ClassLabel);
     }
 
     #[test]
@@ -2058,6 +2152,15 @@ mod tests {
             result.oof_averages[0].predictions.values,
             vec![vec![0.1], vec![0.2]]
         );
+        let all_metrics = cross_fold_validation_reports_with_probabilities(
+            &blocks.iter().map(|row| row.0.clone()).collect::<Vec<_>>(),
+            &blocks.iter().map(|row| row.1.clone()).collect::<Vec<_>>(),
+            &blocks.iter().map(|row| row.2.clone()).collect::<Vec<_>>(),
+            crate::runtime::SCORE_METRICS,
+            FoldPartitionMode::Partition,
+        )
+        .unwrap();
+        assert_training_emission_family(&all_metrics.reports, PredictionKind::ClassLabel);
     }
 
     #[test]
@@ -2143,6 +2246,16 @@ mod tests {
             "avg"
         );
         assert_close(sparse_validation.reports[0].metrics["rmse"], 0.0);
+        let all_metrics = cross_fold_test_reports(
+            &blocks,
+            &[],
+            &target_records,
+            &validation_reports,
+            RegressionMetricKind::Rmse,
+            crate::runtime::SCORE_METRICS,
+        )
+        .unwrap();
+        assert_training_emission_family(&all_metrics.reports, PredictionKind::RegressionPoint);
         let mut incomplete = blocks.clone();
         incomplete[1].sample_ids.pop();
         incomplete[1].values.pop();
@@ -2257,6 +2370,16 @@ mod tests {
         );
         assert_close(result.reports[0].metrics["rmse"], 0.0);
         assert_close(result.reports[1].metrics["rmse"], (0.25_f64 / 3.0).sqrt());
+        let all_metrics = cross_fold_train_reports(
+            &blocks,
+            &[],
+            &targets,
+            &validation,
+            RegressionMetricKind::Rmse,
+            crate::runtime::SCORE_METRICS,
+        )
+        .unwrap();
+        assert_training_emission_family(&all_metrics.reports, PredictionKind::RegressionPoint);
     }
 
     #[test]
@@ -2352,6 +2475,16 @@ mod tests {
         .unwrap();
         assert_eq!(hard.oof_averages[0].predictions.values, vec![vec![0.0]]);
         assert_eq!(hard.oof_averages[1].predictions.values, vec![vec![2.0]]);
+        let all_metrics = cross_fold_test_reports(
+            &blocks,
+            &probabilities,
+            &targets,
+            &validation,
+            RegressionMetricKind::BalancedAccuracy,
+            crate::runtime::SCORE_METRICS,
+        )
+        .unwrap();
+        assert_training_emission_family(&all_metrics.reports, PredictionKind::ClassLabel);
         let mut malformed = probabilities.clone();
         malformed[1].values[0] = vec![0.7, 0.7];
         assert!(cross_fold_test_reports(
@@ -2397,6 +2530,13 @@ mod tests {
             RegressionMetricKind::R2,
         ];
         let report = score_regression_prediction_block(&predictions, &targets, &metrics).unwrap();
+        let all_metrics = score_regression_prediction_block(
+            &predictions,
+            &targets,
+            crate::runtime::SCORE_METRICS,
+        )
+        .unwrap();
+        assert_training_emission_family(&[all_metrics], PredictionKind::RegressionPoint);
         assert_eq!(report.row_count, 3);
         assert_eq!(report.target_width, 2);
         assert_close(report.metrics["rmse:first"], 1.0);
@@ -2716,6 +2856,23 @@ mod tests {
         assert_eq!(candidate.metadata["partition"], "validation");
         assert_eq!(candidate.metadata["prediction_id"], "pred:sample");
         assert_eq!(candidate.metadata["target_names"], serde_json::json!(["y"]));
+        // Reuse the same identity-aligned fixture on every direct scored surface.
+        for partition in [
+            PredictionPartition::Validation,
+            PredictionPartition::Train,
+            PredictionPartition::TrainPool,
+            PredictionPartition::Test,
+            PredictionPartition::Final,
+        ] {
+            let block = PredictionBlock {
+                partition,
+                ..predictions.clone()
+            };
+            let report =
+                score_regression_prediction_block(&block, &targets, crate::runtime::SCORE_METRICS)
+                    .unwrap();
+            assert_training_emission_family(&[report], PredictionKind::RegressionPoint);
+        }
     }
 
     #[test]
@@ -2809,6 +2966,18 @@ mod tests {
         .unwrap();
         assert_eq!(group_report.level, PredictionLevel::Group);
         assert_close(group_report.metrics["mae"], 2.0);
+        for (predictions, targets) in [
+            (&predictions, &targets),
+            (&group_predictions, &group_targets),
+        ] {
+            let report = score_regression_aggregated_block(
+                predictions,
+                targets,
+                crate::runtime::SCORE_METRICS,
+            )
+            .unwrap();
+            assert_training_emission_family(&[report], PredictionKind::RegressionPoint);
+        }
     }
 
     #[test]
