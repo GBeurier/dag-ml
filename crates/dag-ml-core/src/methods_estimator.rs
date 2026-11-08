@@ -53,15 +53,34 @@ use crate::{
     Result, RunId,
 };
 
-/// Reserved node parameter naming the native method.
-pub const METHODS_ESTIMATOR_METHOD_PARAM: &str = "method_id";
 /// Reserved node parameter carrying explicit, lineage-recorded unsafe opt-ins.
 pub const METHODS_ESTIMATOR_UNSAFE_FLAGS_PARAM: &str = "unsafe_flags";
 /// Opt-in allowing an N4ME artifact to embed training rows (kernel/local
 /// methods). Without it such methods are refused before any fit.
 pub const METHODS_ESTIMATOR_ALLOW_TRAINING_ROWS: &str = "allow_training_rows_in_artifact";
 
-pub use crate::n4m_roles::METHODS_ESTIMATOR_EXECUTABLE_ROLES;
+pub use crate::n4m_roles::{
+    METHODS_ESTIMATOR_EXECUTABLE_ROLES, METHODS_ESTIMATOR_METHOD_PARAM,
+    METHODS_FEATURE_JOIN_CONTROLLER,
+};
+
+/// Native manifests, with the data-only join explicitly stateless. Generic
+/// host templates and host-owned feature joins retain their existing policy.
+pub fn methods_estimator_controller_registry(
+    runtime: &MethodsRuntime,
+) -> Result<crate::ControllerRegistry> {
+    let mut registry = crate::ControllerRegistry::new();
+    for spec in methods_estimator_host_controller_specs(runtime)? {
+        let mut manifest = spec.derive()?;
+        if manifest.controller_id.as_str() == METHODS_FEATURE_JOIN_CONTROLLER {
+            manifest.fit_scope = crate::ControllerFitScope::Stateless;
+            manifest.supported_phases = BTreeSet::from([Phase::FitCv, Phase::Refit]);
+            manifest.validate()?;
+        }
+        registry.register(manifest)?;
+    }
+    Ok(registry)
+}
 
 const CAPABILITY_NAMES: [(u64, &str); 10] = [
     (roles::CAP_TRANSFORM, "transform"),
@@ -210,6 +229,10 @@ pub fn register_methods_estimator_controllers(
             shared: Arc::clone(&shared),
         }))?;
     }
+    registry.register(Box::new(MethodsFeatureJoinController {
+        id: ControllerId::new(METHODS_FEATURE_JOIN_CONTROLLER)?,
+        shared,
+    }))?;
     Ok(())
 }
 
@@ -304,13 +327,25 @@ struct NodeMethod {
 
 impl NodeMethod {
     fn from_task(task: &NodeTask, role: N4mRole, catalog: &NativeCatalog) -> Result<Self> {
-        let node_id = &task.node_plan.node_id;
+        Self::from_params(
+            &task.node_plan.params,
+            &task.node_plan.node_id,
+            role,
+            catalog,
+        )
+    }
+
+    fn from_params(
+        params: &BTreeMap<String, serde_json::Value>,
+        node_id: &crate::NodeId,
+        role: N4mRole,
+        catalog: &NativeCatalog,
+    ) -> Result<Self> {
         let invalid = |reason: String| {
             DagMlError::RuntimeValidation(format!(
                 "native Methods estimator node `{node_id}` {reason}"
             ))
         };
-        let params = &task.node_plan.params;
         let method_id = params
             .get(METHODS_ESTIMATOR_METHOD_PARAM)
             .and_then(serde_json::Value::as_str)
@@ -554,7 +589,7 @@ fn param_value(param_type: ParamType, value: &serde_json::Value) -> Option<Param
 
 /// Class ids of a single integral target column. Class ids cross the ABI
 /// unchanged, so a fitted N4ME state predicts the dataset's own labels.
-fn class_labels(data: &MethodsPlsDataset, method_id: &str) -> Result<Vec<i64>> {
+pub(crate) fn class_labels(data: &MethodsPlsDataset, method_id: &str) -> Result<Vec<i64>> {
     let invalid = || {
         DagMlError::RuntimeValidation(format!(
             "native Methods method `{method_id}` requires one target column of integral class ids"
@@ -744,7 +779,8 @@ impl MethodsEstimatorController {
             .get("data:x")
             .filter(|handle| {
                 handle.kind == HandleKind::Data
-                    && N4mRole::from_controller_id(handle.owner_controller.as_str()).is_some()
+                    && (N4mRole::from_controller_id(handle.owner_controller.as_str()).is_some()
+                        || handle.owner_controller.as_str() == METHODS_FEATURE_JOIN_CONTROLLER)
             })
             .ok_or_else(|| {
                 DagMlError::RuntimeValidation(format!(
@@ -892,6 +928,24 @@ impl MethodsEstimatorController {
         scores: Scores,
         artifact: Option<(ArtifactRef, HandleRef)>,
     ) -> Result<NodeResult> {
+        Self::result_with_flags(
+            &self.id,
+            task,
+            outputs,
+            scores,
+            artifact,
+            method.allow_training_rows,
+        )
+    }
+
+    fn result_with_flags(
+        id: &ControllerId,
+        task: &NodeTask,
+        outputs: BTreeMap<String, HandleRef>,
+        scores: Scores,
+        artifact: Option<(ArtifactRef, HandleRef)>,
+        allow_training_rows: bool,
+    ) -> Result<NodeResult> {
         let (artifacts, artifact_handles) = artifact
             .map(|(artifact, handle)| {
                 (
@@ -900,7 +954,7 @@ impl MethodsEstimatorController {
                 )
             })
             .unwrap_or_default();
-        let unsafe_flags = if method.allow_training_rows {
+        let unsafe_flags = if allow_training_rows {
             BTreeSet::from([METHODS_ESTIMATOR_ALLOW_TRAINING_ROWS.to_string()])
         } else {
             BTreeSet::new()
@@ -937,7 +991,7 @@ impl MethodsEstimatorController {
                 run_id: task.run_id.clone(),
                 node_id: task.node_plan.node_id.clone(),
                 phase: task.phase,
-                controller_id: self.id.clone(),
+                controller_id: id.clone(),
                 controller_version: task.node_plan.controller_version.clone(),
                 variant_id: task.variant_id.clone(),
                 fold_id: task.fold_id.clone(),
@@ -1295,24 +1349,7 @@ impl RuntimeController for MethodsEstimatorController {
         &self,
         run_id: &RunId,
     ) -> Result<Option<Arc<dyn std::fmt::Debug + Send + Sync>>> {
-        let mut leases = self
-            .shared
-            .run_leases
-            .lock()
-            .map_err(|_| lock_poisoned("run resources"))?;
-        leases.retain(|_, lease| lease.strong_count() > 0);
-        let lease = leases
-            .get(run_id)
-            .and_then(Weak::upgrade)
-            .unwrap_or_else(|| {
-                let lease = Arc::new(MethodsRunLease {
-                    shared: Arc::clone(&self.shared),
-                    run_id: run_id.clone(),
-                });
-                leases.insert(run_id.clone(), Arc::downgrade(&lease));
-                lease
-            });
-        Ok(Some(lease))
+        retain_feature_store(&self.shared, run_id)
     }
 
     fn controller_id(&self) -> &ControllerId {
@@ -2870,6 +2907,216 @@ mod tests {
             .unwrap_or_default();
         assert!(message.contains("does not match node method"), "{message}");
     }
+    #[test]
+    fn feature_graph_fitcv_matches_direct_training_only_msc_and_ascending_selectors() {
+        let fixture = fixture();
+        let mut x = rows(&fixture["x_train"]);
+        let y = rows(&fixture["y_train"]).concat();
+        let nfit = x.len() - 6;
+        // Deliberate validation shift exposes an accidental all-row MSC reference.
+        for row in &mut x[nfit..] {
+            for value in row {
+                *value = *value * 1.7 + 3.0;
+            }
+        }
+        let provider = Provider::new(&x, &y, &[]);
+        let ids = (0..x.len()).map(|i| sample("", i)).collect::<Vec<_>>();
+        let fit = provider.dataset(&ids[..nfit]);
+        let validation = provider.dataset(&ids[nfit..]);
+        let admission = crate::admit_portable_pipeline(&json!([
+            {"class":"n4m.KennardStone"},
+            {"branch":[
+                {"name":"z_msc","steps":[{"class":"n4m.MSC"}]},
+                {"name":"a_spa","steps":[{"class":"n4m.SPA","params":{"n_components":2,"top_k":2}}]},
+                {"name":"m_selector","steps":[{"class":"n4m.Selector","params":{"method":"spa_select","n_components":2,"method_params":{"top_k":2}}}]}
+            ]}, {"merge":"features"},
+            {"model":{"class":"n4m.PLS","params":{"n_components":1,"scale":false}}}
+        ])).unwrap();
+        preflight_methods_feature_graph(&admission.recipe, &admission.candidates).unwrap();
+        let envelope = envelope();
+        let binding: DataBinding = serde_json::from_value(json!({"node_id":"model:portable","input_name":"x","request_id":"nir-to-tabular",
+            "schema_fingerprint":envelope.schema_fingerprint,"plan_fingerprint":envelope.plan_fingerprint,"relation_fingerprint":envelope.relation_fingerprint,
+            "output_representation":"tabular_numeric","feature_set_id":"x","source_ids":["nir"],"require_relations":false})).unwrap();
+        let folds = serde_json::from_value(json!({"id":"outer","sample_ids":ids,"partition_mode":"resampled","sample_groups":{},
+            "folds":[{"fold_id":"fold:holdout","train_sample_ids":fit.sample_ids,"validation_sample_ids":validation.sample_ids,"metadata":{}}]})).unwrap();
+        let registry = methods_estimator_controller_registry(&runtime()).unwrap();
+        let join_manifest = registry
+            .get(&ControllerId::new(METHODS_FEATURE_JOIN_CONTROLLER).unwrap())
+            .unwrap();
+        assert_eq!(
+            join_manifest.fit_scope,
+            crate::ControllerFitScope::Stateless
+        );
+        assert!(!join_manifest
+            .capabilities
+            .contains(&crate::ControllerCapability::EmitsArtifacts));
+        assert_eq!(
+            join_manifest.supported_phases,
+            BTreeSet::from([Phase::FitCv, Phase::Refit])
+        );
+        let compiled =
+            crate::compile_portable_linear(&admission, binding, Some(folds), &registry).unwrap();
+        assert_eq!(
+            compiled
+                .graph
+                .nodes
+                .iter()
+                .map(|node| node.kind.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                crate::NodeKind::Transform,
+                crate::NodeKind::Transform,
+                crate::NodeKind::Transform,
+                crate::NodeKind::FeatureJoin,
+                crate::NodeKind::Model
+            ]
+        );
+        let join = &compiled.graph.nodes[3];
+        assert_eq!(
+            join.params["branch_inputs_v1"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v["branch_id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["z_msc", "a_spa", "m_selector"]
+        );
+        assert!(
+            join.metadata.get("merge_mode").is_none(),
+            "row-partition join path must remain uninvolved"
+        );
+        let plan = build_execution_plan(
+            "plan:feature.direct",
+            compiled.graph,
+            compiled.campaign_template,
+            &registry,
+        )
+        .unwrap();
+        let controllers = controllers();
+        let mut ctx = RunContext::new(RunId::new("run:feature.direct").unwrap(), Some(7));
+        ctx.variant_id = Some(plan.variants[0].variant_id.clone());
+        let results = SequentialScheduler
+            .execute_campaign_phase_with_data_provider(
+                &plan,
+                &controllers,
+                &provider,
+                &mut ctx,
+                Phase::FitCv,
+            )
+            .unwrap();
+        assert!(
+            results.iter().all(|result| result.artifacts.is_empty()),
+            "FIT_CV exports no model"
+        );
+        let model_result = results
+            .iter()
+            .find(|result| result.node_id.as_str() == "model:portable")
+            .unwrap();
+        assert_eq!(
+            model_result.lineage.metrics["native_fit_rows"], nfit as f64,
+            "validation must never fit"
+        );
+        let joined = results
+            .iter()
+            .find(|r| r.node_id.as_str() == "portable:join:0")
+            .unwrap();
+        let blocks = &joined.shape_deltas[0].metadata["feature_blocks"];
+        assert_eq!(
+            blocks,
+            &json!([{"branch_id":"z_msc","column_count":x[0].len()},
+            {"branch_id":"a_spa","column_count":2},{"branch_id":"m_selector","column_count":2}])
+        );
+        let context = Context::new().unwrap();
+        let mut fit_blocks = Vec::new();
+        let mut validation_blocks = Vec::new();
+        for branch in admission.recipe[0]["branch"].as_array().unwrap() {
+            let step = &branch["steps"][0];
+            let method = step["methodId"].as_str().unwrap();
+            let mut params = Params::new(&context, method).unwrap();
+            if method == "selection.spa" {
+                params.set_int("n_components", 2).unwrap();
+                params.set_int("top_k", 2).unwrap();
+            }
+            let mut estimator = Estimator::new(&context, method, Some(&params)).unwrap();
+            estimator
+                .fit(
+                    &context,
+                    &FitInputs::new(matrix(&fit.x).unwrap())
+                        .y(matrix(fit.y.as_ref().unwrap()).unwrap()),
+                )
+                .unwrap();
+            let transformed_fit = owned(
+                estimator
+                    .transform(&context, matrix(&fit.x).unwrap())
+                    .unwrap(),
+            );
+            let transformed_validation = owned(
+                estimator
+                    .transform(&context, matrix(&validation.x).unwrap())
+                    .unwrap(),
+            );
+            if method == "selection.spa" {
+                let mut selected = estimator.selected_indices().unwrap();
+                selected.sort_unstable();
+                for (row, actual) in transformed_fit.values.chunks(2).enumerate() {
+                    assert_eq!(
+                        actual,
+                        selected
+                            .iter()
+                            .map(|i| fit.x.values[row * fit.x.cols + *i as usize])
+                            .collect::<Vec<_>>()
+                    );
+                }
+            }
+            fit_blocks.push(with_features(&fit, transformed_fit));
+            validation_blocks.push(with_features(&validation, transformed_validation));
+        }
+        let fit_join = join_feature_datasets(&fit_blocks.iter().collect::<Vec<_>>()).unwrap();
+        let validation_join =
+            join_feature_datasets(&validation_blocks.iter().collect::<Vec<_>>()).unwrap();
+        let mut params = Params::new(&context, "models.pls.pls_regression").unwrap();
+        for (name, value) in &admission.candidates[0] {
+            let info = NativeCatalog::live().unwrap();
+            let param = info
+                .method("models.pls.pls_regression")
+                .unwrap()
+                .param(name)
+                .unwrap()
+                .native_type()
+                .unwrap();
+            params
+                .set(name, &param_value(param, value).unwrap())
+                .unwrap();
+        }
+        let mut estimator =
+            Estimator::new(&context, "models.pls.pls_regression", Some(&params)).unwrap();
+        estimator
+            .fit(
+                &context,
+                &FitInputs::new(matrix(&fit_join.x).unwrap())
+                    .y(matrix(fit_join.y.as_ref().unwrap()).unwrap()),
+            )
+            .unwrap();
+        let expected = estimator
+            .predict(&context, matrix(&validation_join.x).unwrap())
+            .unwrap();
+        let actual = ctx
+            .prediction_store
+            .blocks()
+            .iter()
+            .find(|b| {
+                b.producer_node.as_str() == "model:portable"
+                    && b.partition == PredictionPartition::Validation
+            })
+            .unwrap();
+        assert_eq!(actual.sample_ids, validation.sample_ids);
+        close(
+            &actual.values.concat(),
+            &expected.data,
+            1e-10,
+            "declared-order branch graph vs direct Methods",
+        );
+    }
 }
 
 #[cfg(all(test, feature = "methods-optimizer"))]
@@ -2919,5 +3166,410 @@ mod mask_contract_tests {
         assert!(malformed.validate("fixture", true).is_err());
         malformed.y = None;
         assert!(malformed.validate("fixture", false).is_err());
+    }
+}
+
+fn retain_feature_store(
+    shared: &Arc<SharedState>,
+    run_id: &RunId,
+) -> Result<Option<Arc<dyn std::fmt::Debug + Send + Sync>>> {
+    let mut leases = shared
+        .run_leases
+        .lock()
+        .map_err(|_| lock_poisoned("run resources"))?;
+    leases.retain(|_, lease| lease.strong_count() > 0);
+    let lease = leases
+        .get(run_id)
+        .and_then(Weak::upgrade)
+        .unwrap_or_else(|| {
+            let lease = Arc::new(MethodsRunLease {
+                shared: Arc::clone(shared),
+                run_id: run_id.clone(),
+            });
+            leases.insert(run_id.clone(), Arc::downgrade(&lease));
+            lease
+        });
+    Ok(Some(lease))
+}
+
+/// Before any branch fit, check every method's live role, input requirements
+/// and typed parameters through the same native node admission. No numerical
+/// operation or estimator fit occurs here.
+pub fn preflight_methods_feature_graph(
+    recipe: &[serde_json::Value],
+    candidates: &[BTreeMap<String, serde_json::Value>],
+) -> Result<()> {
+    let catalog = NativeCatalog::live()?;
+    let context = Context::new().map_err(|e| native_error("context_create", e))?;
+    fn check(
+        step: &serde_json::Value,
+        model: bool,
+        path: &str,
+        catalog: &NativeCatalog,
+        context: &Context,
+        extra: Option<&BTreeMap<String, serde_json::Value>>,
+    ) -> Result<()> {
+        let invalid = |message: String| DagMlError::RuntimeValidation(format!("{path}: {message}"));
+        let method = step["methodId"]
+            .as_str()
+            .ok_or_else(|| invalid("native methodId required".into()))?;
+        let info = catalog.method(method)?;
+        let role = if model {
+            N4mRole::Regressor
+        } else if info.roles.contains(&N4mRole::Transformer) {
+            N4mRole::Transformer
+        } else {
+            N4mRole::Selector
+        };
+        if !info.roles.contains(&role) {
+            return Err(invalid(
+                "feature graph accepts preprocessing/selection and a terminal regressor only"
+                    .into(),
+            ));
+        }
+        if info.inputs.iter().any(|(name, requirement)| {
+            requirement == "required" && !matches!(name.as_str(), "x" | "y" | "labels")
+        }) {
+            return Err(invalid(
+                "required physical axis or auxiliary fit input is unavailable in the feature graph"
+                    .into(),
+            ));
+        }
+        let mut params: BTreeMap<String, serde_json::Value> =
+            serde_json::from_value(step["params"].clone())?;
+        if let Some(extra) = extra {
+            params.extend(extra.clone());
+        }
+        params.insert(
+            METHODS_ESTIMATOR_METHOD_PARAM.into(),
+            serde_json::json!(method),
+        );
+        let node = NodeMethod::from_params(
+            &params,
+            &crate::NodeId::new("portable:preflight")?,
+            role,
+            catalog,
+        )
+        .map_err(|e| invalid(e.to_string()))?;
+        node.estimator(context)
+            .map_err(|e| invalid(e.to_string()))?;
+        Ok(())
+    }
+    for (i, step) in recipe.iter().enumerate() {
+        if let Some(branches) = step.get("branch").and_then(serde_json::Value::as_array) {
+            for branch in branches {
+                for (j, step) in branch["steps"]
+                    .as_array()
+                    .ok_or_else(|| DagMlError::RuntimeValidation("branch steps required".into()))?
+                    .iter()
+                    .enumerate()
+                {
+                    check(
+                        step,
+                        false,
+                        &format!("$.recipe[{i}].branch.{}[{j}]", branch["id"]),
+                        &catalog,
+                        &context,
+                        None,
+                    )?;
+                }
+            }
+        } else if step.get("merge").is_none() {
+            if i + 1 == recipe.len() {
+                for params in candidates {
+                    check(
+                        step,
+                        true,
+                        &format!("$.recipe[{i}]"),
+                        &catalog,
+                        &context,
+                        Some(params),
+                    )?;
+                }
+            } else {
+                check(
+                    step,
+                    false,
+                    &format!("$.recipe[{i}]"),
+                    &catalog,
+                    &context,
+                    None,
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+struct MethodsFeatureJoinController {
+    id: ControllerId,
+    shared: Arc<SharedState>,
+}
+
+/// Copy columns only after every branch agrees on population and targets.
+fn join_feature_datasets(branches: &[&MethodsPlsDataset]) -> Result<MethodsPlsDataset> {
+    let first = branches
+        .first()
+        .ok_or_else(|| DagMlError::RuntimeValidation("feature join requires inputs".into()))?;
+    let same_targets =
+        |left: &Option<MethodsPlsMatrix>, right: &Option<MethodsPlsMatrix>| match (left, right) {
+            (None, None) => true,
+            (Some(a), Some(b)) => {
+                a.rows == b.rows
+                    && a.cols == b.cols
+                    && a.values.len() == b.values.len()
+                    && a.values
+                        .iter()
+                        .zip(&b.values)
+                        .all(|(a, b)| a.to_bits() == b.to_bits())
+            }
+            _ => false,
+        };
+    for data in branches {
+        data.validate("feature join input", false)?;
+        if data.sample_ids != first.sample_ids
+            || !same_targets(&data.y, &first.y)
+            || data.target_names != first.target_names
+            || data.y_validity_masks != first.y_validity_masks
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "feature join requires identical ordered sample_ids, targets, names and masks"
+                    .into(),
+            ));
+        }
+    }
+    let cols = branches.iter().try_fold(0usize, |n, data| {
+        n.checked_add(data.x.cols).ok_or_else(|| {
+            DagMlError::RuntimeValidation("feature join column count overflow".into())
+        })
+    })?;
+    let len =
+        first.x.rows.checked_mul(cols).ok_or_else(|| {
+            DagMlError::RuntimeValidation("feature join matrix size overflow".into())
+        })?;
+    let mut values = Vec::with_capacity(len);
+    for row in 0..first.x.rows {
+        for data in branches {
+            values.extend_from_slice(&data.x.values[row * data.x.cols..(row + 1) * data.x.cols]);
+        }
+    }
+    Ok(with_features(
+        first,
+        MethodsPlsMatrix {
+            rows: first.x.rows,
+            cols,
+            values,
+        },
+    ))
+}
+
+impl RuntimeController for MethodsFeatureJoinController {
+    fn controller_id(&self) -> &ControllerId {
+        &self.id
+    }
+    fn retain_run_resources(
+        &self,
+        run_id: &RunId,
+    ) -> Result<Option<Arc<dyn std::fmt::Debug + Send + Sync>>> {
+        retain_feature_store(&self.shared, run_id)
+    }
+    fn invoke(&self, task: &NodeTask) -> Result<NodeResult> {
+        if task.node_plan.kind != crate::NodeKind::FeatureJoin || task.node_plan.params.len() != 1 {
+            return Err(DagMlError::RuntimeValidation(
+                "native feature join requires FeatureJoin with only branch_inputs_v1".into(),
+            ));
+        }
+        if !matches!(task.phase, Phase::FitCv | Phase::Refit) {
+            return Err(DagMlError::RuntimeValidation("native feature join supports evaluation only; portable deployment/replay is unavailable".into()));
+        }
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Input {
+            branch_id: String,
+            input: String,
+        }
+        let inputs: Vec<Input> = serde_json::from_value(
+            task.node_plan
+                .params
+                .get("branch_inputs_v1")
+                .cloned()
+                .ok_or_else(|| {
+                    DagMlError::RuntimeValidation("feature join requires branch_inputs_v1".into())
+                })?,
+        )?;
+        let mut branch_ids = BTreeSet::new();
+        let mut keys = BTreeSet::new();
+        for input in &inputs {
+            if input.branch_id.is_empty()
+                || !branch_ids.insert(&input.branch_id)
+                || !keys.insert(format!("data:{}", input.input))
+            {
+                return Err(DagMlError::RuntimeValidation(
+                    "feature join requires unique branch IDs and input ports".into(),
+                ));
+            }
+        }
+        // The scheduler also supplies source-qualified aliases. Bind only the
+        // canonical data namespace; unknown canonical data ports still refuse.
+        let canonical_keys = task
+            .input_handles
+            .keys()
+            .filter(|key| key.starts_with("data:"))
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        if inputs.len() < 2 || keys != canonical_keys {
+            return Err(DagMlError::RuntimeValidation(
+                "feature join input handles must exactly match branch_inputs_v1".into(),
+            ));
+        }
+        let store = self
+            .shared
+            .features
+            .lock()
+            .map_err(|_| lock_poisoned("feature store"))?;
+        let mut branches = Vec::new();
+        for input in &inputs {
+            let handle = &task.input_handles[&format!("data:{}", input.input)];
+            if handle.kind != HandleKind::Data
+                || !matches!(
+                    N4mRole::from_controller_id(handle.owner_controller.as_str()),
+                    Some(N4mRole::Transformer | N4mRole::Selector)
+                )
+            {
+                return Err(DagMlError::RuntimeValidation(
+                    "feature join requires native preprocessing data handles".into(),
+                ));
+            }
+            let (run, data) = store.get(&handle.handle).ok_or_else(|| {
+                DagMlError::RuntimeValidation(
+                    "feature join handle is absent from this registration".into(),
+                )
+            })?;
+            if run != &task.run_id {
+                return Err(DagMlError::RuntimeValidation(
+                    "feature join handle belongs to another run".into(),
+                ));
+            }
+            branches.push(Arc::clone(data));
+        }
+        drop(store);
+        let fit = join_feature_datasets(&branches.iter().map(|b| &b.fit).collect::<Vec<_>>())?;
+        let prediction = if branches.iter().all(|b| b.prediction.is_none()) {
+            None
+        } else {
+            let predicted = branches
+                .iter()
+                .map(|b| {
+                    b.prediction.as_ref().ok_or_else(|| {
+                        DagMlError::RuntimeValidation(
+                            "feature join prediction populations disagree".into(),
+                        )
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            Some(join_feature_datasets(&predicted)?)
+        };
+        let blocks = serde_json::json!(inputs.iter().zip(&branches).map(|(input, data)| serde_json::json!({"branch_id":input.branch_id,"column_count":data.fit.x.cols})).collect::<Vec<_>>());
+        if let Some(prediction) = &prediction {
+            if branches.iter().any(|b| {
+                b.prediction
+                    .as_ref()
+                    .map_or(true, |p| p.x.cols != b.fit.x.cols)
+            }) || prediction.x.cols != fit.x.cols
+            {
+                return Err(DagMlError::RuntimeValidation(
+                    "feature join fit/prediction widths disagree".into(),
+                ));
+            }
+        }
+        let before = format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(
+                &serde_json::json!({"ordered_inputs":blocks})
+            )?)
+        );
+        let after = format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(
+                &serde_json::json!({"joined_columns":fit.x.cols})
+            )?)
+        );
+        let handle = HandleRef {
+            handle: self.shared.next_handle.fetch_add(1, Ordering::SeqCst) + 1,
+            kind: HandleKind::Data,
+            owner_controller: self.id.clone(),
+        };
+        self.shared
+            .features
+            .lock()
+            .map_err(|_| lock_poisoned("feature store"))?
+            .insert(
+                handle.handle,
+                (
+                    task.run_id.clone(),
+                    Arc::new(FeatureSet { fit, prediction }),
+                ),
+            );
+        // Reuse the native result/lineage constructor; no method or fit is invoked.
+        let mut result = MethodsEstimatorController::result_with_flags(
+            &self.id,
+            task,
+            BTreeMap::from([("x_out".into(), handle)]),
+            Scores::default(),
+            None,
+            false,
+        )?;
+        result.shape_deltas.push(crate::ShapeDelta {
+            node_id: task.node_plan.node_id.clone(),
+            kind: crate::ShapeDeltaKind::Feature,
+            before_fingerprint: before,
+            after_fingerprint: after,
+            metadata: BTreeMap::from([("feature_blocks".into(), blocks)]),
+        });
+        Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod feature_join_alignment_tests {
+    use super::*;
+
+    #[test]
+    fn join_refuses_permuted_branch_ids_and_never_recycles_targets_or_masks() {
+        let data = MethodsPlsDataset {
+            sample_ids: vec![
+                crate::SampleId::new("b").unwrap(),
+                crate::SampleId::new("a").unwrap(),
+            ],
+            x: MethodsPlsMatrix {
+                rows: 2,
+                cols: 1,
+                values: vec![1., 2.],
+            },
+            y: Some(MethodsPlsMatrix {
+                rows: 2,
+                cols: 1,
+                values: vec![4., 5.],
+            }),
+            target_names: vec!["y".into()],
+            y_validity_masks: Some(vec![vec![true], vec![false]]),
+        };
+        let mut other = data.clone();
+        other.sample_ids.reverse();
+        let error = join_feature_datasets(&[&data, &other])
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("identical ordered sample_ids"), "{error}");
+        other = data.clone();
+        other.y_validity_masks = Some(vec![vec![true], vec![true]]);
+        assert!(join_feature_datasets(&[&data, &other]).is_err());
+        other = data.clone();
+        other.y.as_mut().unwrap().values[0] = 9.;
+        assert!(join_feature_datasets(&[&data, &other]).is_err());
+        let joined = join_feature_datasets(&[&data, &data]).unwrap();
+        assert_eq!(joined.sample_ids, data.sample_ids);
+        assert_eq!(joined.y, data.y);
+        assert_eq!(joined.y_validity_masks, data.y_validity_masks);
+        assert_eq!(joined.x.values, vec![1., 1., 2., 2.]);
     }
 }

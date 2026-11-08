@@ -5,6 +5,140 @@ use crate::metrics::{PopulationRmseRatiosReport, RegressionReportProfile};
 
 pub const SINGLE_HOLDOUT_BANK_PROFILE: &str = "single_resampled_holdout_bank.v1";
 pub const PIPELINE_STEPS_V1_PARAM: &str = "pipeline_steps_v1";
+/// Classification sibling: native accuracy, maximized, over ClassLabel ids.
+pub const SINGLE_HOLDOUT_BANK_V2_PROFILE: &str = "single_resampled_holdout_bank.v2";
+
+/// Request of both classification bank profiles (`*.v2`). Accuracy is the
+/// closed metric; there is no report profile or host-selected objective.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClassificationBankRequest {
+    pub schema_version: u32,
+    pub profile: String,
+    pub failure_group_dimension: String,
+    pub target_node: NodeId,
+}
+
+/// An evaluated class outside the fitted classifier domain (its
+/// `RolePipeline::classes()`, after intermediate roles and sample filters).
+/// Its samples stay evaluated and always score as errors; nothing is dropped.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct UnseenValidationClass {
+    pub class_id: i64,
+    pub count: usize,
+    /// Validation fold order.
+    pub sample_ids: Vec<SampleId>,
+}
+
+/// The fitted class domain recorded by the target's classifier controller.
+fn take_fitted_classes(
+    plan: &ExecutionPlan,
+    controllers: &RuntimeControllerRegistry,
+    target: &NodeId,
+    phase: Phase,
+    fold_id: Option<&FoldId>,
+) -> Result<Vec<i64>> {
+    let node = plan
+        .node_plans
+        .get(target)
+        .ok_or_else(|| refusal("classification bank score target is absent"))?;
+    controllers
+        .get(&node.controller_id)
+        .ok_or_else(|| refusal("classification bank controller is not registered"))?
+        .take_fitted_class_domain(target, phase, fold_id)?
+        .ok_or_else(|| refusal("classifier controller reported no fitted class domain"))
+}
+
+/// Closed bank metric. v1 keeps RMSE and its regression evidence exactly.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BankMetric {
+    Rmse,
+    GraphRmse,
+    Accuracy,
+}
+impl BankMetric {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Rmse | Self::GraphRmse => "rmse",
+            Self::Accuracy => "accuracy",
+        }
+    }
+    fn objective(self) -> crate::selection::MetricObjective {
+        match self {
+            Self::Rmse | Self::GraphRmse => crate::selection::MetricObjective::Minimize,
+            Self::Accuracy => crate::selection::MetricObjective::Maximize,
+        }
+    }
+    fn controller_admitted(self, id: &ControllerId, version: &str) -> bool {
+        match self {
+            Self::Rmse => version == "1.1.0",
+            Self::GraphRmse => {
+                id.as_str()
+                    == crate::n4m_roles::N4mRole::Regressor
+                        .controller_id()
+                        .expect("regressor id")
+                    && version.starts_with("n4m-abi-")
+            }
+            Self::Accuracy => {
+                id.as_str() == crate::PORTABLE_CLASSIFIER_CONTROLLER
+                    && version == crate::PORTABLE_CLASSIFIER_VERSION
+            }
+        }
+    }
+    fn controller_refusal(self) -> &'static str {
+        match self {
+            Self::GraphRmse => "graph bank requires the native per-estimator regressor controller",
+            Self::Rmse => "holdout bank requires the pipeline_steps_v1 controller version 1.1.0",
+            Self::Accuracy => {
+                "classification bank requires the pipeline_steps_classifier controller version 1.0.0"
+            }
+        }
+    }
+    fn training_profile(self) -> &'static str {
+        match self {
+            Self::Rmse => TRAINING_BANK_PROFILE,
+            Self::GraphRmse => TRAINING_GRAPH_BANK_PROFILE,
+            Self::Accuracy => TRAINING_BANK_V2_PROFILE,
+        }
+    }
+    fn training_policy_id(self) -> &'static str {
+        match self {
+            Self::Rmse => "select:training_bank.v1:rmse",
+            Self::GraphRmse => "select:training_graph_bank.v1:rmse",
+            Self::Accuracy => "select:training_bank.v2:accuracy",
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum HoldoutScoring {
+    Rmse(RegressionReportProfile),
+    GraphRmse(RegressionReportProfile),
+    Accuracy,
+}
+impl HoldoutScoring {
+    fn metric(self) -> BankMetric {
+        match self {
+            Self::Rmse(_) => BankMetric::Rmse,
+            Self::GraphRmse(_) => BankMetric::GraphRmse,
+            Self::Accuracy => BankMetric::Accuracy,
+        }
+    }
+    fn profile(self) -> &'static str {
+        match self {
+            Self::Rmse(_) => SINGLE_HOLDOUT_BANK_PROFILE,
+            Self::GraphRmse(_) => SINGLE_HOLDOUT_GRAPH_BANK_PROFILE,
+            Self::Accuracy => SINGLE_HOLDOUT_BANK_V2_PROFILE,
+        }
+    }
+    fn policy_id(self) -> &'static str {
+        match self {
+            Self::Rmse(_) => "select:single_resampled_holdout_bank.v1:rmse",
+            Self::GraphRmse(_) => "select:single_resampled_holdout_graph_bank.v1:rmse",
+            Self::Accuracy => "select:single_resampled_holdout_bank.v2:accuracy",
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -41,6 +175,12 @@ pub struct HoldoutVariantEvidence {
     pub failure: Option<String>,
     /// False for every member of a failed chain, including completed variants.
     pub eligible: bool,
+    /// Bank v2 only: validation rows outside this candidate's fitted class domain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unseen_validation_classes: Option<Vec<UnseenValidationClass>>,
+    /// Graph profile only: join node ID -> ordered branch column blocks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feature_blocks: Option<BTreeMap<String, serde_json::Value>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -79,6 +219,10 @@ pub struct SingleHoldoutBankResult {
     pub selected: Option<HoldoutBankWinner>,
     pub decision: Option<SelectionDecision>,
     pub refusal: Option<String>,
+    /// Bank v2 only (absent from v1 bytes): validation rows whose class is
+    /// outside the selected classifier's fitted domain, ascending by class id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unseen_validation_classes: Option<Vec<UnseenValidationClass>>,
 }
 
 /// One owner operation owns the entire bank loop and native SELECT. Controllers
@@ -103,6 +247,45 @@ pub fn execute_single_holdout_bank(
             )
             .map(|_| ())
     })
+}
+
+/// Classification bank v2 over the same private bank core and scheduler.
+/// Selects native accuracy on the actual Resampled validation fold.
+#[allow(clippy::too_many_arguments)]
+pub fn execute_single_holdout_bank_v2(
+    plan: &ExecutionPlan,
+    request: &ClassificationBankRequest,
+    run_id: &RunId,
+    root_seed: Option<u64>,
+    controllers: &RuntimeControllerRegistry,
+    data_provider: &dyn RuntimeDataProvider,
+) -> Result<SingleHoldoutBankResult> {
+    select_classification_holdout_with_runner(
+        plan,
+        request,
+        run_id,
+        root_seed,
+        |candidate, ctx| {
+            SequentialScheduler
+                .execute_campaign_phase_with_data_provider(
+                    candidate,
+                    controllers,
+                    data_provider,
+                    ctx,
+                    Phase::FitCv,
+                )
+                .map(|_| ())
+        },
+        |fold| {
+            take_fitted_classes(
+                plan,
+                controllers,
+                &request.target_node,
+                Phase::FitCv,
+                Some(fold),
+            )
+        },
+    )
 }
 
 fn refusal(message: impl Into<String>) -> DagMlError {
@@ -186,12 +369,32 @@ fn bank_identities_for_scope(
     request: &SingleHoldoutBankRequest,
     require_holdout: bool,
 ) -> Result<Vec<HoldoutVariantIdentity>> {
+    bank_identities_core(
+        plan,
+        &request.failure_group_dimension,
+        &request.target_node,
+        require_holdout,
+        (request.schema_version != 1 || request.profile != SINGLE_HOLDOUT_BANK_PROFILE)
+            .then_some("unsupported single holdout bank schema/profile"),
+        BankMetric::Rmse,
+    )
+}
+
+/// Shared admission of every bank profile, in the original v1 check order.
+fn bank_identities_core(
+    plan: &ExecutionPlan,
+    failure_group_dimension: &str,
+    target_node: &NodeId,
+    require_holdout: bool,
+    profile_refusal: Option<&'static str>,
+    metric: BankMetric,
+) -> Result<Vec<HoldoutVariantIdentity>> {
     if let Some(dimension) = plan
         .campaign
         .generation
         .dimensions
         .iter()
-        .find(|dimension| dimension.name == request.failure_group_dimension)
+        .find(|dimension| dimension.name == failure_group_dimension)
     {
         let mut labels = BTreeSet::new();
         for choice in &dimension.choices {
@@ -204,8 +407,8 @@ fn bank_identities_for_scope(
         }
     }
     plan.validate()?;
-    if request.schema_version != 1 || request.profile != SINGLE_HOLDOUT_BANK_PROFILE {
-        return Err(refusal("unsupported single holdout bank schema/profile"));
+    if let Some(message) = profile_refusal {
+        return Err(refusal(message));
     }
     if require_holdout {
         let fold_set = plan
@@ -221,7 +424,7 @@ fn bank_identities_for_scope(
     let generation = &plan.campaign.generation;
     if generation.strategy != GenerationStrategy::Cartesian
         || generation.dimensions.len() != 2
-        || generation.dimensions[0].name != request.failure_group_dimension
+        || generation.dimensions[0].name != failure_group_dimension
         || !generation.constraints.is_empty()
     {
         return Err(refusal("holdout bank requires Cartesian chain-first, model-parameters-second dimensions without pruning"));
@@ -236,24 +439,28 @@ fn bank_identities_for_scope(
     }
     let node = plan
         .node_plans
-        .get(&request.target_node)
+        .get(target_node)
         .ok_or_else(|| refusal("holdout bank score target is absent"))?;
-    if node.kind != NodeKind::Model || node.controller_version != "1.1.0" {
-        return Err(refusal(
-            "holdout bank requires the pipeline_steps_v1 controller version 1.1.0",
-        ));
+    if node.kind != NodeKind::Model
+        || !metric.controller_admitted(&node.controller_id, &node.controller_version)
+    {
+        return Err(refusal(metric.controller_refusal()));
     }
     let graph_node = plan
         .graph_plan
         .graph
         .nodes
         .iter()
-        .find(|node| node.id == request.target_node)
+        .find(|node| &node.id == target_node)
         .expect("validated node plan");
     let operator = graph_node
         .operator
         .as_ref()
         .ok_or_else(|| refusal("holdout bank requires a native pipeline operator"))?;
+    let graph_profile = metric == BankMetric::GraphRmse;
+    if graph_profile && generation.dimensions[0].choices.len() != 1 {
+        return Err(refusal("graph bank requires one fixed chain choice"));
+    }
     for (index, dimension) in generation.dimensions.iter().enumerate() {
         for choice in &dimension.choices {
             let [binding] = choice.param_overrides.as_slice() else {
@@ -261,17 +468,30 @@ fn bank_identities_for_scope(
                     "each bank axis choice must override the target node once",
                 ));
             };
-            if binding.node_id != request.target_node {
+            if &binding.node_id != target_node {
                 return Err(refusal("bank axes must override only the target node"));
             }
             if index == 0 {
-                if binding.params.len() != 1
+                if graph_profile {
+                    if binding.params.len() != 1
+                        || binding.params.get(crate::METHODS_ESTIMATOR_METHOD_PARAM)
+                            != node.params.get(crate::METHODS_ESTIMATOR_METHOD_PARAM)
+                    {
+                        return Err(refusal(
+                            "graph bank chain must fix only the terminal method_id",
+                        ));
+                    }
+                } else if binding.params.len() != 1
                     || !binding.params.contains_key(PIPELINE_STEPS_V1_PARAM)
                 {
                     return Err(refusal("chain axis must override only pipeline_steps_v1"));
                 }
             } else if binding.params.is_empty()
                 || binding.params.contains_key(PIPELINE_STEPS_V1_PARAM)
+                || (graph_profile
+                    && binding
+                        .params
+                        .contains_key(crate::METHODS_ESTIMATOR_METHOD_PARAM))
             {
                 return Err(refusal("model parameter axis requires nonempty target parameters excluding pipeline_steps_v1"));
             }
@@ -282,18 +502,20 @@ fn bank_identities_for_scope(
         .iter()
         .enumerate()
         .map(|(index, variant)| {
-            let params = variant.effective_params_for_node(&request.target_node, &node.params)?;
+            let params = variant.effective_params_for_node(target_node, &node.params)?;
             let n_components = params
                 .get("n_components")
                 .and_then(serde_json::Value::as_u64);
             Ok(HoldoutVariantIdentity {
                 ordinal: format!("ord:{index:0width$}"),
                 variant_id: variant.variant_id.clone(),
-                chain_label: variant.choices[&request.failure_group_dimension]
-                    .label
-                    .clone(),
+                chain_label: variant.choices[failure_group_dimension].label.clone(),
                 n_components,
-                recipe: effective_pipeline_recipe(operator, &params)?,
+                recipe: if graph_profile {
+                    effective_graph_recipe(plan, &params)?
+                } else {
+                    effective_pipeline_recipe(operator, &params)?
+                },
                 params,
             })
         })
@@ -305,12 +527,73 @@ pub(super) fn select_single_holdout_bank_with_runner<F>(
     request: &SingleHoldoutBankRequest,
     run_id: &RunId,
     root_seed: Option<u64>,
-    mut run: F,
+    run: F,
 ) -> Result<SingleHoldoutBankResult>
 where
     F: FnMut(&ExecutionPlan, &mut RunContext) -> Result<()>,
 {
     let identities = bank_identities(plan, request)?;
+    select_holdout_with_identities(
+        plan,
+        identities,
+        &request.target_node,
+        HoldoutScoring::Rmse(request.report_profile),
+        run_id,
+        root_seed,
+        run,
+        None,
+    )
+}
+
+/// `fitted` returns the fitted class domain of the candidate that just ran
+/// on `fold` (the controller's `RolePipeline::classes()`).
+pub(super) fn select_classification_holdout_with_runner<F, D>(
+    plan: &ExecutionPlan,
+    request: &ClassificationBankRequest,
+    run_id: &RunId,
+    root_seed: Option<u64>,
+    run: F,
+    mut fitted: D,
+) -> Result<SingleHoldoutBankResult>
+where
+    F: FnMut(&ExecutionPlan, &mut RunContext) -> Result<()>,
+    D: FnMut(&FoldId) -> Result<Vec<i64>>,
+{
+    let identities = bank_identities_core(
+        plan,
+        &request.failure_group_dimension,
+        &request.target_node,
+        true,
+        (request.schema_version != 1 || request.profile != SINGLE_HOLDOUT_BANK_V2_PROFILE)
+            .then_some("unsupported single holdout bank v2 schema/profile"),
+        BankMetric::Accuracy,
+    )?;
+    select_holdout_with_identities(
+        plan,
+        identities,
+        &request.target_node,
+        HoldoutScoring::Accuracy,
+        run_id,
+        root_seed,
+        run,
+        Some(&mut fitted),
+    )
+}
+
+fn select_holdout_with_identities<F>(
+    plan: &ExecutionPlan,
+    identities: Vec<HoldoutVariantIdentity>,
+    target_node: &NodeId,
+    scoring: HoldoutScoring,
+    run_id: &RunId,
+    root_seed: Option<u64>,
+    mut run: F,
+    mut fitted: Option<&mut dyn FnMut(&FoldId) -> Result<Vec<i64>>>,
+) -> Result<SingleHoldoutBankResult>
+where
+    F: FnMut(&ExecutionPlan, &mut RunContext) -> Result<()>,
+{
+    let metric = scoring.metric();
     let fold = &plan.fold_set.as_ref().expect("validated fold set").folds[0];
     let mut variants = Vec::with_capacity(identities.len());
     let mut issues = BTreeMap::<String, BTreeMap<String, String>>::new();
@@ -323,25 +606,48 @@ where
         ctx.variant_id = Some(variant.variant_id.clone());
         // Discard the entire transient context after any failure. It never
         // participates in a different candidate or downstream training.
-        let scored = run(&candidate, &mut ctx).and_then(|()| {
-            ctx.collect_cross_fold_validation_scores(FoldPartitionMode::Resampled)?;
-            super::scoring::single_holdout_validation_evidence(
-                &ctx,
-                &request.target_node,
-                fold,
-                request.report_profile,
-            )
+        let scored = run(&candidate, &mut ctx).and_then(|()| match scoring {
+            HoldoutScoring::Rmse(profile) | HoldoutScoring::GraphRmse(profile) => {
+                ctx.collect_cross_fold_validation_scores(FoldPartitionMode::Resampled)?;
+                super::scoring::single_holdout_validation_evidence(&ctx, target_node, fold, profile)
+                    .map(|(prediction, truth, report, selection)| {
+                        (prediction, truth, Some(report), selection, None)
+                    })
+            }
+            HoldoutScoring::Accuracy => {
+                ctx.collect_cross_fold_validation_scores_for_target(
+                    FoldPartitionMode::Resampled,
+                    RegressionMetricKind::Accuracy,
+                    Some(target_node),
+                )?;
+                // Taken once per completed candidate, from its own fit.
+                let domain = fitted
+                    .as_deref_mut()
+                    .expect("the classification bank supplies its fitted domain");
+                let classes = domain(&fold.fold_id)?;
+                super::scoring::single_holdout_classification_evidence(
+                    &ctx,
+                    target_node,
+                    fold,
+                    &classes,
+                )
+                .map(|(prediction, truth, selection, unseen)| {
+                    (prediction, truth, None, selection, Some(unseen))
+                })
+            }
         });
         match scored {
-            Ok((prediction, truth, report, selection_report)) => {
+            Ok((prediction, truth, report, selection_report, unseen)) => {
                 variants.push(HoldoutVariantEvidence {
                     identity: identity.clone(),
                     validation_predictions: Some(prediction),
                     validation_targets: Some(truth),
-                    report: Some(report),
+                    report,
                     selection_report: Some(selection_report),
                     failure: None,
                     eligible: true,
+                    unseen_validation_classes: unseen,
+                    feature_blocks: None,
                 })
             }
             Err(error) => {
@@ -358,6 +664,8 @@ where
                     selection_report: None,
                     failure: Some(message),
                     eligible: false,
+                    unseen_validation_classes: None,
+                    feature_blocks: None,
                 });
             }
         }
@@ -366,13 +674,13 @@ where
     for evidence in &mut variants {
         evidence.eligible &= !issues.contains_key(&evidence.identity.chain_label);
         if evidence.eligible {
-            // Only RMSE crosses into CandidateScore. Report-only ratios, bias
-            // and the profile-specific R² cannot become selectable objectives.
+            // Only the closed bank metric crosses into CandidateScore. Report-only
+            // ratios, bias and the profile-specific R² cannot become objectives.
             let mut report = evidence
                 .selection_report
                 .clone()
                 .expect("completed evidence");
-            report.metrics.retain(|name, _| name == "rmse");
+            report.metrics.retain(|name, _| name == metric.name());
             candidates.push(report.into_candidate_score(&evidence.identity.ordinal)?);
         }
     }
@@ -380,10 +688,10 @@ where
         (None, None)
     } else {
         let policy = SelectionPolicy {
-            id: "select:single_resampled_holdout_bank.v1:rmse".into(),
+            id: scoring.policy_id().into(),
             metric: SelectionMetric {
-                name: "rmse".into(),
-                objective: crate::selection::MetricObjective::Minimize,
+                name: metric.name().into(),
+                objective: metric.objective(),
             },
             required_metric_level: Some(PredictionLevel::Sample),
             require_finite: true,
@@ -429,9 +737,16 @@ where
     } else {
         HoldoutBankStatus::Refused
     };
+    // The selected model's own fitted-domain report (bank v2 only).
+    let unseen_validation_classes = decision.as_ref().and_then(|decision| {
+        variants
+            .iter()
+            .find(|evidence| evidence.identity.ordinal == decision.selected_candidate_id)
+            .and_then(|evidence| evidence.unseen_validation_classes.clone())
+    });
     Ok(SingleHoldoutBankResult {
         schema_version: 1,
-        profile: SINGLE_HOLDOUT_BANK_PROFILE.into(),
+        profile: scoring.profile().into(),
         status,
         ordinal_variant_mapping: identities,
         variants,
@@ -451,10 +766,13 @@ where
         decision,
         refusal: (status == HoldoutBankStatus::Refused)
             .then(|| "all chains failed; no eligible holdout winner".into()),
+        unseen_validation_classes,
     })
 }
 
 pub const TRAINING_BANK_PROFILE: &str = "training_bank.v1";
+/// Classification training sibling: resubstitution accuracy, maximized.
+pub const TRAINING_BANK_V2_PROFILE: &str = "training_bank.v2";
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -471,6 +789,12 @@ pub struct TrainingVariantEvidence {
     pub predictions: PredictionBlock,
     pub targets: RegressionTargetBlock,
     pub report: RegressionMetricReport,
+    /// Bank v2 only: evaluated rows outside this candidate's fitted class domain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unseen_validation_classes: Option<Vec<UnseenValidationClass>>,
+    /// Graph profile only: join node ID -> ordered branch column blocks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feature_blocks: Option<BTreeMap<String, serde_json::Value>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -484,6 +808,11 @@ pub struct TrainingBankResult {
     pub decision: SelectionDecision,
     pub training_sample_ids: Vec<SampleId>,
     pub selected_package: crate::InitialFullRefitPackage,
+    /// Bank v2 only (absent from v1 bytes): evaluated rows outside the
+    /// selected classifier's fitted domain, e.g. a class every row of which a
+    /// training sample filter removed before the classifier fit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unseen_validation_classes: Option<Vec<UnseenValidationClass>>,
 }
 
 /// Small no-split sibling: native REFIT and resubstitution, never synthetic OOF.
@@ -511,6 +840,71 @@ pub fn execute_training_bank(
         target_node: request.target_node.clone(),
     };
     let identities = bank_identities_for_scope(plan, &bank, false)?;
+    training_bank_with_identities(
+        plan,
+        identities,
+        &request.target_node,
+        BankMetric::Rmse,
+        envelope,
+        sample_ids,
+        run_id,
+        root_seed,
+        controllers,
+        provider,
+    )
+}
+
+/// Classification training bank v2: native REFIT and resubstitution accuracy
+/// on all rows (Train scope), never synthetic OOF and no extra winner fit.
+#[allow(clippy::too_many_arguments)]
+pub fn execute_training_bank_v2(
+    plan: &ExecutionPlan,
+    request: &ClassificationBankRequest,
+    envelope: &ExternalDataPlanEnvelope,
+    sample_ids: &[SampleId],
+    run_id: &RunId,
+    root_seed: Option<u64>,
+    controllers: &RuntimeControllerRegistry,
+    provider: &dyn RuntimeDataProvider,
+) -> Result<TrainingBankResult> {
+    if request.schema_version != 1 || request.profile != TRAINING_BANK_V2_PROFILE {
+        return Err(refusal("unsupported training bank v2 schema/profile"));
+    }
+    let identities = bank_identities_core(
+        plan,
+        &request.failure_group_dimension,
+        &request.target_node,
+        false,
+        None,
+        BankMetric::Accuracy,
+    )?;
+    training_bank_with_identities(
+        plan,
+        identities,
+        &request.target_node,
+        BankMetric::Accuracy,
+        envelope,
+        sample_ids,
+        run_id,
+        root_seed,
+        controllers,
+        provider,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn training_bank_with_identities(
+    plan: &ExecutionPlan,
+    identities: Vec<HoldoutVariantIdentity>,
+    target_node: &NodeId,
+    metric: BankMetric,
+    envelope: &ExternalDataPlanEnvelope,
+    sample_ids: &[SampleId],
+    run_id: &RunId,
+    root_seed: Option<u64>,
+    controllers: &RuntimeControllerRegistry,
+    provider: &dyn RuntimeDataProvider,
+) -> Result<TrainingBankResult> {
     let mut variants = Vec::new();
     let mut scores = Vec::new();
     let mut packages = BTreeMap::new();
@@ -549,7 +943,7 @@ pub fn execute_training_bank(
             .iter()
             .flat_map(|r| &r.predictions)
             .filter(|p| {
-                p.producer_node == request.target_node && p.partition == PredictionPartition::Final
+                &p.producer_node == target_node && p.partition == PredictionPartition::Final
             })
             .collect::<Vec<_>>();
         let [prediction] = predictions.as_slice() else {
@@ -567,7 +961,7 @@ pub fn execute_training_bank(
         let targets = execution
             .results
             .iter()
-            .filter(|r| r.node_id == request.target_node)
+            .filter(|r| &r.node_id == target_node)
             .flat_map(|r| &r.regression_targets)
             .collect::<Vec<_>>();
         let [target] = targets.as_slice() else {
@@ -582,7 +976,7 @@ pub fn execute_training_bank(
             .reports
             .iter()
             .filter(|r| {
-                r.producer_node == request.target_node
+                &r.producer_node == target_node
                     && r.partition == PredictionPartition::Final
                     && r.level == PredictionLevel::Sample
             })
@@ -593,17 +987,30 @@ pub fn execute_training_bank(
             ));
         };
         let mut report = (*report).clone();
-        report.metrics.retain(|key, _| key == "rmse");
+        report.metrics.retain(|key, _| key == metric.name());
         scores.push(report.clone().into_candidate_score(&identity.ordinal)?);
+        let unseen_validation_classes = if metric == BankMetric::Accuracy {
+            let classes =
+                take_fitted_classes(&candidate, controllers, target_node, Phase::Refit, None)?;
+            Some(super::scoring::unseen_classes(
+                &target_block_aligned_to_samples(sample_ids, target),
+                &classes,
+            )?)
+        } else {
+            None
+        };
         variants.push(TrainingVariantEvidence {
             identity: identity.clone(),
             predictions: (*prediction).clone(),
             targets: (*target).clone(),
             report,
+            unseen_validation_classes,
+            feature_blocks: (metric == BankMetric::GraphRmse)
+                .then(|| feature_blocks(&execution.results)),
         });
         packages.insert(identity.ordinal.clone(), execution.package);
     }
-    let decision = select_training_scores(&scores)?;
+    let decision = select_training_scores_for(&scores, metric)?;
     let selected = identities
         .into_iter()
         .find(|i| i.ordinal == decision.selected_candidate_id)
@@ -611,9 +1018,13 @@ pub fn execute_training_bank(
     let selected_package = packages
         .remove(&selected.ordinal)
         .expect("selected candidate package");
+    let unseen_validation_classes = variants
+        .iter()
+        .find(|evidence| evidence.identity.ordinal == selected.ordinal)
+        .and_then(|evidence| evidence.unseen_validation_classes.clone());
     Ok(TrainingBankResult {
         schema_version: 1,
-        profile: TRAINING_BANK_PROFILE.into(),
+        profile: metric.training_profile().into(),
         scope: crate::EvaluationScope::Train,
         independent_test: false,
         variants,
@@ -621,15 +1032,24 @@ pub fn execute_training_bank(
         decision,
         training_sample_ids: sample_ids.to_vec(),
         selected_package,
+        unseen_validation_classes,
     })
 }
 
+#[cfg(test)]
 fn select_training_scores(scores: &[CandidateScore]) -> Result<SelectionDecision> {
+    select_training_scores_for(scores, BankMetric::Rmse)
+}
+
+fn select_training_scores_for(
+    scores: &[CandidateScore],
+    metric: BankMetric,
+) -> Result<SelectionDecision> {
     let policy = SelectionPolicy {
-        id: "select:training_bank.v1:rmse".into(),
+        id: metric.training_policy_id().into(),
         metric: SelectionMetric {
-            name: "rmse".into(),
-            objective: crate::MetricObjective::Minimize,
+            name: metric.name().into(),
+            objective: metric.objective(),
         },
         required_metric_level: Some(PredictionLevel::Sample),
         require_finite: true,
@@ -707,4 +1127,217 @@ mod training_contract_tests {
         invalid.metrics.insert("rmse".into(), f64::INFINITY);
         assert!(select_training_scores(&[invalid]).is_err());
     }
+    #[test]
+    fn training_v2_admits_only_the_classifier_and_maximizes_accuracy_first_tie() {
+        let admission = crate::admit_portable_pipeline(&json!({"pipeline":[{"class":"n4m.SNV"},
+            {"model":{"class":"n4m.SparsePLSDA"},"param":"n_components","_range_":[1,3,1]}]}))
+        .unwrap();
+        assert_eq!(admission.profile, crate::PORTABLE_CLASSIFICATION_PROFILE);
+        let mut spec = crate::HostControllerSpec::new(
+            crate::PORTABLE_CLASSIFIER_CONTROLLER,
+            crate::PORTABLE_CLASSIFIER_VERSION,
+            crate::NodeKind::Model,
+        );
+        spec.output_ports=Some(serde_json::from_value(json!([{"name":"oof","kind":"prediction","representation":null,"cardinality":"one","description":""}])).unwrap());
+        let mut registry = crate::ControllerRegistry::new();
+        registry.register(spec.derive().unwrap()).unwrap();
+        let hash = "0".repeat(64);
+        let binding=serde_json::from_value(json!({"node_id":"model:portable","input_name":"x","request_id":"test:opaque",
+            "schema_fingerprint":hash,"plan_fingerprint":hash,"relation_fingerprint":hash,"output_representation":"tabular_numeric","source_ids":["x"],"require_relations":true})).unwrap();
+        let compiled =
+            crate::compile_portable_linear(&admission, binding, None, &registry).unwrap();
+        let plan = crate::build_execution_plan(
+            "plan:training.classification.test",
+            compiled.graph,
+            compiled.campaign_template,
+            &registry,
+        )
+        .unwrap();
+        let target = NodeId::new("model:portable").unwrap();
+        let identities =
+            bank_identities_core(&plan, "chain", &target, false, None, BankMetric::Accuracy)
+                .unwrap();
+        assert_eq!(identities.len(), 3);
+        assert_eq!(
+            identities[1].recipe[1]["methodId"],
+            "models.sparse.sparse_pls_da"
+        );
+        assert_eq!(identities[1].recipe[1]["params"]["n_components"], 2);
+        assert_eq!(identities[1].recipe[1]["params"]["sparsity_lambda"], 0.05);
+        let error = bank_identities_core(&plan, "chain", &target, false, None, BankMetric::Rmse)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("controller version 1.1.0"), "{error}");
+        let score = |ordinal: &str, accuracy: f64| CandidateScore {
+            candidate_id: ordinal.into(),
+            metrics: BTreeMap::from([("accuracy".into(), accuracy)]),
+            metadata: BTreeMap::from([("metric_level".into(), json!("sample"))]),
+        };
+        let decision = select_training_scores_for(
+            &[
+                score("ord:00000", 0.5),
+                score("ord:00001", 0.9),
+                score("ord:00002", 0.9),
+            ],
+            BankMetric::Accuracy,
+        )
+        .unwrap();
+        assert_eq!(decision.selected_candidate_id, "ord:00001");
+        assert_eq!(decision.policy_id, "select:training_bank.v2:accuracy");
+        assert_eq!(
+            decision.evaluation_scope,
+            Some(crate::EvaluationScope::Train)
+        );
+    }
+}
+
+pub const SINGLE_HOLDOUT_GRAPH_BANK_PROFILE: &str = "single_resampled_holdout_graph_bank.v1";
+pub const TRAINING_GRAPH_BANK_PROFILE: &str = "training_graph_bank.v1";
+
+fn effective_graph_recipe(
+    plan: &ExecutionPlan,
+    params: &BTreeMap<String, serde_json::Value>,
+) -> Result<Vec<serde_json::Value>> {
+    let mut recipe: Vec<serde_json::Value> = serde_json::from_value(
+        plan.graph_plan
+            .graph
+            .metadata
+            .get(crate::PORTABLE_GRAPH_RECIPE_PARAM)
+            .cloned()
+            .ok_or_else(|| refusal("graph bank requires canonical portable graph recipe"))?,
+    )?;
+    let terminal = recipe
+        .last_mut()
+        .ok_or_else(|| refusal("graph recipe requires a terminal model"))?;
+    if terminal["methodId"] != params[crate::METHODS_ESTIMATOR_METHOD_PARAM] {
+        return Err(refusal("graph recipe terminal disagrees with native model"));
+    }
+    terminal["params"] = serde_json::to_value(
+        params
+            .iter()
+            .filter(|(key, _)| key.as_str() != crate::METHODS_ESTIMATOR_METHOD_PARAM)
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect::<BTreeMap<_, _>>(),
+    )?;
+    Ok(recipe)
+}
+
+fn feature_blocks(results: &[NodeResult]) -> BTreeMap<String, serde_json::Value> {
+    results
+        .iter()
+        .filter(|result| {
+            result.lineage.controller_id.as_str() == crate::METHODS_FEATURE_JOIN_CONTROLLER
+        })
+        .filter_map(|result| {
+            result
+                .shape_deltas
+                .iter()
+                .find_map(|delta| delta.metadata.get("feature_blocks"))
+                .map(|blocks| (result.node_id.to_string(), blocks.clone()))
+        })
+        .collect()
+}
+
+/// Graph admission differs only in target/axes; the bank loop, scoring, chain
+/// failure grouping, native ordinals and first-tie SELECT are shared.
+#[allow(clippy::too_many_arguments)]
+pub fn execute_single_holdout_graph_bank(
+    plan: &ExecutionPlan,
+    request: &SingleHoldoutBankRequest,
+    run_id: &RunId,
+    root_seed: Option<u64>,
+    controllers: &RuntimeControllerRegistry,
+    provider: &dyn RuntimeDataProvider,
+) -> Result<SingleHoldoutBankResult> {
+    let mut blocks = BTreeMap::new();
+    let mut bank = select_single_holdout_graph_bank_with_runner(
+        plan,
+        request,
+        run_id,
+        root_seed,
+        |candidate, ctx| {
+            let results = SequentialScheduler.execute_campaign_phase_with_data_provider(
+                candidate,
+                controllers,
+                provider,
+                ctx,
+                Phase::FitCv,
+            )?;
+            let variant = ctx
+                .variant_id
+                .clone()
+                .ok_or_else(|| refusal("graph bank requires a candidate identity"))?;
+            blocks.insert(variant, feature_blocks(&results));
+            Ok(())
+        },
+    )?;
+    for entry in &mut bank.variants {
+        entry.feature_blocks = blocks.remove(&entry.identity.variant_id);
+    }
+    Ok(bank)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn execute_training_graph_bank(
+    plan: &ExecutionPlan,
+    request: &TrainingBankRequest,
+    envelope: &ExternalDataPlanEnvelope,
+    sample_ids: &[SampleId],
+    run_id: &RunId,
+    root_seed: Option<u64>,
+    controllers: &RuntimeControllerRegistry,
+    provider: &dyn RuntimeDataProvider,
+) -> Result<TrainingBankResult> {
+    let identities = bank_identities_core(
+        plan,
+        &request.failure_group_dimension,
+        &request.target_node,
+        false,
+        (request.schema_version != 1 || request.profile != TRAINING_GRAPH_BANK_PROFILE)
+            .then_some("unsupported training graph bank schema/profile"),
+        BankMetric::GraphRmse,
+    )?;
+    training_bank_with_identities(
+        plan,
+        identities,
+        &request.target_node,
+        BankMetric::GraphRmse,
+        envelope,
+        sample_ids,
+        run_id,
+        root_seed,
+        controllers,
+        provider,
+    )
+}
+
+pub(super) fn select_single_holdout_graph_bank_with_runner<F>(
+    plan: &ExecutionPlan,
+    request: &SingleHoldoutBankRequest,
+    run_id: &RunId,
+    root_seed: Option<u64>,
+    run: F,
+) -> Result<SingleHoldoutBankResult>
+where
+    F: FnMut(&ExecutionPlan, &mut RunContext) -> Result<()>,
+{
+    let identities = bank_identities_core(
+        plan,
+        &request.failure_group_dimension,
+        &request.target_node,
+        true,
+        (request.schema_version != 1 || request.profile != SINGLE_HOLDOUT_GRAPH_BANK_PROFILE)
+            .then_some("unsupported single holdout graph bank schema/profile"),
+        BankMetric::GraphRmse,
+    )?;
+    select_holdout_with_identities(
+        plan,
+        identities,
+        &request.target_node,
+        HoldoutScoring::GraphRmse(request.report_profile),
+        run_id,
+        root_seed,
+        run,
+        None,
+    )
 }

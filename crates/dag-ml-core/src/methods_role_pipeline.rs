@@ -34,7 +34,11 @@ struct Payload {
     states: Vec<Vec<u8>>,
 }
 impl Payload {
+    #[cfg(test)]
     fn read(bytes: &[u8]) -> Result<Self> {
+        Self::read_for(bytes, PortableTerminal::Regressor)
+    }
+    fn read_for(bytes: &[u8], terminal: PortableTerminal) -> Result<Self> {
         let text = std::str::from_utf8(bytes).map_err(failure)?;
         crate::canonical::parse_typed_json(text).map_err(failure)?;
         let saved: Self = serde_json::from_str(text)?;
@@ -68,7 +72,7 @@ impl Payload {
             return Err(failure("invalid closed RAW wrapper"));
         }
         if saved.schema == "dagml.methods.pipeline_steps.v1" {
-            preflight_pipeline_steps(&saved.steps)?;
+            preflight_pipeline_steps_for(&saved.steps, terminal)?;
             return Ok(saved);
         }
         // Recompute a closed native recipe from saved scalar declarations;
@@ -215,9 +219,22 @@ pub fn pipeline_steps_recipe(params: &BTreeMap<String, Value>) -> Result<Vec<Val
     Ok(steps)
 }
 
+/// Terminal role of a pipeline_steps_v1 recipe. The classifier terminal
+/// receives the integral class ids through the native `labels` fit input.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PortableTerminal {
+    Regressor,
+    Classifier,
+}
+
 /// Validate every candidate through the live Methods manifest before the first fit.
 pub fn preflight_pipeline_steps(steps: &[Value]) -> Result<()> {
-    use n4m::roles::{FitInput, InputRequirement, ROLE_REGRESSOR};
+    preflight_pipeline_steps_for(steps, PortableTerminal::Regressor)
+}
+
+/// Role-aware preflight; the regression entry point above is unchanged.
+pub fn preflight_pipeline_steps_for(steps: &[Value], terminal: PortableTerminal) -> Result<()> {
+    use n4m::roles::{FitInput, InputRequirement, ROLE_CLASSIFIER, ROLE_REGRESSOR};
     if steps.is_empty() {
         return Err(failure("empty recipe"));
     }
@@ -227,8 +244,13 @@ pub fn preflight_pipeline_steps(steps: &[Value]) -> Result<()> {
             .as_str()
             .ok_or_else(|| failure("methodId required"))?;
         let info = n4m::roles::method_info(id).map_err(failure)?;
-        if i + 1 == steps.len() && info.roles & ROLE_REGRESSOR == 0 {
+        let last = i + 1 == steps.len();
+        let classifier = terminal == PortableTerminal::Classifier;
+        if last && !classifier && info.roles & ROLE_REGRESSOR == 0 {
             return Err(failure(format!("{id}: terminal role must be regressor")));
+        }
+        if last && classifier && info.roles & ROLE_CLASSIFIER == 0 {
+            return Err(failure(format!("{id}: terminal role must be classifier")));
         }
         if info.roles & n4m::roles::ROLE_SAMPLE_FILTER == 0
             && (info.capabilities & n4m::roles::CAP_SERIALIZABLE == 0
@@ -246,6 +268,9 @@ pub fn preflight_pipeline_steps(steps: &[Value]) -> Result<()> {
             FitInput::TargetDomain,
             FitInput::FoldIds,
         ] {
+            if last && classifier && matches!(input, FitInput::Labels) {
+                continue;
+            }
             if info.input(input) == InputRequirement::Required {
                 return Err(failure(format!(
                     "{id}: unsupported required fit input {input:?}"
@@ -280,9 +305,17 @@ fn pipeline(context: &Context, steps: &[Value], names: &[String]) -> Result<Role
 /// against the actual imported sub-model, not inferred from scale arrays.
 pub fn inspect_methods_role_pipeline_params(
     bytes: &[u8],
-    _runtime: &MethodsRuntime,
+    runtime: &MethodsRuntime,
 ) -> Result<Value> {
-    let saved = Payload::read(bytes)?;
+    inspect_role_pipeline_for(bytes, runtime, PortableTerminal::Regressor)
+}
+
+fn inspect_role_pipeline_for(
+    bytes: &[u8],
+    _runtime: &MethodsRuntime,
+    terminal: PortableTerminal,
+) -> Result<Value> {
+    let saved = Payload::read_for(bytes, terminal)?;
     let context = Context::new().map_err(failure)?;
     let mut model = pipeline(&context, &saved.steps, &saved.feature_names)?;
     let states = saved.states.iter().map(Vec::as_slice).collect::<Vec<_>>();
@@ -337,11 +370,17 @@ pub fn inspect_methods_role_pipeline_params(
     )
 }
 
+type FittedClasses = Mutex<BTreeMap<(crate::NodeId, Phase, Option<crate::FoldId>), Vec<i64>>>;
+
 pub struct MethodsNativeRegressionController {
     id: ControllerId,
     runtime: MethodsRuntime,
     next: AtomicU64,
     pipeline_steps_v1: bool,
+    classifier: bool,
+    /// Classifier only: `RolePipeline::classes()` of the latest fit per node,
+    /// phase and fold, taken once by the owner classification bank.
+    fitted_classes: FittedClasses,
     exported: Mutex<BTreeMap<ArtifactId, Vec<u8>>>,
     hydrated: Mutex<BTreeMap<u64, Vec<u8>>>,
 }
@@ -352,6 +391,8 @@ impl MethodsNativeRegressionController {
                 .expect("constant controller"),
             runtime,
             pipeline_steps_v1: false,
+            classifier: false,
+            fitted_classes: Mutex::new(BTreeMap::new()),
             next: AtomicU64::new(0),
             exported: Mutex::new(BTreeMap::new()),
             hydrated: Mutex::new(BTreeMap::new()),
@@ -364,8 +405,26 @@ impl MethodsNativeRegressionController {
         controller.pipeline_steps_v1 = true;
         controller
     }
+    /// Separate classifier identity sharing the 1.1.0 recipe precedence: the
+    /// terminal Methods CLASSIFIER fits `labels` and predicts `predict_labels`.
+    pub fn pipeline_steps_classifier(runtime: MethodsRuntime) -> Self {
+        let mut controller = Self::pipeline_steps_v1(runtime);
+        controller.id =
+            ControllerId::new(crate::PORTABLE_CLASSIFIER_CONTROLLER).expect("constant ID");
+        controller.classifier = true;
+        controller
+    }
+    fn terminal(&self) -> PortableTerminal {
+        if self.classifier {
+            PortableTerminal::Classifier
+        } else {
+            PortableTerminal::Regressor
+        }
+    }
     fn version(&self) -> &'static str {
-        if self.pipeline_steps_v1 {
+        if self.classifier {
+            crate::PORTABLE_CLASSIFIER_VERSION
+        } else if self.pipeline_steps_v1 {
             crate::PORTABLE_STEPS_VERSION
         } else {
             METHODS_NATIVE_REGRESSION_VERSION
@@ -404,7 +463,7 @@ impl MethodsNativeRegressionController {
             states: model.export_states(context, false).map_err(failure)?,
         };
         let bytes = serde_json::to_vec(&saved)?;
-        inspect_methods_role_pipeline_params(&bytes, &self.runtime)?;
+        inspect_role_pipeline_for(&bytes, &self.runtime, self.terminal())?;
         let raw = format!("{:x}", Sha256::digest(&bytes));
         let scope = if task
             .variant_id
@@ -469,7 +528,7 @@ impl RuntimeController for MethodsNativeRegressionController {
             NativePlsRoleParams::from_params(&task.node_plan.params)?.recipe(task.phase)
         };
         if self.pipeline_steps_v1 {
-            preflight_pipeline_steps(&steps)?;
+            preflight_pipeline_steps_for(&steps, self.terminal())?;
         }
         let request = MethodsPlsController::request(task, provider, "x")?;
         provider.preflight_methods_pls(&request)?;
@@ -488,12 +547,38 @@ impl RuntimeController for MethodsNativeRegressionController {
                     .y
                     .as_ref()
                     .ok_or_else(|| failure("fit requires target-bound training rows"))?;
-                model
-                    .fit(
-                        &context,
-                        &FitInputs::new(matrix(&data.fit.x)?).y(matrix(y)?),
-                    )
-                    .map_err(failure)?;
+                if self.classifier {
+                    // Integral ids cross unchanged; Methods ranks the observed ids.
+                    let method = steps
+                        .last()
+                        .and_then(|step| step["methodId"].as_str())
+                        .expect("preflighted recipe");
+                    let labels = crate::methods_estimator::class_labels(&data.fit, method)?;
+                    model
+                        .fit(
+                            &context,
+                            &FitInputs::new(matrix(&data.fit.x)?).labels(&labels),
+                        )
+                        .map_err(failure)?;
+                    // The learned domain, after intermediate roles and sample
+                    // filters; not the raw labels of the fit rows.
+                    let classes = model.classes().map_err(failure)?;
+                    self.fitted_classes.lock().map_err(failure)?.insert(
+                        (
+                            task.node_plan.node_id.clone(),
+                            task.phase,
+                            task.fold_id.clone(),
+                        ),
+                        classes,
+                    );
+                } else {
+                    model
+                        .fit(
+                            &context,
+                            &FitInputs::new(matrix(&data.fit.x)?).y(matrix(y)?),
+                        )
+                        .map_err(failure)?;
+                }
                 if task.phase == Phase::Refit {
                     artifact = Some(self.export(
                         task,
@@ -526,7 +611,7 @@ impl RuntimeController for MethodsNativeRegressionController {
                     .map_err(failure)?
                     .remove(&handle.handle)
                     .ok_or_else(|| failure("missing invocation-local hydrated bytes"))?;
-                let saved = Payload::read(&bytes)?;
+                let saved = Payload::read_for(&bytes, self.terminal())?;
                 if saved.schema != self.payload_schema()
                     || saved.node_id != task.node_plan.node_id.as_str()
                     || saved.params_fingerprint != task.node_plan.params_fingerprint
@@ -577,15 +662,34 @@ impl RuntimeController for MethodsNativeRegressionController {
                     Some(&names.iter().map(String::as_str).collect::<Vec<_>>()),
                 )
                 .map_err(failure)?;
-            let predicted = model
-                .predict(&context, matrix(&rows.x)?, None)
-                .map_err(failure)?;
-            if predicted.rows != rows.sample_ids.len() || predicted.cols != rows.target_names.len()
-            {
-                return Err(failure(
-                    "prediction dimensions do not match named rows/targets",
-                ));
-            }
+            let values: Vec<Vec<f64>> = if self.classifier {
+                if rows.target_names.len() != 1 {
+                    return Err(failure("classifier predicts one class-id column"));
+                }
+                let labels = model
+                    .predict_labels(&context, matrix(&rows.x)?, None)
+                    .map_err(failure)?;
+                if labels.len() != rows.sample_ids.len() {
+                    return Err(failure("predicted labels do not match named rows"));
+                }
+                labels.into_iter().map(|label| vec![label as f64]).collect()
+            } else {
+                let predicted = model
+                    .predict(&context, matrix(&rows.x)?, None)
+                    .map_err(failure)?;
+                if predicted.rows != rows.sample_ids.len()
+                    || predicted.cols != rows.target_names.len()
+                {
+                    return Err(failure(
+                        "prediction dimensions do not match named rows/targets",
+                    ));
+                }
+                predicted
+                    .data
+                    .chunks(predicted.cols)
+                    .map(<[f64]>::to_vec)
+                    .collect()
+            };
             if let Some(y) = &rows.y {
                 targets.push(RegressionTargetBlock {
                     validity_masks: None,
@@ -639,11 +743,7 @@ impl RuntimeController for MethodsNativeRegressionController {
                     None
                 },
                 sample_ids: rows.sample_ids,
-                values: predicted
-                    .data
-                    .chunks(predicted.cols)
-                    .map(<[f64]>::to_vec)
-                    .collect(),
+                values,
                 target_names: rows.target_names,
             });
         }
@@ -720,6 +820,18 @@ impl RuntimeController for MethodsNativeRegressionController {
     fn export_artifact_payload(&self, id: &ArtifactId) -> Result<Option<Vec<u8>>> {
         Ok(self.exported.lock().map_err(failure)?.remove(id))
     }
+    fn take_fitted_class_domain(
+        &self,
+        node_id: &crate::NodeId,
+        phase: Phase,
+        fold_id: Option<&crate::FoldId>,
+    ) -> Result<Option<Vec<i64>>> {
+        Ok(self.fitted_classes.lock().map_err(failure)?.remove(&(
+            node_id.clone(),
+            phase,
+            fold_id.cloned(),
+        )))
+    }
     fn hydrate_artifact_payload(
         &self,
         request: &ArtifactMaterializationRequest,
@@ -744,14 +856,14 @@ impl RuntimeController for MethodsNativeRegressionController {
         {
             return Err(failure("RAW identity/hash/relative path mismatch"));
         }
-        let saved = Payload::read(payload)?;
+        let saved = Payload::read_for(payload, self.terminal())?;
         if saved.schema != self.payload_schema()
             || saved.node_id != request.node_id.as_str()
             || saved.params_fingerprint != request.params_fingerprint
         {
             return Err(failure("RAW node/parameter binding mismatch"));
         }
-        inspect_methods_role_pipeline_params(payload, &self.runtime)?;
+        inspect_role_pipeline_for(payload, &self.runtime, self.terminal())?;
         let handle = self.handle(HandleKind::Model);
         self.hydrated
             .lock()
@@ -966,6 +1078,74 @@ mod tests {
             inspect_methods_role_pipeline_params(&serde_json::to_vec(&saved).unwrap(), &rt)
                 .is_err()
         );
+    }
+    #[test]
+    fn classifier_terminal_fits_labels_and_replays_only_through_the_classifier_reader() {
+        let rt = runtime();
+        let context = Context::new().unwrap();
+        let steps = vec![
+            json!({"methodId":"preprocessing.scatter.snv","params":{}}),
+            json!({"methodId":"models.sparse.sparse_pls_da","params":{"n_components":2,"sparsity_lambda":0.05}}),
+        ];
+        preflight_pipeline_steps_for(&steps, PortableTerminal::Classifier).unwrap();
+        assert!(preflight_pipeline_steps(&steps).is_err());
+        let names = (0..6).map(|i| format!("feature:{i}")).collect::<Vec<_>>();
+        // Unsorted host ids cross unchanged; Methods ranks the observed ids.
+        let order = [9_i64, 2, 5];
+        let labels = (0..24).map(|r| order[r % 3]).collect::<Vec<_>>();
+        let x = (0..24)
+            .flat_map(|r| {
+                let bump = r % 3;
+                (0..6).map(move |c| {
+                    1.0 + 0.1 * c as f64
+                        + if c == bump * 2 { 0.8 } else { 0.0 }
+                        + 0.01 * ((r * 5 + c) % 7) as f64
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut fitted = pipeline(&context, &steps, &names).unwrap();
+        fitted
+            .fit(
+                &context,
+                &FitInputs::new(MatrixRef::row_major(&x, 24, 6).unwrap()).labels(&labels),
+            )
+            .unwrap();
+        assert_eq!(fitted.classes().unwrap(), vec![2, 5, 9]);
+        let predicted = fitted
+            .predict_labels(&context, MatrixRef::row_major(&x, 24, 6).unwrap(), None)
+            .unwrap();
+        assert!(predicted.iter().all(|label| order.contains(label)));
+        let saved = Payload {
+            schema: "dagml.methods.pipeline_steps.v1".into(),
+            node_id: "model:portable".into(),
+            params_fingerprint: "a".repeat(64),
+            target_names: vec!["y".into()],
+            steps,
+            feature_names: names,
+            states: fitted.export_states(&context, false).unwrap(),
+        };
+        let bytes = serde_json::to_vec(&saved).unwrap();
+        inspect_role_pipeline_for(&bytes, &rt, PortableTerminal::Classifier).unwrap();
+        assert!(inspect_methods_role_pipeline_params(&bytes, &rt).is_err());
+        let mut restored = pipeline(&context, &saved.steps, &saved.feature_names).unwrap();
+        restored
+            .import_states(
+                &context,
+                &saved.states.iter().map(Vec::as_slice).collect::<Vec<_>>(),
+            )
+            .unwrap();
+        assert_eq!(
+            restored
+                .predict_labels(&context, MatrixRef::row_major(&x, 24, 6).unwrap(), None)
+                .unwrap(),
+            predicted
+        );
+        let classifier = MethodsNativeRegressionController::pipeline_steps_classifier(rt);
+        assert_eq!(
+            classifier.controller_id().as_str(),
+            crate::PORTABLE_CLASSIFIER_CONTROLLER
+        );
+        assert_eq!(classifier.version(), crate::PORTABLE_CLASSIFIER_VERSION);
     }
     #[test]
     fn hydration_hash_recipe_rejection_and_idempotent_release_preserve_lifecycle() {

@@ -20,6 +20,10 @@ use crate::graph::{NodeKind, PortCardinality, PortKind, PortSpec};
 
 /// Operator reference prefix naming one native method: `n4m:<method_id>`.
 pub const N4M_OPERATOR_REF_PREFIX: &str = "n4m:";
+/// Reserved node parameter naming the native method.
+pub const METHODS_ESTIMATOR_METHOD_PARAM: &str = "method_id";
+/// Data-only native feature join; available to pure compilation as well.
+pub const METHODS_FEATURE_JOIN_CONTROLLER: &str = "controller:n4m.feature_join";
 
 /// Generic role of a native method, as named by the n4m manifest.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
@@ -248,6 +252,17 @@ pub fn n4m_host_controller_specs(manifest_json: &str) -> Result<Vec<HostControll
         }
         specs.push(spec);
     }
+    let mut join = HostControllerSpec::new(
+        METHODS_FEATURE_JOIN_CONTROLLER,
+        "1.0.0",
+        NodeKind::FeatureJoin,
+    );
+    // Existing host joins keep precedence when their specs are composed with
+    // these native roles. The portable graph registers only native specs.
+    join.priority = u32::MAX;
+    join.rng_policy = RngPolicy::ExternallyDeterministic;
+    join.output_ports = Some(manifest_kind_template(&NodeKind::Transform).output_ports);
+    specs.push(join);
     Ok(specs)
 }
 
@@ -326,7 +341,12 @@ mod tests {
         for (derived, baseline) in derived.iter().zip(&baseline) {
             assert_eq!(derived.controller_id, baseline.controller_id);
             assert_eq!(derived.operator_selectors, baseline.operator_selectors);
-            assert_eq!(derived.controller_version, "n4m-abi-2.14.0");
+            if derived.controller_id == crate::METHODS_FEATURE_JOIN_CONTROLLER {
+                assert_eq!(derived.controller_version, "1.0.0");
+                assert!(derived.operator_selectors.is_empty());
+            } else {
+                assert_eq!(derived.controller_version, "n4m-abi-2.14.0");
+            }
         }
     }
 
@@ -337,7 +357,14 @@ mod tests {
             .iter()
             .map(|spec| (spec.controller_id.as_str(), spec))
             .collect::<BTreeMap<_, _>>();
-        assert_eq!(specs.len(), N4M_GRAPH_ROLES.len());
+        assert_eq!(specs.len(), N4M_GRAPH_ROLES.len() + 1);
+        let join = by_id[crate::METHODS_FEATURE_JOIN_CONTROLLER];
+        assert_eq!(join.operator_kind, NodeKind::FeatureJoin);
+        assert_eq!(join.controller_version, "1.0.0");
+        assert!(join.operator_selectors.is_empty());
+        assert!(!join
+            .added_capabilities
+            .contains(&ControllerCapability::EmitsArtifacts));
         for role in N4M_GRAPH_ROLES {
             let spec = by_id[role.controller_id().unwrap()];
             assert_eq!(Some(spec.operator_kind.clone()), role.node_kind());
@@ -363,9 +390,10 @@ mod tests {
             vec!["n4m:models.pls.cppls", "n4m:models.pls.pls_regression"]
         );
         assert_eq!(refs(N4mRole::SampleFilter), vec!["n4m:filters.y_outlier"]);
-        assert!(specs.iter().all(|spec| !spec.operator_selectors[0]
-            .refs
-            .contains("n4m:diagnostics.model_selection")));
+        assert!(specs.iter().all(|spec| spec
+            .operator_selectors
+            .iter()
+            .all(|selector| !selector.refs.contains("n4m:diagnostics.model_selection"))));
     }
 
     #[test]

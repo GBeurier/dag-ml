@@ -1304,6 +1304,19 @@ pub trait RuntimeController: Send + Sync {
         )))
     }
 
+    /// Class ids the most recent classifier fit of `node_id` in `phase` and
+    /// `fold_id` actually learned (after its pipeline's intermediate roles and
+    /// sample filters), recorded once at fit and taken once by the owner
+    /// classification bank. Opt-in; other controllers report no class domain.
+    fn take_fitted_class_domain(
+        &self,
+        _node_id: &NodeId,
+        _phase: Phase,
+        _fold_id: Option<&FoldId>,
+    ) -> Result<Option<Vec<i64>>> {
+        Ok(None)
+    }
+
     /// Provider-aware execution is opt-in.  Existing controllers retain the
     /// opaque-handle path; native Methods controllers can only receive the
     /// narrow provider capability above when the scheduler has one.
