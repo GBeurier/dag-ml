@@ -111,7 +111,7 @@ fn refusal(message: impl Into<String>) -> DagMlError {
 
 /// Validate the reserved recipe at the adapter boundary. Methods still owns
 /// method/role/parameter capability validation and all numerical operations.
-fn effective_pipeline_recipe(
+pub(crate) fn effective_pipeline_recipe(
     operator: &serde_json::Value,
     params: &BTreeMap<String, serde_json::Value>,
 ) -> Result<Vec<serde_json::Value>> {
@@ -178,6 +178,14 @@ fn bank_identities(
     plan: &ExecutionPlan,
     request: &SingleHoldoutBankRequest,
 ) -> Result<Vec<HoldoutVariantIdentity>> {
+    bank_identities_for_scope(plan, request, true)
+}
+
+fn bank_identities_for_scope(
+    plan: &ExecutionPlan,
+    request: &SingleHoldoutBankRequest,
+    require_holdout: bool,
+) -> Result<Vec<HoldoutVariantIdentity>> {
     if let Some(dimension) = plan
         .campaign
         .generation
@@ -199,12 +207,16 @@ fn bank_identities(
     if request.schema_version != 1 || request.profile != SINGLE_HOLDOUT_BANK_PROFILE {
         return Err(refusal("unsupported single holdout bank schema/profile"));
     }
-    let fold_set = plan
-        .fold_set
-        .as_ref()
-        .ok_or_else(|| refusal("holdout bank requires exactly one Resampled fold"))?;
-    if fold_set.partition_mode != FoldPartitionMode::Resampled || fold_set.folds.len() != 1 {
-        return Err(refusal("holdout bank requires exactly one Resampled fold"));
+    if require_holdout {
+        let fold_set = plan
+            .fold_set
+            .as_ref()
+            .ok_or_else(|| refusal("holdout bank requires exactly one Resampled fold"))?;
+        if fold_set.partition_mode != FoldPartitionMode::Resampled || fold_set.folds.len() != 1 {
+            return Err(refusal("holdout bank requires exactly one Resampled fold"));
+        }
+    } else if plan.fold_set.is_some() || plan.campaign.split_invocation.is_some() {
+        return Err(refusal("training bank forbids folds and split invocations"));
     }
     let generation = &plan.campaign.generation;
     if generation.strategy != GenerationStrategy::Cartesian
@@ -440,4 +452,259 @@ where
         refusal: (status == HoldoutBankStatus::Refused)
             .then(|| "all chains failed; no eligible holdout winner".into()),
     })
+}
+
+pub const TRAINING_BANK_PROFILE: &str = "training_bank.v1";
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TrainingBankRequest {
+    pub schema_version: u32,
+    pub profile: String,
+    pub failure_group_dimension: String,
+    pub target_node: NodeId,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TrainingVariantEvidence {
+    pub identity: HoldoutVariantIdentity,
+    pub predictions: PredictionBlock,
+    pub targets: RegressionTargetBlock,
+    pub report: RegressionMetricReport,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TrainingBankResult {
+    pub schema_version: u32,
+    pub profile: String,
+    pub scope: crate::EvaluationScope,
+    pub independent_test: bool,
+    pub variants: Vec<TrainingVariantEvidence>,
+    pub selected: HoldoutVariantIdentity,
+    pub decision: SelectionDecision,
+    pub training_sample_ids: Vec<SampleId>,
+    pub selected_package: crate::InitialFullRefitPackage,
+}
+
+/// Small no-split sibling: native REFIT and resubstitution, never synthetic OOF.
+/// Candidate identity/ordering uses the same admission as bank v1. Any failed
+/// candidate refuses this single chain; no successful prefix becomes a winner.
+#[allow(clippy::too_many_arguments)]
+pub fn execute_training_bank(
+    plan: &ExecutionPlan,
+    request: &TrainingBankRequest,
+    envelope: &ExternalDataPlanEnvelope,
+    sample_ids: &[SampleId],
+    run_id: &RunId,
+    root_seed: Option<u64>,
+    controllers: &RuntimeControllerRegistry,
+    provider: &dyn RuntimeDataProvider,
+) -> Result<TrainingBankResult> {
+    if request.schema_version != 1 || request.profile != TRAINING_BANK_PROFILE {
+        return Err(refusal("unsupported training bank schema/profile"));
+    }
+    let bank = SingleHoldoutBankRequest {
+        schema_version: 1,
+        profile: SINGLE_HOLDOUT_BANK_PROFILE.into(),
+        report_profile: RegressionReportProfile::PopulationRmseRatiosV1,
+        failure_group_dimension: request.failure_group_dimension.clone(),
+        target_node: request.target_node.clone(),
+    };
+    let identities = bank_identities_for_scope(plan, &bank, false)?;
+    let mut variants = Vec::new();
+    let mut scores = Vec::new();
+    let mut packages = BTreeMap::new();
+    let mut registry = crate::ControllerRegistry::new();
+    for manifest in plan.controller_manifests.values() {
+        registry.register(manifest.clone())?;
+    }
+    for (variant, identity) in plan.variants.iter().zip(&identities) {
+        let mut graph = plan.graph_plan.graph.clone();
+        graph.search_space_fingerprint = None;
+        for node in &mut graph.nodes {
+            node.params = variant.effective_params_for_node(&node.id, &node.params)?;
+        }
+        let mut campaign = plan.campaign.clone();
+        campaign.generation = GenerationSpec::default();
+        let candidate = crate::build_execution_plan(
+            format!("{}:{}", plan.id, identity.ordinal),
+            graph,
+            campaign,
+            &registry,
+        )?;
+        let execution = crate::execute_initial_full_refit(crate::InitialFullRefitExecutionInput {
+            package_id: format!("package:{}:{}", run_id, identity.ordinal),
+            run_id: run_id.clone(),
+            plan: &candidate,
+            training_envelope: envelope,
+            training_sample_ids: sample_ids,
+            controllers,
+            data_provider: provider,
+            root_seed,
+            resource_limits: None,
+            scheduler: crate::InitialRefitScheduler::Sequential,
+        })?;
+        let predictions = execution
+            .results
+            .iter()
+            .flat_map(|r| &r.predictions)
+            .filter(|p| {
+                p.producer_node == request.target_node && p.partition == PredictionPartition::Final
+            })
+            .collect::<Vec<_>>();
+        let [prediction] = predictions.as_slice() else {
+            return Err(refusal(
+                "training bank requires one final resubstitution block",
+            ));
+        };
+        if prediction.sample_ids.iter().collect::<BTreeSet<_>>()
+            != sample_ids.iter().collect::<BTreeSet<_>>()
+        {
+            return Err(refusal(
+                "training bank prediction identities differ from fit population",
+            ));
+        }
+        let targets = execution
+            .results
+            .iter()
+            .filter(|r| r.node_id == request.target_node)
+            .flat_map(|r| &r.regression_targets)
+            .collect::<Vec<_>>();
+        let [target] = targets.as_slice() else {
+            return Err(refusal(
+                "training bank requires one resubstitution target block",
+            ));
+        };
+        let reports = execution
+            .scores
+            .as_ref()
+            .ok_or_else(|| refusal("training bank requires native scores"))?
+            .reports
+            .iter()
+            .filter(|r| {
+                r.producer_node == request.target_node
+                    && r.partition == PredictionPartition::Final
+                    && r.level == PredictionLevel::Sample
+            })
+            .collect::<Vec<_>>();
+        let [report] = reports.as_slice() else {
+            return Err(refusal(
+                "training bank requires one native resubstitution report",
+            ));
+        };
+        let mut report = (*report).clone();
+        report.metrics.retain(|key, _| key == "rmse");
+        scores.push(report.clone().into_candidate_score(&identity.ordinal)?);
+        variants.push(TrainingVariantEvidence {
+            identity: identity.clone(),
+            predictions: (*prediction).clone(),
+            targets: (*target).clone(),
+            report,
+        });
+        packages.insert(identity.ordinal.clone(), execution.package);
+    }
+    let decision = select_training_scores(&scores)?;
+    let selected = identities
+        .into_iter()
+        .find(|i| i.ordinal == decision.selected_candidate_id)
+        .ok_or_else(|| refusal("training selection ordinal missing"))?;
+    let selected_package = packages
+        .remove(&selected.ordinal)
+        .expect("selected candidate package");
+    Ok(TrainingBankResult {
+        schema_version: 1,
+        profile: TRAINING_BANK_PROFILE.into(),
+        scope: crate::EvaluationScope::Train,
+        independent_test: false,
+        variants,
+        selected,
+        decision,
+        training_sample_ids: sample_ids.to_vec(),
+        selected_package,
+    })
+}
+
+fn select_training_scores(scores: &[CandidateScore]) -> Result<SelectionDecision> {
+    let policy = SelectionPolicy {
+        id: "select:training_bank.v1:rmse".into(),
+        metric: SelectionMetric {
+            name: "rmse".into(),
+            objective: crate::MetricObjective::Minimize,
+        },
+        required_metric_level: Some(PredictionLevel::Sample),
+        require_finite: true,
+        evaluation_scope: None,
+        refit_slot_plan: None,
+        requested_rank: None,
+        stacking_fit_contract: None,
+        reduction_id: None,
+    };
+    let mut decision = select_candidate(&policy, scores)?;
+    decision.evaluation_scope = Some(crate::EvaluationScope::Train);
+    Ok(decision)
+}
+
+#[cfg(test)]
+mod training_contract_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn training_admission_has_no_folds_and_reuses_bank_ordinals() {
+        let admission=crate::admit_portable_linear(&json!({"pipeline":[{"model":{"class":"n4m.PLS"},"param":"n_components","_range_":[1,3,1]}]})).unwrap();
+        let mut spec = crate::HostControllerSpec::new(
+            crate::PORTABLE_STEPS_CONTROLLER,
+            crate::PORTABLE_STEPS_VERSION,
+            crate::NodeKind::Model,
+        );
+        spec.output_ports=Some(serde_json::from_value(json!([{"name":"oof","kind":"prediction","representation":null,"cardinality":"one","description":""}])).unwrap());
+        let mut registry = crate::ControllerRegistry::new();
+        registry.register(spec.derive().unwrap()).unwrap();
+        let hash = "0".repeat(64);
+        let binding=serde_json::from_value(json!({"node_id":"model:portable","input_name":"x","request_id":"test:opaque",
+            "schema_fingerprint":hash,"plan_fingerprint":hash,"relation_fingerprint":hash,"output_representation":"tabular_numeric","source_ids":["x"],"require_relations":true})).unwrap();
+        let compiled =
+            crate::compile_portable_linear(&admission, binding, None, &registry).unwrap();
+        let plan = crate::build_execution_plan(
+            "plan:training.test",
+            compiled.graph,
+            compiled.campaign_template,
+            &registry,
+        )
+        .unwrap();
+        assert!(plan.fold_set.is_none());
+        assert!(plan.campaign.split_invocation.is_none());
+        let request = SingleHoldoutBankRequest {
+            schema_version: 1,
+            profile: SINGLE_HOLDOUT_BANK_PROFILE.into(),
+            report_profile: RegressionReportProfile::PopulationRmseRatiosV1,
+            failure_group_dimension: "chain".into(),
+            target_node: NodeId::new("model:portable").unwrap(),
+        };
+        let identities = bank_identities_for_scope(&plan, &request, false).unwrap();
+        assert_eq!(identities.len(), 3);
+        assert_eq!(identities[0].ordinal, "ord:00000");
+        assert_eq!(identities[2].recipe[0]["params"]["n_components"], 3);
+        assert!(
+            bank_identities(&plan, &request).is_err(),
+            "bank v1 must still require its real holdout"
+        );
+    }
+    #[test]
+    fn native_training_select_keeps_first_tie_and_training_scope() {
+        let candidate = |ordinal: &str| CandidateScore {
+            candidate_id: ordinal.into(),
+            metrics: BTreeMap::from([("rmse".into(), 1.0)]),
+            metadata: BTreeMap::from([("metric_level".into(), json!("sample"))]),
+        };
+        let decision =
+            select_training_scores(&[candidate("ord:00000"), candidate("ord:00001")]).unwrap();
+        assert_eq!(decision.selected_candidate_id, "ord:00000");
+        assert_eq!(
+            decision.evaluation_scope,
+            Some(crate::EvaluationScope::Train)
+        );
+        let mut invalid = candidate("ord:00000");
+        invalid.metrics.insert("rmse".into(), f64::INFINITY);
+        assert!(select_training_scores(&[invalid]).is_err());
+    }
 }

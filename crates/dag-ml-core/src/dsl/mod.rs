@@ -40,6 +40,7 @@ mod compat_helpers;
 mod compiler;
 mod fanout;
 mod generation;
+mod portable;
 mod types;
 
 // `types`, `compiler`, and `fanout` carry the public DSL surface (the
@@ -48,6 +49,7 @@ mod types;
 // are re-exported publicly so `pub use dsl::*` in `lib.rs` resolves identically.
 pub use compiler::*;
 pub use fanout::*;
+pub use portable::*;
 pub use types::*;
 
 // The operator-variant content-fingerprint contract (Phase 5) is part of the PUBLIC surface so the
