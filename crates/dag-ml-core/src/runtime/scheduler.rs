@@ -45,6 +45,25 @@ pub(crate) struct MaterializedReplayArtifacts {
     pub(crate) inputs: BTreeMap<NodeId, BTreeMap<String, ArtifactInputSpec>>,
 }
 
+fn validate_replay_external_test_authority(replay: &BundleReplayExecution<'_>) -> Result<()> {
+    if !matches!(replay.replay_request.phase, Phase::Predict | Phase::Explain) {
+        return Ok(());
+    }
+    for requirement in &replay.bundle.data_requirements {
+        let key = requirement.key();
+        let envelope = replay.data_envelopes.get(&key).ok_or_else(|| {
+            DagMlError::RuntimeValidation(format!(
+                "replay is missing external data envelope for `{key}`"
+            ))
+        })?;
+        envelope.validate_external_test_training_authority(
+            requirement.relation_fingerprint.as_deref(),
+            replay.plan.fold_set.as_ref(),
+        )?;
+    }
+    Ok(())
+}
+
 fn prediction_output_ports_for_node(plan: &ExecutionPlan, node_id: &NodeId) -> Result<Vec<String>> {
     let node = plan
         .graph_plan
@@ -148,8 +167,7 @@ fn normalize_prediction_result_port(
         }
         if !prediction_ports.iter().any(|candidate| candidate == port) {
             return Err(DagMlError::RuntimeValidation(format!(
-                "node `{node_id}` emitted {block_kind} for undeclared or non-prediction output port `{port}`; declared prediction ports are {:?}",
-                prediction_ports
+                "node `{node_id}` emitted {block_kind} for undeclared or non-prediction output port `{port}`; declared prediction ports are {prediction_ports:?}"
             )));
         }
         return Ok(());
@@ -485,6 +503,7 @@ impl SequentialScheduler {
             let mut candidate_ctx =
                 RunContext::new(ctx.run_id.clone(), proposal.variant.seed.or(ctx.root_seed));
             candidate_ctx.resource_limits = ctx.resource_limits.clone();
+            candidate_ctx.training_score_kinds = ctx.training_score_kinds.clone();
             candidate_ctx.variant_id = Some(proposal.variant.variant_id.clone());
 
             let evaluation = {
@@ -606,6 +625,12 @@ impl SequentialScheduler {
             session.tell(proposal.trial_id, RuntimeHpoTerminal::Completed { score })?;
             terminal_trials.insert(proposal.trial_id, HpoTrialTerminalState::Completed);
             completed_proposals.push(proposal.clone());
+            // New trials, including trials asked after resume, share this retention site.
+            // Keep calculation reports untouched for weights and preserve inherited reports.
+            retain_metric_families(
+                &candidate_ctx.training_score_kinds,
+                std::slice::from_mut(&mut report),
+            );
             completed_reports.push(RuntimeHpoCompletedReport {
                 trial_id: proposal.trial_id,
                 variant_id: proposal.variant.variant_id.clone(),
@@ -1016,7 +1041,7 @@ impl SequentialScheduler {
 
     /// Replay PREDICT from a no-CV full-refit package without fabricating an
     /// ExecutionBundle or a selected CV variant.
-    pub fn execute_initial_full_refit_predict(
+    pub(crate) fn execute_initial_full_refit_predict(
         &self,
         package: &InitialFullRefitPackage,
         envelope: &ExternalDataPlanEnvelope,
@@ -2449,6 +2474,7 @@ impl SequentialScheduler {
         replay
             .bundle
             .validate_replay_envelopes(replay.data_envelopes)?;
+        validate_replay_external_test_authority(&replay)?;
         let prediction_cache_contracts = if replay.replay_request.phase == Phase::Refit {
             Some(replay_prediction_cache_contracts(replay.bundle)?)
         } else {
@@ -3216,6 +3242,7 @@ impl ParallelScheduler {
         replay
             .bundle
             .validate_replay_envelopes(replay.data_envelopes)?;
+        validate_replay_external_test_authority(&replay)?;
         let prediction_cache_contracts = if replay.replay_request.phase == Phase::Refit {
             Some(replay_prediction_cache_contracts(replay.bundle)?)
         } else {

@@ -3168,8 +3168,7 @@ fn assert_report_refit_contract(
     let merge_refit_samples = json_usize_at(final_refit, "merge_refit_samples")?;
     if merge_refit_samples != sample_count {
         bail!(
-            "final_refit merge_refit_samples={} but sample_count={sample_count}",
-            merge_refit_samples
+            "final_refit merge_refit_samples={merge_refit_samples} but sample_count={sample_count}"
         );
     }
 
@@ -3194,10 +3193,7 @@ fn assert_report_refit_contract(
     };
     let reported_width = json_usize_at(final_refit, "merge_refit_features")?;
     if reported_width != expected_width {
-        bail!(
-            "final_refit merge_refit_features={} but expected {expected_width}",
-            reported_width
-        );
+        bail!("final_refit merge_refit_features={reported_width} but expected {expected_width}");
     }
     Ok(())
 }
@@ -4232,7 +4228,6 @@ impl HostHpoCandidateControllerFactory for CliHpoControllerFactory {
                 process_workers: 1,
                 timeout: self.timeout,
                 retries: 0,
-                control_frames: false,
             },
             SchedulerConfig {
                 scheduler: CliScheduler::Sequential,
@@ -4312,11 +4307,7 @@ impl CliHpoOptimizer {
                 ))
             }
         };
-        let reply: serde_json::Value = serde_json::from_str(&line).map_err(|error| {
-            DagMlError::RuntimeValidation(format!(
-                "HPO optimizer adapter returned invalid JSON: {error}"
-            ))
-        })?;
+        let reply: serde_json::Value = decode_hpo_adapter_reply(&line)?;
         if let Some(error) = reply.get("error").and_then(serde_json::Value::as_str) {
             return Err(DagMlError::RuntimeValidation(format!(
                 "HPO optimizer adapter: {error}"
@@ -4324,6 +4315,34 @@ impl CliHpoOptimizer {
         }
         Ok(reply)
     }
+}
+
+fn decode_hpo_adapter_reply<T: serde::de::DeserializeOwned + Serialize>(
+    raw: &str,
+) -> dag_ml_core::Result<T> {
+    let label = "HPO optimizer adapter reply";
+    dag_ml_core::deserialize_external_contract(raw, label, DagMlError::RuntimeValidation).map_err(
+        |error| match error {
+            DagMlError::Serialization(error) => {
+                DagMlError::RuntimeValidation(format!("{label}: {error}"))
+            }
+            error => error,
+        },
+    )
+}
+
+fn decode_hpo_adapter_value<T: serde::de::DeserializeOwned + Serialize>(
+    value: serde_json::Value,
+) -> dag_ml_core::Result<T> {
+    let label = "HPO optimizer adapter reply";
+    dag_ml_core::deserialize_external_value(value, label, DagMlError::RuntimeValidation).map_err(
+        |error| match error {
+            DagMlError::Serialization(error) => {
+                DagMlError::RuntimeValidation(format!("{label}: {error}"))
+            }
+            error => error,
+        },
+    )
 }
 
 impl Drop for CliHpoOptimizer {
@@ -4351,10 +4370,9 @@ impl HostHpoProposalSource for CliHpoProposals {
         let reply = self.0.borrow_mut().call(serde_json::json!({
             "operation": "ask", "trial_index": trial_index, "phase_index": phase_index,
         }))?;
-        serde_json::from_value(reply.get("params").cloned().ok_or_else(|| {
+        decode_hpo_adapter_value(reply.get("params").cloned().ok_or_else(|| {
             DagMlError::RuntimeValidation("HPO optimizer ask reply lacks params".into())
         })?)
-        .map_err(DagMlError::Serialization)
     }
 
     fn tell(&mut self, trial_index: u32, score: f64) -> dag_ml_core::Result<()> {
@@ -4485,12 +4503,12 @@ fn run_host_hpo_cli(
     let init = optimizer.borrow_mut().call(serde_json::json!({
         "operation": "init", "request": request, "checkpoint": saved,
     }))?;
-    let prepared: Option<HostHpoCheckpoint> = serde_json::from_value(
+    let prepared: Option<HostHpoCheckpoint> = decode_hpo_adapter_value(
         init.get("prepared_checkpoint")
             .cloned()
             .unwrap_or(serde_json::Value::Null),
     )?;
-    let interrupted = serde_json::from_value(
+    let interrupted = decode_hpo_adapter_value(
         init.get("interrupted")
             .cloned()
             .unwrap_or_else(|| serde_json::json!([])),
@@ -4589,7 +4607,8 @@ struct ProcessRuntimeController {
     config: ProcessAdapterRuntimeConfig,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ProcessAdapterDescription {
     schema_version: u32,
     protocol: String,
@@ -4603,7 +4622,6 @@ struct ProcessAdapterRuntimeConfig {
     process_workers: usize,
     timeout: Duration,
     retries: usize,
-    control_frames: bool,
 }
 
 struct PersistentProcessRuntimeController {
@@ -4620,14 +4638,13 @@ struct PersistentProcessSession {
     child: Child,
     stdin: ChildStdin,
     stdout_rx: Receiver<PersistentReadEvent>,
-    control_frames: bool,
     close_timeout: Duration,
 }
 
 enum PersistentReadEvent {
     Line(String),
     Eof,
-    Error(String),
+    Error(std::io::Error),
 }
 
 struct PersistentWorkerFailure {
@@ -4657,7 +4674,7 @@ enum ProcessAdapterRequestFrame<'a> {
     },
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ProcessAdapterResponseFrame {
     Ack {
@@ -4678,7 +4695,7 @@ enum ProcessAdapterResponseFrame {
     },
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct ProcessAdapterErrorFrame {
     code: String,
     message: String,
@@ -4713,13 +4730,25 @@ impl PersistentWorkerFailure {
     }
 }
 
+fn decode_process_adapter_json<T: serde::de::DeserializeOwned + Serialize>(
+    raw: &str,
+    label: &str,
+) -> std::result::Result<T, String> {
+    dag_ml_core::deserialize_external_contract(raw, label, DagMlError::RuntimeValidation).map_err(
+        |error| match error {
+            DagMlError::RuntimeValidation(reason) => reason,
+            DagMlError::Serialization(error) => format!("{label}: {error}"),
+            error => error.to_string(),
+        },
+    )
+}
+
 impl PersistentProcessSession {
     fn spawn(
         controller_id: &ControllerId,
         adapter: &Path,
         worker_index: usize,
         worker_count: usize,
-        control_frames: bool,
         timeout: Duration,
     ) -> dag_ml_core::Result<Self> {
         let mut command = process_adapter_command(adapter, ProcessAdapterMode::Jsonl);
@@ -4749,25 +4778,22 @@ impl PersistentProcessSession {
             child,
             stdin,
             stdout_rx: spawn_persistent_stdout_reader(stdout),
-            control_frames,
             close_timeout: if timeout.is_zero() {
                 Duration::from_millis(250)
             } else {
                 timeout.min(Duration::from_millis(250))
             },
         };
-        if control_frames {
-            session
-                .init(controller_id, adapter, worker_index, worker_count, timeout)
-                .map_err(|failure| {
-                    session.terminate();
-                    DagMlError::RuntimeValidation(format!(
-                        "controller `{controller_id}` failed to initialize persistent adapter `{}` worker {worker_index}/{worker_count}: {}",
-                        adapter.display(),
-                        failure.message
-                    ))
-                })?;
-        }
+        session
+            .init(controller_id, adapter, worker_index, worker_count, timeout)
+            .map_err(|failure| {
+                session.terminate();
+                DagMlError::RuntimeValidation(format!(
+                    "controller `{controller_id}` failed to initialize persistent adapter `{}` worker {worker_index}/{worker_count}: {}",
+                    adapter.display(),
+                    failure.message
+                ))
+            })?;
         Ok(session)
     }
 
@@ -4823,28 +4849,6 @@ impl PersistentProcessSession {
         task: &NodeTask,
         timeout: Duration,
     ) -> Result<NodeResult, PersistentWorkerFailure> {
-        if self.control_frames {
-            return self.invoke_framed(controller_id, adapter, task, timeout);
-        }
-
-        self.write_json_line(controller_id, task)?;
-
-        let line = self.read_response_line(controller_id, adapter, timeout)?;
-        serde_json::from_str(&line).map_err(|err| {
-            PersistentWorkerFailure::terminal(format!(
-                "controller `{controller_id}` persistent adapter `{}` returned invalid NodeResult JSON: {err}",
-                adapter.display()
-            ))
-        })
-    }
-
-    fn invoke_framed(
-        &mut self,
-        controller_id: &ControllerId,
-        adapter: &Path,
-        task: &NodeTask,
-        timeout: Duration,
-    ) -> Result<NodeResult, PersistentWorkerFailure> {
         self.write_json_line(
             controller_id,
             ProcessAdapterRequestFrame::Task {
@@ -4883,11 +4887,6 @@ impl PersistentProcessSession {
         task: &PortableArtifactBridgeTask,
         timeout: Duration,
     ) -> Result<PortableArtifactBridgeResult, PersistentWorkerFailure> {
-        if !self.control_frames {
-            return Err(PersistentWorkerFailure::terminal(
-                "portable artifact bridge requires control frames",
-            ));
-        }
         self.write_json_line(
             controller_id,
             ProcessAdapterRequestFrame::PortableArtifact {
@@ -4945,9 +4944,9 @@ impl PersistentProcessSession {
         timeout: Duration,
     ) -> Result<ProcessAdapterResponseFrame, PersistentWorkerFailure> {
         let line = self.read_response_line(controller_id, adapter, timeout)?;
-        serde_json::from_str(&line).map_err(|err| {
+        decode_process_adapter_json(&line, "process adapter response frame").map_err(|reason| {
             PersistentWorkerFailure::terminal(format!(
-                "controller `{controller_id}` persistent adapter `{}` returned invalid response frame JSON: {err}",
+                "controller `{controller_id}` persistent adapter `{}` returned invalid response frame JSON: {reason}",
                 adapter.display()
             ))
         })
@@ -4980,6 +4979,12 @@ impl PersistentProcessSession {
                     adapter.display()
                 )))
             }
+            Ok(PersistentReadEvent::Error(err)) if err.kind() == std::io::ErrorKind::InvalidData => {
+                Err(PersistentWorkerFailure::terminal(format!(
+                    "controller `{controller_id}` persistent adapter `{}` returned invalid response frame JSON: process adapter response frame is not valid UTF-8: {err}",
+                    adapter.display()
+                )))
+            }
             Ok(PersistentReadEvent::Error(err)) => {
                 Err(PersistentWorkerFailure::restartable(format!(
                     "controller `{controller_id}` failed to read persistent adapter `{}`: {err}",
@@ -5009,9 +5014,6 @@ impl PersistentProcessSession {
     }
 
     fn close_gracefully(&mut self) {
-        if !self.control_frames {
-            return;
-        }
         let Ok(controller_id) = ControllerId::new("controller:process.close") else {
             return;
         };
@@ -5054,7 +5056,7 @@ fn spawn_persistent_stdout_reader(stdout: ChildStdout) -> Receiver<PersistentRea
                     }
                 }
                 Err(err) => {
-                    let _ = tx.send(PersistentReadEvent::Error(err.to_string()));
+                    let _ = tx.send(PersistentReadEvent::Error(err));
                     break;
                 }
             }
@@ -5249,9 +5251,16 @@ impl RuntimeController for ProcessRuntimeController {
                 self.adapter.display()
             )));
         }
-        serde_json::from_slice(&output.stdout).map_err(|err| {
+        let raw = std::str::from_utf8(&output.stdout).map_err(|err| {
             DagMlError::RuntimeValidation(format!(
-                "controller `{}` adapter `{}` returned invalid NodeResult JSON: {err}",
+                "controller `{}` adapter `{}` returned invalid NodeResult JSON: process adapter NodeResult is not valid UTF-8: {err}",
+                self.id,
+                self.adapter.display()
+            ))
+        })?;
+        decode_process_adapter_json(raw, "process adapter NodeResult").map_err(|reason| {
+            DagMlError::RuntimeValidation(format!(
+                "controller `{}` adapter `{}` returned invalid NodeResult JSON: {reason}",
                 self.id,
                 self.adapter.display()
             ))
@@ -5345,7 +5354,6 @@ impl RuntimeController for PersistentProcessRuntimeController {
                                 &self.adapter,
                                 worker_index,
                                 self.config.process_workers,
-                                self.config.control_frames,
                                 self.config.timeout,
                             )
                             .map_err(|restart_err| {
@@ -5985,13 +5993,12 @@ fn process_runtime_controllers_for_mode(
 fn persistent_process_runtime_controllers(
     plan: &dag_ml_core::ExecutionPlan,
     adapter: PathBuf,
-    mut config: ProcessAdapterRuntimeConfig,
+    config: ProcessAdapterRuntimeConfig,
     scheduler: SchedulerConfig,
 ) -> Result<RuntimeControllerRegistry> {
     validate_process_runtime_config(true, &config)?;
     let description = validate_process_adapter_description(&adapter, ProcessAdapterMode::Jsonl)?;
     validate_process_adapter_execution_capabilities(&adapter, &description, true, scheduler)?;
-    config.control_frames = true;
     let mut registry = RuntimeControllerRegistry::new();
     for controller_id in plan.controller_manifests.keys() {
         let mut sessions = Vec::with_capacity(config.process_workers);
@@ -6001,7 +6008,6 @@ fn persistent_process_runtime_controllers(
                 &adapter,
                 worker_index,
                 config.process_workers,
-                config.control_frames,
                 config.timeout,
             )?));
         }
@@ -6065,7 +6071,6 @@ fn process_adapter_runtime_config(
         process_workers,
         timeout: Duration::from_millis(process_timeout_ms),
         retries: process_retries,
-        control_frames: false,
     })
 }
 
@@ -6111,10 +6116,12 @@ fn validate_process_adapter_description(
             adapter.display()
         );
     }
-    let description: ProcessAdapterDescription = serde_json::from_slice(&output.stdout)
-        .with_context(|| {
-            format!(
-                "adapter `{}` describe handshake returned invalid JSON",
+    let description: ProcessAdapterDescription = std::str::from_utf8(&output.stdout)
+        .map_err(|error| format!("process adapter description is not valid UTF-8: {error}"))
+        .and_then(|raw| decode_process_adapter_json(raw, "process adapter description"))
+        .map_err(|reason| {
+            anyhow::anyhow!(
+                "adapter `{}` describe handshake returned invalid JSON: {reason}",
                 adapter.display()
             )
         })?;
@@ -6300,9 +6307,7 @@ fn host_artifact_store(
     let supplied = handles.keys().cloned().collect::<BTreeSet<_>>();
     if supplied != expected {
         bail!(
-            "host sidecar artifact handles must exactly cover bundle refit artifacts (expected {:?}, supplied {:?})",
-            expected,
-            supplied
+            "host sidecar artifact handles must exactly cover bundle refit artifacts (expected {expected:?}, supplied {supplied:?})"
         );
     }
     let mut store = InMemoryArtifactStore::new();
@@ -6960,6 +6965,37 @@ fn emit_json<T: Serialize>(output: Option<&PathBuf>, value: &T, label: &str) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn portable_process_description_preflight_checks_capability_and_strictness() {
+        let dir =
+            std::env::temp_dir().join(format!("dagml-portable-description-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let adapter = dir.join("adapter.py");
+        let description = r#"{"schema_version":1,"protocol":"dag-ml-process-adapter","adapter_id":"portable-test","supported_modes":["jsonl"],"capabilities":["node_task_json_v1","node_result_json_v1","portable_artifact_bridge_v1"]}"#;
+        let write_adapter = |raw: &str| {
+            std::fs::write(&adapter, format!("import sys\nsys.stdout.write({raw:?})\n")).unwrap();
+        };
+        write_adapter(description);
+        require_portable_process_adapter(&adapter).unwrap();
+        write_adapter(&description.replace(",\"portable_artifact_bridge_v1\"", ""));
+        let error = require_portable_process_adapter(&adapter)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("loaded process replay requires portable_artifact_bridge_v1"),
+            "{error}"
+        );
+        write_adapter(&description.replace(
+            "\"schema_version\":1",
+            "\"schema_version\":1,\"schema_version\":1",
+        ));
+        let error = require_portable_process_adapter(&adapter)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("process adapter description"), "{error}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn detached_process_replay_parser_requires_independent_trust_and_refuses_fit_flags() {
@@ -8498,8 +8534,7 @@ for line in sys.stdin:
         .unwrap();
         let id = ControllerId::new("controller:cli.raw.bridge").unwrap();
         let session =
-            PersistentProcessSession::spawn(&id, &adapter, 0, 1, true, Duration::from_secs(5))
-                .unwrap();
+            PersistentProcessSession::spawn(&id, &adapter, 0, 1, Duration::from_secs(5)).unwrap();
         let artifact_id = ArtifactId::new("artifact:cli.raw.bridge").unwrap();
         let controller = PersistentProcessRuntimeController {
             id: id.clone(),
@@ -8508,7 +8543,6 @@ for line in sys.stdin:
                 process_workers: 1,
                 timeout: Duration::from_secs(5),
                 retries: 0,
-                control_frames: true,
             },
             sessions: vec![Mutex::new(session)],
             portable_artifact_bridge: true,

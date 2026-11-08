@@ -864,8 +864,7 @@ pub fn aggregate_sample_predictions_by_unit(
         .any(|unit_id| unit_id.level() != requested_level)
     {
         return Err(DagMlError::OofValidation(format!(
-            "aggregation requested units do not match level {:?}",
-            requested_level
+            "aggregation requested units do not match level {requested_level:?}"
         )));
     }
     let requested = requested_unit_order.iter().collect::<BTreeSet<_>>();

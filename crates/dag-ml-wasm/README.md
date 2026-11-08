@@ -15,7 +15,34 @@ optimizer in trial order. `host_hpo_search_json` remains the synchronous
 single-worker route. For progressive pruning, tagged fold tasks call
 `host_hpo_evaluate_worker_fold_json` and return to the coordinator after each
 fold; pruned candidates never execute later folds. Complete candidates run one
-full native FIT_CV pass for the exact global OOF result.
+full native FIT_CV pass for the exact global OOF result. Optimizer replies and
+worker result strings use strict TCV1 JSON; workers must relay their native
+result strings verbatim. The fold-result decoder is also strict.
+
+The HPO search request and data envelope, and the task, request and envelope
+accepted by the worker task and fold evaluators, use the existing strict TCV1
+JSON boundary. Malformed inputs report `runtime_validation` with the labels
+`host HPO worker task`, `host HPO request`, or `host HPO envelope` before the
+local host callback. Open parameter and descriptor maps and additive envelope
+content remain open. This rule does not apply to the separately decoded
+controller manifests. An envelope's additive fields are still subject to the
+schema of its version; the v2 unknown-root discrepancy remains separate.
+
+Integer-form tokens must fit the TCV1 signed or unsigned 64-bit range. This
+changes some otherwise valid JSON spellings: JavaScript `JSON.stringify` emits
+out-of-range integer tokens for finite integral values `2^64 <= x < 1e21` and
+`-1e21 < x <= -2^63`, including `-(2**63)`. For those floating-point values,
+provide a JSON token with `.0` or an exponent, such as `100000000000000000000.0`
+or `1e+20`; the boundary does not rewrite input. Typed failures at these HPO
+inputs now carry the labels above rather than the old serialization category
+and line/column text. A worker refusal recorded in a failed checkpoint can
+therefore produce a different checkpoint fingerprint.
+A JavaScript `Error` thrown or rejected by a host callback is recorded as
+`name: message`; its `stack` is never read. Failed-trial checkpoints recorded
+from such an Error therefore get a new fingerprint. Stored checkpoints keep
+their recorded text.
+JavaScript's existing `JSON.stringify(-0)` behavior emits `0`; use a raw
+`-0.0` token when the floating-point sign must reach the owner.
 
 `contract_manifest_json()` returns a stable JSON manifest with the package
 version, supported contract ids, exported Python/WASM function names and shared
@@ -128,7 +155,7 @@ For host hyperparameter search, `host_hpo_search_json(planJson, manifestsJson,
 envelopeJson, requestJson, checkpointJson, controller, optimizer)` runs the same
 sequential native search as Rust and PyO3. The `controller` has the signature
 shown above. The synchronous `optimizer(operation, payloadJson)` must return a
-JSON string: `ask` returns `{"params": {...}}` or `{"params": null}`;
+strict TCV1 JSON string: `ask` returns `{"params": {...}}` or `{"params": null}`;
 `report_intermediate` returns `{"prune": true|false}`; `tell`, `pruned`,
 `fail`, and `prepare_terminal` return `{"ok": true}`; `checkpoint` returns
 `{"continue": true|false}`. `prepare_terminal` receives a sealed prospective
@@ -137,8 +164,15 @@ durably before replying. To resume, pass the last published native checkpoint
 as `checkpointJson` and reconcile any prepared optimizer transition first with
 `recover_host_hpo_checkpoint_json(checkpointJson, preparedJson, interruptedJson)`;
 use `"null"` and `"[]"` when there is no prepared terminal or interrupted trial.
-This export runs one candidate at a time; browser worker parallelism remains
-an adapter gap.
+This export runs one candidate at a time; the parallel export above delegates
+worker execution to the browser host.
+
+JavaScript serialization can emit a finite number as an integer token outside
+TCV1's signed/unsigned 64-bit range. For example, `JSON.stringify(-(2**63))`
+produces `-9223372036854776000` even though -2^63 itself is representable. Values
+such as `2e19`, `-1e19`, and `9.99e20` can similarly produce refused tokens.
+When used as optimizer parameters, such a reply aborts the search; hosts must
+provide valid numeric tokens. No serializer conversion is performed by the bridge.
 
 JavaScript-local descriptors use `binding:javascript` and a `host_local` or
 `portable_registered` lifecycle. A Web Worker must populate its own registry;
@@ -148,3 +182,5 @@ is rejected when the exact descriptor or phase does not match.
 Rust-side validation failures are returned as JSON strings with the ADR-11
 descriptor fields `category`, `code`, `severity`, `message`,
 `remediation_hint` and `context`.
+
+WASM exported text arguments accept primitive JavaScript strings with well-formed UTF-16; optional text arguments also accept `null` or `undefined`. Callback exceptions with lone UTF-16 surrogates are reported using the lossless `ill_formed_utf16("...")` diagnostic token. Generated glue and its WASM module ship as a pair; direct raw WASM exports are unsupported. Cyclic arrays, graphs beyond 1,024 nodes and arrays with a custom `toStringTag` use bounded fallback diagnostics.

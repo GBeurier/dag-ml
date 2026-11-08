@@ -81,8 +81,8 @@ def run_jsonl() -> None:
         if base.is_control_frame(payload):
             if not handle_control_frame(payload):
                 break
-            continue
-        emit_result(payload)
+        else:
+            base.emit_error("unsupported_frame", "expected a control frame")
 
 
 def handle_control_frame(frame: dict[str, Any]) -> bool:

@@ -67,45 +67,15 @@ fn provider_for_replay(
     provider_for_bindings(bindings, envelopes)
 }
 
-/// Assemble the canonical opaque payload set consumed by Core's bounded ZIP writer.
-#[wasm_bindgen]
-pub fn build_archive_v2_native_portable_payloads_json(
-    archive_id: &str,
-    outcome_json: &str,
-    package_json: &str,
-) -> Result<String, JsValue> {
-    let outcome = dag_ml_core::TrainingOutcome::from_json(outcome_json).map_err(js_core_error)?;
-    let package = PortablePredictorPackage::from_json(package_json).map_err(js_core_error)?;
-    let payloads =
-        dag_ml_core::build_archive_v2_native_portable_payloads(archive_id, &outcome, &package)
-            .map_err(js_core_error)?;
-    serde_json::to_string(&serde_json::json!({
-        "manifest": payloads.manifest, "members": payloads.members
-    }))
-    .map_err(js_serde_error)
-}
-
-/// Validate opaque archive members before replay can invoke a controller.
-#[wasm_bindgen]
-pub fn validate_archive_v2_portable_payloads_json(
-    manifest_json: &str,
-    package_json: &str,
-    members_json: &str,
-) -> Result<String, JsValue> {
-    let manifest = parse_contract::<serde_json::Value>(manifest_json, "Archive V2 manifest")
-        .map_err(js_core_error)?;
-    let package = PortablePredictorPackage::from_json(package_json).map_err(js_core_error)?;
-    let members = parse_contract::<BTreeMap<String, Vec<u8>>>(members_json, "Archive V2 members")
-        .map_err(js_core_error)?;
-    dag_ml_core::validate_archive_v2_portable_payloads(&manifest, &package, &members)
-        .map_err(js_core_error)?;
-    Ok("{\"valid\":true}".to_string())
-}
-
 /// Sign an unsigned declaration using the same TCV1 contract as Python/C ABI.
 /// Fingerprints are content seals, not cryptographic authorization signatures.
 #[wasm_bindgen]
-pub fn sign_training_request_json(json: &str) -> Result<String, JsValue> {
+pub fn sign_training_request_json(json: &js_sys::JsString) -> Result<String, JsValue> {
+    let json = crate::js_text::text_argument(json, "json")?;
+    sign_training_request_json_impl(&json)
+}
+
+fn sign_training_request_json_impl(json: &str) -> Result<String, JsValue> {
     let mut request: TrainingRequest =
         parse_contract(json, "training request declaration").map_err(js_core_error)?;
     request.request_fingerprint = request.compute_fingerprint().map_err(js_core_error)?;
@@ -116,6 +86,15 @@ pub fn sign_training_request_json(json: &str) -> Result<String, JsValue> {
 /// Derive an identity from an attested binding/envelope, without host hashing.
 #[wasm_bindgen]
 pub fn training_data_identity_json(
+    binding_json: &js_sys::JsString,
+    envelope_json: &js_sys::JsString,
+) -> Result<String, JsValue> {
+    let binding_json = crate::js_text::text_argument(binding_json, "binding_json")?;
+    let envelope_json = crate::js_text::text_argument(envelope_json, "envelope_json")?;
+    training_data_identity_json_impl(&binding_json, &envelope_json)
+}
+
+fn training_data_identity_json_impl(
     binding_json: &str,
     envelope_json: &str,
 ) -> Result<String, JsValue> {
@@ -129,7 +108,12 @@ pub fn training_data_identity_json(
 }
 
 #[wasm_bindgen]
-pub fn sample_relation_set_fingerprint_json(json: &str) -> Result<String, JsValue> {
+pub fn sample_relation_set_fingerprint_json(json: &js_sys::JsString) -> Result<String, JsValue> {
+    let json = crate::js_text::text_argument(json, "json")?;
+    sample_relation_set_fingerprint_json_impl(&json)
+}
+
+fn sample_relation_set_fingerprint_json_impl(json: &str) -> Result<String, JsValue> {
     let relations: SampleRelationSet =
         parse_contract(json, "sample relations").map_err(js_core_error)?;
     relations.fingerprint().map_err(js_core_error)
@@ -138,6 +122,16 @@ pub fn sample_relation_set_fingerprint_json(json: &str) -> Result<String, JsValu
 /// Attach independently derived, target-free or external-test V2 cohort evidence.
 #[wasm_bindgen]
 pub fn attach_predict_cohort_to_envelope_json(
+    envelope_json: &js_sys::JsString,
+    cohort_request_json: &js_sys::JsString,
+) -> Result<String, JsValue> {
+    let envelope_json = crate::js_text::text_argument(envelope_json, "envelope_json")?;
+    let cohort_request_json =
+        crate::js_text::text_argument(cohort_request_json, "cohort_request_json")?;
+    attach_predict_cohort_to_envelope_json_impl(&envelope_json, &cohort_request_json)
+}
+
+fn attach_predict_cohort_to_envelope_json_impl(
     envelope_json: &str,
     cohort_request_json: &str,
 ) -> Result<String, JsValue> {
@@ -153,7 +147,12 @@ pub fn attach_predict_cohort_to_envelope_json(
 }
 
 #[wasm_bindgen]
-pub fn sign_training_replay_request_json(json: &str) -> Result<String, JsValue> {
+pub fn sign_training_replay_request_json(json: &js_sys::JsString) -> Result<String, JsValue> {
+    let json = crate::js_text::text_argument(json, "json")?;
+    sign_training_replay_request_json_impl(&json)
+}
+
+fn sign_training_replay_request_json_impl(json: &str) -> Result<String, JsValue> {
     let mut request: TrainingReplayRequest =
         parse_contract(json, "training replay declaration").map_err(js_core_error)?;
     request.request_fingerprint = request.compute_fingerprint().map_err(js_core_error)?;
@@ -168,6 +167,37 @@ pub fn sign_training_replay_request_json(json: &str) -> Result<String, JsValue> 
 #[wasm_bindgen]
 #[allow(clippy::too_many_arguments)]
 pub fn execute_training_json(
+    request_json: &js_sys::JsString,
+    data_envelopes_json: &js_sys::JsString,
+    relations_json: &js_sys::JsString,
+    package_id: &js_sys::JsString,
+    outcome_id: &js_sys::JsString,
+    run_id: &js_sys::JsString,
+    bundle_id: &js_sys::JsString,
+    js_invoke: &js_sys::Function,
+) -> Result<String, JsValue> {
+    let request_json = crate::js_text::text_argument(request_json, "request_json")?;
+    let data_envelopes_json =
+        crate::js_text::text_argument(data_envelopes_json, "data_envelopes_json")?;
+    let relations_json = crate::js_text::text_argument(relations_json, "relations_json")?;
+    let package_id = crate::js_text::text_argument(package_id, "package_id")?;
+    let outcome_id = crate::js_text::text_argument(outcome_id, "outcome_id")?;
+    let run_id = crate::js_text::text_argument(run_id, "run_id")?;
+    let bundle_id = crate::js_text::text_argument(bundle_id, "bundle_id")?;
+    execute_training_json_impl(
+        &request_json,
+        &data_envelopes_json,
+        &relations_json,
+        &package_id,
+        &outcome_id,
+        &run_id,
+        &bundle_id,
+        js_invoke,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_training_json_impl(
     request_json: &str,
     data_envelopes_json: &str,
     relations_json: &str,
@@ -236,6 +266,37 @@ pub fn execute_training_json(
 #[wasm_bindgen]
 #[allow(clippy::too_many_arguments)]
 pub fn replay_training_package_json(
+    package_json: &js_sys::JsString,
+    request_json: &js_sys::JsString,
+    data_envelopes_json: &js_sys::JsString,
+    trusted_controller_manifests_json: &js_sys::JsString,
+    outcome_id: &js_sys::JsString,
+    run_id: &js_sys::JsString,
+    js_invoke: &js_sys::Function,
+) -> Result<String, JsValue> {
+    let package_json = crate::js_text::text_argument(package_json, "package_json")?;
+    let request_json = crate::js_text::text_argument(request_json, "request_json")?;
+    let data_envelopes_json =
+        crate::js_text::text_argument(data_envelopes_json, "data_envelopes_json")?;
+    let trusted_controller_manifests_json = crate::js_text::text_argument(
+        trusted_controller_manifests_json,
+        "trusted_controller_manifests_json",
+    )?;
+    let outcome_id = crate::js_text::text_argument(outcome_id, "outcome_id")?;
+    let run_id = crate::js_text::text_argument(run_id, "run_id")?;
+    replay_training_package_json_impl(
+        &package_json,
+        &request_json,
+        &data_envelopes_json,
+        &trusted_controller_manifests_json,
+        &outcome_id,
+        &run_id,
+        js_invoke,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn replay_training_package_json_impl(
     package_json: &str,
     request_json: &str,
     data_envelopes_json: &str,
@@ -312,7 +373,7 @@ mod replay_provider_tests {
                 PredictCohort::from_relations(
                     PredictCohortRole::Inference,
                     envelope.coordinator_relations.clone().unwrap(),
-                    vec!["y".into()],
+                    package.output_bindings[0].target_names.clone(),
                     envelope.data_content_fingerprint.clone().unwrap(),
                     None,
                 )
@@ -388,5 +449,156 @@ mod replay_provider_tests {
             }
             assert!(provider_for_replay(&package.effective_plan, wrong).is_err());
         }
+    }
+
+    #[test]
+    fn rust_wasm_replay_delegation_refuses_explicit_target_claim_before_callbacks() {
+        use dag_ml_core::{
+            DataMaterializationRequest, DataViewRequest, HandleKind, NodeResult, NodeTask,
+            RuntimeController, RuntimeControllerRegistry,
+        };
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+        struct Controller {
+            id: ControllerId,
+            calls: Arc<AtomicUsize>,
+        }
+        impl RuntimeController for Controller {
+            fn controller_id(&self) -> &ControllerId {
+                &self.id
+            }
+            fn invoke(&self, _: &NodeTask) -> CoreResult<NodeResult> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                Err(CoreDagMlError::RuntimeValidation(
+                    "unexpected test controller callback".into(),
+                ))
+            }
+        }
+        struct Provider<'a> {
+            inner: &'a EnvelopeAttestedRuntimeDataProvider<InMemoryDataProvider>,
+            calls: Arc<AtomicUsize>,
+        }
+        impl RuntimeDataProvider for Provider<'_> {
+            fn materialize(&self, request: &DataMaterializationRequest) -> CoreResult<HandleRef> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                self.inner.materialize(request)
+            }
+            fn make_view(&self, request: &DataViewRequest) -> CoreResult<HandleRef> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                self.inner.make_view(request)
+            }
+            fn coordinator_relations(
+                &self,
+                binding: &DataBinding,
+            ) -> CoreResult<Option<dag_ml_core::SampleRelationSet>> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                self.inner.coordinator_relations(binding)
+            }
+            fn predict_cohort(
+                &self,
+                binding: &DataBinding,
+                phase: Phase,
+            ) -> CoreResult<Option<PredictCohort>> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                self.inner.predict_cohort(binding, phase)
+            }
+        }
+        let (package, mut envelopes) = current_target_free_fixture();
+        let mut request = TrainingReplayRequest {
+            schema_version: 1,
+            request_id: "replay:wasm:target-claim".into(),
+            source_outcome_fingerprint: package.training_outcome.outcome_fingerprint.clone(),
+            phase: Phase::Predict,
+            data_envelope_keys: envelopes.keys().cloned().collect(),
+            output_binding_ids: package
+                .output_bindings
+                .iter()
+                .map(|binding| binding.binding_id.clone())
+                .collect(),
+            request_fingerprint: String::new(),
+        };
+        request.output_binding_ids.sort();
+        request.request_fingerprint = request.compute_fingerprint().unwrap();
+        dag_ml_core::preflight_loaded_predictor_replay(&package, &request, &envelopes).unwrap();
+        let valid_envelopes = envelopes.clone();
+        for envelope in envelopes.values_mut() {
+            let cohort = envelope.predict_cohort.as_mut().unwrap();
+            cohort.target_names = vec!["contradictory-target".into()];
+            cohort.cohort_fingerprint = cohort.fingerprint().unwrap();
+            envelope.validate().unwrap();
+        }
+        let inner = provider_for_replay(&package.effective_plan, envelopes.clone()).unwrap();
+        let data_calls = Arc::new(AtomicUsize::new(0));
+        let model_calls = Arc::new(AtomicUsize::new(0));
+        let provider = Provider {
+            inner: &inner,
+            calls: data_calls.clone(),
+        };
+        let mut controllers = RuntimeControllerRegistry::new();
+        for id in package
+            .effective_plan
+            .node_plans
+            .values()
+            .map(|node| node.controller_id.clone())
+            .collect::<std::collections::BTreeSet<_>>()
+        {
+            controllers
+                .register(Box::new(Controller {
+                    id,
+                    calls: model_calls.clone(),
+                }))
+                .unwrap();
+        }
+        // Explicit test-only trust boundary for this existing mock sidecar
+        // fixture. No serializer bytes or numerical model are hydrated here.
+        let loaded = package
+            .load_with(|record| {
+                Ok(HandleRef {
+                    handle: 1,
+                    kind: HandleKind::Artifact,
+                    owner_controller: record.controller_id.clone(),
+                })
+            })
+            .unwrap();
+        let valid_inner =
+            provider_for_replay(&loaded.package().effective_plan, valid_envelopes.clone()).unwrap();
+        let control_provider = Provider {
+            inner: &valid_inner,
+            calls: data_calls.clone(),
+        };
+        // Valid inputs must reach an actual callback through this same Rust
+        // binding/provider path; the trap is not numerical qualification.
+        assert!(execute_loaded_predictor_replay(LoadedPredictorReplayInput {
+            predictor: &loaded,
+            request: &request,
+            outcome_id: "outcome:wasm:control".into(),
+            run_id: RunId::new("run:wasm:control").unwrap(),
+            controllers: &controllers,
+            data_provider: &control_provider,
+            data_envelopes: &valid_envelopes,
+            warnings: Vec::new(),
+            diagnostics: BTreeMap::new(),
+        })
+        .is_err());
+        assert!(model_calls.load(Ordering::SeqCst) + data_calls.load(Ordering::SeqCst) > 0);
+        model_calls.store(0, Ordering::SeqCst);
+        data_calls.store(0, Ordering::SeqCst);
+        let result = execute_loaded_predictor_replay(LoadedPredictorReplayInput {
+            predictor: &loaded,
+            request: &request,
+            outcome_id: "outcome:wasm:targets".into(),
+            run_id: RunId::new("run:wasm:targets").unwrap(),
+            controllers: &controllers,
+            data_provider: &provider,
+            data_envelopes: &envelopes,
+            warnings: Vec::new(),
+            diagnostics: BTreeMap::new(),
+        });
+        assert!(matches!(result, Err(CoreDagMlError::RuntimeValidation(_))));
+        assert_eq!(model_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(data_calls.load(Ordering::SeqCst), 0);
+        assert!(inner.inner().handle_records().is_empty());
     }
 }

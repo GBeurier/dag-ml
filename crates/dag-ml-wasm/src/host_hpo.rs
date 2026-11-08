@@ -13,20 +13,45 @@ use dag_ml_core::{
 };
 use wasm_bindgen_futures::JsFuture;
 
+fn decode_host_hpo_argument<T: serde::de::DeserializeOwned + serde::Serialize>(
+    raw: &str,
+    label: &str,
+) -> Result<T, JsValue> {
+    deserialize_external_contract(raw, label, CoreDagMlError::RuntimeValidation)
+        .map_err(|error| match error {
+            CoreDagMlError::Serialization(error) => {
+                CoreDagMlError::RuntimeValidation(format!("{label}: {error}"))
+            }
+            other => other,
+        })
+        .map_err(js_core_error)
+}
+
 /// Validate a browser-persisted prepared terminal and seal interrupted trials
 /// before resuming search. This is the same recovery contract as PyO3/C ABI.
 #[wasm_bindgen]
 pub fn recover_host_hpo_checkpoint_json(
+    checkpoint_json: &js_sys::JsString,
+    prepared_json: &js_sys::JsString,
+    interrupted_json: &js_sys::JsString,
+) -> Result<String, JsValue> {
+    let checkpoint_json = crate::js_text::text_argument(checkpoint_json, "checkpoint_json")?;
+    let prepared_json = crate::js_text::text_argument(prepared_json, "prepared_json")?;
+    let interrupted_json = crate::js_text::text_argument(interrupted_json, "interrupted_json")?;
+    recover_host_hpo_checkpoint_json_impl(&checkpoint_json, &prepared_json, &interrupted_json)
+}
+
+fn recover_host_hpo_checkpoint_json_impl(
     checkpoint_json: &str,
     prepared_json: &str,
     interrupted_json: &str,
 ) -> Result<String, JsValue> {
     let checkpoint: HostHpoCheckpoint =
-        serde_json::from_str(checkpoint_json).map_err(js_serde_error)?;
+        decode_host_hpo_argument(checkpoint_json, "host HPO recovery checkpoint")?;
     let prepared: Option<HostHpoCheckpoint> =
-        serde_json::from_str(prepared_json).map_err(js_serde_error)?;
+        decode_host_hpo_argument(prepared_json, "host HPO recovery prepared checkpoint")?;
     let interrupted: Vec<HostHpoInterruptedTrial> =
-        serde_json::from_str(interrupted_json).map_err(js_serde_error)?;
+        decode_host_hpo_argument(interrupted_json, "host HPO recovery interrupted trials")?;
     let recovered = checkpoint
         .recover_interrupted_trials(prepared, interrupted)
         .map_err(js_core_error)?;
@@ -47,15 +72,26 @@ fn call_optimizer(
         )
         .map_err(|error| {
             CoreDagMlError::RuntimeValidation(format!(
-                "JS HPO optimizer `{operation}` threw: {error:?}"
+                "JS HPO optimizer `{operation}` threw: {}",
+                crate::js_text::js_failure_text(&error)
             ))
         })?;
-    let json = response.as_string().ok_or_else(|| {
-        CoreDagMlError::RuntimeValidation(format!(
-            "JS HPO optimizer `{operation}` must return a JSON string"
-        ))
-    })?;
-    serde_json::from_str(&json).map_err(CoreDagMlError::Serialization)
+    let json = callback_utf16_string(&response)
+        .map_err(|()| {
+            CoreDagMlError::RuntimeValidation(format!(
+                "JS HPO optimizer `{operation}` reply is not valid UTF-16"
+            ))
+        })?
+        .ok_or_else(|| {
+            CoreDagMlError::RuntimeValidation(format!(
+                "JS HPO optimizer `{operation}` must return a JSON string"
+            ))
+        })?;
+    deserialize_external_contract::<serde_json::Value, _>(
+        &json,
+        &format!("JS HPO optimizer `{operation}` reply"),
+        CoreDagMlError::RuntimeValidation,
+    )
 }
 
 struct JsProposal {
@@ -191,11 +227,43 @@ impl HostHpoProgress for JsProgress {
 #[wasm_bindgen]
 #[allow(clippy::too_many_arguments)]
 pub fn host_hpo_search_json(
+    execution_plan_json: &js_sys::JsString,
+    trusted_controller_manifests_json: &js_sys::JsString,
+    data_envelope_json: &js_sys::JsString,
+    request_json: &js_sys::JsString,
+    checkpoint_json: Option<js_sys::JsString>,
+    js_invoke: &js_sys::Function,
+    js_optimizer: &js_sys::Function,
+) -> Result<String, JsValue> {
+    let execution_plan_json =
+        crate::js_text::text_argument(execution_plan_json, "execution_plan_json")?;
+    let trusted_controller_manifests_json = crate::js_text::text_argument(
+        trusted_controller_manifests_json,
+        "trusted_controller_manifests_json",
+    )?;
+    let data_envelope_json =
+        crate::js_text::text_argument(data_envelope_json, "data_envelope_json")?;
+    let request_json = crate::js_text::text_argument(request_json, "request_json")?;
+    let checkpoint_json =
+        crate::js_text::optional_text_argument(checkpoint_json, "checkpoint_json")?;
+    host_hpo_search_json_impl(
+        &execution_plan_json,
+        &trusted_controller_manifests_json,
+        &data_envelope_json,
+        &request_json,
+        checkpoint_json.as_deref(),
+        js_invoke,
+        js_optimizer,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn host_hpo_search_json_impl(
     execution_plan_json: &str,
     trusted_controller_manifests_json: &str,
     data_envelope_json: &str,
     request_json: &str,
-    checkpoint_json: Option<String>,
+    checkpoint_json: Option<&str>,
     js_invoke: &js_sys::Function,
     js_optimizer: &js_sys::Function,
 ) -> Result<String, JsValue> {
@@ -203,14 +271,13 @@ pub fn host_hpo_search_json(
     let trusted_manifests = controller_registry_from_json(trusted_controller_manifests_json)?;
     validate_runtime_controller_manifests(&plan, &trusted_manifests).map_err(js_core_error)?;
     let envelope: ExternalDataPlanEnvelope =
-        serde_json::from_str(data_envelope_json).map_err(js_serde_error)?;
+        decode_host_hpo_argument(data_envelope_json, "host HPO envelope")?;
     let mut options =
         HostHpoResumeOptions::from_envelope(&envelope, None).map_err(js_core_error)?;
     options.checkpoint = checkpoint_json
-        .map(|json| serde_json::from_str(&json).map_err(js_serde_error))
+        .map(|json| decode_host_hpo_argument(json, "host HPO search checkpoint"))
         .transpose()?;
-    let request: HostHpoSearchRequest =
-        serde_json::from_str(request_json).map_err(js_serde_error)?;
+    let request: HostHpoSearchRequest = decode_host_hpo_argument(request_json, "host HPO request")?;
     let provider = InMemoryDataProvider::with_envelope(
         ControllerId::new("controller:wasm.hpo.provider").map_err(js_core_error)?,
         envelope,
@@ -250,20 +317,43 @@ pub fn host_hpo_search_json(
 /// which invokes this function with its local synchronous controller callback.
 #[wasm_bindgen]
 pub fn host_hpo_evaluate_worker_task_json(
+    task_json: &js_sys::JsString,
+    trusted_controller_manifests_json: &js_sys::JsString,
+    data_envelope_json: &js_sys::JsString,
+    request_json: &js_sys::JsString,
+    js_invoke: &js_sys::Function,
+) -> Result<String, JsValue> {
+    let task_json = crate::js_text::text_argument(task_json, "task_json")?;
+    let trusted_controller_manifests_json = crate::js_text::text_argument(
+        trusted_controller_manifests_json,
+        "trusted_controller_manifests_json",
+    )?;
+    let data_envelope_json =
+        crate::js_text::text_argument(data_envelope_json, "data_envelope_json")?;
+    let request_json = crate::js_text::text_argument(request_json, "request_json")?;
+    host_hpo_evaluate_worker_task_json_impl(
+        &task_json,
+        &trusted_controller_manifests_json,
+        &data_envelope_json,
+        &request_json,
+        js_invoke,
+    )
+}
+
+fn host_hpo_evaluate_worker_task_json_impl(
     task_json: &str,
     trusted_controller_manifests_json: &str,
     data_envelope_json: &str,
     request_json: &str,
     js_invoke: &js_sys::Function,
 ) -> Result<String, JsValue> {
-    let task: HostHpoWorkerTask = serde_json::from_str(task_json).map_err(js_serde_error)?;
-    let request: HostHpoSearchRequest =
-        serde_json::from_str(request_json).map_err(js_serde_error)?;
+    let task: HostHpoWorkerTask = decode_host_hpo_argument(task_json, "host HPO worker task")?;
+    let request: HostHpoSearchRequest = decode_host_hpo_argument(request_json, "host HPO request")?;
     let trusted_manifests = controller_registry_from_json(trusted_controller_manifests_json)?;
     validate_runtime_controller_manifests(&task.candidate_plan, &trusted_manifests)
         .map_err(js_core_error)?;
     let envelope: ExternalDataPlanEnvelope =
-        serde_json::from_str(data_envelope_json).map_err(js_serde_error)?;
+        decode_host_hpo_argument(data_envelope_json, "host HPO envelope")?;
     let data_fingerprint = HostHpoResumeOptions::from_envelope(&envelope, None)
         .map_err(js_core_error)?
         .data_fingerprint;
@@ -296,6 +386,32 @@ pub fn host_hpo_evaluate_worker_task_json(
 #[wasm_bindgen]
 #[allow(clippy::too_many_arguments)]
 pub fn host_hpo_evaluate_worker_fold_json(
+    task_json: &js_sys::JsString,
+    fold_index: u32,
+    trusted_controller_manifests_json: &js_sys::JsString,
+    data_envelope_json: &js_sys::JsString,
+    request_json: &js_sys::JsString,
+    js_invoke: &js_sys::Function,
+) -> Result<String, JsValue> {
+    let task_json = crate::js_text::text_argument(task_json, "task_json")?;
+    let trusted_controller_manifests_json = crate::js_text::text_argument(
+        trusted_controller_manifests_json,
+        "trusted_controller_manifests_json",
+    )?;
+    let data_envelope_json =
+        crate::js_text::text_argument(data_envelope_json, "data_envelope_json")?;
+    let request_json = crate::js_text::text_argument(request_json, "request_json")?;
+    host_hpo_evaluate_worker_fold_json_impl(
+        &task_json,
+        fold_index,
+        &trusted_controller_manifests_json,
+        &data_envelope_json,
+        &request_json,
+        js_invoke,
+    )
+}
+
+fn host_hpo_evaluate_worker_fold_json_impl(
     task_json: &str,
     fold_index: u32,
     trusted_controller_manifests_json: &str,
@@ -303,14 +419,13 @@ pub fn host_hpo_evaluate_worker_fold_json(
     request_json: &str,
     js_invoke: &js_sys::Function,
 ) -> Result<String, JsValue> {
-    let task: HostHpoWorkerTask = serde_json::from_str(task_json).map_err(js_serde_error)?;
-    let request: HostHpoSearchRequest =
-        serde_json::from_str(request_json).map_err(js_serde_error)?;
+    let task: HostHpoWorkerTask = decode_host_hpo_argument(task_json, "host HPO worker task")?;
+    let request: HostHpoSearchRequest = decode_host_hpo_argument(request_json, "host HPO request")?;
     let trusted_manifests = controller_registry_from_json(trusted_controller_manifests_json)?;
     validate_runtime_controller_manifests(&task.candidate_plan, &trusted_manifests)
         .map_err(js_core_error)?;
     let envelope: ExternalDataPlanEnvelope =
-        serde_json::from_str(data_envelope_json).map_err(js_serde_error)?;
+        decode_host_hpo_argument(data_envelope_json, "host HPO envelope")?;
     let data_fingerprint = HostHpoResumeOptions::from_envelope(&envelope, None)
         .map_err(js_core_error)?
         .data_fingerprint;
@@ -340,13 +455,32 @@ pub fn host_hpo_evaluate_worker_fold_json(
     serde_json::to_string(&result).map_err(js_serde_error)
 }
 
-async fn worker_json(promise: Result<js_sys::Promise, JsValue>) -> Result<String, String> {
-    let promise = promise.map_err(|error| format!("worker dispatch threw: {error:?}"))?;
-    let value = JsFuture::from(promise)
-        .await
-        .map_err(|error| format!("worker promise rejected: {error:?}"))?;
-    value
-        .as_string()
+// Adopt each dispatch result through a fresh native Promise and attach its
+// handlers before awaiting any other worker in the window.
+fn observe_worker_dispatch(response: Result<JsValue, JsValue>) -> Result<JsFuture, JsValue> {
+    response.map(|value| {
+        let promise = js_sys::Promise::new(&mut |resolve, _reject| {
+            let _ = resolve.call1(&JsValue::UNDEFINED, &value);
+        });
+        JsFuture::from(promise)
+    })
+}
+
+async fn worker_json(future: Result<JsFuture, JsValue>) -> Result<String, String> {
+    let future = future.map_err(|error| {
+        format!(
+            "worker dispatch threw: {}",
+            crate::js_text::js_failure_text(&error)
+        )
+    })?;
+    let value = future.await.map_err(|error| {
+        format!(
+            "worker promise rejected: {}",
+            crate::js_text::js_failure_text(&error)
+        )
+    })?;
+    callback_utf16_string(&value)
+        .map_err(|()| "worker returned a result with invalid UTF-16".to_string())?
         .ok_or_else(|| "worker returned a non-string result".to_string())
 }
 
@@ -398,9 +532,9 @@ async fn dispatch_prunable_window(
                     "fold_index": fold_index,
                 });
                 let payload = serde_json::to_string(&payload).map_err(js_serde_error)?;
-                let promise = dispatch
-                    .call1(&JsValue::NULL, &JsValue::from_str(&payload))
-                    .map(|value| js_sys::Promise::resolve(&value));
+                let promise = observe_worker_dispatch(
+                    dispatch.call1(&JsValue::NULL, &JsValue::from_str(&payload)),
+                );
                 Ok::<_, JsValue>((index, promise))
             })
             .collect::<Result<Vec<_>, JsValue>>()?;
@@ -481,16 +615,20 @@ async fn dispatch_prunable_window(
         .map(|&index| {
             let payload = serde_json::json!({"kind": "complete", "task": &tasks[index]});
             let payload = serde_json::to_string(&payload).map_err(js_serde_error)?;
-            let promise = dispatch
-                .call1(&JsValue::NULL, &JsValue::from_str(&payload))
-                .map(|value| js_sys::Promise::resolve(&value));
+            let promise = observe_worker_dispatch(
+                dispatch.call1(&JsValue::NULL, &JsValue::from_str(&payload)),
+            );
             Ok::<_, JsValue>((index, promise))
         })
         .collect::<Result<Vec<_>, JsValue>>()?;
     for (index, promise) in pending {
         let task = &tasks[index];
         let result = match worker_json(promise).await {
-            Ok(json) => match serde_json::from_str::<HostHpoWorkerResult>(&json) {
+            Ok(json) => match deserialize_external_contract::<HostHpoWorkerResult, _>(
+                &json,
+                "worker complete result",
+                CoreDagMlError::RuntimeValidation,
+            ) {
                 Ok(HostHpoWorkerResult::Complete {
                     evidence,
                     data_fingerprint,
@@ -530,11 +668,46 @@ async fn dispatch_prunable_window(
 #[wasm_bindgen]
 #[allow(clippy::too_many_arguments)]
 pub async fn host_hpo_search_parallel_json(
+    execution_plan_json: &js_sys::JsString,
+    trusted_controller_manifests_json: &js_sys::JsString,
+    data_envelope_json: &js_sys::JsString,
+    request_json: &js_sys::JsString,
+    checkpoint_json: Option<js_sys::JsString>,
+    max_workers: usize,
+    js_dispatch: &js_sys::Function,
+    js_optimizer: &js_sys::Function,
+) -> Result<String, JsValue> {
+    let execution_plan_json =
+        crate::js_text::text_argument(execution_plan_json, "execution_plan_json")?;
+    let trusted_controller_manifests_json = crate::js_text::text_argument(
+        trusted_controller_manifests_json,
+        "trusted_controller_manifests_json",
+    )?;
+    let data_envelope_json =
+        crate::js_text::text_argument(data_envelope_json, "data_envelope_json")?;
+    let request_json = crate::js_text::text_argument(request_json, "request_json")?;
+    let checkpoint_json =
+        crate::js_text::optional_text_argument(checkpoint_json, "checkpoint_json")?;
+    host_hpo_search_parallel_json_impl(
+        &execution_plan_json,
+        &trusted_controller_manifests_json,
+        &data_envelope_json,
+        &request_json,
+        checkpoint_json.as_deref(),
+        max_workers,
+        js_dispatch,
+        js_optimizer,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn host_hpo_search_parallel_json_impl(
     execution_plan_json: &str,
     trusted_controller_manifests_json: &str,
     data_envelope_json: &str,
     request_json: &str,
-    checkpoint_json: Option<String>,
+    checkpoint_json: Option<&str>,
     max_workers: usize,
     js_dispatch: &js_sys::Function,
     js_optimizer: &js_sys::Function,
@@ -543,14 +716,13 @@ pub async fn host_hpo_search_parallel_json(
     let trusted_manifests = controller_registry_from_json(trusted_controller_manifests_json)?;
     validate_runtime_controller_manifests(&plan, &trusted_manifests).map_err(js_core_error)?;
     let envelope: ExternalDataPlanEnvelope =
-        serde_json::from_str(data_envelope_json).map_err(js_serde_error)?;
+        decode_host_hpo_argument(data_envelope_json, "host HPO envelope")?;
     let mut options =
         HostHpoResumeOptions::from_envelope(&envelope, None).map_err(js_core_error)?;
     options.checkpoint = checkpoint_json
-        .map(|json| serde_json::from_str(&json).map_err(js_serde_error))
+        .map(|json| decode_host_hpo_argument(json, "host HPO parallel search checkpoint"))
         .transpose()?;
-    let request: HostHpoSearchRequest =
-        serde_json::from_str(request_json).map_err(js_serde_error)?;
+    let request: HostHpoSearchRequest = decode_host_hpo_argument(request_json, "host HPO request")?;
     let mut proposal = JsProposal {
         callback: js_optimizer.clone(),
     };
@@ -580,17 +752,21 @@ pub async fn host_hpo_search_parallel_json(
                 .map(|task| {
                     let payload = serde_json::to_string(task).map_err(js_serde_error)?;
                     let response = dispatch.call1(&JsValue::NULL, &JsValue::from_str(&payload));
-                    Ok::<_, JsValue>((
-                        task.trial_index,
-                        response.map(|value| js_sys::Promise::resolve(&value)),
-                    ))
+                    Ok::<_, JsValue>((task.trial_index, observe_worker_dispatch(response)))
                 })
                 .collect::<Result<Vec<_>, JsValue>>()?;
             let mut results = Vec::with_capacity(pending.len());
             for (trial_index, promise) in pending {
                 let result = worker_json(promise)
                     .await
-                    .and_then(|json| serde_json::from_str(&json).map_err(|error| error.to_string()))
+                    .and_then(|json| {
+                        deserialize_external_contract::<HostHpoWorkerResult, _>(
+                            &json,
+                            "worker result",
+                            CoreDagMlError::RuntimeValidation,
+                        )
+                        .map_err(|error| error.to_string())
+                    })
                     .unwrap_or_else(|error| HostHpoWorkerResult::Failed { trial_index, error });
                 results.push(result);
             }

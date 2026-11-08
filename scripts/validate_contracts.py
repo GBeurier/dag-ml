@@ -50,6 +50,12 @@ SCHEMA_REL = Path("docs/contracts/coordinator_data_plan_envelope.schema.json")
 PREDICT_COHORT_ENVELOPE_V2_SCHEMA_REL = Path(
     "docs/contracts/coordinator_data_plan_envelope.v2.schema.json"
 )
+HOST_HPO_CAPTURE_FIXTURE_REL = Path("examples/fixtures/training/host_hpo_capture.v1.json")
+HOST_HPO_CAPTURE_SCHEMA_BASE = "https://github.com/GBeurier/dag-ml/schemas/"
+HOST_HPO_FAILED_ATTEMPT_REF = (
+    "https://dag-ml.org/contracts/realization_evidence.v1.schema.json#/$defs/FailedAttempt"
+)
+HOST_HPO_TERMINAL_STATUSES = {"completed", "failed", "pruned", "cancelled"}
 FEATURE_FUSION_SCHEMA_REL = Path("docs/contracts/feature_fusion_selector.schema.json")
 DATA_VIEW_REQUEST_V3_SCHEMA_REL = Path("docs/contracts/data_view_request.v3.schema.json")
 DATA_VIEW_REQUEST_V3_FIXTURE_REL = Path("examples/fixtures/data/data_view_request_v3.json")
@@ -19124,6 +19130,480 @@ def validate_w10_training_pack(pack: Any, negatives: dict[str, Any]) -> None:
     )
 
 
+def host_hpo_compact_sha256(value: Any) -> str:
+    """Hash the owner stable JSON layout of an already ordered document."""
+
+    payload = json.dumps(value, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def host_hpo_nonempty_hex(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and bool(value)
+        and len(value) % 2 == 0
+        and all(char in "0123456789abcdef" for char in value)
+    )
+
+
+def host_hpo_owner_digest(value: Any) -> bool:
+    return host_hpo_nonempty_hex(value) and len(value) == 64
+
+
+def host_hpo_located_values_code(
+    owner_evidence_hex: Any,
+    choices: list[dict[str, Any]],
+    params: dict[str, Any],
+) -> str | None:
+    """Mirror the binding of located values to proposal parameters."""
+
+    if not host_hpo_nonempty_hex(owner_evidence_hex):
+        return "attempt_evidence"
+    located: set[str] = set()
+    for choice in choices:
+        parameter = choice["parameter"]
+        try:
+            value = json.loads(bytes.fromhex(choice["value_hex"]).decode("utf-8"))
+        except ValueError:
+            return "attempt_evidence"
+        if parameter not in params or value != params[parameter] or parameter in located:
+            return "attempt_evidence"
+        located.add(parameter)
+    return None if len(located) == len(params) else "attempt_evidence"
+
+
+def host_hpo_failed_attempt_code(failed: dict[str, Any]) -> str | None:
+    """Mirror the closed capture_provenance semantic gate."""
+
+    for attempt in failed["owned_attempts"]:
+        if attempt["ownership"] == "confirmed" and not attempt["owner_ref_hex"]:
+            return "ownership"
+        if (
+            attempt["cleanup"] == "confirmed"
+            and attempt["status"] not in HOST_HPO_TERMINAL_STATUSES
+        ):
+            return "cleanup_observation"
+    return None
+
+
+def host_hpo_pair_fingerprint(
+    checkpoint: dict[str, Any], owner: str, structural_binding: Any
+) -> str:
+    preimage = {"checkpoint_fingerprint": owner, "native_checkpoint": checkpoint}
+    if structural_binding is not None:
+        preimage["structural_binding"] = structural_binding
+    return dagml_tcv1_sha256(preimage)
+
+
+def host_hpo_seal_code(checkpoint: dict[str, Any]) -> str | None:
+    native = checkpoint["checkpoint"]
+    if checkpoint["fingerprint"] != host_hpo_compact_sha256(
+        [
+            checkpoint["schema_version"],
+            native["fingerprint"],
+            checkpoint["source_digest"],
+            checkpoint["attempts"],
+            checkpoint["pending_attempts"],
+        ]
+    ) or native["fingerprint"] != host_hpo_compact_sha256(
+        [native["schema_version"], native["binding"], native["trials"]]
+    ):
+        return "checkpoint_seal"
+    return None
+
+
+def host_hpo_seed_conflict_code(
+    capture: dict[str, Any], restored: dict[str, Any]
+) -> str | None:
+    """Mirror the immutable seed check, which the recorder cannot see."""
+
+    declared = {seed["seed_id"]: seed["requested"] for seed in capture["seed_declarations"]}
+    resolved: dict[str, Any] = {}
+    attempts = restored["attempts"] + [
+        entry["attempt"] for entry in restored["pending_attempts"]
+    ]
+    for attempt in attempts:
+        for seed in attempt["seed_declarations"]:
+            if declared.setdefault(seed["seed_id"], seed["requested"]) != seed["requested"]:
+                return "seed_conflict"
+        for seed in attempt["seed_resolutions"]:
+            facts = [seed[name] for name in ("effective", "resolution", "parent", "policy")]
+            if resolved.setdefault(seed["seed_id"], facts) != facts:
+                return "seed_conflict"
+    return None
+
+
+def host_hpo_restored_attempts_code(
+    capture_id: str, restored: dict[str, Any], trial_budget: int
+) -> str | None:
+    """Mirror the per-attempt checks of a restored checkpoint."""
+
+    trials = restored["checkpoint"]["trials"]
+    pending = restored["pending_attempts"]
+    if len(restored["attempts"]) != len(trials) or any(
+        entry["attempt"]["trial_index"] != len(trials) + offset
+        for offset, entry in enumerate(pending)
+    ):
+        return "attempt_coverage"
+    if any(entry["attempt"]["trial_index"] >= trial_budget for entry in pending):
+        return "pending_outside_budget"
+    owner_refs: set[str] = set()
+
+    def identity_code(attempt: dict[str, Any]) -> str | None:
+        observation = attempt["owner_observation"]
+        owner_ref = attempt["owner_ref_hex"]
+        if (
+            attempt["capture_id"] == capture_id
+            or attempt["terminal_capture_id"] == capture_id
+            or not host_hpo_nonempty_hex(owner_ref)
+            or owner_ref in owner_refs
+            or observation["owner_ref_hex"] != owner_ref
+            or observation["ownership"] != "confirmed"
+            or attempt["phase_index"] is not None
+        ):
+            return "attempt_identity"
+        owner_refs.add(owner_ref)
+        return None
+
+    for attempt, trial in zip(restored["attempts"], trials):
+        evidence = trial.get("evidence", trial)
+        if attempt["trial_index"] != evidence["trial_index"]:
+            return "attempt_identity"
+        code = identity_code(attempt) or host_hpo_located_values_code(
+            attempt["owner_evidence_hex"], attempt["located_choices"], evidence["params"]
+        )
+        if code is not None:
+            return code
+        failed = trial["state"] == "failed"
+        status = {"complete": "completed", "pruned": "pruned", "failed": "failed"}[
+            trial["state"]
+        ]
+        observation = attempt["owner_observation"]
+        cause = trial["error"].encode("utf-8").hex() if failed else None
+        candidate = attempt["candidate"]
+        stage = attempt["failure_stage"]
+        if candidate is None:
+            candidate_bound = failed and stage != "evaluation"
+        else:
+            parameters = json.dumps(
+                evidence["params"], sort_keys=True, separators=(",", ":")
+            )
+            candidate_bound = (
+                candidate["owner_variant_id"] == evidence["variant_id"]
+                and candidate["parameters_hex"] == parameters.encode("utf-8").hex()
+            )
+        if (
+            observation["status"] != status
+            or (failed and observation["cleanup"] != "confirmed")
+            or failed != (stage is not None)
+            or attempt["causal_diagnostic_hex"] != cause
+            or attempt["terminal_capture_id"] is None
+            or attempt["terminal_scope_id"] is None
+            or not candidate_bound
+        ):
+            return "attempt_terminal"
+    for entry in pending:
+        attempt = entry["attempt"]
+        code = identity_code(attempt) or host_hpo_located_values_code(
+            attempt["owner_evidence_hex"], attempt["located_choices"], entry["params"]
+        )
+        if code is not None:
+            return code
+        if (
+            attempt["owner_observation"]["status"] != "running"
+            or attempt["failure_stage"] is not None
+            or attempt["causal_diagnostic_hex"] is not None
+            or attempt["terminal_capture_id"] is not None
+            or attempt["terminal_scope_id"] is not None
+        ):
+            return "attempt_terminal"
+    return None
+
+
+def host_hpo_prefix_provenance(publication: dict[str, Any]) -> list[dict[str, Any]]:
+    """Mirror host_hpo_capture_prefix_provenance for a paired publication."""
+
+    checkpoint = publication["checkpoint"]
+    return [
+        {
+            "failed_capture_id": attempt["terminal_capture_id"],
+            "failed_scope_id": attempt["terminal_scope_id"],
+            "failure_stage": attempt["failure_stage"],
+            "causal_diagnostic_hex": attempt["causal_diagnostic_hex"],
+            "owned_attempts": [attempt["owner_observation"]],
+            "trusted_prefix_ref": {
+                "owner_ref_hex": attempt["owner_ref_hex"],
+                "checkpoint_fingerprint": checkpoint["fingerprint"],
+                "pair_fingerprint": publication["pair_fingerprint"],
+            },
+        }
+        for attempt in checkpoint["attempts"]
+        if attempt["owner_observation"]["status"] == "failed"
+    ]
+
+
+def host_hpo_prior_attempts_code(
+    capture: dict[str, Any], publication: dict[str, Any]
+) -> str | None:
+    checkpoint = publication["checkpoint"]
+    prior = capture["failed_attempts"]
+    required = host_hpo_prefix_provenance(publication)
+    attempts = checkpoint["attempts"]
+    for failed in prior:
+        prefix = failed["trusted_prefix_ref"]
+        if prefix is None:
+            if failed["owned_attempts"]:
+                return "unbound_prior_attempts"
+            continue
+        if prefix["checkpoint_fingerprint"] != checkpoint["fingerprint"]:
+            return "prefix_mismatch"
+        if prefix["pair_fingerprint"] != publication["pair_fingerprint"]:
+            return "pair_mismatch"
+        if all(attempt["owner_ref_hex"] != prefix["owner_ref_hex"] for attempt in attempts):
+            return "prefix_owner_mismatch"
+    for failed in prior:
+        for owned in failed["owned_attempts"]:
+            if (
+                owned["ownership"] != "confirmed"
+                or owned["status"] not in HOST_HPO_TERMINAL_STATUSES
+            ):
+                return "prior_attempt_uncertain"
+            if not any(
+                owned["owner_ref_hex"] == attempt["owner_ref_hex"]
+                and attempt["owner_observation"]["status"] == owned["status"]
+                for attempt in attempts
+            ):
+                return "prior_attempt_outside_prefix"
+    if any(failed not in prior for failed in required):
+        return "unpaired_failed_trial"
+    if any(failed["owned_attempts"] and failed not in required for failed in prior):
+        return "prior_attempt_outside_prefix"
+    return None
+
+
+def host_hpo_capture_lineage_code(
+    capture: dict[str, Any],
+    publication: dict[str, Any] | None,
+    observed: dict[str, Any] | None,
+    trial_budget: int = 3,
+) -> str | None:
+    """Mirror the lineage order, without the owner Recorder dry replay."""
+
+    declaration = capture["declaration_text"].encode("utf-8")
+    if hashlib.sha256(declaration).hexdigest() != capture["source_digest"]:
+        return "source_digest"
+    prior = capture["failed_attempts"]
+    for failed in prior:
+        code = host_hpo_failed_attempt_code(failed)
+        if code is not None:
+            return code
+    if observed is not None and not (
+        observed["owner_checkpoint_fingerprint"] is None
+        or host_hpo_owner_digest(observed["owner_checkpoint_fingerprint"])
+    ):
+        return "owner_state_invalid"
+    if any(failed["failed_capture_id"] == capture["capture_id"] for failed in prior):
+        return "capture_lineage_reused"
+    if publication is None:
+        if any(failed["trusted_prefix_ref"] is not None for failed in prior):
+            return "prefix_mismatch"
+        if (observed is not None and observed["owner_trial_count"] != 0) or any(
+            failed["owned_attempts"] for failed in prior
+        ):
+            return "fresh_store_required"
+        return None
+    restored = publication["checkpoint"]
+    if restored["source_digest"] != capture["source_digest"]:
+        return "declaration_mismatch"
+    code = host_hpo_seal_code(restored)
+    if code is not None:
+        return code
+    pair = publication["pair_fingerprint"]
+    owner = publication["owner_checkpoint_fingerprint"]
+    if pair is None or owner is None:
+        return "pair_unavailable"
+    if not host_hpo_owner_digest(owner):
+        return "owner_state_invalid"
+    if pair != host_hpo_pair_fingerprint(
+        restored, owner, publication["structural_binding"]
+    ):
+        return "pair_mismatch"
+    if observed is not None:
+        current = observed["owner_checkpoint_fingerprint"]
+        if current is None:
+            return "pair_unavailable"
+        if pair != host_hpo_pair_fingerprint(
+            restored, current, observed["structural_binding"]
+        ):
+            return "pair_mismatch"
+        expected = len(restored["checkpoint"]["trials"]) + len(restored["pending_attempts"])
+        if observed["owner_trial_count"] != expected:
+            return "owner_row_mismatch"
+    return (
+        host_hpo_restored_attempts_code(capture["capture_id"], restored, trial_budget)
+        or host_hpo_seed_conflict_code(capture, restored)
+        or host_hpo_prior_attempts_code(capture, publication)
+    )
+
+
+def host_hpo_capture_vector_code(
+    schema: dict[str, Any],
+    document: Any,
+    registry: Registry,
+    label: str,
+    semantic: Any,
+) -> str:
+    """Return `schema`, a stable semantic code or `accepted` for one vector."""
+
+    try:
+        validate_draft_2020_instance(document, schema, registry, label)
+    except ContractError:
+        return "schema"
+    return semantic(document) or "accepted"
+
+
+def validate_host_hpo_capture_contract(
+    registry: Registry,
+    schemas_by_id: dict[str, dict[str, Any]],
+    fixture: dict[str, Any],
+) -> None:
+    """Check the closed capture schemas and pure bindings against literal vectors.
+
+    This mirror proves contract consistency only. `gate=recorder` vectors are
+    judged by the Rust owner Recorder, so here they must merely stay schema-valid
+    and pass the pure checks that precede that gate.
+    """
+
+    label = "host HPO capture fixture"
+    require(fixture["schema_version"] == 2, f"{label} version drifted")
+    require(fixture["profile"] == "host_hpo_capture.v2", f"{label} profile drifted")
+    diagnostic = fixture["planning_sibling_diagnostic"]
+    require(
+        diagnostic == "not evaluated; owning window planning failed"
+        and fixture["planning_sibling_diagnostic_hex"] == diagnostic.encode("utf-8").hex(),
+        f"{label} planning sibling diagnostic drifted",
+    )
+
+    def schema(name: str) -> dict[str, Any]:
+        document = schemas_by_id.get(f"{HOST_HPO_CAPTURE_SCHEMA_BASE}{name}.schema.json")
+        require(isinstance(document, dict), f"{label} schema `{name}` is not registered")
+        return document
+
+    def proposal_code(document: dict[str, Any]) -> str | None:
+        outcome = document["outcome"]
+        if outcome["status"] != "proposed":
+            return None
+        seed_ids = [seed["seed_id"] for seed in outcome["seed_resolutions"]]
+        return host_hpo_located_values_code(
+            outcome["owner_evidence_hex"], outcome["located_choices"], outcome["params"]
+        ) or ("seed_resolution_conflict" if len(set(seed_ids)) != len(seed_ids) else None)
+
+    base_capture = fixture["resume_fixture"]["request"]["capture"]
+
+    def publication_code(document: dict[str, Any]) -> str | None:
+        capture = dict(base_capture, failed_attempts=host_hpo_prefix_provenance(document))
+        return host_hpo_capture_lineage_code(capture, document, None)
+
+    groups = [
+        ("proposal_vectors", schema("host_hpo_proposal_evidence.v1"), proposal_code),
+        (
+            "attempt_vectors",
+            {"$ref": f"{HOST_HPO_CAPTURE_SCHEMA_BASE}host_hpo_proposal_evidence.v1.schema.json#/$defs/attempt"},
+            lambda document: None,
+        ),
+        (
+            "proposal_state_vectors",
+            {"$ref": f"{HOST_HPO_CAPTURE_SCHEMA_BASE}host_hpo_proposal_evidence.v1.schema.json#/$defs/proposal_state"},
+            lambda document: None,
+        ),
+        (
+            "request_vectors",
+            schema("host_hpo_search_request.v2"),
+            lambda document: host_hpo_capture_lineage_code(document["capture"], None, None),
+        ),
+        ("publication_vectors", schema("host_hpo_checkpoint.v2"), publication_code),
+        (
+            "failed_attempt_vectors",
+            {"$ref": HOST_HPO_FAILED_ATTEMPT_REF},
+            host_hpo_failed_attempt_code,
+        ),
+    ]
+    for key, document_schema, semantic in groups:
+        vectors = fixture[key]
+        require(
+            any(vector["expect"] == "accepted" for vector in vectors)
+            and any(vector["expect"] != "accepted" for vector in vectors),
+            f"{label}.{key} needs positive and negative vectors",
+        )
+        for vector in vectors:
+            vector_label = f"{label}.{key}.{vector['id']}"
+            expected = "accepted" if vector.get("gate") == "recorder" else vector["expect"]
+            code = host_hpo_capture_vector_code(
+                document_schema, vector["document"], registry, vector_label, semantic
+            )
+            require(code == expected, f"{vector_label}: expected {expected}, observed {code}")
+    sibling_hex = fixture["planning_sibling_diagnostic_hex"]
+    require(
+        any(
+            attempt["diagnostic_hex"] == sibling_hex
+            for vector in fixture["failed_attempt_vectors"]
+            if vector["expect"] == "accepted"
+            for attempt in vector["document"]["owned_attempts"]
+        ),
+        f"{label} lacks the planning sibling diagnostic vector",
+    )
+    documents = {
+        vector["id"]: vector["document"] for vector in fixture["publication_vectors"]
+    }
+    goldens = {
+        "failed_prefix_binary64_params": documents["bound_failed_prefix"],
+        "completed_float_score": documents["completed_float_score"],
+        "extended_canonical_binding": documents["bound_failed_prefix"],
+    }
+    require(
+        {golden["id"] for golden in fixture["pair_goldens"]} == set(goldens),
+        f"{label} pair goldens drifted",
+    )
+    for golden in fixture["pair_goldens"]:
+        document = goldens[golden["id"]]
+        owner = golden["owner_checkpoint_fingerprint"]
+        binding = golden.get("structural_binding")
+        require(
+            dagml_tcv1_sha256(golden["owner_state"]) == owner
+            and document["owner_checkpoint_fingerprint"] == owner
+            and document["checkpoint"]["fingerprint"] == golden["checkpoint_fingerprint"]
+            and (binding is not None or document["pair_fingerprint"] == golden["pair_fingerprint"])
+            and host_hpo_pair_fingerprint(document["checkpoint"], owner, binding)
+            == golden["pair_fingerprint"],
+            f"{label} pair golden `{golden['id']}` drifted",
+        )
+    publications = {
+        "failed": fixture["resume_fixture"]["publication"],
+        "pending": fixture["resume_fixture"]["pending_publication"],
+    }
+    for vector in fixture["resume_vectors"]:
+        capture = dict(
+            base_capture,
+            capture_id=vector["capture_id"],
+            failed_attempts=vector["failed_attempts"],
+            seed_declarations=vector.get(
+                "seed_declarations", base_capture["seed_declarations"]
+            ),
+        )
+        publication = publications[vector.get("publication", "failed")]
+        code = host_hpo_capture_lineage_code(
+            capture,
+            publication if vector["restored"] else None,
+            vector["observed"],
+            vector.get("trial_budget", 3),
+        ) or "accepted"
+        require(
+            code == vector["expect"],
+            f"{label}.resume_vectors.{vector['id']}: expected {vector['expect']}, "
+            f"observed {code}",
+        )
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -19346,6 +19826,11 @@ def main(argv: list[str] | None = None) -> int:
         ]
         local_header = load_text(ROOT / LOCAL_C_HEADER_REL)
         local_schema_registry, local_schemas_by_id = build_local_schema_registry()
+        validate_host_hpo_capture_contract(
+            local_schema_registry,
+            local_schemas_by_id,
+            load_json(ROOT / HOST_HPO_CAPTURE_FIXTURE_REL),
+        )
         validate_estimator_draft_2020_contracts(
             local_schema_registry,
             local_schemas_by_id,

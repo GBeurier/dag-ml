@@ -8,7 +8,7 @@ import readline from "node:readline";
 import {createRequire} from "node:module";
 import {pathToFileURL} from "node:url";
 import {N4mWasmMultimodalController, SOURCE_ORDER, multimodalManifest, strictJson} from "../bindings/js/n4m_multimodal_controller.mjs";
-import {replayMultimodalArchive} from "../bindings/js/multimodal_archive.mjs";
+import {multimodalArchivePackage, replayMultimodalArchive} from "../bindings/js/multimodal_archive.mjs";
 
 const [mode, inputPath, methodsPath, dagPath, outputPath] = process.argv.slice(2);
 assert.ok(["--worker", "--campaign"].includes(mode), "--worker CONFIG METHODS_DIST or --campaign CAPTURE METHODS_DIST DAG_WASM OUTPUT required");
@@ -107,7 +107,18 @@ if(mode === "--worker") {
   const outcome=JSON.parse(complete.training_outcome_json),packageValue=JSON.parse(complete.portable_predictor_package_json);
   compareScores(outcome.score_set,wire.training_outcome.score_set);
   assert.equal(packageValue.artifact_bindings.length,1);assert.equal(packageValue.execution_bundle.refit_artifacts[0].artifact.kind,"methods_multimodal_pipeline");
-  const assembled=JSON.parse(dag.build_archive_v2_native_portable_payloads_json("archive:u07.wasm",complete.training_outcome_json,complete.portable_predictor_package_json));assert.equal(assembled.manifest.payloads.methods.multimodal_pipelines.length,1);
+  assert.ok(process.env.DAG_ML_CORE_JS_ENTRY,"Actual freshly built Core JS entry is mandatory for the archive consumer");
+  const core=await import(pathToFileURL(path.resolve(process.env.DAG_ML_CORE_JS_ENTRY)).href);
+  // Core stores the exact owner-serialized outcome/package bytes in its native container and validates the selected closure.
+  const utf8=new TextEncoder(),outcomeBytes=utf8.encode(complete.training_outcome_json),packageBytes=utf8.encode(complete.portable_predictor_package_json);
+  const nativeBytes=await core.writeNativePredictorPackage("archive:u07.wasm",outcomeBytes,packageBytes);
+  const nativeArchive=await core.readPortableArchiveV2(nativeBytes);
+  assert.equal(nativeArchive.view.profile,"native-methods-package");assert.equal(nativeArchive.view.package_schema_version,2);
+  assert.equal(nativeArchive.archiveId,"archive:u07.wasm");assert.equal(nativeArchive.archiveSha256,hash(nativeBytes));assert.equal(nativeArchive.view.archive_sha256,nativeArchive.archiveSha256);
+  assert.ok(Buffer.from(nativeArchive.package).equals(Buffer.from(packageBytes)),"Core must return the exact original package bytes");
+  assert.ok(nativeArchive.trainingOutcome instanceof Uint8Array&&Buffer.from(nativeArchive.trainingOutcome).equals(Buffer.from(outcomeBytes)),"Core must return the exact original TrainingOutcome bytes");
+  assert.ok(Buffer.from(nativeArchive.members[nativeArchive.view.package_member]).equals(Buffer.from(packageBytes)));
+  const archivePackage=multimodalArchivePackage(nativeArchive);assert.equal(archivePackage.packageText,complete.portable_predictor_package_json);
   const searchArgs=owner(transport.search_request);searchArgs.controller_manifests=[manifest];
   const compiled=losslessJson(dag.compile_pipeline_dsl_artifact_with_controllers_json(JSON.stringify(searchArgs.dsl),JSON.stringify([manifest])));
   const plan=dag.build_execution_plan_json("plan:u07.wasm.hpo",JSON.stringify(compiled.graph),JSON.stringify(compiled.campaign_template),JSON.stringify([manifest]));
@@ -117,19 +128,18 @@ if(mode === "--worker") {
   const replayConfig={...config,sources:wire.prediction_sources,targets:null,allow_fit:false};const replayController=makeController(replayConfig,false);
   const replayRequest={...transport.prediction_request};replayRequest.source_outcome_fingerprint=packageValue.training_outcome.outcome_fingerprint;
   const originalFit=methods.MultimodalPipeline.prototype.fit;methods.MultimodalPipeline.prototype.fit=()=>{throw new Error("Loaded complete predictor cannot FIT");};let replay;
-  try {replay=JSON.parse(dag.replay_training_package_json(complete.portable_predictor_package_json,dag.sign_training_replay_request_json(JSON.stringify(replayRequest)),JSON.stringify(transport.prediction_envelopes),JSON.stringify([manifest]),"outcome:u07.wasm.replay","run:u07.wasm.replay",replayController.callback));assert.equal(replayController.models.size,0);}finally{methods.MultimodalPipeline.prototype.fit=originalFit;close(replayController);}
+  try {replay=JSON.parse(dag.replay_training_package_json(archivePackage.packageText,dag.sign_training_replay_request_json(JSON.stringify(replayRequest)),JSON.stringify(transport.prediction_envelopes),JSON.stringify([manifest]),"outcome:u07.wasm.replay","run:u07.wasm.replay",replayController.callback));assert.equal(replayController.models.size,0);}finally{methods.MultimodalPipeline.prototype.fit=originalFit;close(replayController);}
   assert.deepEqual(replayController.audit.map(row=>row.operation),["hydrate","PREDICT","dispose","release"]);
   compareNumbers(replayPredictionValues(dag,replay,wire.prediction_sources.nir.sample_ids,wire.target_names),wire.expected_prediction,"Fresh raw-input replay");
-  assert.ok(process.env.DAG_ML_CORE_JS_ENTRY,"Actual freshly built Core JS entry is mandatory for the archive consumer");
-  const core=await import(pathToFileURL(path.resolve(process.env.DAG_ML_CORE_JS_ENTRY)).href);
   const producerController=makeController({...replayConfig,controller_id:"controller:methods.python.multimodal"},false);
-  let producerArchive;
+  let producerArchive;const producerBytes=Uint8Array.from(fs.readFileSync(wire.archive));
   methods.MultimodalPipeline.prototype.fit=()=>{throw new Error("Unchanged producer archive cannot FIT");};
-  try {producerArchive=await replayMultimodalArchive({archiveBytes:Uint8Array.from(fs.readFileSync(wire.archive)),readPortableArchiveV2:core.readPortableArchiveV2,dagMl:dag,controller:producerController,dataEnvelopes:transport.prediction_envelopes,request:transport.prediction_request,outcomeId:"outcome:u07.python-in-wasm",runId:"run:u07.python-in-wasm"});}finally{methods.MultimodalPipeline.prototype.fit=originalFit;close(producerController);}
+  try {producerArchive=await replayMultimodalArchive({archiveBytes:producerBytes,readPortableArchiveV2:core.readPortableArchiveV2,dagMl:dag,controller:producerController,dataEnvelopes:transport.prediction_envelopes,request:transport.prediction_request,outcomeId:"outcome:u07.python-in-wasm",runId:"run:u07.python-in-wasm"});}finally{methods.MultimodalPipeline.prototype.fit=originalFit;close(producerController);}
   assert.deepEqual(producerController.audit.map(row=>row.operation),["hydrate","PREDICT","dispose","release"]);
+  assert.equal(producerArchive.archiveSha256,hash(producerBytes));
   compareNumbers(replayPredictionValues(dag,producerArchive.replay,wire.prediction_sources.nir.sample_ids,wire.target_names),wire.expected_prediction,"unchanged Python archive");
   assert.equal(outcome.selected_variant_id,wire.training_outcome.selected_variant_id);assert.equal(search.selected_trial_index,wire.search_result.selected_trial_index);
   assert.equal(search.trials.length,wire.search_result.trials.length);
   search.trials.forEach((trial,index)=>{assert.deepEqual(trial.params,wire.search_result.trials[index].params);compareNumbers([trial.score],[wire.search_result.trials[index].score],"native HPO score");compareScores(trial.scores,wire.search_result.trials[index].scores);});
-  fs.writeFileSync(outputPath,JSON.stringify({host:"wasm",training_outcome:outcome,package:packageValue,archive_inputs:assembled,search_result:search,replay,producer_archive:producerArchive,training_lifecycle:controller.audit,replay_lifecycle:replayController.audit,producer_archive_lifecycle:producerController.audit,runtime:{execution_host:"wasm",signed_controller:controller.controllerId,node:process.version,dag_wasm_sha256:hash(fs.readFileSync(path.join(dagPath,"dag_ml_wasm_bg.wasm"))),methods_dist:path.resolve(methodsPath)}},null,2)+"\n");
+  fs.writeFileSync(outputPath,JSON.stringify({host:"wasm",training_outcome:outcome,package:packageValue,native_archive:{archive_id:nativeArchive.archiveId,archive_sha256:nativeArchive.archiveSha256,view:nativeArchive.view,manifest:nativeArchive.manifest,package_sha256:hash(nativeArchive.package),training_outcome_sha256:hash(nativeArchive.trainingOutcome),selected_member_sha256:Object.fromEntries(Object.entries(nativeArchive.members).map(([name,bytes])=>[name,hash(bytes)]))},search_result:search,replay,producer_archive:producerArchive,training_lifecycle:controller.audit,replay_lifecycle:replayController.audit,producer_archive_lifecycle:producerController.audit,runtime:{execution_host:"wasm",signed_controller:controller.controllerId,node:process.version,dag_wasm_sha256:hash(fs.readFileSync(path.join(dagPath,"dag_ml_wasm_bg.wasm"))),methods_dist:path.resolve(methodsPath)}},null,2)+"\n");
 }

@@ -136,6 +136,10 @@ static int extract_seed(const char *json, size_t len, char *out, size_t out_len)
     return 1;
 }
 
+static unsigned controller_invoke_count = 0;
+static unsigned data_callback_count = 0;
+static unsigned artifact_materialize_count = 0;
+
 static DagMlStatusCode data_materialize(
     void *user_data,
     DagMlHandle dataset,
@@ -144,6 +148,7 @@ static DagMlStatusCode data_materialize(
 ) {
     (void)user_data;
     (void)request_json;
+    data_callback_count++;
     if (!out_handle || dataset == 0) {
         return DAG_ML_STATUS_INVALID_ARGUMENT;
     }
@@ -159,6 +164,7 @@ static DagMlStatusCode data_make_view(
 ) {
     (void)user_data;
     (void)selector_json;
+    data_callback_count++;
     if (!out_view || data == 0) {
         return DAG_ML_STATUS_INVALID_ARGUMENT;
     }
@@ -184,6 +190,7 @@ static DagMlStatusCode artifact_materialize(
 ) {
     (void)user_data;
     (void)request_json;
+    artifact_materialize_count++;
     if (!out_handle) {
         return DAG_ML_STATUS_INVALID_ARGUMENT;
     }
@@ -198,6 +205,7 @@ static DagMlStatusCode controller_invoke(
     DagMlOwnedBytes *out_result_json
 ) {
     (void)user_data;
+    controller_invoke_count++;
     if (!task_json.ptr || !out_result_json) {
         return DAG_ML_STATUS_INVALID_ARGUMENT;
     }
@@ -470,8 +478,8 @@ static int verify_pipeline_dsl_compile(void) {
 }
 
 int main(int argc, char **argv) {
-    if (argc != 7) {
-        fprintf(stderr, "usage: %s GRAPH CAMPAIGN CONTROLLERS BUNDLE REQUEST ENVELOPES\n", argv[0]);
+    if (argc != 7 && argc != 8) {
+        fprintf(stderr, "usage: %s GRAPH CAMPAIGN CONTROLLERS BUNDLE REQUEST ENVELOPES [EXPECTED_ERROR]\n", argv[0]);
         return 2;
     }
     if (!verify_prediction_tensor_exports()) {
@@ -608,6 +616,26 @@ int main(int argc, char **argv) {
     free(request.ptr);
     free(envelopes.ptr);
     dagml_owned_bytes_free(plan);
+    printf("callbacks: invoke=%u data=%u artifact=%u\n",
+        controller_invoke_count, data_callback_count, artifact_materialize_count);
+    if (argc == 8) {
+        int refused = status != DAG_ML_STATUS_OK && error.ptr &&
+            contains_bytes((const uint8_t *)error.ptr, error.len, argv[7]);
+        int zero_callbacks = controller_invoke_count == 0 && data_callback_count == 0 &&
+            artifact_materialize_count == 0 && data_release_count == 0;
+        if (!refused || !zero_callbacks) {
+            fprintf(stderr, "expected refusal before callbacks; status=%u error=%.*s output=%.*s\n",
+                status, (int)error.len, error.ptr ? error.ptr : "",
+                (int)out.len, out.ptr ? (char *)out.ptr : "");
+        }
+        if (error.ptr) {
+            dagml_string_free(error);
+        }
+        if (out.ptr) {
+            dagml_owned_bytes_free(out);
+        }
+        return refused && zero_callbacks ? 0 : 1;
+    }
     if (status != DAG_ML_STATUS_OK) {
         fprintf(stderr, "dagml_replay_execute_json failed with status %u: %.*s\n",
             status,
@@ -634,6 +662,12 @@ int main(int argc, char **argv) {
         dagml_owned_bytes_free(out);
         return 1;
     }
+    if (controller_invoke_count != 2 || data_callback_count == 0 || artifact_materialize_count == 0) {
+        fprintf(stderr, "successful replay did not exercise all callback kinds\n");
+        dagml_owned_bytes_free(out);
+        return 1;
+    }
+    printf("replay result_count=2\n");
     dagml_owned_bytes_free(out);
     return 0;
 }
@@ -2932,4 +2966,220 @@ fn c_program_refuses_native_training_before_callbacks_against_c_abi() {
         String::from_utf8_lossy(&run_output.stdout),
         String::from_utf8_lossy(&run_output.stderr)
     );
+}
+
+#[test]
+fn c_program_checks_external_test_training_authority_before_callbacks() {
+    use dag_ml_core::{
+        ExternalDataPlanEnvelope, PredictCohort, PredictCohortRole, ReplayPhaseRequest,
+        SampleRelationSet,
+    };
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let workspace = manifest_dir.parent().and_then(Path::parent).unwrap();
+    let read = |path: &str| -> serde_json::Value {
+        serde_json::from_slice(&fs::read(workspace.join(path)).unwrap()).unwrap()
+    };
+    let mut good: ExternalDataPlanEnvelope = serde_json::from_value(read(
+        "examples/fixtures/data/coordinator_data_plan_envelope_sample12.json",
+    ))
+    .unwrap();
+    let hash = good
+        .coordinator_relations
+        .as_ref()
+        .unwrap()
+        .fingerprint()
+        .unwrap();
+    good.relation_fingerprint = Some(hash.clone());
+    good.schema_version = 2;
+    let relations_for = |sample: &str| -> SampleRelationSet {
+        serde_json::from_value(serde_json::json!({"records": [{
+            "observation_id": format!("observation:{sample}"), "sample_id": sample,
+            "target_id": format!("target:{sample}"), "group_id": format!("group:{sample}"),
+            "source_id": "nir", "is_augmented": false, "origin_sample_id": null
+        }]}))
+        .unwrap()
+    };
+    good.predict_cohort = Some(
+        PredictCohort::from_relations(
+            PredictCohortRole::ExternalTest,
+            relations_for("sample:c.conformance"),
+            vec!["y".into()],
+            "c".repeat(64),
+            Some("d".repeat(64)),
+        )
+        .unwrap(),
+    );
+    good.validate().unwrap();
+    let mut campaign: CampaignSpec =
+        serde_json::from_value(read("examples/campaign_oof_generation.json")).unwrap();
+    campaign
+        .data_bindings
+        .get_mut(&NodeId::new("model:base").unwrap())
+        .unwrap()[0]
+        .relation_fingerprint = Some(hash);
+    let manifests: Vec<ControllerManifest> =
+        serde_json::from_value(read("examples/controller_manifests.json")).unwrap();
+    let mut registry = ControllerRegistry::new();
+    for manifest in &manifests {
+        registry.register(manifest.clone()).unwrap();
+    }
+    // The C harness rebuilds this exact plan id from the regenerated campaign.
+    let plan = build_execution_plan(
+        "plan:cli.bundle",
+        serde_json::from_value(read("examples/minimal_graph.json")).unwrap(),
+        campaign,
+        &registry,
+    )
+    .unwrap();
+    let spec = read("examples/fixtures/bundle/bundle_build_spec_minimal.json");
+    let bundle = build_execution_bundle(
+        serde_json::from_value(spec["bundle_id"].clone()).unwrap(),
+        &plan,
+        Some(plan.variants[0].variant_id.clone()),
+        serde_json::from_value(spec["selections"].clone()).unwrap(),
+        serde_json::from_value(spec["refit_artifacts"].clone()).unwrap(),
+    )
+    .unwrap();
+    bundle.validate_against_plan(&plan).unwrap();
+    let target_debug = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .and_then(Path::parent)
+        .unwrap()
+        .to_path_buf();
+    let library = find_dynamic_library(&target_debug);
+    let temp = std::env::temp_dir().join(format!(
+        "dag_ml_c_authority_{}_{}",
+        std::process::id(),
+        unique_suffix()
+    ));
+    fs::create_dir(&temp).unwrap();
+    let source_path = temp.join("authority.c");
+    let executable = temp.join("authority");
+    fs::write(&source_path, C_CONFORMANCE_SOURCE).unwrap();
+    fs::write(
+        temp.join("campaign.json"),
+        serde_json::to_vec(&plan.campaign).unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        temp.join("bundle.json"),
+        serde_json::to_vec(&bundle).unwrap(),
+    )
+    .unwrap();
+    let mut compiler = Command::new(std::env::var("CC").unwrap_or_else(|_| "cc".into()));
+    compiler
+        .arg("-std=c11")
+        .arg(&source_path)
+        .arg("-I")
+        .arg(manifest_dir.join("include"))
+        .arg(&library)
+        .arg("-o")
+        .arg(&executable);
+    if cfg!(any(target_os = "linux", target_os = "macos")) {
+        compiler.arg(format!(
+            "-Wl,-rpath,{}",
+            library.parent().unwrap().display()
+        ));
+    }
+    let compiled = compiler.output().unwrap();
+    assert!(
+        compiled.status.success(),
+        "C authority harness compile failed: {}",
+        String::from_utf8_lossy(&compiled.stderr)
+    );
+    let authority_error = "external_test training relations do not match owner authority";
+    let bundle_error = "replay envelope for `model:base.x` does not match bundle data requirement";
+    for (label, expected, phase) in [
+        ("positive", None, Phase::Predict),
+        ("wrong-set", Some(authority_error), Phase::Predict),
+        ("wrong-set", Some(authority_error), Phase::Explain),
+        ("wrong-string", Some(bundle_error), Phase::Predict),
+        ("v1", None, Phase::Predict),
+        ("inference", None, Phase::Predict),
+    ] {
+        let mut envelope = good.clone();
+        if label == "wrong-set" {
+            envelope.coordinator_relations = Some(relations_for("sample:unrelated:authority"));
+            envelope.predict_cohort = Some(
+                PredictCohort::from_relations(
+                    PredictCohortRole::ExternalTest,
+                    relations_for("sample:1"),
+                    vec!["y".into()],
+                    "c".repeat(64),
+                    Some("d".repeat(64)),
+                )
+                .unwrap(),
+            );
+        } else if label == "wrong-string" {
+            envelope.relation_fingerprint = Some("a".repeat(64));
+        } else if label == "v1" {
+            envelope.schema_version = 1;
+            envelope.predict_cohort = None;
+        } else if label == "inference" {
+            envelope.predict_cohort = Some(
+                PredictCohort::from_relations(
+                    PredictCohortRole::Inference,
+                    relations_for("sample:c.conformance"),
+                    vec!["y".into()],
+                    "c".repeat(64),
+                    None,
+                )
+                .unwrap(),
+            );
+            envelope.coordinator_relations = Some(relations_for("sample:unrelated:authority"));
+        }
+        envelope.validate().unwrap();
+        let envelopes = BTreeMap::from([("model:base.x".to_string(), envelope)]);
+        if label != "wrong-string" {
+            bundle.validate_replay_envelopes(&envelopes).unwrap();
+        }
+        fs::write(
+            temp.join("envelopes.json"),
+            serde_json::to_vec(&envelopes).unwrap(),
+        )
+        .unwrap();
+        let request = ReplayPhaseRequest {
+            bundle_id: bundle.bundle_id.clone(),
+            phase,
+            data_envelope_keys: envelopes.keys().cloned().collect(),
+        };
+        fs::write(
+            temp.join("request.json"),
+            serde_json::to_vec(&request).unwrap(),
+        )
+        .unwrap();
+        let mut command = Command::new(&executable);
+        command
+            .arg(workspace.join("examples/minimal_graph.json"))
+            .arg(temp.join("campaign.json"))
+            .arg(workspace.join("examples/controller_manifests.json"))
+            .arg(temp.join("bundle.json"))
+            .arg(temp.join("request.json"))
+            .arg(temp.join("envelopes.json"));
+        if let Some(expected) = expected {
+            command.arg(expected);
+        }
+        let output = command.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{label} {phase:?}: status={}\nstdout:\n{}\nstderr:\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if expected.is_some() {
+            assert!(
+                stdout.contains("callbacks: invoke=0 data=0 artifact=0"),
+                "{label}: {stdout}"
+            );
+        } else {
+            assert!(
+                stdout.contains("replay result_count=2"),
+                "{label}: {stdout}"
+            );
+        }
+    }
+    fs::remove_dir_all(temp).unwrap();
 }

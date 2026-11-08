@@ -1,0 +1,9 @@
+{
+  "source": "dag-ml-core/tests/fixtures/artifact_facets_b1, genuine published owner producer; 40 development/48 heldout samples, target protein",
+  "scope": "Exact byte copies for compiled Python binding callback-refusal tests; no native execution or installed-wheel qualification claimed.",
+  "sha256": {
+    "ppc.before.json": "b4575e23003bcb9f9c29bd4e95c3f7adefe8d2a96507a484d944390a31911b84",
+    "replay_request.json": "52bbe42104d92ca66a220ee34124bbf3176513bb7547c197cc183a16f16f631e",
+    "replay_envelope.json": "42bdbd9307b933d82fecbeffc007587243fbcaf5d035516cfd243407f84293ef"
+  }
+}

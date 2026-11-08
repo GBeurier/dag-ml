@@ -12,6 +12,7 @@ const pkg = path.resolve(process.argv[2] || path.join(repo, "crates/dag-ml-wasm/
 const files = new Map([
   ["/", [path.join(repo, "scripts/browser_hpo/index.html"), "text/html"]],
   ["/worker.js", [path.join(repo, "scripts/browser_hpo/worker.js"), "text/javascript"]],
+  ["/n4m_multimodal_controller.mjs", [path.join(repo, "bindings/js/n4m_multimodal_controller.mjs"), "text/javascript"]],
   ["/ridge_operator.js", [path.join(repo, "scripts/browser_hpo/ridge_operator.js"), "text/javascript"]],
   ["/ridge_refit_oracle.js", [path.join(repo, "scripts/wasm_ridge_refit_oracle.mjs"), "text/javascript"]],
   ["/initial_refit_fixture.json", [path.join(repo, "crates/dag-ml-core/tests/fixtures/initial_full_refit/package.json"), "application/json"]],

@@ -119,7 +119,7 @@ impl RuntimeController for TrainingController {
         } else {
             Vec::new()
         };
-        if explicit_model_ports {
+        if explicit_model_ports && !predictions.is_empty() {
             let mut sibling = predictions
                 .first()
                 .expect("explicit C ABI model port controller emits the primary prediction")
@@ -215,7 +215,17 @@ impl RuntimeController for TrainingController {
             consumed_data_views: std::collections::BTreeMap::new(),
             observation_predictions: Vec::new(),
             aggregated_predictions: Vec::new(),
-            explanations: Vec::new(),
+            explanations: if is_model && task.phase == Phase::Explain {
+                vec![dag_ml_core::ExplanationBlock {
+                    producer_node: task.node_plan.node_id.clone(),
+                    producer_port: Some("oof".into()),
+                    method: "synthetic_zero_importance".into(),
+                    target_name: Some(self.prediction_name.clone()),
+                    payload: serde_json::json!({"importance": 0.0}),
+                }]
+            } else {
+                Vec::new()
+            },
             shape_deltas: Vec::new(),
             artifacts: artifacts.clone(),
             artifact_handles,
@@ -555,6 +565,7 @@ enum ResultWireMutation {
     None,
     UnknownRootField,
     PositionalOutputHandle,
+    AlienReplayId,
 }
 
 unsafe extern "C" fn host_invoke(
@@ -574,6 +585,13 @@ unsafe extern "C" fn host_invoke(
             let mut result_json = serde_json::to_value(&result).expect("serialize node result");
             match host.result_wire_mutation {
                 ResultWireMutation::None => {}
+                ResultWireMutation::AlienReplayId => {
+                    if task.phase == Phase::Predict {
+                        for block in result_json["predictions"].as_array_mut().unwrap() {
+                            block["sample_ids"][0] = serde_json::json!("sample:alien");
+                        }
+                    }
+                }
                 ResultWireMutation::UnknownRootField => {
                     result_json.as_object_mut().unwrap().insert(
                         "unexpected_contract_field".to_string(),
@@ -1046,8 +1064,12 @@ fn training_execute_filters_explicit_multi_prediction_port_outputs() {
 #[test]
 fn training_result_replay_predict_over_c_abi_uses_live_attached_result() {
     let counters = fresh_counters();
-    let (_fixture, inputs) =
-        build_inputs_with(&counters, false, true, add_explicit_model_probability_port);
+    let (_fixture, inputs) = build_inputs_with(&counters, false, true, |fixture| {
+        for manifest in &mut fixture.request.controller_manifests {
+            manifest.supported_phases.insert(Phase::Explain);
+        }
+        add_explicit_model_probability_port(fixture);
+    });
     let request = inputs.request();
     let mut result: *mut DagMlTrainingResult = std::ptr::null_mut();
     let mut error = DagMlString::default();
@@ -1096,7 +1118,7 @@ fn training_result_replay_predict_over_c_abi_uses_live_attached_result() {
     let replay_request_json = serde_json::to_vec(&replay_request).unwrap();
     let replay_outcome_id: Box<str> = "outcome:c.native.replay.predict".into();
     let replay_run_id: Box<str> = "run:c.native.replay.predict".into();
-    let replay_call = DagMlTrainingReplayRequest {
+    let mut replay_call = DagMlTrainingReplayRequest {
         replay_request_json: bytes_view(&replay_request_json),
         outcome_id: bytes_view(replay_outcome_id.as_bytes()),
         run_id: bytes_view(replay_run_id.as_bytes()),
@@ -1113,6 +1135,47 @@ fn training_result_replay_predict_over_c_abi_uses_live_attached_result() {
         data_provider: request.data_provider,
         data_owner_controller_id: bytes_view(inputs.data_owner.as_bytes()),
     };
+
+    // Public ABI delegation must refuse a contradictory explicit V2 claim
+    // before any existing live controller/data callback. Original V1 below
+    // remains the successful control; it makes no explicit target-name claim.
+    let mut contradictory: BTreeMap<String, ExternalDataPlanEnvelope> =
+        serde_json::from_slice(&inputs.envelopes_json).unwrap();
+    for envelope in contradictory.values_mut() {
+        envelope.schema_version = 2;
+        envelope.target_content_fingerprint = None;
+        envelope.predict_cohort = Some(
+            PredictCohort::from_relations(
+                PredictCohortRole::Inference,
+                envelope.coordinator_relations.clone().unwrap(),
+                vec!["contradictory-target".into()],
+                envelope.data_content_fingerprint.clone().unwrap(),
+                None,
+            )
+            .unwrap(),
+        );
+        envelope.validate().unwrap();
+    }
+    let contradictory_json = serde_json::to_vec(&contradictory).unwrap();
+    replay_call.data_envelopes_json = bytes_view(&contradictory_json);
+    let before_model = counters.invoked.load(Ordering::SeqCst);
+    let data_host = unsafe { &*(request.data_provider.user_data as *const DataHost) };
+    let before_data = data_host.next_handle.load(Ordering::SeqCst);
+    let before_released = counters.released.lock().unwrap().len();
+    let mut refused = DagMlOwnedBytes::default();
+    let mut refused_error = DagMlString::default();
+    assert_eq!(
+        unsafe {
+            dagml_training_result_replay(result, &replay_call, &mut refused, &mut refused_error)
+        },
+        DagMlStatusCode::VALIDATION_ERROR
+    );
+    assert!(refused.ptr.is_null());
+    assert_eq!(counters.invoked.load(Ordering::SeqCst), before_model);
+    assert_eq!(data_host.next_handle.load(Ordering::SeqCst), before_data);
+    assert_eq!(counters.released.lock().unwrap().len(), before_released);
+    unsafe { dagml_string_free(refused_error) };
+    replay_call.data_envelopes_json = bytes_view(&inputs.envelopes_json);
 
     let mut replay_json = DagMlOwnedBytes::default();
     let mut replay_error = DagMlString::default();
@@ -1145,6 +1208,64 @@ fn training_result_replay_predict_over_c_abi_uses_live_attached_result() {
             && block.fold_id.is_none()
     }));
     assert!(replay_outcome.explanations.is_empty());
+
+    // Honest synthetic EXPLAIN through the same public attached C ABI.
+    let mut explain_request = replay_request.clone();
+    explain_request.phase = Phase::Explain;
+    explain_request.request_fingerprint = explain_request.compute_fingerprint().unwrap();
+    let explain_request_json = serde_json::to_vec(&explain_request).unwrap();
+    replay_call.replay_request_json = bytes_view(&explain_request_json);
+    let mut explain_json = DagMlOwnedBytes::default();
+    let mut explain_error = DagMlString::default();
+    assert_eq!(
+        unsafe {
+            dagml_training_result_replay(
+                result,
+                &replay_call,
+                &mut explain_json,
+                &mut explain_error,
+            )
+        },
+        DagMlStatusCode::OK,
+        "{}",
+        unsafe { error_text(&explain_error) }
+    );
+    let explain_text =
+        std::str::from_utf8(unsafe { slice::from_raw_parts(explain_json.ptr, explain_json.len) })
+            .unwrap();
+    let explain = TrainingReplayOutcome::from_json(explain_text).unwrap();
+    explain.validate_against(&source, &explain_request).unwrap();
+    assert_eq!(explain.explanations.len(), 1);
+    assert!(explain.outputs.is_empty());
+    unsafe {
+        dagml_owned_bytes_free(explain_json);
+    }
+    replay_call.replay_request_json = bytes_view(&replay_request_json);
+
+    // Change only the live host response, after the genuine positive replay.
+    // The public C ABI must propagate the shared current-row owner refusal.
+    for binding in &inputs.bindings {
+        unsafe {
+            (*(binding.binding.vtable.user_data as *mut ControllerHost)).result_wire_mutation =
+                ResultWireMutation::AlienReplayId;
+        }
+    }
+    let mut alien_json = DagMlOwnedBytes::default();
+    let mut alien_error = DagMlString::default();
+    let before_calls = counters.invoked.load(Ordering::SeqCst);
+    assert_eq!(
+        unsafe {
+            dagml_training_result_replay(result, &replay_call, &mut alien_json, &mut alien_error)
+        },
+        DagMlStatusCode::VALIDATION_ERROR
+    );
+    assert!(alien_json.ptr.is_null());
+    assert!(unsafe { error_text(&alien_error) }
+        .contains("outside this binding's current relation closure"));
+    assert!(counters.invoked.load(Ordering::SeqCst) > before_calls);
+    unsafe {
+        dagml_string_free(alien_error);
+    }
 
     unsafe {
         dagml_owned_bytes_free(replay_json);

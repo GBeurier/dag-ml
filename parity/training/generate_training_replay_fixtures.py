@@ -45,8 +45,8 @@ PACK_PATH = (
 BASE_PACK_ID = "dag-ml.training-contracts.v1"
 # Derived from the current base pack by generate_fixtures.py.  Keep the replay
 # pack pinned to those bytes/checksum; do not edit a replay artifact hash by hand.
-BASE_PACK_SHA256 = "eca20d4bc8d13e8c56085114f537c45684d2e0d9998e9dd7331b7ccf3f0aaab3"
-BASE_PACK_CHECKSUM = "1aaff7199f2968f74c231f58b0f1a61005d6a9448a77389cc1d58cea342e5a9b"
+BASE_PACK_SHA256 = "d2dc8f9b60ac35107c66ddaad2b622693720638b87e1da532732a9b3d165ff23"
+BASE_PACK_CHECKSUM = "c23855620a69811841c48f288450e258f647ecd7be111a1645a374dd6f540f97"
 serde_json_sha256 = _serde_sha256
 LEGACY_AUTHORITY_SHA256 = {
     "docs/contracts/replay_outcome.schema.json": "c57279e8c76e4e2467af0eca5eb59804a2f7bb97bec6cce9d8b23975f223c36a",
@@ -105,6 +105,12 @@ D4_ARTIFACTS = {
     "parity/training/tests/test_training_replay_contracts.py": "test",
     "scripts/requirements-contracts.txt": "ci_dependency",
     "scripts/validate_training_replay_contracts.py": "production_validator",
+    "crates/dag-ml-core/src/terminal_prediction.rs": "training_replay_terminal_authority",
+    "crates/dag-ml-core/src/initial_refit.rs": "training_replay_initial_refit_authority",
+    "crates/dag-ml-core/tests/external_test_training_authority.rs": "training_replay_authority_test",
+    "crates/dag-ml-cli/tests/cli_contracts.rs": "training_replay_cli_authority_test",
+    "crates/dag-ml-py/tests/test_terminal_predict_facade.py": "training_replay_python_authority_test",
+    "tests/test_external_test_authority_wasm.mjs": "training_replay_wasm_authority_test",
 }
 
 

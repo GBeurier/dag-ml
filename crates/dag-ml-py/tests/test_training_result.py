@@ -95,7 +95,6 @@ class _FakeNativeTrainingResult:
 class ArchiveV3PythonSurfaceTests(unittest.TestCase):
     def test_refit_package_surface_is_native_and_fail_closed(self) -> None:
         self.assertIn("PortableRefitPackageV3", dag_ml.__all__)
-        self.assertIn("build_archive_v3_native_refit_payloads", dag_ml.__all__)
         self.assertIn("execute_methods_portable_full_refit", dag_ml.__all__)
         self.assertIn("execute_methods_portable_full_refit_json", dag_ml.__all__)
         self.assertIn("read_native_results_v2", dag_ml.__all__)

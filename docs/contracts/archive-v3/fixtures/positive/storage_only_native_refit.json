@@ -1,0 +1,159 @@
+{
+  "schema_version": 3,
+  "profile": "nirs4all.archive_workspace.v3",
+  "archive_id": "archive:synthetic-v3-storage-only",
+  "persistence_kind": "n4a_archive",
+  "writer": {
+    "product_aggregate_owner": "nirs4all-core",
+    "canonical_writer_id": "nirs4all-core.archive_workspace_writer.v3"
+  },
+  "reader_dispatch": {
+    "archive_v3": {
+      "accepted_versions": [
+        3
+      ],
+      "future_versions": "refuse",
+      "dispatch_before_extraction": true
+    },
+    "archive_v2": {
+      "accepted_versions": [
+        2
+      ],
+      "read_mode": "immutable_dual_read",
+      "mutation": "never_in_place"
+    },
+    "archive_v1": {
+      "accepted_versions": [
+        1
+      ],
+      "read_mode": "immutable_dual_read",
+      "mutation": "never_in_place"
+    }
+  },
+  "physical_profile": {
+    "container": "zip",
+    "manifest_member": "manifest.json",
+    "regular_files_only": true,
+    "limits": {
+      "max_entries": 256,
+      "max_total_uncompressed_bytes": 536870912,
+      "max_member_uncompressed_bytes": 134217728,
+      "max_compression_ratio": 100
+    }
+  },
+  "replay": {
+    "portable_refit_package": {
+      "owner": "dag-ml",
+      "schema_id": "https://github.com/GBeurier/dag-ml/schemas/portable_refit_package.v3.schema.json",
+      "schema_version": 3,
+      "member_path": "dagml/portable_refit_package.json",
+      "raw_sha256": "7aaf843a371162264a3527b792d5a619a61e8b692af8e4a0aa96fc8ab188a40a",
+      "semantic_fingerprint": "088f78ed47d232662ce78b2c21d0472ea0830a45083a529365f923c4255407f7",
+      "semantic_profile": "dagml_tcv1",
+      "producer_port_required": true
+    },
+    "refit_artifacts": {
+      "graph": {
+        "owner": "dag-ml",
+        "schema_id": "https://github.com/GBeurier/dag-ml/schemas/graph_spec.v1.schema.json",
+        "schema_version": 1,
+        "member_path": "dagml/graph.json",
+        "raw_sha256": "60ddf98410f3b6d0a7524b4f463ed14831cc07495c008b96f92a23c6df4e761c",
+        "semantic_fingerprint": "281ab42766cd35de0606b1d1119878c06eb2400e3c6f04067fa45b7578e27da4",
+        "semantic_profile": "dagml_historical_serde_json_v1"
+      },
+      "execution_bundle": {
+        "owner": "dag-ml",
+        "schema_id": "https://github.com/GBeurier/dag-ml/schemas/portable_refit_execution_bundle.v3.schema.json",
+        "schema_version": 3,
+        "member_path": "dagml/portable_refit_execution_bundle.json",
+        "raw_sha256": "1ee5434be5661e72c0f651480581fb76ded76fcf63b5b4141b6532eb9a82195f",
+        "semantic_fingerprint": "d69b9a4f6d764840cea9a37b2000179959a7795abf03aed1f41d5c40a7884d77",
+        "semantic_profile": "dagml_tcv1",
+        "producer_port_required": true
+      },
+      "refit_outcome": {
+        "owner": "dag-ml",
+        "schema_id": "https://github.com/GBeurier/dag-ml/schemas/portable_refit_outcome.v3.schema.json",
+        "schema_version": 3,
+        "member_path": "dagml/portable_refit_outcome.json",
+        "raw_sha256": "47e0d9d2eb265d0298618dfdbc7ee586b9f7b7fc1c9807730b20c1b72daed0a7",
+        "semantic_fingerprint": "50662ec78eefd4d5f4dac1a979ff116bbfce4dfec8b85394f9a9cfb4ba1b5647",
+        "semantic_profile": "dagml_tcv1",
+        "producer_port_required": true
+      }
+    },
+    "future_artifacts": []
+  },
+  "payloads": {
+    "methods": {
+      "n4mm": [
+        {
+          "artifact_id": "artifact:synthetic-n4mm",
+          "kind": "N4MM",
+          "owner": "nirs4all-methods",
+          "format_version": 1,
+          "abi_major": 2,
+          "abi_min_minor": 0,
+          "member_path": "methods/synthetic.n4mm",
+          "raw_sha256": "859e282c4b441d48730fc144da21602979288a0f7c369f9923eb75c29bed6ea0",
+          "semantic_fingerprint": "859e282c4b441d48730fc144da21602979288a0f7c369f9923eb75c29bed6ea0",
+          "semantic_profile": "n4mm_raw_sha256"
+        }
+      ],
+      "n4mopt": []
+    },
+    "n4d_aggregate_reference": null,
+    "conformal": null,
+    "robustness": null,
+    "host_artifacts": []
+  },
+  "member_inventory": [
+    {
+      "path": "dagml/portable_refit_package.json",
+      "regular_file": true,
+      "raw_sha256": "7aaf843a371162264a3527b792d5a619a61e8b692af8e4a0aa96fc8ab188a40a",
+      "uncompressed_size_bytes": 113,
+      "semantic_fingerprint": "088f78ed47d232662ce78b2c21d0472ea0830a45083a529365f923c4255407f7",
+      "semantic_profile": "dagml_tcv1"
+    },
+    {
+      "path": "dagml/graph.json",
+      "regular_file": true,
+      "raw_sha256": "60ddf98410f3b6d0a7524b4f463ed14831cc07495c008b96f92a23c6df4e761c",
+      "uncompressed_size_bytes": 99,
+      "semantic_fingerprint": "281ab42766cd35de0606b1d1119878c06eb2400e3c6f04067fa45b7578e27da4",
+      "semantic_profile": "dagml_historical_serde_json_v1"
+    },
+    {
+      "path": "dagml/portable_refit_execution_bundle.json",
+      "regular_file": true,
+      "raw_sha256": "1ee5434be5661e72c0f651480581fb76ded76fcf63b5b4141b6532eb9a82195f",
+      "uncompressed_size_bytes": 97,
+      "semantic_fingerprint": "d69b9a4f6d764840cea9a37b2000179959a7795abf03aed1f41d5c40a7884d77",
+      "semantic_profile": "dagml_tcv1"
+    },
+    {
+      "path": "dagml/portable_refit_outcome.json",
+      "regular_file": true,
+      "raw_sha256": "47e0d9d2eb265d0298618dfdbc7ee586b9f7b7fc1c9807730b20c1b72daed0a7",
+      "uncompressed_size_bytes": 111,
+      "semantic_fingerprint": "50662ec78eefd4d5f4dac1a979ff116bbfce4dfec8b85394f9a9cfb4ba1b5647",
+      "semantic_profile": "dagml_tcv1"
+    },
+    {
+      "path": "methods/synthetic.n4mm",
+      "regular_file": true,
+      "raw_sha256": "859e282c4b441d48730fc144da21602979288a0f7c369f9923eb75c29bed6ea0",
+      "uncompressed_size_bytes": 348,
+      "semantic_fingerprint": "859e282c4b441d48730fc144da21602979288a0f7c369f9923eb75c29bed6ea0",
+      "semantic_profile": "n4mm_raw_sha256"
+    }
+  ],
+  "migration_provenance": null,
+  "security": {
+    "integrity_profile": "sha256_raw_member_inventory_v3",
+    "signature": null
+  },
+  "workspace": null
+}

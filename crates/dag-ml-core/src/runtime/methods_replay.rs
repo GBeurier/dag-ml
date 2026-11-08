@@ -167,7 +167,7 @@ pub fn execute_loaded_methods_portable_refit_replay_v3(
 }
 
 #[cfg(feature = "methods-optimizer")]
-struct MethodsPortableReplayProvider {
+pub(crate) struct MethodsPortableReplayProvider {
     inner: InMemoryDataProvider,
     inputs: BTreeMap<String, MethodsPlsDataset>,
     cohort_sample_ids: BTreeMap<String, Vec<SampleId>>,
@@ -175,7 +175,7 @@ struct MethodsPortableReplayProvider {
 
 #[cfg(feature = "methods-optimizer")]
 impl MethodsPortableReplayProvider {
-    fn new(
+    pub(crate) fn new(
         envelopes: BTreeMap<String, ExternalDataPlanEnvelope>,
         inputs: BTreeMap<String, MethodsPlsDataset>,
     ) -> Result<Self> {

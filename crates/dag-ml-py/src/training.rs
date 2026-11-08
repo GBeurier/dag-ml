@@ -10,10 +10,7 @@ use std::collections::BTreeSet;
 use std::sync::{Mutex, MutexGuard};
 
 #[cfg(all(feature = "methods-optimizer", test))]
-use dag_ml_core::{
-    build_archive_v2_native_portable_payloads, ARCHIVE_V2_CACHE_MEMBER, ARCHIVE_V2_OUTCOME_MEMBER,
-    ARCHIVE_V2_PACKAGE_MEMBER,
-};
+use dag_ml_core::build_native_predictor_facets;
 #[cfg(feature = "methods-optimizer")]
 use dag_ml_core::{
     build_portable_refit_package_v3, derive_portable_full_refit_target_plan,
@@ -2994,6 +2991,270 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn python_json_replay_refuses_foreign_training_relations_before_callbacks() {
+        const PACKAGE: &str =
+            include_str!("../tests/fixtures/replay_target_claims/ppc.before.json");
+        const REQUEST: &str =
+            include_str!("../tests/fixtures/replay_target_claims/replay_request.json");
+        const ENVELOPES: &str =
+            include_str!("../tests/fixtures/replay_target_claims/replay_envelope.json");
+        let mut envelopes: BTreeMap<String, ExternalDataPlanEnvelope> =
+            serde_json::from_str(ENVELOPES).unwrap();
+        for envelope in envelopes.values_mut() {
+            let relations = SampleRelationSet {
+                records: vec![SampleRelation::new(
+                    ObservationId::new("observation:authority:unrelated").unwrap(),
+                    SampleId::new("sample:authority:unrelated").unwrap(),
+                )],
+            };
+            envelope.relation_fingerprint = Some(relations.fingerprint().unwrap());
+            envelope.coordinator_relations = Some(relations);
+            envelope.validate().unwrap();
+        }
+        pyo3::Python::initialize();
+        Python::attach(|py| {
+            let module = pyo3::types::PyModule::from_code(py,
+                pyo3::ffi::c_str!("hits = []\ndef callback(*args):\n    hits.append(args)\n    raise RuntimeError('unexpected callback')\n"),
+                pyo3::ffi::c_str!("authority.py"), pyo3::ffi::c_str!("authority")).unwrap();
+            let callback = module.getattr("callback").unwrap().unbind();
+            assert!(execute_loaded_predictor_replay_json(
+                py,
+                PACKAGE,
+                REQUEST,
+                ENVELOPES,
+                "{}",
+                callback.clone_ref(py),
+                "outcome:python:authority:control",
+                "run:python:authority:control",
+                Some(callback.clone_ref(py)),
+                "[]",
+                "{}",
+                None,
+            )
+            .is_err());
+            assert!(module.getattr("hits").unwrap().len().unwrap() > 0);
+            module
+                .getattr("hits")
+                .unwrap()
+                .call_method0("clear")
+                .unwrap();
+            let error = execute_loaded_predictor_replay_json(
+                py,
+                PACKAGE,
+                REQUEST,
+                &serde_json::to_string(&envelopes).unwrap(),
+                "{}",
+                callback.clone_ref(py),
+                "outcome:python:authority",
+                "run:python:authority",
+                Some(callback.clone_ref(py)),
+                "[]",
+                "{}",
+                None,
+            )
+            .unwrap_err();
+            assert!(error
+                .to_string()
+                .contains("external_test training relations do not match owner authority"));
+            assert_eq!(module.getattr("hits").unwrap().len().unwrap(), 0);
+            let original: BTreeMap<String, ExternalDataPlanEnvelope> =
+                serde_json::from_str(ENVELOPES).unwrap();
+            for mutation in 0..3 {
+                let mut bad = original.clone();
+                for envelope in bad.values_mut() {
+                    match mutation {
+                        0 => {
+                            envelope.coordinator_relations = Some(SampleRelationSet {
+                                records: vec![SampleRelation::new(
+                                    ObservationId::new("observation:authority:unrelated").unwrap(),
+                                    SampleId::new("sample:authority:unrelated").unwrap(),
+                                )],
+                            })
+                        }
+                        1 => envelope.relation_fingerprint = None,
+                        _ => envelope.relation_fingerprint = Some("a".repeat(64)),
+                    }
+                    envelope.validate().unwrap();
+                }
+                for phase in [Phase::Predict, Phase::Explain] {
+                    let mut request: dag_ml_core::TrainingReplayRequest =
+                        serde_json::from_str(REQUEST).unwrap();
+                    request.phase = phase;
+                    request.request_fingerprint = request.compute_fingerprint().unwrap();
+                    let error = execute_loaded_predictor_replay_json(
+                        py,
+                        PACKAGE,
+                        &serde_json::to_string(&request).unwrap(),
+                        &serde_json::to_string(&bad).unwrap(),
+                        "{}",
+                        callback.clone_ref(py),
+                        "outcome:python:authority:variant",
+                        "run:python:authority:variant",
+                        Some(callback.clone_ref(py)),
+                        "[]",
+                        "{}",
+                        None,
+                    )
+                    .unwrap_err();
+                    assert!(
+                        error.to_string().contains(
+                            "external_test training relations do not match owner authority"
+                        ),
+                        "mutation {mutation}, {phase:?}: {error}"
+                    );
+                    assert_eq!(module.getattr("hits").unwrap().len().unwrap(), 0);
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn contextual_loaded_replay_runs_python_predict_and_explain_callbacks() {
+        const PACKAGE: &str =
+            include_str!("../../dag-ml-core/tests/fixtures/contextual_replay_v2/package.json");
+        let cases = [
+            (include_str!("../../dag-ml-core/tests/fixtures/contextual_replay_v2/predict-request.json"), include_str!("../../dag-ml-core/tests/fixtures/contextual_replay_v2/predict-envelopes.json"), "normal", true),
+            (include_str!("../../dag-ml-core/tests/fixtures/contextual_replay_v2/predict-request.json"), include_str!("../../dag-ml-core/tests/fixtures/contextual_replay_v2/predict-envelopes.json"), "alien", false),
+            (include_str!("../../dag-ml-core/tests/fixtures/contextual_replay_v2/explain-selected-request.json"), include_str!("../../dag-ml-core/tests/fixtures/contextual_replay_v2/explain-selected-envelopes.json"), "normal", true),
+            (include_str!("../../dag-ml-core/tests/fixtures/contextual_replay_v2/explain-selected-request.json"), include_str!("../../dag-ml-core/tests/fixtures/contextual_replay_v2/explain-selected-envelopes.json"), "global", true),
+            (include_str!("../../dag-ml-core/tests/fixtures/contextual_replay_v2/explain-selected-request.json"), include_str!("../../dag-ml-core/tests/fixtures/contextual_replay_v2/explain-selected-envelopes.json"), "target", false),
+            (include_str!("../../dag-ml-core/tests/fixtures/contextual_replay_v2/explain-selected-request.json"), include_str!("../../dag-ml-core/tests/fixtures/contextual_replay_v2/explain-selected-envelopes.json"), "raw", false),
+            (include_str!("../../dag-ml-core/tests/fixtures/contextual_replay_v2/explain-selected-request.json"), include_str!("../../dag-ml-core/tests/fixtures/contextual_replay_v2/explain-selected-envelopes.json"), "unselected_raw", false),
+        ];
+        pyo3::Python::initialize();
+        Python::attach(|py| {
+            for (request, envelopes, mode, accepted) in cases {
+                let code =
+                    std::ffi::CString::new(include_str!("../tests/contextual_controller.py"))
+                        .unwrap();
+                let module = pyo3::types::PyModule::from_code(
+                    py,
+                    &code,
+                    pyo3::ffi::c_str!("contextual_controller.py"),
+                    pyo3::ffi::c_str!("contextual_controller"),
+                )
+                .unwrap();
+                module.setattr("mode", mode).unwrap();
+                let result = execute_loaded_predictor_replay_json(
+                    py,
+                    PACKAGE,
+                    request,
+                    envelopes,
+                    "{}",
+                    module.getattr("callback").unwrap().unbind(),
+                    "outcome:python.contextual",
+                    "run:python.contextual",
+                    Some(module.getattr("artifact").unwrap().unbind()),
+                    "[]",
+                    "{}",
+                    None,
+                );
+                assert_eq!(result.is_ok(), accepted, "{mode}: {result:?}");
+                let calls: Vec<String> = module.getattr("calls").unwrap().extract().unwrap();
+                assert!(calls.iter().any(|c| c == "PREDICT" || c == "EXPLAIN"));
+                assert_eq!(
+                    calls.iter().filter(|c| *c == "hydrate").count(),
+                    calls.iter().filter(|c| *c == "release").count()
+                );
+                if let Ok(json) = result {
+                    let outcome = TrainingReplayOutcome::from_json(&json).unwrap();
+                    assert_eq!(outcome.lineage.len(), 3);
+                    if outcome.phase == Phase::Explain {
+                        assert_eq!(outcome.explanations.len(), 1);
+                    }
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn general_loaded_replay_delegates_target_claim_refusal_without_python_callbacks() {
+        const PACKAGE: &str =
+            include_str!("../tests/fixtures/replay_target_claims/ppc.before.json");
+        const REQUEST: &str =
+            include_str!("../tests/fixtures/replay_target_claims/replay_request.json");
+        const ENVELOPES: &str =
+            include_str!("../tests/fixtures/replay_target_claims/replay_envelope.json");
+        let package = dag_ml_core::PortablePredictorPackage::from_json(PACKAGE).unwrap();
+        let request = dag_ml_core::TrainingReplayRequest::from_json(REQUEST).unwrap();
+        let mut envelopes: BTreeMap<String, ExternalDataPlanEnvelope> =
+            serde_json::from_str(ENVELOPES).unwrap();
+        dag_ml_core::preflight_loaded_predictor_replay(&package, &request, &envelopes).unwrap();
+        for envelope in envelopes.values_mut() {
+            let cohort = envelope.predict_cohort.as_mut().unwrap();
+            cohort.target_names = vec!["contradictory-target".into()];
+            cohort.cohort_fingerprint = cohort.fingerprint().unwrap();
+            envelope.validate().unwrap();
+        }
+        pyo3::Python::initialize();
+        Python::attach(|py| {
+            let module = pyo3::types::PyModule::from_code(py,
+                pyo3::ffi::c_str!("hits = []\ndef callback(*args):\n    hits.append(args)\n    raise RuntimeError('unexpected model or artifact callback')\n"),
+                pyo3::ffi::c_str!("target_claims.py"), pyo3::ffi::c_str!("target_claims")).unwrap();
+            let callback = module.getattr("callback").unwrap().unbind();
+            // Same public function and valid inputs reach the callback trap.
+            // This guards against an unrelated constructor/dependency refusal
+            // making the contradictory-input zero count vacuously pass.
+            assert!(execute_loaded_predictor_replay_json(
+                py,
+                PACKAGE,
+                REQUEST,
+                ENVELOPES,
+                "{}",
+                callback.clone_ref(py),
+                "outcome:python:control",
+                "run:python:control",
+                Some(callback.clone_ref(py)),
+                "[]",
+                "{}",
+                None
+            )
+            .is_err());
+            assert!(module.getattr("hits").unwrap().len().unwrap() > 0);
+            module
+                .getattr("hits")
+                .unwrap()
+                .call_method0("clear")
+                .unwrap();
+            let error = execute_loaded_predictor_replay_json(
+                py,
+                PACKAGE,
+                REQUEST,
+                &serde_json::to_string(&envelopes).unwrap(),
+                "{}",
+                callback.clone_ref(py),
+                "outcome:python:targets",
+                "run:python:targets",
+                Some(callback),
+                "[]",
+                "{}",
+                None,
+            )
+            .unwrap_err();
+            let expected = dag_ml_core::DagMlError::RuntimeValidation(String::new());
+            assert_eq!(
+                error
+                    .value(py)
+                    .getattr("code")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                expected.code()
+            );
+            assert_eq!(
+                error
+                    .value(py)
+                    .getattr("category")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                expected.category()
+            );
+            assert_eq!(module.getattr("hits").unwrap().len().unwrap(), 0);
+        });
+    }
+
     #[cfg(feature = "methods-optimizer")]
     #[test]
     fn portable_methods_lanes_allow_only_native_methods_controllers() {
@@ -3899,11 +4160,9 @@ mod tests {
                 .values()
                 .all(|payload| !payload.is_empty()));
 
-            // The strict terminal facade intentionally leaves CV OOF cache
-            // payloads ephemeral.  Archive V2 may nevertheless carry its
-            // mandatory cache member as the existing, validated empty V2
-            // payload-set shape.  It must not mutate or re-sign the terminal
-            // outcome/package and it must never persist the sealed receipt.
+            // The strict terminal facade leaves CV OOF cache payloads
+            // ephemeral. Native facets preserve that absence and the exact
+            // terminal outcome/package without persisting the sealed receipt.
             let source_outcome = training_result.bind(py).borrow().outcome.clone();
             let source_outcome_json = serialize_json(&source_outcome).unwrap();
             let source_outcome_fingerprint = source_outcome.outcome_fingerprint.clone();
@@ -3922,78 +4181,41 @@ mod tests {
                 .iter()
                 .all(|edge| !edge.contract.requires_oof));
 
-            let archive = build_archive_v2_native_portable_payloads(
-                "archive:strict.methods.terminal",
-                &source_outcome,
-                &package,
+            let facets = build_native_predictor_facets(
+                source_outcome_json.as_bytes(),
+                package_json.as_bytes(),
             )
-            .expect("strict terminal outcome has an archive-safe absence of retained OOF caches");
-            let archive_again = build_archive_v2_native_portable_payloads(
-                "archive:strict.methods.terminal",
-                &source_outcome,
-                &package,
+            .expect("strict terminal facets prove absence of retained OOF caches");
+            let facets_again = build_native_predictor_facets(
+                source_outcome_json.as_bytes(),
+                package_json.as_bytes(),
             )
-            .expect("strict terminal archive assembly is deterministic");
-            assert_eq!(archive, archive_again);
+            .expect("strict terminal facet assembly is deterministic");
+            assert_eq!(facets.graph, facets_again.graph);
+            assert_eq!(facets.members, facets_again.members);
+            facets.validate().unwrap();
             assert_eq!(
-                archive
-                    .members
-                    .get(ARCHIVE_V2_OUTCOME_MEMBER)
-                    .map(Vec::as_slice),
-                Some(source_outcome_json.as_bytes())
+                facets.members["dagml/result.json"],
+                source_outcome_json.as_bytes()
             );
-            assert_eq!(
-                archive
-                    .members
-                    .get(ARCHIVE_V2_PACKAGE_MEMBER)
-                    .map(Vec::as_slice),
-                Some(package_json.as_bytes())
-            );
-            let archived_outcome = TrainingOutcome::from_json(
-                std::str::from_utf8(
-                    archive
-                        .members
-                        .get(ARCHIVE_V2_OUTCOME_MEMBER)
-                        .expect("Archive V2 retains the exact TrainingOutcome member"),
-                )
-                .unwrap(),
+            assert_eq!(facets.members["dagml/model.json"], package_json.as_bytes());
+            let reloaded_outcome = TrainingOutcome::from_json(
+                std::str::from_utf8(&facets.members["dagml/result.json"]).unwrap(),
             )
             .unwrap();
-            assert!(archived_outcome.portable_prediction_caches.is_none());
+            assert!(reloaded_outcome.portable_prediction_caches.is_none());
             assert_eq!(
-                archived_outcome.outcome_fingerprint,
+                reloaded_outcome.outcome_fingerprint,
                 source_outcome_fingerprint
             );
-            let archive_cache_member = archive
-                .members
-                .get(ARCHIVE_V2_CACHE_MEMBER)
-                .expect("Archive V2 always carries its cache payload member");
-            let archive_caches: dag_ml_core::BundlePredictionCachePayloadSet =
-                serde_json::from_slice(archive_cache_member).unwrap();
-            assert_eq!(
-                archive_caches.bundle_id,
-                source_outcome.execution_bundle.bundle_id
-            );
-            assert_eq!(archive_caches.schema_version, 2);
-            assert!(archive_caches.caches.is_empty());
-            archive_caches
-                .validate_against_bundle(&source_outcome.execution_bundle)
-                .unwrap();
-            let cache_raw_sha256 = format!("{:x}", Sha256::digest(archive_cache_member));
-            let cache_reference =
-                &archive.manifest["replay"]["training_artifacts"]["prediction_cache_payload_set"];
-            assert_eq!(cache_reference["raw_sha256"], cache_raw_sha256);
-            assert_eq!(cache_reference["semantic_fingerprint"], cache_raw_sha256);
-            let cache_inventory = archive.manifest["member_inventory"]
-                .as_array()
-                .unwrap()
+            assert!(!facets.members.contains_key("dagml/prediction.json"));
+            assert!(!facets
+                .graph
+                .artifacts
                 .iter()
-                .find(|member| member["path"] == ARCHIVE_V2_CACHE_MEMBER)
-                .expect("cache member has a closed inventory entry");
-            assert_eq!(cache_inventory["raw_sha256"], cache_raw_sha256);
-            assert_eq!(cache_inventory["semantic_fingerprint"], cache_raw_sha256);
-            assert!(archive.members.keys().all(|path| !path.contains("receipt")));
-            assert!(!serde_json::to_string(&archive.manifest)
+                .any(|artifact| artifact.kind == dag_ml_core::ArtifactFacetKind::Prediction));
+            assert!(facets.members.keys().all(|path| !path.contains("receipt")));
+            assert!(!serde_json::to_string(&facets.graph)
                 .unwrap()
                 .contains("terminal_receipt"));
             assert_eq!(
@@ -4001,14 +4223,9 @@ mod tests {
                 source_outcome_fingerprint
             );
             assert_eq!(package.package_fingerprint, source_package_fingerprint);
-            let archive_package_json = std::str::from_utf8(
-                archive
-                    .members
-                    .get(ARCHIVE_V2_PACKAGE_MEMBER)
-                    .expect("Archive V2 retains the exact Package V2 member"),
-            )
-            .unwrap()
-            .to_owned();
+            let native_package_json = std::str::from_utf8(&facets.members["dagml/model.json"])
+                .unwrap()
+                .to_owned();
 
             let sys = py.import("sys").unwrap();
             sys.getattr("path")
@@ -4089,7 +4306,7 @@ mod tests {
             replay_request.request_fingerprint = replay_request.compute_fingerprint().unwrap();
             let replay = execute_loaded_methods_predictor_replay_json(
                 py,
-                &archive_package_json,
+                &native_package_json,
                 &serde_json::to_string(&replay_request).unwrap(),
                 &serde_json::to_string(&BTreeMap::from([(
                     "model:base.x".to_string(),
@@ -4336,7 +4553,7 @@ mod tests {
                     metrics: BTreeMap::new(),
                     loss_attestations: Vec::new(),
                     early_stopping_records: Vec::new(),
-            target_domain: None,
+                    target_domain: None,
                 },
             };
             pythonize::pythonize(py, &result)

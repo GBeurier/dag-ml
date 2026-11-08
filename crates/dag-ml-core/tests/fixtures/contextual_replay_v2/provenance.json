@@ -1,0 +1,93 @@
+{
+  "qualification": "SYNTHETIC HOST/MOCK; no numerical, Methods or IO qualification",
+  "generation": "Actual public Rust TrainingRequest::validate/project, execute_training, TrainingOutcome::validate, to_portable_predictor_package and execute_loaded_predictor_replay with a V2 PredictCohort constructed by from_relations. No saved payload edits or private proof.",
+  "source": "phase3-contextual-replay-correction/generator/harness/src/main.rs and pattern.rs",
+  "command": "CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_BUILD_JOBS=2 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 CARGO_TARGET_DIR=/tmp/dagml-facets-target PROBE_OUTPUT=/home/delete/nirs4all/_implementation/2026-11-03-ecosystem-consolidation/phase3-contextual-replay-correction/generator/output cargo +1.88.0 run --locked --offline --manifest-path /home/delete/nirs4all/_implementation/2026-11-03-ecosystem-consolidation/phase3-contextual-replay-correction/generator/harness/Cargo.toml",
+  "source_hashes": {
+    "Cargo.toml": "93cd50fd7e42a6efca6b00d915749d2d5b0e2e2934e6ee9f9fad64c32c20e260",
+    "Cargo.lock": "8995f99f1e51fbb63a06e7d968515ce96d1d4f9bcb874ee0007dea9402d7865d",
+    "src/pattern.rs": "c50446297255b6310ebff9a9179ff07627a5e07e7d94969c2076dee76c089dad",
+    "src/main.rs": "546e1fa3c08d3b8eead55e0af238c0eb9f9ff82fccdd1c68ffda43b6bc0e89ef",
+    "inputs/minimal_graph.json": "5c518a752a4d840c7c1b9ef9602b35a849df5ca1f132e7ace19137ec5c5f1a67",
+    "inputs/campaign_oof_generation.json": "87197d3edaebdc75ee37fa42707a472057b0a0fdd4f9b27d11f982271884af62",
+    "inputs/controller_manifests.json": "18f5abebe62d6645f3d44ff28e330d4f6bc0e93eeb26bcd75b0814682cc794f7"
+  },
+  "inputs_and_outputs": [
+    {
+      "path": "training-request.json",
+      "sha256": "69bacaf050ee90b32539ba95d2dd4a2f49994849942213806c7437ea742e8cf6",
+      "origin": "/home/delete/nirs4all/_implementation/2026-11-03-ecosystem-consolidation/phase3-contextual-replay-correction/generator/output/training-request.json"
+    },
+    {
+      "path": "training-outcome.json",
+      "sha256": "52668dc76bcdea74574fd12e5524b980ca100a4d674c1d014d5a75ac4ee46980",
+      "origin": "/home/delete/nirs4all/_implementation/2026-11-03-ecosystem-consolidation/phase3-contextual-replay-correction/generator/output/training-outcome.json"
+    },
+    {
+      "path": "package.json",
+      "sha256": "4e5be8ccedb9a65f9fb71ac89542a67bfa451da93d4ed48039883f1061c9fd1a",
+      "origin": "/home/delete/nirs4all/_implementation/2026-11-03-ecosystem-consolidation/phase3-contextual-replay-correction/generator/output/package.json"
+    },
+    {
+      "path": "training-relations.json",
+      "sha256": "fadae16a92fab502e379de5db1982a3f322acb57b4100c861ac67a04e7f63b48",
+      "origin": "/home/delete/nirs4all/_implementation/2026-11-03-ecosystem-consolidation/phase3-contextual-replay-correction/generator/output/training-relations.json"
+    },
+    {
+      "path": "host-training-X.json",
+      "sha256": "c210105edc4614bc1233f10d73b105127e9c8d4db13cb75567c6bc766685838b",
+      "origin": "/home/delete/nirs4all/_implementation/2026-11-03-ecosystem-consolidation/phase3-contextual-replay-correction/generator/output/host-training-X.json"
+    },
+    {
+      "path": "host-training-y.json",
+      "sha256": "f4860ed23486f6423261bd1b4709c6f344e9e631e7d6db623588aee68bd5ca0b",
+      "origin": "/home/delete/nirs4all/_implementation/2026-11-03-ecosystem-consolidation/phase3-contextual-replay-correction/generator/output/host-training-y.json"
+    },
+    {
+      "path": "host-replay-X.json",
+      "sha256": "994b2b8105a7fe1b427b6536def09de6fab09eb484d1f0fd0a8a24553f09cdeb",
+      "origin": "/home/delete/nirs4all/_implementation/2026-11-03-ecosystem-consolidation/phase3-contextual-replay-correction/generator/output/host-replay-X.json"
+    },
+    {
+      "path": "host-legacy-replay-y.json",
+      "sha256": "1f6f1c1f14b8aa4a3bc692549d8193d5034f74892c45c517d7031d7599c47195",
+      "origin": "/home/delete/nirs4all/_implementation/2026-11-03-ecosystem-consolidation/phase3-contextual-replay-correction/generator/output/host-legacy-replay-y.json"
+    },
+    {
+      "path": "predict-request.json",
+      "sha256": "1e8023d4f9a2eb42b84e13a6729b491a55dccaabd69045858f6c26d6279cdb5d",
+      "origin": "/home/delete/nirs4all/_implementation/2026-11-03-ecosystem-consolidation/phase3-contextual-replay-correction/generator/output/predict-request.json"
+    },
+    {
+      "path": "predict-envelopes.json",
+      "sha256": "6bfe54c25d9464f72e3ffb0e9b7769494fe0ead2b223978f2d240b4cadb0ba0a",
+      "origin": "/home/delete/nirs4all/_implementation/2026-11-03-ecosystem-consolidation/phase3-contextual-replay-correction/generator/output/predict-envelopes.json"
+    },
+    {
+      "path": "predict-replay.json",
+      "sha256": "f345d03be0f5e40d0a398a375f417feee9fdf735b986208e9ed0d3b1dfbd1b75",
+      "origin": "/home/delete/nirs4all/_implementation/2026-11-03-ecosystem-consolidation/phase3-contextual-replay-correction/generator/output/predict-replay.json"
+    },
+    {
+      "path": "explain-selected-request.json",
+      "sha256": "5ced1d199b384b39f0e755950e4815f317ff63bc38b3c3543b0a4ae8484c9212",
+      "origin": "/home/delete/nirs4all/_implementation/2026-11-03-ecosystem-consolidation/phase3-contextual-replay-correction/generator/output/explain-selected-request.json"
+    },
+    {
+      "path": "explain-selected-envelopes.json",
+      "sha256": "7d0d01b9e93bb1d2a93d5907d1892e2849b632fa188a93c61f47b78af4ca3ee3",
+      "origin": "/home/delete/nirs4all/_implementation/2026-11-03-ecosystem-consolidation/phase3-contextual-replay-correction/generator/output/explain-selected-envelopes.json"
+    },
+    {
+      "path": "explain-selected-replay.json",
+      "sha256": "27b2086910521fa546c445f3bd57eac188b2c7750a6dab0d4d6145e4594c3274",
+      "origin": "/home/delete/nirs4all/_implementation/2026-11-03-ecosystem-consolidation/phase3-contextual-replay-correction/generator/output/explain-selected-replay.json"
+    },
+    {
+      "path": "GENERATION.json",
+      "sha256": "f6cb96255cf407ae4ef76501052fb91ddc32dfa074c724a1fa9d8b99a2ec0f45",
+      "origin": "/home/delete/nirs4all/_implementation/2026-11-03-ecosystem-consolidation/phase3-contextual-replay-correction/generator/output/GENERATION.json"
+    }
+  ],
+  "old_fixture_replaced": false
+}

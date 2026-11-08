@@ -369,8 +369,10 @@ pub fn execute_nested_selection_with_metrics(
     metrics: &dyn NestedSelectionMetrics,
 ) -> Result<NestedSelectionOutcome> {
     request.validate()?;
+    let samples = request.sample_groups.keys().cloned().collect::<Vec<_>>();
     let outer = request.outer.split_with_target_missing(
         format!("{}.outer", request.id),
+        &samples,
         &request.sample_groups,
         &request.target_missing_sample_ids,
     )?;

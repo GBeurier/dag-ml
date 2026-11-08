@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GBeurier/dag-ml/schemas/host_hpo_checkpoint.v2.schema.json",
+  "title": "DAG-ML sealed captured host HPO publication v2",
+  "$comment": "A publication pairs one sealed checkpoint with the owner state observed after the last transition. pair_fingerprint is the TCV1 digest of {checkpoint_fingerprint, native_checkpoint, structural_binding when present}. owner_checkpoint_fingerprint is the canonical digest defined by proposal_state. A null pair is honest unavailability and refuses qualified resume. An aborted window publishes nothing. fingerprint seals (schema_version, checkpoint.fingerprint, source_digest, attempts, pending_attempts). structural_binding is null here when absent, but an absent binding is omitted from the pair preimage rather than encoded as null, so a producer must drop the key to reach the same digest. Known limit: a publication does not name its publisher, so reuse of a capture id whose publication holds only unterminated replays cannot be detected.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "checkpoint",
+    "owner_checkpoint_fingerprint",
+    "structural_binding",
+    "pair_fingerprint"
+  ],
+  "properties": {
+    "checkpoint": {
+      "$ref": "#/$defs/capture_checkpoint"
+    },
+    "owner_checkpoint_fingerprint": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$(?![\\s\\S])"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "structural_binding": {},
+    "pair_fingerprint": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$(?![\\s\\S])"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "capture_checkpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "checkpoint",
+        "source_digest",
+        "attempts",
+        "pending_attempts",
+        "fingerprint"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 2
+        },
+        "checkpoint": {
+          "$ref": "https://github.com/GBeurier/dag-ml/schemas/host_hpo_checkpoint.v1.schema.json"
+        },
+        "source_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$(?![\\s\\S])"
+        },
+        "attempts": {
+          "type": "array",
+          "items": {
+            "$ref": "https://github.com/GBeurier/dag-ml/schemas/host_hpo_proposal_evidence.v1.schema.json#/$defs/attempt"
+          }
+        },
+        "pending_attempts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/pending_attempt"
+          }
+        },
+        "fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$(?![\\s\\S])"
+        }
+      }
+    },
+    "pending_attempt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "params",
+        "attempt"
+      ],
+      "properties": {
+        "params": {
+          "type": "object",
+          "additionalProperties": {}
+        },
+        "attempt": {
+          "$ref": "https://github.com/GBeurier/dag-ml/schemas/host_hpo_proposal_evidence.v1.schema.json#/$defs/attempt"
+        }
+      },
+      "$comment": "An asked trial that is still RUNNING at publication. It replays from these sealed values without a new ask."
+    }
+  }
+}

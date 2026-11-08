@@ -16,19 +16,17 @@ mod methods_role_pipeline;
 mod training;
 
 use dag_ml_core::{
-    align_named_source_rows, build_archive_v2_native_portable_payloads,
-    build_archive_v3_native_refit_payloads, build_conformal_presentation_v1, build_execution_plan,
+    align_named_source_rows, build_conformal_presentation_v1, build_execution_plan,
     compile_pipeline_dsl, compile_pipeline_dsl_with_generation,
     compile_pipeline_dsl_with_generation_and_controller_registry, fan_out_data_aware_branches,
     fold_set_fingerprint, operator_variant_canonical_value, operator_variant_label_from_steps_json,
-    parse_pipeline_dsl_json, select_candidate, validate_archive_v2_portable_payloads,
-    CacheNamespace, CampaignSpec, CandidateScore, ControllerManifest, ControllerRegistry,
-    DagMlError as CoreDagMlError, ExecutionBundle, ExecutionPlan, ExternalDataPlanEnvelope,
-    FoldSet, GraphSpec, HostControllerSpec, NamedSourceAlignmentRequest, ParameterProjection,
-    PortablePredictorPackage, PortableRefitPackageV3, PredictCohortConstructionRequest,
-    SampleRelationSet, SelectionPolicy, StackingFoldSelectionRequest,
-    StackingProducerSelectionRequest, TrainingContractProjection, TrainingOutcome,
-    TrainingReplayOutcome, TrainingReplayRequest, TrainingRequest,
+    parse_pipeline_dsl_json, select_candidate, CacheNamespace, CampaignSpec, CandidateScore,
+    ControllerManifest, ControllerRegistry, DagMlError as CoreDagMlError, ExecutionBundle,
+    ExecutionPlan, ExternalDataPlanEnvelope, FoldSet, GraphSpec, HostControllerSpec,
+    NamedSourceAlignmentRequest, ParameterProjection, PortablePredictorPackage,
+    PortableRefitPackageV3, PredictCohortConstructionRequest, SampleRelationSet, SelectionPolicy,
+    StackingFoldSelectionRequest, StackingProducerSelectionRequest, TrainingContractProjection,
+    TrainingOutcome, TrainingReplayOutcome, TrainingReplayRequest, TrainingRequest,
     EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION_V2,
 };
 
@@ -269,60 +267,6 @@ fn sign_training_replay_request_json(json: &str) -> PyResult<String> {
     request.request_fingerprint = request.compute_fingerprint().map_err(py_core_error)?;
     request.validate().map_err(py_core_error)?;
     serde_json::to_string(&request).map_err(py_serde_error)
-}
-
-/// Assemble the opaque manifest and exact member bytes for a Core Archive V2.
-/// DAG-ML owns this contract assembly; the caller must hand the result without
-/// alteration to the Core writer, which owns ZIP storage and integrity checks.
-#[pyfunction]
-fn build_archive_v2_native_portable_payloads_json(
-    archive_id: &str,
-    outcome_json: &str,
-    package_json: &str,
-) -> PyResult<String> {
-    let outcome = TrainingOutcome::from_json(outcome_json).map_err(py_core_error)?;
-    let package = PortablePredictorPackage::from_json(package_json).map_err(py_core_error)?;
-    let payloads = build_archive_v2_native_portable_payloads(archive_id, &outcome, &package)
-        .map_err(py_core_error)?;
-    serde_json::to_string(&serde_json::json!({
-        "manifest": payloads.manifest,
-        "members": payloads.members,
-    }))
-    .map_err(py_serde_error)
-}
-
-#[pyfunction]
-fn validate_archive_v2_portable_payloads_json(
-    manifest_json: &str,
-    package_json: &str,
-    members_json: &str,
-) -> PyResult<String> {
-    let manifest =
-        training::parse_strict_json::<serde_json::Value>(manifest_json, "Archive V2 manifest")?;
-    let package = PortablePredictorPackage::from_json(package_json).map_err(py_core_error)?;
-    let members = training::parse_strict_json::<std::collections::BTreeMap<String, Vec<u8>>>(
-        members_json,
-        "Archive V2 members",
-    )?;
-    validate_archive_v2_portable_payloads(&manifest, &package, &members).map_err(py_core_error)?;
-    Ok("{\"valid\":true}".to_string())
-}
-
-/// Assemble the opaque manifest and exact member bytes for a Core Archive V3.
-/// DAG-ML owns the refit package semantics; Core remains the ZIP writer.
-#[pyfunction]
-fn build_archive_v3_native_refit_payloads_json(
-    archive_id: &str,
-    package_json: &str,
-) -> PyResult<String> {
-    let package = PortableRefitPackageV3::from_json(package_json).map_err(py_core_error)?;
-    let payloads =
-        build_archive_v3_native_refit_payloads(archive_id, &package).map_err(py_core_error)?;
-    serde_json::to_string(&serde_json::json!({
-        "manifest": payloads.manifest,
-        "members": payloads.members,
-    }))
-    .map_err(py_serde_error)
 }
 
 /// Project a verified Package V2 PREDICT replay into the scalar, identity-bound
@@ -775,23 +719,11 @@ fn _dag_ml(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(sign_training_request_json, module)?)?;
     module.add_function(wrap_pyfunction!(sign_training_replay_request_json, module)?)?;
     module.add_function(wrap_pyfunction!(
-        build_archive_v2_native_portable_payloads_json,
-        module
-    )?)?;
-    module.add_function(wrap_pyfunction!(
-        validate_archive_v2_portable_payloads_json,
-        module
-    )?)?;
-    module.add_function(wrap_pyfunction!(
         methods_role_pipeline::methods_pls_role_pipeline_contract_json,
         module
     )?)?;
     module.add_function(wrap_pyfunction!(
         methods_role_pipeline::inspect_methods_role_pipeline_params_json,
-        module
-    )?)?;
-    module.add_function(wrap_pyfunction!(
-        build_archive_v3_native_refit_payloads_json,
         module
     )?)?;
     module.add_function(wrap_pyfunction!(project_training_request_json, module)?)?;
@@ -1040,11 +972,8 @@ fn contract_manifest() -> serde_json::Value {
             "sample_relation_set_fingerprint_json",
             "sign_training_request_json",
             "sign_training_replay_request_json",
-            "build_archive_v2_native_portable_payloads_json",
-            "validate_archive_v2_portable_payloads_json",
             "methods_pls_role_pipeline_contract_json",
             "inspect_methods_role_pipeline_params_json",
-            "build_archive_v3_native_refit_payloads_json",
             "build_conformal_presentation_v1_json",
             "project_training_request_json",
             "validate_training_contract_projection_json",

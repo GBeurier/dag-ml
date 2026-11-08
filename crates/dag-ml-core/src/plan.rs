@@ -1261,8 +1261,7 @@ fn validate_fusion_sources_match_binding(
             "multisource",
             effective_source_ids,
             format!(
-                "default_fusion.representation_plan component_source_ids {:?} do not match binding source_ids {:?}",
-                component_sources, effective_source_ids
+                "default_fusion.representation_plan component_source_ids {component_sources:?} do not match binding source_ids {effective_source_ids:?}"
             ),
         ));
     }

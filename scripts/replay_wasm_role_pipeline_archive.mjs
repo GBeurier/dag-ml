@@ -23,18 +23,20 @@ const { N4mWasmRegressionController } = await import(
 const capture = JSON.parse(fs.readFileSync(capturePath, "utf8"));
 const archiveBytes = new Uint8Array(fs.readFileSync(archivePath));
 const loaded = await core.readPortableArchiveV2(archiveBytes);
-const packageJson = new TextDecoder("utf-8", { fatal: true }).decode(
-  loaded.members["dagml/portable_predictor_package.json"]);
+// Core's generic native reader admitted the container and its selected scientific closure. `package`
+// and `trainingOutcome` are the exact serialized root bytes; there is no physical manifest replay map.
+const utf8 = new TextEncoder();
+assert.equal(loaded.view.profile, "native-methods-package");
+assert.equal(loaded.view.package_schema_version, 2);
+assert.equal(loaded.archiveSha256, createHash("sha256").update(archiveBytes).digest("hex"));
+assert.ok(Buffer.from(loaded.package).equals(Buffer.from(utf8.encode(capture.packageJson))),
+  "The native reader must return the exact original package bytes");
+assert.ok(Buffer.from(loaded.trainingOutcome).equals(Buffer.from(utf8.encode(capture.outcomeJson))),
+  "The native reader must return the exact original TrainingOutcome bytes");
+assert.ok(Buffer.from(loaded.members[loaded.view.package_member]).equals(Buffer.from(loaded.package)));
+const packageJson = new TextDecoder("utf-8", { fatal: true }).decode(loaded.package);
 const packageValue = JSON.parse(packageJson);
-const wireMembers = Object.fromEntries(Object.entries(loaded.members).map(
-  ([member, bytes]) => [member, Array.from(bytes)]));
-const validate = (manifest, members) => JSON.parse(dagMl.validate_archive_v2_portable_payloads_json(
-  JSON.stringify(manifest), packageJson, JSON.stringify(members)));
-assert.deepEqual(validate(loaded.manifest, wireMembers), { valid: true });
 assert.equal(packageValue.package_fingerprint, JSON.parse(capture.packageJson).package_fingerprint);
-assert.equal(loaded.manifest.payloads.methods.n4mm.length, 0);
-assert.equal(loaded.manifest.payloads.methods.role_pipelines.length, 5);
-assert.equal(Object.keys(loaded.members).length, 11);
 assert.equal(packageValue.artifact_bindings.length, 5);
 
 const digest = bytes => createHash("sha256").update(bytes).digest("hex");
@@ -76,15 +78,16 @@ try {
   const badTrust = { ...trustedManifest, controller_version: "999.0.0" };
   assert.throws(() => invoke([badTrust], () => { callbacks++; }));
   assert.equal(callbacks, 0);
-  const modified = structuredClone(wireMembers);
-  modified[loaded.manifest.payloads.methods.role_pipelines[0].member_path][0] ^= 1;
-  assert.throws(() => validate(loaded.manifest, modified));
-  const missing = structuredClone(wireMembers);
-  delete missing[loaded.manifest.payloads.methods.role_pipelines[0].member_path];
-  assert.throws(() => validate(loaded.manifest, missing));
-  const aliased = structuredClone(loaded.manifest);
-  aliased.payloads.methods.role_pipelines[1].member_path = aliased.payloads.methods.role_pipelines[0].member_path;
-  assert.throws(() => validate(aliased, wireMembers));
+  // Core refuses a corrupted selected member or a truncated container before any scientific use.
+  const stateMember = Object.entries(loaded.members)
+    .filter(([member]) => member !== loaded.view.package_member)
+    .sort(([, left], [, right]) => right.length - left.length)[0][1];
+  const stateOffset = Buffer.from(archiveBytes).indexOf(Buffer.from(stateMember));
+  assert.ok(stateOffset >= 0, "Stored physical members must appear verbatim in the container");
+  const corrupted = Uint8Array.from(archiveBytes);
+  corrupted[stateOffset] ^= 1;
+  await assert.rejects(() => core.readPortableArchiveV2(corrupted));
+  await assert.rejects(() => core.readPortableArchiveV2(archiveBytes.slice(0, archiveBytes.length - 1)));
   const failed = makeController();
   try {
     assert.throws(() => invoke([trustedManifest], (id, json, seed) => {
@@ -109,6 +112,7 @@ assert.equal(actual.length, expected.length);
 actual.forEach((value, index) => assert.ok(Number.isFinite(value) && Math.abs(value - expected[index]) < 1e-9));
 console.log(JSON.stringify({ archiveId: loaded.archiveId, archiveSha256: digest(archiveBytes),
   coreModule: path.resolve(coreModulePath), dagmlPackage: packageDir,
-  packageFingerprint: packageValue.package_fingerprint, modelCount: 5, memberCount: 11,
+  packageFingerprint: packageValue.package_fingerprint, modelCount: 5, memberCount: Object.keys(loaded.members).length,
+  profile: loaded.view.profile, packageSchemaVersion: loaded.view.package_schema_version,
   fits: 0, hydrations: 5, predictions: 5, releases: 5, currentSourcesOnly: true,
-  trustedManifestsChecked: true, tamperAndMissingRefused: true, failedReplayReleasedStates: true }));
+  trustedManifestsChecked: true, tamperAndTruncationRefused: true, failedReplayReleasedStates: true }));

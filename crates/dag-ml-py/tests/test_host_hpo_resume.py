@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import threading
 import time
 import unittest
@@ -97,7 +98,11 @@ class HostHpoResumeTests(unittest.TestCase):
         )
 
     def test_native_resume_preserves_scores_and_winner_without_replaying_trials(self) -> None:
-        self.assertTrue(str(native_module.__file__).startswith(str(REPO)))
+        expected_extension = os.environ.get("DAG_ML_TEST_EXTENSION_PATH")
+        if expected_extension:
+            self.assertEqual(str(native_module.__file__), expected_extension)
+        else:
+            self.assertTrue(str(native_module.__file__).startswith(str(REPO)))
         operator, proposals = _Operators(), _Proposals()
         progress: list[dict[str, Any]] = []
 
@@ -139,6 +144,37 @@ class HostHpoResumeTests(unittest.TestCase):
         uninterrupted = self._run(3, _Operators(), _Proposals(), progress_callback=lambda _: None)
         self.assertEqual(resumed, uninterrupted)
         self.assertEqual(operator.calls + resumed_operator.calls, ["FIT_CV"] * 6)
+
+    def test_unknown_owner_evidence_is_rejected_before_resume_callbacks(self) -> None:
+        outcome = self._run(1, _Operators(), _Proposals(), progress_callback=lambda _: None)
+        checkpoint = json.loads(json.dumps(outcome["checkpoint"]))
+        for location in ("evidence", "scores", "report"):
+            with self.subTest(location=location):
+                changed = json.loads(json.dumps(checkpoint))
+                evidence = changed["trials"][0]["evidence"]
+                target = evidence if location == "evidence" else evidence["scores"] if location == "scores" else evidence["scores"]["reports"][0]
+                target["unknown_probe"] = True
+                operator, proposals = _Operators(), _Proposals()
+                with self.assertRaisesRegex(Exception, "unknown field"):
+                    self._run(1, operator, proposals, resume_checkpoint=changed)
+                self.assertEqual(operator.calls, [])
+                self.assertEqual(proposals.calls, [])
+                with self.assertRaisesRegex(Exception, "unknown field"):
+                    native_module.recover_host_hpo_checkpoint_json(json.dumps(changed), "null", "[]")
+
+    def test_structural_result_decode_retains_outcome_envelope(self) -> None:
+        outcome = self._run(1, _Operators(), _Proposals(), progress_callback=lambda _: None)
+        self.assertIn("status", outcome)
+        self.assertIn("checkpoint", outcome)
+        # An invalid template is deliberate: it proves the real result passed
+        # decoding before the structural template boundary is reached.
+        with self.assertRaises(Exception) as valid_error:
+            native_module.resolve_host_hpo_structural_winner_json(json.dumps(_request(1)), json.dumps(outcome), "{}")
+        self.assertNotIn("unknown field", str(valid_error.exception))
+        changed = json.loads(json.dumps(outcome))
+        changed["trials"][0]["unknown_probe"] = True
+        with self.assertRaisesRegex(Exception, "unknown field"):
+            native_module.resolve_host_hpo_structural_winner_json(json.dumps(_request(1)), json.dumps(changed), "{}")
 
     def test_candidate_callback_factory_isolates_operator_state(self) -> None:
         fallback = _Operators()

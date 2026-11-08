@@ -910,6 +910,22 @@ impl TrainingInfluenceManifest {
         Ok(())
     }
 
+    /// Validate identity closure against the fingerprint-bound relation set.
+    /// This integrity check does not authenticate either value.
+    pub fn validate_identity_closure(&self, relations: &SampleRelationSet) -> Result<()> {
+        self.validate()?;
+        relations.validate()?;
+        if self.relation_fingerprint != relations.fingerprint()? {
+            return contract_error(
+                "training influence relation fingerprint does not match relation set".to_string(),
+            );
+        }
+        for entry in &self.entries {
+            validate_influence_identity_closure(entry, relations)?;
+        }
+        Ok(())
+    }
+
     pub fn validate_for_projection(
         &self,
         projection: &TrainingContractProjection,
@@ -2915,7 +2931,7 @@ fn deep_set_object_key(
     Ok(())
 }
 
-fn predictor_closure<'a>(
+pub(crate) fn predictor_closure<'a>(
     plan: &ExecutionPlan,
     roots: impl IntoIterator<Item = &'a NodeId>,
 ) -> Result<BTreeSet<NodeId>> {
@@ -3683,8 +3699,7 @@ fn validate_package_base_influence(
         let kinds = &actual[node_id];
         if kinds.is_empty() || kinds.iter().any(|kind| *kind != expected_kind) {
             return contract_error(format!(
-                "portable predictor influence node `{node_id}` entries do not all have expected kind `{:?}`",
-                expected_kind
+                "portable predictor influence node `{node_id}` entries do not all have expected kind `{expected_kind:?}`"
             ));
         }
     }

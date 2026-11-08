@@ -32,8 +32,8 @@ use crate::graph::{NodeKind, PortKind};
 use crate::hpo::{methods_optimizer_preflight, MethodsHpoStudyConfig};
 use crate::ids::{ArtifactId, BundleId, FoldId, LineageId, NodeId, RunId, SampleId, VariantId};
 use crate::metrics::{
-    score_regression_aggregated_block, OofAverageBlock, RegressionMetricKind, ScoreSet,
-    LEGACY_SCORE_SET_SCHEMA_VERSION, SCORE_SET_SCHEMA_VERSION,
+    score_regression_aggregated_block, OofAverageBlock, RegressionMetricKind,
+    RegressionMetricReport, ScoreSet, LEGACY_SCORE_SET_SCHEMA_VERSION, SCORE_SET_SCHEMA_VERSION,
 };
 use crate::oof::{PredictionBlock, PredictionPartition};
 use crate::phase::Phase;
@@ -730,6 +730,10 @@ impl HpoExecutionContext<'_> {
             PredictionLevel::Sample,
             |candidate, ctx| {
                 ctx.resource_limits = Some(self.request.options.resources.clone());
+                ctx.training_score_kinds = crate::runtime::training_score_kinds(
+                    &self.request.graph,
+                    &self.projection.outputs,
+                );
                 SequentialScheduler
                     .execute_fold_hpo_fit_cv(
                         candidate,
@@ -819,6 +823,8 @@ impl HpoExecutionContext<'_> {
         }
         let mut ctx = RunContext::new(run_id.clone(), Some(self.request.options.seed));
         ctx.resource_limits = Some(self.request.options.resources.clone());
+        ctx.training_score_kinds =
+            crate::runtime::training_score_kinds(&self.request.graph, &self.projection.outputs);
         let campaign = SequentialScheduler.execute_hpo_campaign(
             &projection.plan,
             self.controllers,
@@ -2484,6 +2490,8 @@ pub fn execute_training(input: TrainingExecutionInput<'_>) -> Result<TrainingOut
     let mut run_candidate_fit_cv =
         |candidate_plan: &ExecutionPlan, candidate_ctx: &mut RunContext| -> Result<()> {
             candidate_ctx.resource_limits = Some(input.request.options.resources.clone());
+            candidate_ctx.training_score_kinds =
+                crate::runtime::training_score_kinds(&input.request.graph, &projection.outputs);
             let results = scheduler.fit_cv(
                 candidate_plan,
                 input.controllers,
@@ -2537,6 +2545,8 @@ pub fn execute_training(input: TrainingExecutionInput<'_>) -> Result<TrainingOut
             let mut campaign_context =
                 RunContext::new(input.run_id.clone(), Some(input.request.options.seed));
             campaign_context.resource_limits = Some(input.request.options.resources.clone());
+            campaign_context.training_score_kinds =
+                crate::runtime::training_score_kinds(&input.request.graph, &projection.outputs);
             let campaign = SequentialScheduler.execute_hpo_campaign(
                 &projection.plan,
                 input.controllers,
@@ -2659,6 +2669,8 @@ pub fn execute_training(input: TrainingExecutionInput<'_>) -> Result<TrainingOut
     } else {
         let mut ctx = RunContext::new(input.run_id.clone(), Some(input.request.options.seed));
         ctx.resource_limits = Some(input.request.options.resources.clone());
+        ctx.training_score_kinds =
+            crate::runtime::training_score_kinds(&input.request.graph, &projection.outputs);
         ctx.variant_id = Some(selected_variant_id.clone());
         let results = if let Some(state) = &methods_hpo_fold_state {
             SequentialScheduler.execute_fold_hpo_fit_cv(
@@ -2687,6 +2699,7 @@ pub fn execute_training(input: TrainingExecutionInput<'_>) -> Result<TrainingOut
         &selection.selection.validation_reports,
         &selected_ctx.score_collector,
         &selected_variant_id,
+        &selected_ctx.training_score_kinds,
     )?;
 
     let prediction_requirements = build_oof_prediction_requirements(
@@ -2754,7 +2767,14 @@ pub fn execute_training(input: TrainingExecutionInput<'_>) -> Result<TrainingOut
                 .score_collector
                 .iter()
                 .filter(|report| report.partition != PredictionPartition::Validation)
-                .cloned(),
+                .cloned()
+                .map(|mut report| {
+                    crate::runtime::retain_metric_families(
+                        &selected_ctx.training_score_kinds,
+                        std::slice::from_mut(&mut report),
+                    );
+                    report
+                }),
         );
     }
     let score_set = ScoreSet {
@@ -3323,6 +3343,7 @@ fn validate_selected_rerun_reports(
     retained: &[crate::metrics::RegressionMetricReport],
     rerun: &[crate::metrics::RegressionMetricReport],
     selected_variant_id: &VariantId,
+    kinds: &crate::runtime::TrainingScoreKinds,
 ) -> Result<()> {
     let mut retained = retained
         .iter()
@@ -3389,7 +3410,7 @@ fn validate_selected_rerun_reports(
         || retained
             .iter()
             .zip(&rerun)
-            .any(|(left, right)| !reports_match_rerun_tolerance(left, right))
+            .any(|(left, right)| !reports_match_rerun_tolerance(left, right, kinds))
     {
         return Err(DagMlError::RuntimeValidation(
             "selected variant FIT_CV rerun diverged from the reports that justified SELECT"
@@ -3405,6 +3426,7 @@ fn validate_selected_rerun_reports(
 fn reports_match_rerun_tolerance(
     left: &crate::metrics::RegressionMetricReport,
     right: &crate::metrics::RegressionMetricReport,
+    kinds: &crate::runtime::TrainingScoreKinds,
 ) -> bool {
     left.prediction_id == right.prediction_id
         && left.producer_node == right.producer_node
@@ -3418,7 +3440,7 @@ fn reports_match_rerun_tolerance(
         && left.target_width == right.target_width
         && left.grouping_key == right.grouping_key
         && left.target_names == right.target_names
-        && metric_maps_match(&left.metrics, &right.metrics)
+        && training_metric_maps_match(right, left, kinds)
 }
 
 fn metric_maps_match(left: &BTreeMap<String, f64>, right: &BTreeMap<String, f64>) -> bool {
@@ -3430,6 +3452,45 @@ fn metric_maps_match(left: &BTreeMap<String, f64>, right: &BTreeMap<String, f64>
                     && (value - other).abs() <= 1.0e-12 + 1.0e-12 * value.abs().max(other.abs())
             })
         })
+}
+
+// The primitive rescore defines the available supported metric keys. A bound native
+// scalar output additionally requires its whole available family. Neither rule depends
+// on a report's age, version, metric count or a compatibility profile.
+fn training_metric_maps_match(
+    rescored: &RegressionMetricReport,
+    report: &RegressionMetricReport,
+    kinds: &crate::runtime::TrainingScoreKinds,
+) -> bool {
+    let kind = kinds
+        .get(&(report.producer_node.clone(), report.producer_port.clone()))
+        .copied();
+    if report.target_domain.is_some()
+        || !matches!(
+            kind,
+            Some(PredictionKind::RegressionPoint | PredictionKind::ClassLabel)
+        )
+    {
+        return metric_maps_match(&rescored.metrics, &report.metrics);
+    }
+    let supplied = rescored
+        .metrics
+        .iter()
+        .filter(|(name, _)| report.metrics.contains_key(*name))
+        .map(|(name, value)| (name.clone(), *value))
+        .collect::<BTreeMap<_, _>>();
+    if !metric_maps_match(&supplied, &report.metrics) {
+        return false;
+    }
+    let mut required = [rescored.clone()];
+    crate::runtime::retain_metric_families(kinds, &mut required);
+    let observed_required = report
+        .metrics
+        .iter()
+        .filter(|(name, _)| required[0].metrics.contains_key(*name))
+        .map(|(name, value)| (name.clone(), *value))
+        .collect::<BTreeMap<_, _>>();
+    metric_maps_match(&required[0].metrics, &observed_required)
 }
 
 fn validate_selection_report_levels(
@@ -3633,7 +3694,7 @@ fn is_bound_output_partition(
     }
 }
 
-fn producer_port_matches_graph_output(
+pub(crate) fn producer_port_matches_graph_output(
     plan: &ExecutionPlan,
     node_id: &NodeId,
     port_name: &str,
@@ -4459,7 +4520,7 @@ fn oof_cache_namespace_fingerprints(
 }
 
 impl TrainingOutcome {
-    fn validate_ensemble_averages(&self) -> Result<()> {
+    fn validate_ensemble_averages(&self, kinds: &crate::runtime::TrainingScoreKinds) -> Result<()> {
         let mut seen = BTreeSet::new();
         for average in &self.ensemble_averages {
             let predictions = &average.predictions;
@@ -4523,7 +4584,7 @@ impl TrainingOutcome {
                 );
             }
             let rescored = score_regression_aggregated_block(predictions, targets, SCORE_METRICS)?;
-            if !metric_maps_match(&rescored.metrics, &report.metrics) {
+            if !training_metric_maps_match(&rescored, report, kinds) {
                 return contract_error(
                     "training outcome CV ensemble values disagree with score report",
                 );
@@ -4532,8 +4593,8 @@ impl TrainingOutcome {
         Ok(())
     }
 
-    fn validate_oof_averages(&self) -> Result<()> {
-        self.validate_oof_average_blocks(&self.oof_averages, &self.selected_variant_id)?;
+    fn validate_oof_averages(&self, kinds: &crate::runtime::TrainingScoreKinds) -> Result<()> {
+        self.validate_oof_average_blocks(&self.oof_averages, &self.selected_variant_id, kinds)?;
         if self.schema_version == LEGACY_TRAINING_OUTCOME_SCHEMA_VERSION
             && !self.variant_oof_averages.is_empty()
         {
@@ -4555,15 +4616,47 @@ impl TrainingOutcome {
                     "training outcome variant OOF averages must identify a unique ranked non-selected variant",
                 );
             }
-            self.validate_oof_average_blocks(&variant.oof_averages, &variant.variant_id)?;
+            self.validate_oof_average_blocks(&variant.oof_averages, &variant.variant_id, kinds)?;
         }
         Ok(())
+    }
+
+    // Derive the declared scoring context once for this outcome validation.
+    fn validation_score_kinds(&self) -> Result<crate::runtime::TrainingScoreKinds> {
+        let union = crate::training::training_operator_union_plan(&self.effective_plan)?;
+        let graph = &union
+            .as_ref()
+            .map_or(&self.effective_plan, |(plan, _)| plan)
+            .graph_plan
+            .graph;
+        let outputs = self
+            .outputs
+            .iter()
+            .map(|output| {
+                let binding = &output.binding;
+                ResolvedTrainingOutput {
+                    output_id: binding.binding_id.clone(),
+                    node_id: binding.node_id.clone(),
+                    port_name: binding.port_name.clone(),
+                    prediction_level: binding.prediction_level,
+                    unit_level: binding.unit_level,
+                    prediction_kind: binding.prediction_kind,
+                    target_names: binding.target_names.clone(),
+                    target_units: binding.target_units.clone(),
+                    class_labels: binding.class_labels.clone(),
+                    output_order: binding.output_order,
+                    target_space: binding.target_space.clone(),
+                }
+            })
+            .collect::<Vec<_>>();
+        Ok(crate::runtime::training_score_kinds(graph, &outputs))
     }
 
     fn validate_oof_average_blocks(
         &self,
         averages: &[OofAverageBlock],
         variant_id: &VariantId,
+        kinds: &crate::runtime::TrainingScoreKinds,
     ) -> Result<()> {
         let mut seen = BTreeSet::new();
         for average in averages {
@@ -4625,7 +4718,7 @@ impl TrainingOutcome {
                 );
             }
             let rescored = score_regression_aggregated_block(predictions, targets, SCORE_METRICS)?;
-            if !metric_maps_match(&rescored.metrics, &report.metrics) {
+            if !training_metric_maps_match(&rescored, report, kinds) {
                 return contract_error(
                     "training outcome OOF average values disagree with selected score report",
                 );
@@ -4926,8 +5019,9 @@ impl TrainingOutcome {
         self.validate_refit()?;
         self.score_set.validate()?;
         crate::target_domain::validate_domain_outcome(self)?;
-        self.validate_oof_averages()?;
-        self.validate_ensemble_averages()?;
+        let score_kinds = self.validation_score_kinds()?;
+        self.validate_oof_averages(&score_kinds)?;
+        self.validate_ensemble_averages(&score_kinds)?;
         self.validate_version_family()?;
         if self.schema_version == LEGACY_TRAINING_OUTCOME_SCHEMA_VERSION
             && (self.conformal_calibration.is_some() || self.conformal_calibration_replay.is_some())
@@ -5256,8 +5350,7 @@ impl TrainingOutcome {
                 (TRAINING_OUTCOME_SCHEMA_VERSION, Some(BOUND_TRAINING_OUTPUT_SCHEMA_VERSION)) => {}
                 (TRAINING_OUTCOME_SCHEMA_VERSION, Some(version)) => {
                     return contract_error(format!(
-                        "training outcome V2 requires bound output schema_version {}, got {version}",
-                        BOUND_TRAINING_OUTPUT_SCHEMA_VERSION
+                        "training outcome V2 requires bound output schema_version {BOUND_TRAINING_OUTPUT_SCHEMA_VERSION}, got {version}"
                     ));
                 }
                 (TRAINING_OUTCOME_SCHEMA_VERSION, None) => {
@@ -5778,8 +5871,7 @@ impl BoundTrainingOutput {
         if let Some(schema_version) = self.schema_version {
             if schema_version != BOUND_TRAINING_OUTPUT_SCHEMA_VERSION {
                 return contract_error(format!(
-                    "bound training output schema_version {schema_version} is unsupported; current {}",
-                    BOUND_TRAINING_OUTPUT_SCHEMA_VERSION
+                    "bound training output schema_version {schema_version} is unsupported; current {BOUND_TRAINING_OUTPUT_SCHEMA_VERSION}"
                 ));
             }
         }

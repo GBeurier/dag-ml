@@ -5,7 +5,7 @@
 //! prediction flows that every binding must preserve.
 
 pub mod aggregation;
-pub mod archive_workspace;
+pub mod artifact_facets;
 pub mod bundle;
 pub mod campaign;
 pub mod canonical;
@@ -39,6 +39,7 @@ pub mod methods_role_pipeline;
 pub mod metric_provider;
 pub mod metrics;
 pub mod n4m_roles;
+pub mod native_linear_pipeline;
 pub mod nested_selection;
 pub mod observability;
 pub mod oof;
@@ -47,6 +48,7 @@ pub mod plan;
 pub mod policy;
 pub mod provenance;
 mod python_torch_profile;
+pub mod realization_evidence;
 pub mod relation;
 pub mod replay;
 pub mod residual;
@@ -60,7 +62,7 @@ pub mod training;
 pub mod training_runtime;
 
 pub use aggregation::*;
-pub use archive_workspace::*;
+pub use artifact_facets::*;
 pub use bundle::*;
 pub use campaign::*;
 pub use canonical::*;
@@ -88,6 +90,7 @@ pub use methods_estimator::*;
 pub use metric_provider::*;
 pub use metrics::*;
 pub use n4m_roles::*;
+pub use native_linear_pipeline::*;
 pub use nested_selection::*;
 pub use observability::*;
 pub use oof::*;

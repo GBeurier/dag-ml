@@ -1,17 +1,15 @@
 /** DAG-owned high-level native U07 replay, no SDK/workspace dependency. */
 import {N4mWasmMultimodalController, SOURCE_ORDER, strictJson} from './n4m_multimodal_controller.mjs';
-import {replayMultimodalArchive} from './multimodal_archive.mjs';
+import {multimodalArchivePackage,replayMultimodalArchive} from './multimodal_archive.mjs';
 
 const stable=value=>Array.isArray(value)?value.map(stable):value&&typeof value==='object'?Object.fromEntries(Object.keys(value).sort().map(key=>[key,stable(value[key])])):value;
 const same=(a,b)=>JSON.stringify(stable(a))===JSON.stringify(stable(b));
 const require=(condition,message)=>{if(!condition)throw new Error(message);};
 
 export async function replayMultimodalDatasetArchive({archiveBytes,readPortableArchiveV2,dagMl,methods,current,digest,
-  outcomeId='outcome:public.multimodal',runId='run:public.multimodal'}) {
-  const archive=await readPortableArchiveV2(archiveBytes),packagePath=archive.manifest.replay.portable_predictor_package.member_path;
-  const packageText=new TextDecoder('utf-8',{fatal:true}).decode(archive.members[packagePath]),packageValue=strictJson(packageText);
-  dagMl.validate_archive_v2_portable_payloads_json(JSON.stringify(archive.manifest),packageText,
-    JSON.stringify(Object.fromEntries(Object.entries(archive.members).map(([name,bytes])=>[name,Array.from(bytes)]))));
+  outcomeId='outcome:public.multimodal',runId='run:public.multimodal',entrypoint}) {
+  const archive=await readPortableArchiveV2(archiveBytes,{entrypoint});
+  const {packageValue}=multimodalArchivePackage(archive);
   const plan=packageValue.effective_plan,nodes=plan.graph_plan.graph.nodes;
   require(nodes.length===1&&nodes[0].kind==='model'&&nodes[0].operator.type==='N4mMultimodalPipeline','One complete raw multimodal model required');
   const node=nodes[0],selected=plan.node_plans[node.id],owner=selected.controller_id;
@@ -23,6 +21,7 @@ export async function replayMultimodalDatasetArchive({archiveBytes,readPortableA
     {...current.source_schemas[name],identity:strictJson(current.source_schemas[name].identity)}),`Current source schema differs: ${name}`);
   const bindings=packageValue.output_bindings;
   require(bindings.length===1&&same(bindings[0].target_names,['y']),'One U07 output named y required');
+  const targetNames=[...bindings[0].target_names];
   const relations=current.coordinator_relations,relationFingerprint=dagMl.sample_relation_set_fingerprint_json(JSON.stringify(relations)),envelopes={};
   for(const requirement of packageValue.execution_bundle.data_requirements) {
     const key=`${requirement.node_id}.${requirement.input_name}`;
@@ -30,7 +29,7 @@ export async function replayMultimodalDatasetArchive({archiveBytes,readPortableA
     envelopes[key]=JSON.parse(dagMl.attach_predict_cohort_to_envelope_json(JSON.stringify({schema_version:1,
       schema_fingerprint:requirement.schema_fingerprint,plan_fingerprint:requirement.plan_fingerprint,
       relation_fingerprint:relationFingerprint,data_content_fingerprint:current.data_content_fingerprint,target_content_fingerprint:null,coordinator_relations:relations}),
-      JSON.stringify({role:'inference',relations,target_names:['y'],data_content_fingerprint:current.data_content_fingerprint,target_content_fingerprint:null})));
+      JSON.stringify({role:'inference',relations,target_names:[...targetNames],data_content_fingerprint:current.data_content_fingerprint,target_content_fingerprint:null})));
   }
   require(Object.keys(envelopes).length>0,'Missing replay data requirements');
   const request=JSON.parse(dagMl.sign_training_replay_request_json(JSON.stringify({schema_version:1,request_id:'replay:public.multimodal',
@@ -38,7 +37,7 @@ export async function replayMultimodalDatasetArchive({archiveBytes,readPortableA
     output_binding_ids:[bindings[0].binding_id],request_fingerprint:'0'.repeat(64)})));
   const positions=Object.fromEntries(SOURCE_ORDER.map(name=>[name,new Map(current.sources[name].sample_ids.map((id,i)=>[id,i]))]));
   const controller=new N4mWasmMultimodalController({methods,operators:{[node.id]:node.operator},nodeParams:{[node.id]:selected.params??{}},
-    sourceIds:current.source_ids,targetNames:['y'],digest,allowFit:false,controllerId:owner,resolveTargets:null,
+    sourceIds:current.source_ids,targetNames:[...targetNames],digest,allowFit:false,controllerId:owner,resolveTargets:null,
     resolveFeatures:({view})=>{
       const blocks={};
       for(const name of SOURCE_ORDER) {
@@ -54,7 +53,7 @@ export async function replayMultimodalDatasetArchive({archiveBytes,readPortableA
       return {sampleIds:[...view.sample_ids],blocks,sourceSchemas:schemas};
     }});
   try {
-    const evidence=await replayMultimodalArchive({archiveBytes,readPortableArchiveV2,dagMl,controller,dataEnvelopes:envelopes,request,outcomeId,runId});
+    const evidence=await replayMultimodalArchive({archiveBytes,readPortableArchiveV2:async()=>archive,dagMl,controller,dataEnvelopes:envelopes,request,outcomeId,runId,entrypoint});
     const outputs=evidence.replay.outputs;
     require(outputs.length===1&&outputs[0].predictions.length===1,'One complete native prediction block required');
     const block=outputs[0].predictions[0];

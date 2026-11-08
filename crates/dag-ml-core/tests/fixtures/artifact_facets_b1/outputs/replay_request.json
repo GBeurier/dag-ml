@@ -1,0 +1,1 @@
+{"schema_version":1,"request_id":"predict:b1.calibration.fixture","source_outcome_fingerprint":"a5b9c71bb79b655c871378951464122ba8eff1056ab84a9c3b994afc09f352b6","phase":"PREDICT","data_envelope_keys":["model:pls.x"],"output_binding_ids":["output:prediction"],"request_fingerprint":"202bdb970aead0e24662d687b329c201247ccc674f18ad64ff4c34112b296468"}

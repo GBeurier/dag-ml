@@ -1,0 +1,30 @@
+{
+  "dagml/model.json": {
+    "byte_length": 40240,
+    "sha256": "77a2b8f25b6536ed4d0e0cf4b8901250ecb98cecc8da07718bd7a955517c5247"
+  },
+  "dagml/plan.json": {
+    "byte_length": 17249,
+    "sha256": "894b05568cead85f368333655f4fa62798fc87cd461dd2ae7288014650e92fda"
+  },
+  "dagml/prediction.json": {
+    "byte_length": 2249,
+    "sha256": "3c0bdccd066fa4b11c42d06f923410876b39ffa5a3c5a54b886e4d4a30bd5de0"
+  },
+  "dagml/recipe.json": {
+    "byte_length": 3261,
+    "sha256": "5ff380e69dad7b2f67725483afd8b917b3d2bcde7190c4cfa952b6c227d773d5"
+  },
+  "dagml/result.json": {
+    "byte_length": 43728,
+    "sha256": "07ac6bfd47a57aa42a8344cb6e62d47e115f9c409cde4ec9345bc6de1975d7ed"
+  },
+  "dagml/run.json": {
+    "byte_length": 8098,
+    "sha256": "ec316bd881acd0719dad4767c864a6bafe8d1b46d536b34d0fb52911b46a192b"
+  },
+  "dagml/score.json": {
+    "byte_length": 738,
+    "sha256": "4117050f783e3af816d7befd2032e2de93b2a8e91e4a1f1a443e88a2bb89968b"
+  }
+}

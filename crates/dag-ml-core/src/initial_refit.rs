@@ -707,24 +707,28 @@ impl InitialPayloadArtifactStore<'_> {
     }
 }
 
-/// Run PREDICT from the captured REFIT artifacts and an independent V2 cohort.
-/// No package-bound CV selection or training phase is replayed.
-pub fn execute_initial_full_refit_prediction(
-    input: InitialRefitReplayInput<'_>,
-) -> Result<InitialRefitReplayExecution> {
-    input.package.validate()?;
-    let cohort = require_terminal_predict_cohort(input.envelope)?;
-    if input.output_ids.is_empty()
-        || input.output_ids.iter().collect::<BTreeSet<_>>().len() != input.output_ids.len()
+/// Owner metadata preflight shared by explicit execution and facet admission.
+/// No provider, controller, hydration or numerical callback is invoked.
+pub fn preflight_initial_full_refit_prediction(
+    package: &InitialFullRefitPackage,
+    envelope: &ExternalDataPlanEnvelope,
+    output_ids: &[String],
+) -> Result<()> {
+    package.validate()?;
+    require_terminal_predict_cohort(envelope)?;
+    envelope.validate_external_test_training_authority(
+        Some(&package.training_relations.fingerprint()?),
+        None,
+    )?;
+    if output_ids.is_empty() || output_ids.iter().collect::<BTreeSet<_>>().len() != output_ids.len()
     {
         return Err(package_error(
             "initial full-refit replay requires distinct explicit output IDs",
         ));
     }
-    let plan = &input.package.effective_plan;
-    for output_id in input.output_ids {
-        let binding = input
-            .package
+    let plan = &package.effective_plan;
+    for output_id in output_ids {
+        let binding = package
             .outputs
             .iter()
             .find(|binding| binding.output_id == *output_id)
@@ -733,7 +737,7 @@ pub fn execute_initial_full_refit_prediction(
             })?;
         validate_terminal_prediction_preflight(
             plan,
-            input.envelope,
+            envelope,
             &TerminalPredictionSelector::new(binding.node_id.clone(), binding.port_name.clone())?,
         )?;
     }
@@ -743,8 +747,7 @@ pub fn execute_initial_full_refit_prediction(
                 .controller_capabilities
                 .contains(&crate::ControllerCapability::Stateful)
     }) {
-        if !input
-            .package
+        if !package
             .artifacts
             .iter()
             .any(|artifact| artifact.record.node_id == node.node_id)
@@ -755,6 +758,24 @@ pub fn execute_initial_full_refit_prediction(
             )));
         }
     }
+    for binding in plan
+        .node_plans
+        .values()
+        .flat_map(|node| node.data_bindings.iter())
+    {
+        binding.validate_envelope(envelope)?;
+    }
+    Ok(())
+}
+
+/// Run PREDICT from the captured REFIT artifacts and an independent V2 cohort.
+/// No package-bound CV selection or training phase is replayed.
+pub fn execute_initial_full_refit_prediction(
+    input: InitialRefitReplayInput<'_>,
+) -> Result<InitialRefitReplayExecution> {
+    preflight_initial_full_refit_prediction(input.package, input.envelope, input.output_ids)?;
+    let cohort = require_terminal_predict_cohort(input.envelope)?;
+    let plan = &input.package.effective_plan;
     for binding in plan
         .node_plans
         .values()

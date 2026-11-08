@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "request_id": "replay:both-union",
+  "source_outcome_fingerprint": "c30fd6f103e0e14bf76250dbd7f1acf084d840ff857f3939fca0e0fa963f80bb",
+  "phase": "PREDICT",
+  "data_envelope_keys": [
+    "transform:snv.x"
+  ],
+  "output_binding_ids": [
+    "output:a",
+    "output:b"
+  ],
+  "request_fingerprint": "2e96ed491133789fa7a69e514b6b692222c6bca351f0361a584243f8343c548a"
+}

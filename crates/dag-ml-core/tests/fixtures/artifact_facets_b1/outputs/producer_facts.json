@@ -1,0 +1,311 @@
+{
+  "scope": "controlled synthetic calibration fixture; inner schema2 ConformalCalibration only; no real-measurement or coverage-generalization claim",
+  "source_input_sha256": {
+    "source_dataset.json": "9d0010a8297401a0a36fb0bbabe946ad37e7dedd14b0a8433286db663879be5a",
+    "calibration_dataset.json": "db9ab5fc65cad7bc7747e29e0c29f9744589ec32851ef60af77db22beeed5508"
+  },
+  "normalized_sha256": {
+    "source": "b56650c8973e4987de60988ecd98a7f91c86a0de74c01d4ed92ea453b7eb29cd",
+    "calibration": "0c65f0a7b796d7fa8b62d81cc729aa045ffc7bf7c0c8d23ece4dd572f38b97c3"
+  },
+  "library_sha256": {
+    "before": "05ae1a2e82491439f0e71ada0ea500ed79d03af227a11c4a2dbb317a99558529",
+    "after": "05ae1a2e82491439f0e71ada0ea500ed79d03af227a11c4a2dbb317a99558529"
+  },
+  "source_outcome_fingerprint_before_calibration": "a5b9c71bb79b655c871378951464122ba8eff1056ab84a9c3b994afc09f352b6",
+  "source_outcome_fingerprint_after_calibration": "3f9e5f456a066f0552ea152ca25d860aca14bc2a61264633a9cba2ba0a4a6212",
+  "ppc_before_anchor": {
+    "outcome_id": "outcome:b1.calibration.fixture",
+    "outcome_fingerprint": "a5b9c71bb79b655c871378951464122ba8eff1056ab84a9c3b994afc09f352b6",
+    "training_request_fingerprint": "d39163714d9e24ac87aa13362f766ec5ea232fdb1c08cce6cef83358b0f89142",
+    "effective_plan_fingerprint": "db3329a7b1ed03c15aa3ca602c46e5c211602c2a6014f9054751296d5dc50bca",
+    "execution_bundle_id": "bundle:b1.calibration.fixture",
+    "execution_bundle_fingerprint": "a8f08b9a486e5e96233550c964062ca8c46a6f9a1c0f300653c020bab04b4a97",
+    "output_binding_fingerprints": [
+      "4f78ab58582afa1b1e04399f1ea9ae0bf25b17025616ae537af37eb9c2f68854"
+    ],
+    "training_influence_fingerprint": "64208d22b7fc2b74621465d8d6f6c7570d680f090775f1439eadbaaeb77320a7",
+    "data_identities_fingerprint": "3310cbf3f308c8f6081c4aa670842d51cdca5893910eecef03559c0aea4369be"
+  },
+  "ppc_after_anchor": {
+    "outcome_id": "outcome:b1.calibration.fixture",
+    "outcome_fingerprint": "3f9e5f456a066f0552ea152ca25d860aca14bc2a61264633a9cba2ba0a4a6212",
+    "pre_conformal_outcome_fingerprint": "a5b9c71bb79b655c871378951464122ba8eff1056ab84a9c3b994afc09f352b6",
+    "training_request_fingerprint": "d39163714d9e24ac87aa13362f766ec5ea232fdb1c08cce6cef83358b0f89142",
+    "effective_plan_fingerprint": "db3329a7b1ed03c15aa3ca602c46e5c211602c2a6014f9054751296d5dc50bca",
+    "execution_bundle_id": "bundle:b1.calibration.fixture",
+    "execution_bundle_fingerprint": "64733da72c6301945e64e5ff3b7257639a360e1a10837d7575e7410985e2bd76",
+    "output_binding_fingerprints": [
+      "4f78ab58582afa1b1e04399f1ea9ae0bf25b17025616ae537af37eb9c2f68854"
+    ],
+    "training_influence_fingerprint": "64208d22b7fc2b74621465d8d6f6c7570d680f090775f1439eadbaaeb77320a7",
+    "data_identities_fingerprint": "3310cbf3f308c8f6081c4aa670842d51cdca5893910eecef03559c0aea4369be"
+  },
+  "ppc_before_package_fingerprint": "06240fa868fa4435463171c4a54ca7ee8f28351f6091aeb4be58007e5c88345e",
+  "ppc_after_package_fingerprint": "662fb4356dc7415588488f0707ae7a1899b4af7ae451597d0b35b1be52e342d3",
+  "native_model_info_before": [
+    {
+      "artifact_id": "artifact:methods-pls:model:pls:refit",
+      "format_version": 3,
+      "writer_abi": [
+        2,
+        20,
+        0
+      ],
+      "n_features": 8,
+      "n_targets": 1,
+      "raw_sha256": "6a721ee4c688a1b4b38fb4bc43e94b621d7134249b475772c020adee96b204a9"
+    }
+  ],
+  "native_model_info_after": [
+    {
+      "artifact_id": "artifact:methods-pls:model:pls:refit",
+      "format_version": 3,
+      "writer_abi": [
+        2,
+        20,
+        0
+      ],
+      "n_features": 8,
+      "n_targets": 1,
+      "raw_sha256": "6a721ee4c688a1b4b38fb4bc43e94b621d7134249b475772c020adee96b204a9"
+    }
+  ],
+  "raw_state_hashes_before": {
+    "artifact:methods-pls:model:pls:refit": {
+      "bytes": 636,
+      "sha256": "6a721ee4c688a1b4b38fb4bc43e94b621d7134249b475772c020adee96b204a9"
+    }
+  },
+  "raw_state_hashes_after": {
+    "artifact:methods-pls:model:pls:refit": {
+      "bytes": 636,
+      "sha256": "6a721ee4c688a1b4b38fb4bc43e94b621d7134249b475772c020adee96b204a9"
+    }
+  },
+  "raw_state_identical_before_after": true,
+  "calibration": {
+    "schema_version": 2,
+    "binding_id": "output:prediction",
+    "target_names": [
+      "protein"
+    ],
+    "sample_ids": [
+      "cal.000",
+      "cal.001",
+      "cal.002",
+      "cal.003",
+      "cal.004",
+      "cal.005",
+      "cal.006",
+      "cal.007",
+      "cal.008",
+      "cal.009",
+      "cal.010",
+      "cal.011",
+      "cal.012",
+      "cal.013",
+      "cal.014",
+      "cal.015",
+      "cal.016",
+      "cal.017",
+      "cal.018",
+      "cal.019",
+      "cal.020",
+      "cal.021",
+      "cal.022",
+      "cal.023",
+      "cal.024",
+      "cal.025",
+      "cal.026",
+      "cal.027",
+      "cal.028",
+      "cal.029",
+      "cal.030",
+      "cal.031",
+      "cal.032",
+      "cal.033",
+      "cal.034",
+      "cal.035",
+      "cal.036",
+      "cal.037",
+      "cal.038",
+      "cal.039",
+      "cal.040",
+      "cal.041",
+      "cal.042",
+      "cal.043",
+      "cal.044",
+      "cal.045",
+      "cal.046",
+      "cal.047"
+    ],
+    "coverages": [
+      0.8,
+      0.9,
+      0.95
+    ],
+    "multi_target_policy": "marginal",
+    "small_sample_policy": "error",
+    "quantiles": [
+      {
+        "coverage": 0.8,
+        "rank": 40,
+        "radii": [
+          {
+            "status": "finite",
+            "value": 0.8062941192442601
+          }
+        ]
+      },
+      {
+        "coverage": 0.9,
+        "rank": 45,
+        "radii": [
+          {
+            "status": "finite",
+            "value": 1.1191753566119251
+          }
+        ]
+      },
+      {
+        "coverage": 0.95,
+        "rank": 47,
+        "radii": [
+          {
+            "status": "finite",
+            "value": 1.3198175133481964
+          }
+        ]
+      }
+    ],
+    "context": {
+      "predictor_binding_fingerprint": "4f78ab58582afa1b1e04399f1ea9ae0bf25b17025616ae537af37eb9c2f68854",
+      "source_training_outcome_fingerprint": "a5b9c71bb79b655c871378951464122ba8eff1056ab84a9c3b994afc09f352b6",
+      "calibration_replay_outcome_fingerprint": "d473166a43628e8297b98e154ca297b2823d2f35264e18c6c75d23ef0ff5bf9c",
+      "data_identities_fingerprint": "3310cbf3f308c8f6081c4aa670842d51cdca5893910eecef03559c0aea4369be",
+      "fold_set_fingerprint": "95fc4e9bc2902c98d38c6053222ad685da5a2ddbed94d1ae67be3752ab954786",
+      "training_influence_fingerprint": "64208d22b7fc2b74621465d8d6f6c7570d680f090775f1439eadbaaeb77320a7",
+      "relation_fingerprint": "31fcd1121d52d74b15d9f8d670adac2c3bd6e6410ac656f94f5854d51edbf745",
+      "calibration_cohort": {
+        "role": "calibration",
+        "physical_sample_ids": [
+          "cal.000",
+          "cal.001",
+          "cal.002",
+          "cal.003",
+          "cal.004",
+          "cal.005",
+          "cal.006",
+          "cal.007",
+          "cal.008",
+          "cal.009",
+          "cal.010",
+          "cal.011",
+          "cal.012",
+          "cal.013",
+          "cal.014",
+          "cal.015",
+          "cal.016",
+          "cal.017",
+          "cal.018",
+          "cal.019",
+          "cal.020",
+          "cal.021",
+          "cal.022",
+          "cal.023",
+          "cal.024",
+          "cal.025",
+          "cal.026",
+          "cal.027",
+          "cal.028",
+          "cal.029",
+          "cal.030",
+          "cal.031",
+          "cal.032",
+          "cal.033",
+          "cal.034",
+          "cal.035",
+          "cal.036",
+          "cal.037",
+          "cal.038",
+          "cal.039",
+          "cal.040",
+          "cal.041",
+          "cal.042",
+          "cal.043",
+          "cal.044",
+          "cal.045",
+          "cal.046",
+          "cal.047"
+        ],
+        "origin_sample_ids": [],
+        "target_names": [
+          "protein"
+        ],
+        "manifest_fingerprint": "4eb01a7cc0d195c05d0b70aacc121180a3e4a5f4057bfc6faacb6c4475d3515b"
+      },
+      "context_fingerprint": "9be550e732b45eb4a32d98b30c30f51dc98f9ad99cdf5d658919d76175f9055c"
+    },
+    "calibration_fingerprint": "3781088cd7656ad11cdac81a4d6bfbcb70c64a7d5da513bb5a343152898baad8"
+  },
+  "calibration_replay_outcome_fingerprint": "d473166a43628e8297b98e154ca297b2823d2f35264e18c6c75d23ef0ff5bf9c",
+  "calibration_replay_input_identities": [
+    {
+      "requirement_key": "model:pls.x",
+      "schema_fingerprint": "a194f6a6f93ff8daba35ea4f5c4e070f7e4f43966cd7c367048424d1a56b7e4b",
+      "plan_fingerprint": "d4d16a9358c9a3726179d1309aef6aaf3fd7c42186457b8a8cede1d70c09cf19",
+      "relation_fingerprint": "31fcd1121d52d74b15d9f8d670adac2c3bd6e6410ac656f94f5854d51edbf745",
+      "data_content_fingerprint": "58103d66d2f957f27fdaa4e8cc7b616602c7e6ae9be3e412d781b415f7ba390e",
+      "target_content_fingerprint": "82fafba38e9659688d4a96cd72f91f833c4a3684b593a1b2be40845ed866e21b",
+      "identity_fingerprint": "498b4618a14d529c5db6a6d758248446d4bc231682684f816927dc9ea8f7fce0"
+    }
+  ],
+  "calibrated_package_replay": {
+    "status": "passed",
+    "point_predictions_identical_to_pre_calibration_replay": true,
+    "conformal_interval_blocks": 1
+  },
+  "coverages": [
+    0.8,
+    0.9,
+    0.95
+  ],
+  "calibration_sample_count": 48,
+  "binding_id": "output:prediction",
+  "target_names": [
+    "protein"
+  ],
+  "disjointness": {
+    "calibration_physical_count": 48,
+    "calibration_origin_count": 48,
+    "source_training_influence_id_count": 40,
+    "source_foldset_sample_count": 40,
+    "source_relation_id_count": 40,
+    "physical_x_influence": [],
+    "origin_x_influence": [],
+    "physical_x_foldset": [],
+    "origin_x_foldset": [],
+    "physical_x_source_relations": [],
+    "origin_x_source_relations": [],
+    "relation_fingerprint_calibration": "31fcd1121d52d74b15d9f8d670adac2c3bd6e6410ac656f94f5854d51edbf745",
+    "relation_fingerprint_source_development": "bdc98b52edaa7b56cddf564c36faeb39bffdcaccb223395934a7e4dae7179bed"
+  },
+  "file_sha256": {
+    "source_dataset.normalized.json": "b56650c8973e4987de60988ecd98a7f91c86a0de74c01d4ed92ea453b7eb29cd",
+    "calibration_dataset.normalized.json": "0c65f0a7b796d7fa8b62d81cc729aa045ffc7bf7c0c8d23ece4dd572f38b97c3",
+    "training_outcome.after.json": "23bae90d3953ad7bc46f99a62ef2c02a7eb96af63b0b3a778ba40ec8d22c38ba",
+    "training_outcome.before.json": "3b13e1412788edcfe2f0874bf093c6d1e8f8d62882718a0b556050385ae7265e",
+    "native_predictions_vs_truth.json": "a29291eafa23826dcc70b913bb34771bbbb5ae4b6bd4fcd3e49994edfc02ef2c",
+    "ppc.after.json": "ca4a2e76c79f3f7a534d687a0e779fd6a092486bf22accc968720f095fa93fe9",
+    "calibrated_package_replay.json": "d2c78b67f82300c8ebd4ae6ea76a042608f108199ec394bd2d1482b3ed3472c9",
+    "replay_envelope.json": "42bdbd9307b933d82fecbeffc007587243fbcaf5d035516cfd243407f84293ef",
+    "disjointness.json": "ebaa502c49954dd2bf3bc0bc0303a3f07e0496c1c85d69e446ec295f3f0a1f68",
+    "calibration_truth.json": "13b88cdd7486ef56c899e0418b1f71329407788f3f4786f4abb52713ab236b3f",
+    "conformal_calibration.json": "66ccd516c3c59fa8483ca1273428fda4e5485de84f74529256d0877be3684544",
+    "calibration_replay.json": "b8d24568d82a55c85ba3e128c1e864b44fc314fb93334b4e67e2325d5683a7c5",
+    "replay_request.json": "52bbe42104d92ca66a220ee34124bbf3176513bb7547c197cc183a16f16f631e",
+    "calibration_relations.json": "ad7d860489908779c5605e58526a882b45c14afa41c2a4717c654b6aa84a9c8a",
+    "ppc.before.json": "b4575e23003bcb9f9c29bd4e95c3f7adefe8d2a96507a484d944390a31911b84"
+  }
+}

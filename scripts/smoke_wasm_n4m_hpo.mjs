@@ -65,7 +65,7 @@ const persist = snapshot => { stored = structuredClone(snapshot); };
 const run = (adapter, budget, checkpoint = null, callback = adapter.callback) => {
   request.trial_budget = budget;
   return JSON.parse(dagMl.host_hpo_search_json(plan, JSON.stringify([manifest]), envelope,
-    JSON.stringify(request), checkpoint === null ? undefined : JSON.stringify(checkpoint), controller, callback));
+    JSON.stringify(request), checkpoint ?? undefined, controller, callback));
 };
 
 const firstAdapter = new N4mWasmHostOptimizer({ ...config, persist });
@@ -77,7 +77,7 @@ firstAdapter.close();
 
 const resumedAdapter = new N4mWasmHostOptimizer({ ...config, persist, state: stored });
 assert.deepEqual(resumedAdapter.committed, first.checkpoint);
-const resumed = run(resumedAdapter, 3, resumedAdapter.committed);
+const resumed = run(resumedAdapter, 3, resumedAdapter.committedJson);
 assert.equal(resumed.checkpoint.trials.length, 3);
 assert.deepEqual(resumed.trials.slice(0, 2), first.trials);
 assertRidgeHpoScores(resumed);
@@ -88,7 +88,8 @@ const continuous = new N4mWasmHostOptimizer({ ...config, persist: snapshot => { 
 const continuousResult = run(continuous, 3);
 assert.deepEqual(resumed.trials, continuousResult.trials);
 assert.deepEqual(resumed.checkpoint.trials, continuousResult.checkpoint.trials);
-assert.equal(continuousState.committed.trials.length, 3);
+assert.equal(resumed.checkpoint.fingerprint, continuousResult.checkpoint.fingerprint);
+assert.equal(JSON.parse(continuousState.committed_json).trials.length, 3);
 continuous.close();
 
 let crashState;
@@ -98,14 +99,15 @@ assert.throws(() => run(interrupted, 2, null, (operation, payload) => {
   if (operation === "prepare_terminal") throw new Error("simulated crash after prepared checkpoint");
   return reply;
 }), /simulated crash|prepare_terminal/);
-assert.equal(crashState.committed.trials.length, 0);
-assert.equal(crashState.prepared.trials.length, 1);
+assert.equal(JSON.parse(crashState.committed_json).trials.length, 0);
+assert.equal(JSON.parse(crashState.prepared_json).trials.length, 1);
 interrupted.close();
 const recovered = new N4mWasmHostOptimizer({ ...config,
   persist: snapshot => { crashState = structuredClone(snapshot); }, state: crashState });
 assert.equal(recovered.committed.trials.length, 1);
-const afterCrash = run(recovered, 2, recovered.committed);
+const afterCrash = run(recovered, 2, recovered.committedJson);
 assert.deepEqual(afterCrash.trials, first.trials);
+assert.equal(afterCrash.checkpoint.fingerprint, first.checkpoint.fingerprint);
 recovered.close();
 
 let orphanState;
@@ -116,12 +118,12 @@ assert.throws(() => run(orphaned, 2, null, (operation, payload) => {
   if (operation === "ask") throw new Error("simulated crash after Methods ask");
   return reply;
 }), /simulated crash|ask/);
-assert.equal(orphanState.committed.trials.length, 0);
+assert.equal(JSON.parse(orphanState.committed_json).trials.length, 0);
 orphaned.close();
 const recoveredOrphan = new N4mWasmHostOptimizer({ ...config,
   persist: snapshot => { orphanState = structuredClone(snapshot); }, state: orphanState });
 assert.equal(recoveredOrphan.committed.trials[0].state, "failed");
-const afterOrphan = run(recoveredOrphan, 2, recoveredOrphan.committed);
+const afterOrphan = run(recoveredOrphan, 2, recoveredOrphan.committedJson);
 assert.deepEqual(afterOrphan.checkpoint.trials.map(trial => trial.state), ["failed", "complete"]);
 recoveredOrphan.close();
 
@@ -146,7 +148,7 @@ assert.throws(() => run(prunedMidReport, 3, null, (operation, payload) => {
   return reply;
 }));
 assert.equal(sawPrune, true);
-assert.equal(pruneState.committed.trials.length, 1);
+assert.equal(JSON.parse(pruneState.committed_json).trials.length, 1);
 const storedPruner = Optimizer.load(Uint8Array.from(pruneState.n4mopt), pruneConfig.space);
 assert.equal(storedPruner.trialRecords().at(-1).status, "running");
 storedPruner.dispose();
@@ -154,7 +156,7 @@ prunedMidReport.close();
 const recoveredPrune = new N4mWasmHostOptimizer({ ...pruneConfig,
   persist: snapshot => { pruneState = structuredClone(snapshot); }, state: pruneState });
 assert.equal(recoveredPrune.committed.trials.at(-1).state, "failed");
-const afterPruneCrash = run(recoveredPrune, 3, recoveredPrune.committed);
+const afterPruneCrash = run(recoveredPrune, 3, recoveredPrune.committedJson);
 assert.equal(afterPruneCrash.checkpoint.trials.length, 3);
 recoveredPrune.close();
 
@@ -172,12 +174,12 @@ assert.throws(() => run(prunedPrepared, 3, null, (operation, payload) => {
   return reply;
 }));
 assert.equal(crashedAfterPrunePrepare, true);
-assert.equal(preparedPruneState.prepared.trials.at(-1).state, "pruned");
+assert.equal(JSON.parse(preparedPruneState.prepared_json).trials.at(-1).state, "pruned");
 prunedPrepared.close();
 const recoveredPreparedPrune = new N4mWasmHostOptimizer({ ...pruneConfig,
   persist: snapshot => { preparedPruneState = structuredClone(snapshot); }, state: preparedPruneState });
 assert.equal(recoveredPreparedPrune.committed.trials.at(-1).state, "pruned");
-assert.equal(run(recoveredPreparedPrune, 3, recoveredPreparedPrune.committed).checkpoint.trials.length, 3);
+assert.equal(run(recoveredPreparedPrune, 3, recoveredPreparedPrune.committedJson).checkpoint.trials.length, 3);
 recoveredPreparedPrune.close();
 request.progressive_pruning = false;
 
@@ -186,6 +188,32 @@ damaged.n4mopt[damaged.n4mopt.length - 1] ^= 1;
 assert.throws(() => new N4mWasmHostOptimizer({ ...config, persist, state: damaged }));
 assert.throws(() => new N4mWasmHostOptimizer({ ...config, options: { ...config.options, seed: 20 },
   persist, state: firstState }), /snapshot contract mismatch/);
+
+// Real Methods float proposals must retain their binary64 token across resume.
+let floatState;
+const floatConfig = { ...config, space: { ...config.space, scale_probe: { kind: "float", low: 2e19, high: 9e20 } } };
+const floatOptimizer = new N4mWasmHostOptimizer({ ...floatConfig, persist: value => { floatState = structuredClone(value); } });
+const floatFirst = run(floatOptimizer, 2);
+floatOptimizer.close();
+const floatResumed = new N4mWasmHostOptimizer({ ...floatConfig, persist: value => { floatState = structuredClone(value); }, state: floatState });
+const floatFinal = run(floatResumed, 3, floatResumed.committedJson);
+floatResumed.close();
+const floatContinuous = new N4mWasmHostOptimizer({ ...floatConfig, persist: () => {} });
+const floatReference = run(floatContinuous, 3);
+assert.equal(floatFinal.checkpoint.fingerprint, floatReference.checkpoint.fingerprint);
+assert.equal(floatFirst.status, "completed");
+floatContinuous.close();
+let floatCrashState;
+const floatCrash = new N4mWasmHostOptimizer({ ...floatConfig, persist: value => { floatCrashState = structuredClone(value); } });
+assert.throws(() => run(floatCrash, 3, null, (operation, payload) => {
+  const reply = floatCrash.callback(operation, payload);
+  if (operation === "prepare_terminal") throw new Error("float prepared crash");
+  return reply;
+}), /float prepared crash|prepare_terminal/);
+floatCrash.close();
+const floatRecovered = new N4mWasmHostOptimizer({ ...floatConfig, state: floatCrashState, persist: () => {} });
+assert.equal(run(floatRecovered, 3, floatRecovered.committedJson).checkpoint.fingerprint, floatReference.checkpoint.fingerprint);
+floatRecovered.close();
 
 let refitQualified = false;
 if (typeof dagMl.execute_initial_full_refit_json === "function") {

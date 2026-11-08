@@ -1,0 +1,158 @@
+{
+  "qualification": "SYNTHETIC HOST/MOCK; generic DAG coordination only. No native Methods/IO/scientific qualification.",
+  "shared_import": "Exact immutable completed public models-shared producer captures.",
+  "equal_import": "Exact immutable extended-controls true multi-target equal producer captures.",
+  "explain_generation": "New actual execute_training + to_portable_predictor_package run, with controller manifests declaring EXPLAIN and honest synthetic explanations. No saved outcome/package edits.",
+  "generator_manifest_origin": "/home/delete/nirs4all/_implementation/2026-11-03-ecosystem-consolidation/phase2a-b-multi-output-correction/fixture-producer/harness/Cargo.toml",
+  "generator_manifest_sha256": "93cd50fd7e42a6efca6b00d915749d2d5b0e2e2934e6ee9f9fad64c32c20e260",
+  "generator_lock_sha256": "8995f99f1e51fbb63a06e7d968515ce96d1d4f9bcb874ee0007dea9402d7865d",
+  "command": "CARGO_BUILD_JOBS=4 CARGO_TARGET_DIR=/tmp/phase2a-b-multi-output-extended-target PROBE_OUTPUT=/home/delete/nirs4all/_implementation/2026-11-03-ecosystem-consolidation/phase2a-b-multi-output-correction/fixture-producer/output cargo +1.88.0 run --offline --locked --manifest-path _implementation/2026-11-03-ecosystem-consolidation/phase2a-b-multi-output-correction/fixture-producer/harness/Cargo.toml",
+  "generator_log": "_implementation/2026-11-03-ecosystem-consolidation/phase2a-b-multi-output-correction/fixture-producer/run-2.log",
+  "imports": [
+    {
+      "path": "crates/dag-ml-core/tests/fixtures/multi_output_target_claims/shared/training-request.json",
+      "before": null,
+      "origin": "/home/delete/nirs4all/_implementation/2026-11-03-ecosystem-consolidation/phase2a-b-multi-output-probe/runs/current/models-shared/training-request.json",
+      "sha256": "0c1bbe1dcc8d63116b3a9572cd45aa27791f8925f7d6706adf4b3e05fbc25589"
+    },
+    {
+      "path": "crates/dag-ml-core/tests/fixtures/multi_output_target_claims/shared/outcome.json",
+      "before": null,
+      "origin": "/home/delete/nirs4all/_implementation/2026-11-03-ecosystem-consolidation/phase2a-b-multi-output-probe/runs/current/models-shared/training-outcome.json",
+      "sha256": "03639f011fed62fca2032886206e0186c8a242aabfa872ab819cde7441452425"
+    },
+    {
+      "path": "crates/dag-ml-core/tests/fixtures/multi_output_target_claims/shared/package.json",
+      "before": null,
+      "origin": "/home/delete/nirs4all/_implementation/2026-11-03-ecosystem-consolidation/phase2a-b-multi-output-probe/runs/current/models-shared/package.json",
+      "sha256": "a7337cbbe953cc419d3a8a4fa7891aeb6dcb9aee63ab551f49aafc54875c9102"
+    },
+    {
+      "path": "crates/dag-ml-core/tests/fixtures/multi_output_target_claims/shared/request.json",
+      "before": null,
+      "origin": "/home/delete/nirs4all/_implementation/2026-11-03-ecosystem-consolidation/phase2a-b-multi-output-probe/runs/current/models-shared/both-union-request.json",
+      "sha256": "8961df1f7331f6249e6e9c2c5f50e886592f7810fbfd8957d387900dd61dc1bd"
+    },
+    {
+      "path": "crates/dag-ml-core/tests/fixtures/multi_output_target_claims/shared/envelopes.json",
+      "before": null,
+      "origin": "/home/delete/nirs4all/_implementation/2026-11-03-ecosystem-consolidation/phase2a-b-multi-output-probe/runs/current/models-shared/both-union-envelopes.json",
+      "sha256": "d950913ce0d81fe5889e0e0edd60c397de6659c2c52227d68b904c952c212326"
+    },
+    {
+      "path": "crates/dag-ml-core/tests/fixtures/multi_output_target_claims/shared/host-training-X.json",
+      "before": null,
+      "origin": "/home/delete/nirs4all/_implementation/2026-11-03-ecosystem-consolidation/phase2a-b-multi-output-probe/runs/current/models-shared/host-training-X.json",
+      "sha256": "c210105edc4614bc1233f10d73b105127e9c8d4db13cb75567c6bc766685838b"
+    },
+    {
+      "path": "crates/dag-ml-core/tests/fixtures/multi_output_target_claims/shared/host-training-y.json",
+      "before": null,
+      "origin": "/home/delete/nirs4all/_implementation/2026-11-03-ecosystem-consolidation/phase2a-b-multi-output-probe/runs/current/models-shared/host-training-y.json",
+      "sha256": "96aa2bbfc459640224b9f2cfcf71922fd1fc06accb6e71a1b4ddfd9010475979"
+    },
+    {
+      "path": "crates/dag-ml-core/tests/fixtures/multi_output_target_claims/shared/training-relations.json",
+      "before": null,
+      "origin": "/home/delete/nirs4all/_implementation/2026-11-03-ecosystem-consolidation/phase2a-b-multi-output-probe/runs/current/models-shared/training-relations.json",
+      "sha256": "fadae16a92fab502e379de5db1982a3f322acb57b4100c861ac67a04e7f63b48"
+    },
+    {
+      "path": "crates/dag-ml-core/tests/fixtures/multi_output_target_claims/equal/training-request.json",
+      "before": null,
+      "origin": "/home/delete/nirs4all/_implementation/2026-11-03-ecosystem-consolidation/phase2a-b-multi-output-probe/extended-controls/runs/models-multi-equal/training-request.json",
+      "sha256": "59538a9681816e38e5a2f0bb1a0c20423bb97feac4cf7459b5556252c340fd1c"
+    },
+    {
+      "path": "crates/dag-ml-core/tests/fixtures/multi_output_target_claims/equal/outcome.json",
+      "before": null,
+      "origin": "/home/delete/nirs4all/_implementation/2026-11-03-ecosystem-consolidation/phase2a-b-multi-output-probe/extended-controls/runs/models-multi-equal/training-outcome.json",
+      "sha256": "a1cc92a9fa952aaff8423d2f06c95a97ad04544f7794020d09d918b219d23cdb"
+    },
+    {
+      "path": "crates/dag-ml-core/tests/fixtures/multi_output_target_claims/equal/package.json",
+      "before": null,
+      "origin": "/home/delete/nirs4all/_implementation/2026-11-03-ecosystem-consolidation/phase2a-b-multi-output-probe/extended-controls/runs/models-multi-equal/package.json",
+      "sha256": "bcd5a31b9f96d86f60305653eeca3b901d2c1ea2cb6dc71af2dfdcddb529d3e6"
+    },
+    {
+      "path": "crates/dag-ml-core/tests/fixtures/multi_output_target_claims/equal/request.json",
+      "before": null,
+      "origin": "/home/delete/nirs4all/_implementation/2026-11-03-ecosystem-consolidation/phase2a-b-multi-output-probe/extended-controls/runs/models-multi-equal/both-a-order-request.json",
+      "sha256": "4089b9b5709f7768a6caef31d553de58f0fc9bf7d529b134c550ee44a0d171ad"
+    },
+    {
+      "path": "crates/dag-ml-core/tests/fixtures/multi_output_target_claims/equal/envelopes.json",
+      "before": null,
+      "origin": "/home/delete/nirs4all/_implementation/2026-11-03-ecosystem-consolidation/phase2a-b-multi-output-probe/extended-controls/runs/models-multi-equal/both-a-order-envelopes.json",
+      "sha256": "d950913ce0d81fe5889e0e0edd60c397de6659c2c52227d68b904c952c212326"
+    },
+    {
+      "path": "crates/dag-ml-core/tests/fixtures/multi_output_target_claims/equal/host-training-X.json",
+      "before": null,
+      "origin": "/home/delete/nirs4all/_implementation/2026-11-03-ecosystem-consolidation/phase2a-b-multi-output-probe/extended-controls/runs/models-multi-equal/host-training-X.json",
+      "sha256": "c210105edc4614bc1233f10d73b105127e9c8d4db13cb75567c6bc766685838b"
+    },
+    {
+      "path": "crates/dag-ml-core/tests/fixtures/multi_output_target_claims/equal/host-training-y.json",
+      "before": null,
+      "origin": "/home/delete/nirs4all/_implementation/2026-11-03-ecosystem-consolidation/phase2a-b-multi-output-probe/extended-controls/runs/models-multi-equal/host-training-y.json",
+      "sha256": "f4860ed23486f6423261bd1b4709c6f344e9e631e7d6db623588aee68bd5ca0b"
+    },
+    {
+      "path": "crates/dag-ml-core/tests/fixtures/multi_output_target_claims/equal/training-relations.json",
+      "before": null,
+      "origin": "/home/delete/nirs4all/_implementation/2026-11-03-ecosystem-consolidation/phase2a-b-multi-output-probe/extended-controls/runs/models-multi-equal/training-relations.json",
+      "sha256": "fadae16a92fab502e379de5db1982a3f322acb57b4100c861ac67a04e7f63b48"
+    },
+    {
+      "path": "crates/dag-ml-core/tests/fixtures/multi_output_target_claims/explain/training-request.json",
+      "before": null,
+      "origin": "/home/delete/nirs4all/_implementation/2026-11-03-ecosystem-consolidation/phase2a-b-multi-output-correction/fixture-producer/output/training-request.json",
+      "sha256": "a2126e527e65af8cffb7b7acb212c07fc1522bbb266d120247d2a93515f1ac14"
+    },
+    {
+      "path": "crates/dag-ml-core/tests/fixtures/multi_output_target_claims/explain/outcome.json",
+      "before": null,
+      "origin": "/home/delete/nirs4all/_implementation/2026-11-03-ecosystem-consolidation/phase2a-b-multi-output-correction/fixture-producer/output/training-outcome.json",
+      "sha256": "90098f4539c500ee8e4981fa9b9c44ebe5d5d70ef1a9c64edd88c300ae65dfa9"
+    },
+    {
+      "path": "crates/dag-ml-core/tests/fixtures/multi_output_target_claims/explain/package.json",
+      "before": null,
+      "origin": "/home/delete/nirs4all/_implementation/2026-11-03-ecosystem-consolidation/phase2a-b-multi-output-correction/fixture-producer/output/package.json",
+      "sha256": "45be229029a9ace11636bda4ce6a823e0e4c6333007aeb6541abef863628279c"
+    },
+    {
+      "path": "crates/dag-ml-core/tests/fixtures/multi_output_target_claims/generator-source/src/pattern.rs",
+      "before": null,
+      "origin": "/home/delete/nirs4all/_implementation/2026-11-03-ecosystem-consolidation/phase2a-b-multi-output-correction/fixture-producer/harness/src/pattern.rs",
+      "sha256": "c50446297255b6310ebff9a9179ff07627a5e07e7d94969c2076dee76c089dad"
+    },
+    {
+      "path": "crates/dag-ml-core/tests/fixtures/multi_output_target_claims/generator-source/src/main.rs",
+      "before": null,
+      "origin": "/home/delete/nirs4all/_implementation/2026-11-03-ecosystem-consolidation/phase2a-b-multi-output-correction/fixture-producer/harness/src/main.rs",
+      "sha256": "62317d93c2da193909a6114e5c9d0157b3cb6b5cd6200d852cb0c6b4c022dbf5"
+    },
+    {
+      "path": "crates/dag-ml-core/tests/fixtures/multi_output_target_claims/generator-source/inputs/minimal_graph.json",
+      "before": null,
+      "origin": "/home/delete/nirs4all/_implementation/2026-11-03-ecosystem-consolidation/phase2a-b-multi-output-correction/fixture-producer/harness/inputs/minimal_graph.json",
+      "sha256": "5c518a752a4d840c7c1b9ef9602b35a849df5ca1f132e7ace19137ec5c5f1a67"
+    },
+    {
+      "path": "crates/dag-ml-core/tests/fixtures/multi_output_target_claims/generator-source/inputs/campaign_oof_generation.json",
+      "before": null,
+      "origin": "/home/delete/nirs4all/_implementation/2026-11-03-ecosystem-consolidation/phase2a-b-multi-output-correction/fixture-producer/harness/inputs/campaign_oof_generation.json",
+      "sha256": "87197d3edaebdc75ee37fa42707a472057b0a0fdd4f9b27d11f982271884af62"
+    },
+    {
+      "path": "crates/dag-ml-core/tests/fixtures/multi_output_target_claims/generator-source/inputs/controller_manifests.json",
+      "before": null,
+      "origin": "/home/delete/nirs4all/_implementation/2026-11-03-ecosystem-consolidation/phase2a-b-multi-output-correction/fixture-producer/harness/inputs/controller_manifests.json",
+      "sha256": "18f5abebe62d6645f3d44ff28e330d4f6bc0e93eeb26bcd75b0814682cc794f7"
+    }
+  ],
+  "historical_before_build_performed": false
+}

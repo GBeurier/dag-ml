@@ -39,7 +39,11 @@ impl DagMlHostHpoFeedbackCallbacks {
         Ok(())
     }
 
-    fn call(&self, event: serde_json::Value) -> dag_ml_core::Result<serde_json::Value> {
+    fn call(
+        &self,
+        operation: &str,
+        event: serde_json::Value,
+    ) -> dag_ml_core::Result<serde_json::Value> {
         let encoded = serde_json::to_vec(&event)?;
         let mut bytes = DagMlOwnedBytes::default();
         let status = unsafe {
@@ -60,11 +64,10 @@ impl DagMlHostHpoFeedbackCallbacks {
         }
         let payload = unsafe { slice::from_raw_parts(bytes.ptr, bytes.len) }.to_vec();
         unsafe { self.release_bytes.expect("validated")(self.user_data, bytes) };
-        serde_json::from_slice(&payload).map_err(|error| {
-            DagMlError::RuntimeValidation(format!(
-                "host HPO C feedback returned invalid JSON: {error}"
-            ))
-        })
+        decode_external(
+            &payload,
+            &format!("host HPO C feedback `{operation}` reply"),
+        )
     }
 }
 
@@ -121,6 +124,23 @@ fn callback_status(status: DagMlStatusCode, operation: &str) -> dag_ml_core::Res
             "host HPO C {operation} callback returned {status:?}"
         )))
     }
+}
+
+fn decode_external<T: DeserializeOwned + Serialize>(
+    bytes: &[u8],
+    label: &str,
+) -> dag_ml_core::Result<T> {
+    let raw = std::str::from_utf8(bytes).map_err(|error| {
+        DagMlError::RuntimeValidation(format!("{label} is not valid UTF-8: {error}"))
+    })?;
+    dag_ml_core::deserialize_external_contract(raw, label, DagMlError::RuntimeValidation).map_err(
+        |error| match error {
+            DagMlError::Serialization(error) => {
+                DagMlError::RuntimeValidation(format!("{label}: {error}"))
+            }
+            error => error,
+        },
+    )
 }
 
 struct CProposals {
@@ -185,11 +205,7 @@ impl HostHpoProposalSource for CProposals {
                 bytes,
             )
         };
-        let params = serde_json::from_slice(&value).map_err(|error| {
-            DagMlError::RuntimeValidation(format!(
-                "host HPO C ask returned invalid parameter JSON: {error}"
-            ))
-        })?;
+        let params = decode_external(&value, "host HPO C ask parameters")?;
         Ok(Some(params))
     }
 
@@ -231,10 +247,13 @@ impl HostHpoProposalSource for CProposals {
             )
         })?;
         feedback
-            .call(serde_json::json!({
-                "operation": "report_intermediate", "trial_index": trial_index,
-                "step": step, "score": score,
-            }))?
+            .call(
+                "report_intermediate",
+                serde_json::json!({
+                    "operation": "report_intermediate", "trial_index": trial_index,
+                    "step": step, "score": score,
+                }),
+            )?
             .get("prune")
             .and_then(serde_json::Value::as_bool)
             .ok_or_else(|| {
@@ -250,9 +269,12 @@ impl HostHpoProposalSource for CProposals {
                 "host HPO C ABI v1 cannot terminalize a pruned trial".into(),
             )
         })?;
-        let reply = feedback.call(serde_json::json!({
-            "operation": "pruned", "trial_index": trial_index,
-        }))?;
+        let reply = feedback.call(
+            "pruned",
+            serde_json::json!({
+                "operation": "pruned", "trial_index": trial_index,
+            }),
+        )?;
         if reply.get("ok").and_then(serde_json::Value::as_bool) == Some(true) {
             Ok(())
         } else {
@@ -271,9 +293,12 @@ impl HostHpoProgress for CProgress {
         checkpoint: &HostHpoCheckpoint,
         status: HostHpoSearchStatus,
     ) -> dag_ml_core::Result<()> {
-        let reply = self.0.call(serde_json::json!({
-            "operation": "prepare_terminal", "checkpoint": checkpoint, "status": status,
-        }))?;
+        let reply = self.0.call(
+            "prepare_terminal",
+            serde_json::json!({
+                "operation": "prepare_terminal", "checkpoint": checkpoint, "status": status,
+            }),
+        )?;
         if reply.get("ok").and_then(serde_json::Value::as_bool) == Some(true) {
             Ok(())
         } else {
@@ -288,9 +313,12 @@ impl HostHpoProgress for CProgress {
         checkpoint: &HostHpoCheckpoint,
         status: HostHpoSearchStatus,
     ) -> dag_ml_core::Result<bool> {
-        let reply = self.0.call(serde_json::json!({
-            "operation": "checkpoint", "checkpoint": checkpoint, "status": status,
-        }))?;
+        let reply = self.0.call(
+            "checkpoint",
+            serde_json::json!({
+                "operation": "checkpoint", "checkpoint": checkpoint, "status": status,
+            }),
+        )?;
         if reply.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
             return Err(DagMlError::RuntimeValidation(
                 "host HPO C checkpoint reply lacks true `ok`".into(),

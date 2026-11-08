@@ -1,0 +1,121 @@
+{
+  "schema_version": 3,
+  "outcome_id": "outcome:explain-selected",
+  "run_id": "run:explain-selected",
+  "source_training_outcome": {
+    "outcome_id": "outcome:probe.models-shared",
+    "outcome_fingerprint": "6dc9f720d02cbe2ad38102403df617d7f7518626f8ba5b6a155dfdd7f85902c3",
+    "training_request_fingerprint": "7837647cca302f0e1a8e8080ce9974058b64b6798a4c0a17d23a071cc33d0be4",
+    "effective_plan_fingerprint": "019e89c50133420f915842bf7a5afff936e3805f3cf3359cd3005e67189f5b41",
+    "execution_bundle_id": "bundle:probe.models-shared",
+    "execution_bundle_fingerprint": "8f851ecbab4cacde0cacc2c3704707e6ca24abd518f6ed3b3eba8416d1581d94",
+    "output_binding_fingerprints": [
+      "2c8f415954ef45dff1fd807ffbb5de24150765c7d9966afa4af48519358675e9",
+      "78235772c295a5f06027b60db6c70f30ee0c163312c56b2de33dfe821d530f22"
+    ],
+    "training_influence_fingerprint": "81543cf4b45b06fdab4e537b93b422977be5786d5937e56ecb096803afbd9103",
+    "data_identities_fingerprint": "9aadb1856dfdec9dc733c093829651280bcb6df97ad33d3813cebdad60d3a278"
+  },
+  "replay_request_id": "replay:explain-selected",
+  "replay_request_fingerprint": "6b0bf7c58d0bbec59b9f369f5f8934fd33d5cc49b72c955426080512eb485a35",
+  "input_data_identities": [
+    {
+      "requirement_key": "transform:snv.x",
+      "schema_fingerprint": "f97b37872fa22134b508f98fd8e207e5b776b52594fb8f6f5c3e15bee212246b",
+      "plan_fingerprint": "7c5431d85574b3f337022fa5d25971d5b5cf445b90331b49938f573ff6901e4d",
+      "relation_fingerprint": "a7fb28d44ff0b8c6c4316fafc6efb450f3d004b7fb7199f6df2d8c255518e549",
+      "data_content_fingerprint": "994b2b8105a7fe1b427b6536def09de6fab09eb484d1f0fd0a8a24553f09cdeb",
+      "target_content_fingerprint": null,
+      "identity_fingerprint": "d2f075799df1ba34d00a0893834b700919e9903400e0fe70db10a079ac8b35ac"
+    }
+  ],
+  "bundle_id": "bundle:probe.models-shared",
+  "plan_id": "plan:contextual.synthetic",
+  "phase": "EXPLAIN",
+  "result_count": 3,
+  "lineage_record_count": 3,
+  "prediction_block_count": 0,
+  "observation_prediction_block_count": 0,
+  "aggregated_prediction_block_count": 0,
+  "explanation_block_count": 1,
+  "controller_count": 2,
+  "prediction_cache_store": false,
+  "outputs": [],
+  "explanations": [
+    {
+      "producer_node": "model:base",
+      "producer_port": "oof",
+      "method": "synthetic_zero_importance",
+      "target_name": "protein",
+      "payload": {
+        "importance": 0.0
+      }
+    }
+  ],
+  "lineage": [
+    {
+      "record_id": "lineage:model:base:EXPLAIN:variant:af810523e92fd31b:full",
+      "run_id": "run:explain-selected",
+      "node_id": "model:base",
+      "phase": "EXPLAIN",
+      "controller_id": "controller:model.mock",
+      "controller_version": "0.1.0",
+      "variant_id": "variant:af810523e92fd31b",
+      "fold_id": null,
+      "branch_path": [],
+      "input_lineage": [
+        "lineage:transform:snv:EXPLAIN:variant:af810523e92fd31b:full"
+      ],
+      "artifact_refs": [],
+      "params_fingerprint": "97fefbccf77e64dfa755f23bc374273a992f79dd721d8b10c24ec0b1e65835da",
+      "data_model_shape_fingerprint": null,
+      "aggregation_policy_fingerprint": null,
+      "seed": 18404320392444007534,
+      "unsafe_flags": [],
+      "metrics": {}
+    },
+    {
+      "record_id": "lineage:model:second:EXPLAIN:variant:af810523e92fd31b:full",
+      "run_id": "run:explain-selected",
+      "node_id": "model:second",
+      "phase": "EXPLAIN",
+      "controller_id": "controller:model.mock",
+      "controller_version": "0.1.0",
+      "variant_id": "variant:af810523e92fd31b",
+      "fold_id": null,
+      "branch_path": [],
+      "input_lineage": [
+        "lineage:transform:snv:EXPLAIN:variant:af810523e92fd31b:full"
+      ],
+      "artifact_refs": [],
+      "params_fingerprint": "b3957f4a4076a63edad09b131c62903d589649c3ac9d23bb53dea7a7fa656b9b",
+      "data_model_shape_fingerprint": null,
+      "aggregation_policy_fingerprint": null,
+      "seed": 12935763355269917097,
+      "unsafe_flags": [],
+      "metrics": {}
+    },
+    {
+      "record_id": "lineage:transform:snv:EXPLAIN:variant:af810523e92fd31b:full",
+      "run_id": "run:explain-selected",
+      "node_id": "transform:snv",
+      "phase": "EXPLAIN",
+      "controller_id": "controller:transform.mock",
+      "controller_version": "0.1.0",
+      "variant_id": "variant:af810523e92fd31b",
+      "fold_id": null,
+      "branch_path": [],
+      "input_lineage": [],
+      "artifact_refs": [],
+      "params_fingerprint": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "data_model_shape_fingerprint": null,
+      "aggregation_policy_fingerprint": null,
+      "seed": 16442217646903332863,
+      "unsafe_flags": [],
+      "metrics": {}
+    }
+  ],
+  "warnings": [],
+  "diagnostics": {},
+  "outcome_fingerprint": "9d3b1a54c1709d38646d64a9c8fcaae5dfcb48beb10a05f84b976462e6808de1"
+}

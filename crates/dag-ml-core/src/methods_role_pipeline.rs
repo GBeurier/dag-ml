@@ -35,17 +35,13 @@ struct Payload {
 }
 impl Payload {
     fn read(bytes: &[u8]) -> Result<Self> {
-        if bytes.len() > 134_217_728 {
-            return Err(failure("RAW wrapper exceeds the codec bound"));
-        }
         let text = std::str::from_utf8(bytes).map_err(failure)?;
         crate::canonical::parse_typed_json(text).map_err(failure)?;
         let saved: Self = serde_json::from_str(text)?;
         crate::NodeId::new(&saved.node_id)?;
         let unique = |names: &[String]| {
             !names.is_empty()
-                && names.len() <= 65_536
-                && names.iter().all(|s| !s.is_empty() && s.len() <= 4096)
+                && names.iter().all(|s| !s.is_empty())
                 && names
                     .iter()
                     .collect::<std::collections::BTreeSet<_>>()
@@ -611,6 +607,37 @@ impl RuntimeController for MethodsNativeRegressionController {
 }
 fn matrix(m: &MethodsPlsMatrix) -> Result<MatrixRef<'_>> {
     MatrixRef::row_major(&m.values, m.rows, m.cols).map_err(failure)
+}
+
+#[cfg(test)]
+mod payload_tests {
+    use super::*;
+
+    const RAW: &[u8] = include_bytes!(
+        "../tests/fixtures/artifact_facets/native_role/source_role_pipeline_0.raw.json"
+    );
+
+    #[test]
+    fn long_names_preserve_the_genuine_state_and_closed_recipe() {
+        let mut saved = Payload::read(RAW).unwrap();
+        saved.target_names[0] = "target:".to_owned() + &"t".repeat(4097);
+        saved.feature_names[0] = "feature:".to_owned() + &"f".repeat(4097);
+        let bytes = serde_json::to_vec(&saved).unwrap();
+        assert_eq!(Payload::read(&bytes).unwrap(), saved);
+        assert_eq!(saved.states, Payload::read(RAW).unwrap().states);
+        saved.feature_names[1] = saved.feature_names[0].clone();
+        assert!(Payload::read(&serde_json::to_vec(&saved).unwrap()).is_err());
+    }
+
+    #[test]
+    #[ignore = "explicit 128 MiB materialized-input regression; no native runtime required"]
+    fn wrapper_above_128_mib_preserves_the_genuine_payload() {
+        // Whitespace changes only the envelope length, never the fitted wire.
+        let mut bytes = Vec::with_capacity(128 * 1024 * 1024 + 1);
+        bytes.extend_from_slice(RAW);
+        bytes.resize(128 * 1024 * 1024 + 1, b' ');
+        assert_eq!(Payload::read(&bytes).unwrap(), Payload::read(RAW).unwrap());
+    }
 }
 
 #[cfg(all(test, feature = "methods-optimizer-local"))]

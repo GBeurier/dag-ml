@@ -74,15 +74,8 @@ from ._dag_ml import (
     attach_predict_cohort_to_envelope_json as _native_attach_predict_cohort_to_envelope_json,
 )
 from ._dag_ml import (
-    build_archive_v2_native_portable_payloads_json as _native_build_archive_v2_native_portable_payloads_json,
-)
-from ._dag_ml import (
-    validate_archive_v2_portable_payloads_json as _native_validate_archive_v2_portable_payloads_json,
     methods_pls_role_pipeline_contract_json as _native_methods_pls_role_pipeline_contract_json,
     inspect_methods_role_pipeline_params_json as _native_inspect_methods_role_pipeline_params_json,
-)
-from ._dag_ml import (
-    build_archive_v3_native_refit_payloads_json as _native_build_archive_v3_native_refit_payloads_json,
 )
 from ._dag_ml import (
     build_conformal_presentation_v1_json as _native_build_conformal_presentation_v1_json,
@@ -201,9 +194,6 @@ _FACADE_EXPORTS = [
     "compile_pipeline_dsl_graph",
     "attach_predict_cohort_to_envelope",
     "configure_methods_runtime",
-    "build_archive_v2_native_portable_payloads",
-    "validate_archive_v2_portable_payloads",
-    "build_archive_v3_native_refit_payloads",
     "compile_pipeline_dsl_artifact",
     "compile_pipeline_dsl_artifact_with_controllers",
     "derive_controller_manifest",
@@ -1365,60 +1355,6 @@ def sign_training_replay_request(request: Any) -> TrainingReplayRequest:
     return TrainingReplayRequest(sign_training_replay_request_json(request))
 
 
-def build_archive_v2_native_portable_payloads(
-    archive_id: str,
-    outcome: Any,
-    package: Any,
-) -> tuple[dict[str, Any], dict[str, bytes]]:
-    """Build the exact Core Archive V2 write inputs for a native Package V2.
-
-    DAG-ML validates and assembles every manifest reference and member byte.
-    Core must receive the returned mapping unchanged and remains the sole ZIP
-    writer/reader.  Host-sidecar packages and incomplete native closures are
-    refused by the native assembler.
-    """
-
-    payloads = json.loads(
-        _native_build_archive_v2_native_portable_payloads_json(
-            archive_id, _coerce_json(outcome), _coerce_json(package)
-        )
-    )
-    manifest = payloads.get("manifest")
-    members = payloads.get("members")
-    if not isinstance(manifest, dict) or not isinstance(members, dict):
-        raise _facade_contract_error("native Archive V2 assembler returned an invalid payload object")
-    byte_members: dict[str, bytes] = {}
-    for path, value in members.items():
-        if not isinstance(path, str) or not isinstance(value, list):
-            raise _facade_contract_error("native Archive V2 assembler returned an invalid member")
-        try:
-            byte_members[path] = bytes(value)
-        except ValueError as error:
-            raise _facade_contract_error("native Archive V2 assembler returned invalid member bytes") from error
-    return manifest, byte_members
-
-
-def validate_archive_v2_portable_payloads(
-    manifest: Mapping[str, Any],
-    package: Any,
-    members: Mapping[str, bytes],
-) -> None:
-    """Validate the complete DAG-ML archive transport before controller replay.
-
-    Core must first validate archive bounds and inventory. This native semantic
-    gate checks the original predictor/outcome, companion links and exact RAW
-    closure; it does not load models or invoke a controller.
-    """
-    wire_members: dict[str, list[int]] = {}
-    for path, payload in members.items():
-        if not isinstance(path, str) or not isinstance(payload, (bytes, bytearray, memoryview)):
-            raise _facade_contract_error("Archive V2 members must map paths to opaque byte buffers")
-        wire_members[path] = list(bytes(payload))
-    _native_validate_archive_v2_portable_payloads_json(
-        _coerce_json(manifest), _coerce_json(package), _coerce_json(wire_members)
-    )
-
-
 def build_conformal_presentation_v1(
     package: Any,
     request: Any,
@@ -1443,37 +1379,6 @@ def build_conformal_presentation_v1(
             "native conformal presentation returned a non-object contract"
         )
     return presentation
-
-
-def build_archive_v3_native_refit_payloads(
-    archive_id: str,
-    package: Any,
-) -> tuple[dict[str, Any], dict[str, bytes]]:
-    """Build exact Core Archive V3 inputs from a refit Package V3.
-
-    DAG-ML validates and assembles every manifest reference and member byte.
-    Core is the sole ZIP writer/reader, and this target-bound V3 child is never
-    coerced into the V2 predictor-package family.
-    """
-
-    payloads = json.loads(
-        _native_build_archive_v3_native_refit_payloads_json(
-            archive_id, _coerce_json(package)
-        )
-    )
-    manifest = payloads.get("manifest")
-    members = payloads.get("members")
-    if not isinstance(manifest, dict) or not isinstance(members, dict):
-        raise _facade_contract_error("native Archive V3 assembler returned an invalid payload object")
-    byte_members: dict[str, bytes] = {}
-    for path, value in members.items():
-        if not isinstance(path, str) or not isinstance(value, list):
-            raise _facade_contract_error("native Archive V3 assembler returned an invalid member")
-        try:
-            byte_members[path] = bytes(value)
-        except ValueError as error:
-            raise _facade_contract_error("native Archive V3 assembler returned invalid member bytes") from error
-    return manifest, byte_members
 
 
 def execute_training_json(
@@ -2039,9 +1944,6 @@ __all__ = [
     "TrainingResult",
     "__version__",
     "attach_predict_cohort_to_envelope",
-    "build_archive_v2_native_portable_payloads",
-    "validate_archive_v2_portable_payloads",
-    "build_archive_v3_native_refit_payloads",
     "build_conformal_presentation_v1",
     "build_execution_plan",
     "build_execution_plan_json",

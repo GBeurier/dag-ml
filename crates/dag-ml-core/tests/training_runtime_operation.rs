@@ -2,10 +2,42 @@ use dag_ml_core::training::PredictionSource;
 use dag_ml_core::*;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
-#[cfg(feature = "methods-optimizer-local")]
+#[cfg(feature = "methods-optimizer")]
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+
+#[cfg(feature = "methods-optimizer-local")]
+fn native_training_facets(
+    outcome: &TrainingOutcome,
+    package: &PortablePredictorPackage,
+) -> FacetResult<ArtifactFacetExport> {
+    build_native_predictor_facets(
+        &canonical_archive_json::to_vec(outcome).unwrap(),
+        &canonical_archive_json::to_vec(package).unwrap(),
+    )
+}
+
+#[cfg(feature = "methods-optimizer")]
+struct NativeFixtureMembers<'a>(&'a BTreeMap<String, Vec<u8>>);
+
+#[cfg(feature = "methods-optimizer")]
+impl FacetMemberSource for NativeFixtureMembers<'_> {
+    fn read_member(&self, path: &str) -> FacetResult<Vec<u8>> {
+        self.0
+            .get(path)
+            .cloned()
+            .ok_or_else(|| FacetRefusal::InvalidStructure {
+                detail: format!("missing native fixture member `{path}`"),
+            })
+    }
+}
+
+#[cfg(feature = "methods-optimizer")]
+fn native_fixture_closure(export: &ArtifactFacetExport, root: &str) -> NativePackageClosure {
+    validate_selected_native_closure(&export.graph, root, &NativeFixtureMembers(&export.members))
+        .expect("native scientific closure validates after transport")
+}
 
 struct FoldDomainController(TrainingController);
 
@@ -205,11 +237,12 @@ struct CallState {
     emit_extra_fit_cv_partitions: Mutex<bool>,
     emit_explicit_model_ports: Mutex<bool>,
     predict_sample_ids: Mutex<Option<Vec<SampleId>>>,
+    refit_sample_ids: Mutex<Option<Vec<SampleId>>>,
     scoped_validation_samples: Mutex<BTreeMap<FoldId, Vec<SampleId>>>,
     observed_model_patch_values: Mutex<Vec<Option<serde_json::Value>>>,
 }
 
-#[cfg(feature = "methods-optimizer-local")]
+#[cfg(feature = "methods-optimizer")]
 fn methods_runtime() -> MethodsRuntime {
     let library_path = std::env::var_os("N4M_LIBRARY_PATH")
         .expect("methods native tests require an explicit N4M_LIBRARY_PATH");
@@ -483,6 +516,17 @@ impl RuntimeController for TrainingController {
             scoped_samples.unwrap_or_else(|| match task.fold_id.as_ref().map(FoldId::as_str) {
                 Some("fold:0") => vec![sample("sample:1"), sample("sample:2")],
                 Some("fold:1") => vec![sample("sample:3"), sample("sample:4")],
+                None if task.phase == Phase::Refit => self
+                    .state
+                    .refit_sample_ids
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .unwrap_or_else(|| {
+                        (1..=4)
+                            .map(|index| sample(&format!("sample:{index}")))
+                            .collect()
+                    }),
                 None if task.phase == Phase::Predict => self
                     .state
                     .predict_sample_ids
@@ -1040,7 +1084,7 @@ fn use_studio_pls_regression_v1_params(fixture: &mut Fixture) {
     rebuild(fixture);
 }
 
-#[cfg(feature = "methods-optimizer-local")]
+#[cfg(feature = "methods-optimizer")]
 fn use_portable_methods_pipeline(fixture: &mut Fixture) {
     fixture.request.campaign.generation.dimensions.clear();
     fixture.request.campaign.generation.strategy = GenerationStrategy::None;
@@ -1098,7 +1142,7 @@ fn methods_hpo_descriptor_mut(fixture: &mut Fixture) -> &mut serde_json::Value {
 /// columns. That makes all V1 `n_components=1..=3` candidates genuinely
 /// evaluable; the alternating third feature is intentionally out-of-fold
 /// hostile, making component 3 the deterministic bad Median candidate.
-#[cfg(feature = "methods-optimizer-local")]
+#[cfg(feature = "methods-optimizer")]
 fn give_methods_hpo_four_train_rows(fixture: &mut Fixture) {
     let fold_set = fixture
         .request
@@ -1332,7 +1376,7 @@ fn controllers(
     controllers
 }
 
-#[cfg(feature = "methods-optimizer-local")]
+#[cfg(feature = "methods-optimizer")]
 fn use_native_pls_phase_profile(fixture: &mut Fixture, trials: Option<u32>) {
     use_portable_methods_pipeline(fixture);
     let params = BTreeMap::from([
@@ -2102,31 +2146,26 @@ fn target_free_methods_provider(
     .expect("target-free Methods provider must bind its exact PREDICT cohort")
 }
 
-fn replay_envelopes_with_relation(
+// A different observation namespace changes genuine relation provenance while
+// preserving every physical sample, numerical source row, target and group.
+fn current_replay_relations(fixture: &Fixture) -> SampleRelationSet {
+    let mut relations = fixture.relations.clone();
+    for record in &mut relations.records {
+        record.observation_id =
+            ObservationId::new(format!("{}.replay", record.observation_id)).unwrap();
+    }
+    relations
+}
+fn current_replay_provider(fixture: &Fixture) -> AttestedProvider {
+    let mut current = provider(fixture);
+    current.relations = current_replay_relations(fixture);
+    current
+}
+fn replay_envelopes_for_fixture(
     outcome: &TrainingOutcome,
-    relation_fingerprint: &str,
+    fixture: &Fixture,
 ) -> BTreeMap<String, ExternalDataPlanEnvelope> {
-    outcome
-        .execution_bundle
-        .data_requirements
-        .iter()
-        .map(|requirement| {
-            let key = requirement.key();
-            (
-                key.clone(),
-                ExternalDataPlanEnvelope {
-                    schema_version: EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION,
-                    schema_fingerprint: requirement.schema_fingerprint.clone(),
-                    plan_fingerprint: requirement.plan_fingerprint.clone(),
-                    relation_fingerprint: Some(relation_fingerprint.to_string()),
-                    data_content_fingerprint: Some(content_hash(&format!("{key}:data"))),
-                    target_content_fingerprint: Some(content_hash(&format!("{key}:target"))),
-                    coordinator_relations: Some(relations()),
-                    predict_cohort: None,
-                },
-            )
-        })
-        .collect()
+    replay_envelopes_with_relations(outcome, &current_replay_relations(fixture))
 }
 
 fn replay_envelopes_with_relations(
@@ -2818,6 +2857,79 @@ fn native_training_refit_and_no_refit_are_deterministic_and_auditable() {
     let state = Arc::new(CallState::default());
     let mut store = InMemoryArtifactStore::new();
     let outcome = run(&refit, state.clone(), &provider(&refit), &mut store).unwrap();
+    assert_eq!(
+        refit.request.options.outputs[0].prediction_kind,
+        PredictionKind::RegressionPoint
+    );
+    assert_eq!(outcome.selected_variant_id, refit.preferred);
+    assert_eq!(
+        outcome.execution_bundle.selections["selection:rmse"]
+            .selected_score
+            .to_bits(),
+        0.0_f64.to_bits()
+    );
+    let variants = refit.request.project().unwrap().plan.variants;
+    let expected_scopes = variants
+        .iter()
+        .flat_map(|variant| {
+            ["fold:0", "fold:1", "avg", "w_avg"]
+                .into_iter()
+                .map(move |fold| (variant.variant_id.clone(), fold))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        outcome
+            .score_set
+            .reports
+            .iter()
+            .map(|report| {
+                assert!(report.target_domain.is_none());
+                assert_eq!(report.producer_node, node("model:base"));
+                assert_eq!(report.producer_port.as_deref(), Some("oof"));
+                assert_eq!(report.partition, PredictionPartition::Validation);
+                assert_eq!(report.level, PredictionLevel::Sample);
+                assert_eq!(report.target_names, ["protein"]);
+                assert_eq!(
+                    report
+                        .metrics
+                        .keys()
+                        .map(String::as_str)
+                        .collect::<Vec<_>>(),
+                    [
+                        "mae",
+                        "mae:protein",
+                        "mse",
+                        "mse:protein",
+                        "r2",
+                        "r2:protein",
+                        "rmse",
+                        "rmse:protein"
+                    ]
+                );
+                let expected_rmse: f64 = if report.variant_id.as_ref() == Some(&refit.preferred) {
+                    0.0
+                } else {
+                    5.0
+                };
+                assert_eq!(report.metrics["rmse"].to_bits(), expected_rmse.to_bits());
+                assert_eq!(
+                    report.metrics["rmse:protein"].to_bits(),
+                    expected_rmse.to_bits()
+                );
+                let fold = report.fold_id.as_ref().unwrap().as_str();
+                assert_eq!(
+                    report.row_count,
+                    if matches!(fold, "avg" | "w_avg") {
+                        4
+                    } else {
+                        2
+                    }
+                );
+                (report.variant_id.clone().unwrap(), fold)
+            })
+            .collect::<Vec<_>>(),
+        expected_scopes
+    );
     outcome.validate().unwrap();
     let reference = outcome.to_reference().unwrap();
     assert_eq!(
@@ -3311,6 +3423,37 @@ fn native_methods_hpo_training_resume_keeps_selected_rerun_reports_identical() {
         .is_some_and(|fold| fold.as_str() == "avg"));
     assert_eq!(selected_terminal_report.level, PredictionLevel::Sample);
     assert_eq!(resumed_resume_state.trial_history_len, 3);
+    for prior in &first_resume_state.completed_reports {
+        assert_eq!(
+            resumed_resume_state
+                .completed_reports
+                .iter()
+                .find(|completed| completed.trial_id == prior.trial_id)
+                .unwrap(),
+            prior
+        );
+    }
+    for completed in &resumed_resume_state.completed_reports {
+        assert_eq!(
+            completed
+                .report
+                .metrics
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            [
+                "mae",
+                "mae:protein",
+                "mse",
+                "mse:protein",
+                "r2",
+                "r2:protein",
+                "rmse",
+                "rmse:protein"
+            ]
+        );
+    }
+    resumed.validate().unwrap();
 
     let mut uninterrupted_fixture = fixture(true, false);
     add_portable_methods_hpo(&mut uninterrupted_fixture);
@@ -3782,7 +3925,7 @@ fn native_methods_hpo_replay_hydrates_n4mm_from_json_bundle_in_fresh_controller(
     // Artifact hydration precedes graph execution. A provider refusal after
     // hydration must roll the invocation-local payload back instead of
     // growing controller state on every failed replay.
-    let mut refusing_provider = provider(&fixture);
+    let mut refusing_provider = current_replay_provider(&fixture);
     refusing_provider.methods_pls_enabled = false;
     let error = execute_attached_training_replay(AttachedTrainingReplayInput {
         source: &source,
@@ -3792,7 +3935,7 @@ fn native_methods_hpo_replay_hydrates_n4mm_from_json_bundle_in_fresh_controller(
         controllers: &fresh_controllers,
         data_provider: &refusing_provider,
         artifact_store: &empty_fallback_store,
-        data_envelopes: &replay_envelopes_with_relation(&source, &"a".repeat(64)),
+        data_envelopes: &replay_envelopes_for_fixture(&source, &fixture),
         warnings: Vec::new(),
         diagnostics: BTreeMap::new(),
     })
@@ -3809,9 +3952,9 @@ fn native_methods_hpo_replay_hydrates_n4mm_from_json_bundle_in_fresh_controller(
         outcome_id: "replay:methods-hpo.n4mm".to_string(),
         run_id: RunId::new("run:methods-hpo.replay").unwrap(),
         controllers: &fresh_controllers,
-        data_provider: &provider(&fixture),
+        data_provider: &current_replay_provider(&fixture),
         artifact_store: &empty_fallback_store,
-        data_envelopes: &replay_envelopes_with_relation(&source, &"a".repeat(64)),
+        data_envelopes: &replay_envelopes_for_fixture(&source, &fixture),
         warnings: Vec::new(),
         diagnostics: BTreeMap::new(),
     })
@@ -3848,7 +3991,7 @@ fn native_methods_hpo_replay_hydrates_n4mm_from_json_bundle_in_fresh_controller(
     // A fresh inference cohort is intentionally target-free. The exact same
     // native N4MM controller must accept it without replacing the absent
     // target identity with a training-time sentinel.
-    let mut target_free_envelopes = replay_envelopes_with_relation(&source, &"a".repeat(64));
+    let mut target_free_envelopes = replay_envelopes_for_fixture(&source, &fixture);
     for envelope in target_free_envelopes.values_mut() {
         envelope.target_content_fingerprint = None;
     }
@@ -3883,9 +4026,9 @@ fn native_methods_hpo_replay_hydrates_n4mm_from_json_bundle_in_fresh_controller(
         outcome_id: "replay:methods-hpo.n4mm.again".to_string(),
         run_id: RunId::new("run:methods-hpo.replay.again").unwrap(),
         controllers: &fresh_controllers,
-        data_provider: &provider(&fixture),
+        data_provider: &current_replay_provider(&fixture),
         artifact_store: &empty_fallback_store,
-        data_envelopes: &replay_envelopes_with_relation(&source, &"a".repeat(64)),
+        data_envelopes: &replay_envelopes_for_fixture(&source, &fixture),
         warnings: Vec::new(),
         diagnostics: BTreeMap::new(),
     })
@@ -3912,28 +4055,24 @@ fn native_methods_hpo_replay_hydrates_n4mm_from_json_bundle_in_fresh_controller(
         .portable_prediction_caches
         .as_ref()
         .expect("the retained-cache source preserves its payload-set member");
-    let retained_archive = build_archive_v2_native_portable_payloads(
-        "archive:methods-hpo.retained",
-        &source,
-        &package,
-    )
-    .expect("existing retained-cache archive behavior remains available");
+    let retained_facets = native_training_facets(&source, &package)
+        .expect("retained-cache outcomes remain valid native packages");
     assert_eq!(
-        retained_archive
+        retained_facets
             .members
-            .get(ARCHIVE_V2_CACHE_MEMBER)
+            .get("dagml/prediction.json")
             .unwrap(),
         canonical_archive_json::to_vec(retained_caches)
             .unwrap()
             .as_slice(),
-        "a retained cache payload set must use canonical archive bytes"
+        "a retained cache payload set keeps its canonical owner bytes"
     );
 
     // Model the strict terminal facade's legal absence of retained OOF cache
     // payloads without modifying the source Package or Outcome in place.  The
-    // synthetic archive member is allowed only because the bundle has no OOF
+    // absent prediction facet is allowed only because the bundle has no OOF
     // requirements/cache records and the effective graph has no requires_oof
-    // edge.  Re-signing models a real portable JSON boundary.
+    // edge. Re-signing models a real portable JSON boundary.
     assert!(source.execution_bundle.prediction_requirements.is_empty());
     assert!(source.execution_bundle.prediction_caches.is_empty());
     assert!(source
@@ -3943,172 +4082,108 @@ fn native_methods_hpo_replay_hydrates_n4mm_from_json_bundle_in_fresh_controller(
         .edges
         .iter()
         .all(|edge| !edge.contract.requires_oof));
-    let mut archive_source = source.clone();
-    archive_source.portable_prediction_caches = None;
-    resign_outcome(&mut archive_source);
-    archive_source.validate().unwrap();
-    let archive_package = archive_source
+    let mut strict_source = source.clone();
+    strict_source.portable_prediction_caches = None;
+    resign_outcome(&mut strict_source);
+    strict_source.validate().unwrap();
+    let strict_package = strict_source
         .to_portable_predictor_package(
             "predictor:methods-hpo.strict-terminal",
             FittedArtifactMode::PortableRequired,
             ArtifactLoadMode::NativePortable,
         )
         .unwrap();
-    let archive_package =
-        PortablePredictorPackage::from_json(&serde_json::to_string(&archive_package).unwrap())
+    let strict_package =
+        PortablePredictorPackage::from_json(&serde_json::to_string(&strict_package).unwrap())
             .unwrap();
-    let archive = build_archive_v2_native_portable_payloads(
-        "archive:methods-hpo.n4mm",
-        &archive_source,
-        &archive_package,
-    )
-    .expect("a strict no-OOF-cache native Methods outcome closes the Archive V2 P0 member set");
+    let facets = native_training_facets(&strict_source, &strict_package)
+        .expect("a strict terminal native package proves absence of retained OOF caches");
     assert_eq!(
-        archive.members.get(ARCHIVE_V2_PACKAGE_MEMBER).unwrap(),
-        canonical_archive_json::to_vec(&archive_package)
-            .unwrap()
-            .as_slice()
-    );
-    let archive_caches: BundlePredictionCachePayloadSet =
-        serde_json::from_slice(archive.members.get(ARCHIVE_V2_CACHE_MEMBER).unwrap()).unwrap();
-    assert_eq!(
-        archive_caches.bundle_id,
-        archive_source.execution_bundle.bundle_id
-    );
-    assert_eq!(archive_caches.schema_version, 2);
-    assert!(archive_caches.caches.is_empty());
-    archive_caches
-        .validate_against_bundle(&archive_source.execution_bundle)
-        .unwrap();
-    assert!(archive.members.keys().all(|path| !path.contains("receipt")));
-    assert!(archive
-        .members
-        .keys()
-        .all(|path| path.starts_with("dagml/") || path.starts_with("methods/")));
-    assert_eq!(
-        archive.manifest["payloads"]["methods"]["n4mm"][0]["semantic_profile"],
-        "n4mm_raw_sha256"
+        facets.members["dagml/model.json"],
+        canonical_archive_json::to_vec(&strict_package).unwrap()
     );
     assert_eq!(
-        archive.manifest["replay"]["training_artifacts"]["training_outcome"]
-            ["semantic_fingerprint"],
-        archive_source.outcome_fingerprint
+        facets.members["dagml/result.json"],
+        canonical_archive_json::to_vec(&strict_source).unwrap()
+    );
+    assert!(!facets.members.contains_key("dagml/prediction.json"));
+    assert!(!facets
+        .graph
+        .artifacts
+        .iter()
+        .any(|facet| facet.kind == ArtifactFacetKind::Prediction));
+    assert!(facets.members.keys().all(|path| !path.contains("receipt")));
+    let closure = native_fixture_closure(&facets, "model");
+    assert_eq!(
+        closure.root().identity().fingerprint,
+        strict_package.package_fingerprint
     );
     assert_eq!(
-        archive.manifest["member_inventory"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|member| member["path"] == ARCHIVE_V2_OUTCOME_MEMBER)
-            .unwrap()["semantic_fingerprint"],
-        archive_source.outcome_fingerprint
+        closure.evidence().unwrap().identity().fingerprint,
+        strict_source.outcome_fingerprint
     );
-    // Core owns only bounded ZIP/inventory storage. Its returned Package V2
-    // bytes cross back into DAG-ML for semantic parsing and fresh replay.
-    // The registry-only Core 0.3.22 dev baseline has a frozen closed manifest
-    // schema from before `abi_min_minor`. Exercise its historical PLS read
-    // shape for this transport-only round trip; the exact new writer manifest
-    // (asserted above) is qualified against the release-train Core separately.
-    let mut registry_baseline_manifest = archive.manifest.clone();
-    for reference in registry_baseline_manifest["payloads"]["methods"]["n4mm"]
-        .as_array_mut()
-        .expect("Archive V2 N4MM references")
-    {
-        if reference["format_version"] != serde_json::json!(3) {
-            reference
-                .as_object_mut()
-                .expect("Archive V2 N4MM reference object")
-                .remove("abi_min_minor");
-        }
+    assert!(closure
+        .evidence()
+        .unwrap()
+        .training_outcome()
+        .unwrap()
+        .portable_prediction_caches
+        .is_none());
+    assert!(!closure.methods_requirements().is_empty());
+    for requirement in closure.methods_requirements() {
+        assert_eq!(requirement.artifact_kind, "n4m_model");
+        assert_eq!(requirement.abi_major, 2);
     }
-    let historical = core_transport_roundtrip(&registry_baseline_manifest, &archive.members);
-    assert_eq!(historical.writer_reference, historical.loaded_reference);
-    assert_eq!(
-        &historical.portable_package,
-        archive.members.get(ARCHIVE_V2_PACKAGE_MEMBER).unwrap()
-    );
-    assert_eq!(
-        historical.members.get(ARCHIVE_V2_CACHE_MEMBER).unwrap(),
-        archive.members.get(ARCHIVE_V2_CACHE_MEMBER).unwrap(),
-        "Core must preserve the synthetic empty cache member byte-for-byte"
-    );
-    let loaded_cache: BundlePredictionCachePayloadSet =
-        serde_json::from_slice(historical.members.get(ARCHIVE_V2_CACHE_MEMBER).unwrap()).unwrap();
-    assert_eq!(loaded_cache, archive_caches);
-    loaded_cache
-        .validate_against_bundle(&archive_source.execution_bundle)
-        .unwrap();
-    let loaded_outcome = TrainingOutcome::from_json(
-        std::str::from_utf8(historical.members.get(ARCHIVE_V2_OUTCOME_MEMBER).unwrap()).unwrap(),
-    )
-    .unwrap();
-    assert!(loaded_outcome.portable_prediction_caches.is_none());
-    assert!(historical.loaded_is_v2);
-    let archived_package = PortablePredictorPackage::from_json(
-        std::str::from_utf8(&historical.portable_package).unwrap(),
-    )
-    .expect("DAG-ML must validate Core-returned Package V2 bytes");
-    let archived_loaded = archived_package
+    // This fresh scientific witness remains tied to this run's exact package
+    // and predictions. The frozen Core oracle transport has its own test below.
+    let native_package = closure.root().predictor_package().unwrap().clone();
+    let native_loaded = native_package
         .load_with(|record| {
             panic!(
-                "Core-loaded native artifact `{}` unexpectedly requested a host-sidecar handle",
+                "facet-loaded native artifact `{}` unexpectedly requested a host-sidecar handle",
                 record.artifact.id
             )
         })
         .unwrap();
-    let archive_replay_state = Arc::new(CallState::default());
-    let archive_methods = Arc::new(MethodsPlsController::new(methods_runtime()));
-    let mut archive_controllers = controllers(&fixture, archive_replay_state, false);
-    archive_controllers
-        .register(Box::new(SharedMethodsPlsController(
-            archive_methods.clone(),
-        )))
+    let native_replay_state = Arc::new(CallState::default());
+    let native_methods = Arc::new(MethodsPlsController::new(methods_runtime()));
+    let mut native_controllers = controllers(&fixture, native_replay_state, false);
+    native_controllers
+        .register(Box::new(SharedMethodsPlsController(native_methods.clone())))
         .unwrap();
-    let archive_request = replay_request(&archive_source, Phase::Predict);
-    let archive_replay = execute_loaded_predictor_replay(LoadedPredictorReplayInput {
-        predictor: &archived_loaded,
-        request: &archive_request,
+    let native_request = replay_request(&strict_source, Phase::Predict);
+    let native_replay = execute_loaded_predictor_replay(LoadedPredictorReplayInput {
+        predictor: &native_loaded,
+        request: &native_request,
         outcome_id: "replay:core-archive.methods-hpo.n4mm".to_string(),
         run_id: RunId::new("run:core-archive.methods-hpo.replay").unwrap(),
-        controllers: &archive_controllers,
-        data_provider: &provider(&fixture),
-        data_envelopes: &replay_envelopes_with_relation(&archive_source, &"a".repeat(64)),
+        controllers: &native_controllers,
+        data_provider: &current_replay_provider(&fixture),
+        data_envelopes: &replay_envelopes_for_fixture(&strict_source, &fixture),
         warnings: Vec::new(),
         diagnostics: BTreeMap::new(),
     })
-    .expect("fresh controller must replay the Core-loaded native package");
-    assert_eq!(archive_replay.outputs[0].predictions[0], *actual);
-    assert_eq!(archive_methods.hydrated_payload_count().unwrap(), 0);
+    .expect("fresh controller must replay the facet-loaded native package");
+    assert_eq!(native_replay.outputs[0].predictions[0], *actual);
+    assert_eq!(native_methods.hydrated_payload_count().unwrap(), 0);
 
-    // A raw member bit flip is rejected by Core before a package parser or a
-    // host fallback can receive it.
-    assert!(historical.tampered_member_rejected);
     let mut host_sidecar = package.clone();
     host_sidecar.fitted_artifact_mode = FittedArtifactMode::AllowHostSidecar;
     for binding in &mut host_sidecar.artifact_bindings {
         binding.load_mode = ArtifactLoadMode::HostSidecar;
     }
     host_sidecar.package_fingerprint = host_sidecar.compute_fingerprint().unwrap();
-    assert!(build_archive_v2_native_portable_payloads(
-        "archive:methods-hpo.host-sidecar",
-        &source,
-        &host_sidecar,
-    )
-    .unwrap_err()
-    .to_string()
-    .contains("host-sidecar"));
+    assert!(native_training_facets(&source, &host_sidecar)
+        .unwrap_err()
+        .to_string()
+        .contains("host-sidecar"));
     let mut missing_raw_payload = package.clone();
     missing_raw_payload
         .execution_bundle
         .raw_artifact_payloads
         .clear();
     missing_raw_payload.package_fingerprint = missing_raw_payload.compute_fingerprint().unwrap();
-    assert!(build_archive_v2_native_portable_payloads(
-        "archive:methods-hpo.missing-raw",
-        &source,
-        &missing_raw_payload,
-    )
-    .is_err());
+    assert!(native_training_facets(&source, &missing_raw_payload).is_err());
     let loaded = package
         .clone()
         .load_with(|record| {
@@ -4125,8 +4200,8 @@ fn native_methods_hpo_replay_hydrates_n4mm_from_json_bundle_in_fresh_controller(
         outcome_id: "replay:loaded.methods-hpo.unknown-controller".to_string(),
         run_id: RunId::new("run:loaded.methods-hpo.unknown-controller").unwrap(),
         controllers: &unknown_controllers,
-        data_provider: &provider(&fixture),
-        data_envelopes: &replay_envelopes_with_relation(&source, &"a".repeat(64)),
+        data_provider: &current_replay_provider(&fixture),
+        data_envelopes: &replay_envelopes_for_fixture(&source, &fixture),
         warnings: Vec::new(),
         diagnostics: BTreeMap::new(),
     })
@@ -4139,8 +4214,8 @@ fn native_methods_hpo_replay_hydrates_n4mm_from_json_bundle_in_fresh_controller(
         outcome_id: "replay:loaded.methods-hpo.n4mm".to_string(),
         run_id: RunId::new("run:loaded.methods-hpo.replay").unwrap(),
         controllers: &fresh_controllers,
-        data_provider: &provider(&fixture),
-        data_envelopes: &replay_envelopes_with_relation(&source, &"a".repeat(64)),
+        data_provider: &current_replay_provider(&fixture),
+        data_envelopes: &replay_envelopes_for_fixture(&source, &fixture),
         warnings: Vec::new(),
         diagnostics: BTreeMap::new(),
     })
@@ -4149,7 +4224,7 @@ fn native_methods_hpo_replay_hydrates_n4mm_from_json_bundle_in_fresh_controller(
     assert_eq!(
         fresh_state.count(Phase::Predict, "transform:snv"),
         // target-bound, target-free, repeated attached, then loaded-package
-        // replay all use the same fresh registry; the Core archive route owns
+        // replay all use the same fresh registry; the native facet route owns
         // a separate registry below.
         failed_replay_transform_calls + 4
     );
@@ -4158,7 +4233,7 @@ fn native_methods_hpo_replay_hydrates_n4mm_from_json_bundle_in_fresh_controller(
 
 #[cfg(feature = "methods-optimizer-local")]
 #[test]
-fn native_methods_pipeline_round_trips_versioned_archive_member_into_fresh_predict() {
+fn native_methods_pipeline_round_trips_native_facets_into_fresh_predict() {
     let mut fixture = fixture(true, false);
     give_methods_hpo_four_train_rows(&mut fixture);
     use_portable_methods_pipeline(&mut fixture);
@@ -4198,34 +4273,23 @@ fn native_methods_pipeline_round_trips_versioned_archive_member_into_fresh_predi
             ArtifactLoadMode::NativePortable,
         )
         .expect("pipeline N4MM is a portable predictor");
-    let archive =
-        build_archive_v2_native_portable_payloads("archive:methods.pipeline-v2", &source, &package)
-            .expect("pipeline Package V2 closes Archive V2");
-    if let Some(directory) = std::env::var_os("DAGML_ARCHIVE_CAPI_FIXTURES_DIR") {
-        let directory = PathBuf::from(directory);
-        std::fs::write(
-            directory.join("outcome_v2.json"),
-            serde_json::to_vec(&source).unwrap(),
-        )
-        .unwrap();
-        std::fs::write(
-            directory.join("package_v2.json"),
-            serde_json::to_vec(&package).unwrap(),
-        )
-        .unwrap();
-    }
+    let facets = native_training_facets(&source, &package)
+        .expect("pipeline Package V2 closes its native scientific facets");
+    let closure = native_fixture_closure(&facets, "model");
+    let requirement = closure.methods_requirements().first().unwrap();
+    assert_eq!(requirement.artifact_kind, "n4m_model");
     assert_eq!(
-        archive.manifest["payloads"]["methods"]["n4mm"][0]["format_version"],
-        serde_json::json!(3)
+        requirement.abi_min_minor,
+        dag_ml_core::hpo::METHODS_COMPONENT_RESOLUTION_N4MM_MIN_ABI_MINOR
     );
-
-    // Reading the Package member back is the semantic archive boundary: no
-    // process-local model handle or preprocessed matrix crosses it.
-    let archived_package = PortablePredictorPackage::from_json(
-        std::str::from_utf8(archive.members.get(ARCHIVE_V2_PACKAGE_MEMBER).unwrap()).unwrap(),
-    )
-    .expect("archived pipeline package validates after reload");
-    let loaded = archived_package
+    // Exact root bytes cross the semantic boundary; no process-local model
+    // handle or preprocessed matrix is used to reconstruct the package.
+    assert_eq!(
+        closure.root().original_bytes(),
+        canonical_archive_json::to_vec(&package).unwrap()
+    );
+    let native_package = closure.root().predictor_package().unwrap().clone();
+    let loaded = native_package
         .load_with(|record| {
             panic!(
                 "native pipeline artifact `{}` unexpectedly requested a host handle",
@@ -4241,6 +4305,7 @@ fn native_methods_pipeline_round_trips_versioned_archive_member_into_fresh_predi
             methods_controller.clone(),
         )))
         .unwrap();
+    native_provider.relations = current_replay_relations(&fixture);
     let replay = execute_loaded_predictor_replay(LoadedPredictorReplayInput {
         predictor: &loaded,
         request: &request,
@@ -4248,7 +4313,7 @@ fn native_methods_pipeline_round_trips_versioned_archive_member_into_fresh_predi
         run_id: RunId::new("run:methods.pipeline-v2.replay").unwrap(),
         controllers: &fresh_controllers,
         data_provider: &native_provider,
-        data_envelopes: &replay_envelopes_with_relation(&source, &"a".repeat(64)),
+        data_envelopes: &replay_envelopes_for_fixture(&source, &fixture),
         warnings: Vec::new(),
         diagnostics: BTreeMap::new(),
     })
@@ -4415,45 +4480,25 @@ fn native_methods_full_refit_executes_on_a_fresh_attested_cohort() {
         execution.raw_artifact_payloads,
         "V3 package owns the exact detached REFIT bytes, not controller handles"
     );
-    let archive_v3 =
-        build_archive_v3_native_refit_payloads("archive:methods.full-refit.child", &refit_package)
-            .expect("DAG-ML assembles the exact Archive V3 refit closure");
-    if let Some(directory) = std::env::var_os("DAGML_ARCHIVE_CAPI_FIXTURES_DIR") {
-        std::fs::write(
-            PathBuf::from(directory).join("package_v3.json"),
-            serde_json::to_vec(&refit_package).unwrap(),
-        )
-        .unwrap();
-    }
+    let facets = build_native_refit_facets(refit_json.as_bytes())
+        .expect("DAG-ML assembles the exact native Package3 refit closure");
+    let closure = native_fixture_closure(&facets, "full_refit");
+    assert_eq!(closure.root().content_type().version, 3);
     assert_eq!(
-        archive_v3.manifest["schema_version"],
-        serde_json::json!(3),
-        "a V3 full-refit child is never serialized as an Archive V2 predictor"
+        closure.root().identity().fingerprint,
+        refit_package.package_fingerprint
     );
-    assert_eq!(
-        archive_v3.manifest["replay"]["portable_refit_package"]["semantic_fingerprint"],
-        refit_package.package_fingerprint,
+    assert!(
+        closure.evidence().is_none(),
+        "a standalone child invents no parent score"
     );
-    assert_eq!(
-        PortableRefitPackageV3::from_json(
-            std::str::from_utf8(
-                archive_v3
-                    .members
-                    .get(ARCHIVE_V3_PACKAGE_MEMBER)
-                    .expect("Archive V3 package member"),
-            )
-            .unwrap(),
-        )
-        .unwrap(),
-        refit_package,
-        "the Archive V3 member remains DAG-ML's strict child package"
-    );
-    for record in &execution.refit_artifacts {
-        let path = record.artifact.uri.as_deref().expect("portable N4MM URI");
+    assert_eq!(closure.root().refit_package().unwrap(), &refit_package);
+    assert_eq!(closure.root().original_bytes(), refit_json.as_bytes());
+    for state in closure.state_members() {
         assert_eq!(
-            archive_v3.members.get(path),
-            execution.raw_artifact_payloads.get(&record.artifact.id),
-            "Archive V3 N4MM member must byte-equal the detached V3 payload"
+            facets.members.get(&state.member_path),
+            execution.raw_artifact_payloads.get(&state.artifact_id),
+            "native state member byte-equals the detached V3 payload"
         );
     }
     let runtime_bundle = refit_package
@@ -4473,7 +4518,7 @@ fn native_methods_full_refit_executes_on_a_fresh_attested_cohort() {
         refit_package.outcome.outcome_fingerprint.clone();
     v3_replay_request.request_fingerprint = "0".repeat(64);
     v3_replay_request.request_fingerprint = v3_replay_request.compute_fingerprint().unwrap();
-    let replay_envelopes = replay_envelopes_with_relation(&source, &"a".repeat(64));
+    let replay_envelopes = replay_envelopes_for_fixture(&source, &fixture);
     let methods_binding = refit_package
         .outcome
         .effective_plan
@@ -4488,7 +4533,7 @@ fn native_methods_full_refit_executes_on_a_fresh_attested_cohort() {
         .expect("V3 Methods replay has an x data binding");
     let methods_key =
         data_binding_requirement_key(&methods_binding.node_id, &methods_binding.input_name);
-    let replay_provider = provider(&fixture);
+    let replay_provider = current_replay_provider(&fixture);
     let replay_sample_ids = replay_provider
         .methods_rows
         .keys()
@@ -4622,8 +4667,8 @@ fn attached_training_replay_predict_rebinds_current_cohort_without_mutating_sour
         .relation_fingerprint
         .clone();
 
-    let current_relation = "f".repeat(64);
-    let envelopes = replay_envelopes_with_relation(&source, &current_relation);
+    let current_relation = current_replay_relations(&fixture).fingerprint().unwrap();
+    let envelopes = replay_envelopes_for_fixture(&source, &fixture);
     let request = replay_request(&source, Phase::Predict);
     let controllers = controllers(&fixture, state.clone(), true);
 
@@ -4633,7 +4678,7 @@ fn attached_training_replay_predict_rebinds_current_cohort_without_mutating_sour
         outcome_id: "replay:attached.predict.outcome".to_string(),
         run_id: RunId::new("run:attached.predict").unwrap(),
         controllers: &controllers,
-        data_provider: &provider(&fixture),
+        data_provider: &current_replay_provider(&fixture),
         artifact_store: &store,
         data_envelopes: &envelopes,
         warnings: Vec::new(),
@@ -4688,8 +4733,7 @@ fn native_calibration_refuses_training_cohort_reuse() {
     let mut store = InMemoryArtifactStore::new();
     let mut source = run(&fixture, state.clone(), &provider(&fixture), &mut store)
         .expect("source training outcome");
-    let calibration_relation_fingerprint = fixture.relations.fingerprint().unwrap();
-    let envelopes = replay_envelopes_with_relation(&source, &calibration_relation_fingerprint);
+    let envelopes = replay_envelopes_with_relations(&source, &fixture.relations);
     let request = replay_request(&source, Phase::Predict);
     let controllers = controllers(&fixture, state.clone(), true);
     let replay = execute_attached_training_replay(AttachedTrainingReplayInput {
@@ -5198,37 +5242,23 @@ fn calibration_attachment_rejects_missing_ambiguous_and_forged_origin_authority(
             warnings: Vec::new(),
             diagnostics: BTreeMap::new(),
         })
-        .unwrap()
     };
 
     let mut missing = calibration_relations(&sample_ids);
     missing.records.pop();
-    let replay = replay_for(&source, &missing, "missing");
-    let point = &replay.outputs[0].predictions[0];
-    let context = calibration_context(&source, &replay, &missing);
-    let error = calibrate_attached_training_replay(
-        &mut source,
-        &replay,
-        replay.outputs[0].binding.binding_id.as_str(),
-        &missing,
-        ConformalCalibrationTruth {
-            sample_ids: point.sample_ids.clone(),
-            values: point.values.clone(),
-        },
-        context,
-        vec![0.5],
-        ConformalMultiTargetPolicy::Marginal,
-        ConformalSmallSamplePolicy::Error,
-    )
-    .unwrap_err();
-    assert!(error.to_string().contains("absent from relation authority"));
+    // Current-row validation now rejects this missing authority before the
+    // calibration API can consume a replay that already contains an alien row.
+    let error = replay_for(&source, &missing, "missing").unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("outside this binding's current relation closure"));
 
     let mut ambiguous = calibration_relations(&sample_ids);
     let mut conflicting = ambiguous.records[0].clone();
     conflicting.observation_id = ObservationId::new("observation:authority:conflict").unwrap();
     conflicting.origin_sample_id = Some(sample("origin:authority:conflict"));
     ambiguous.records.push(conflicting);
-    let replay = replay_for(&source, &ambiguous, "ambiguous");
+    let replay = replay_for(&source, &ambiguous, "ambiguous").unwrap();
     let point = &replay.outputs[0].predictions[0];
     let context = calibration_context(&source, &replay, &ambiguous);
     let error = calibrate_attached_training_replay(
@@ -5249,7 +5279,7 @@ fn calibration_attachment_rejects_missing_ambiguous_and_forged_origin_authority(
     assert!(error.to_string().contains("ambiguous origin relations"));
 
     let relations = calibration_relations(&sample_ids);
-    let replay = replay_for(&source, &relations, "forged");
+    let replay = replay_for(&source, &relations, "forged").unwrap();
     let point = &replay.outputs[0].predictions[0];
     for inject in [false, true] {
         let mut context = calibration_context(&source, &replay, &relations);
@@ -5410,8 +5440,8 @@ fn attached_training_replay_explain_emits_explanations_without_outputs() {
         .expect("source training outcome");
     assert!(source.replayable_phases.contains(&Phase::Explain));
 
-    let current_relation = "e".repeat(64);
-    let envelopes = replay_envelopes_with_relation(&source, &current_relation);
+    let current_relation = current_replay_relations(&fixture).fingerprint().unwrap();
+    let envelopes = replay_envelopes_for_fixture(&source, &fixture);
     let request = replay_request(&source, Phase::Explain);
     let controllers = controllers(&fixture, state.clone(), true);
 
@@ -5421,7 +5451,7 @@ fn attached_training_replay_explain_emits_explanations_without_outputs() {
         outcome_id: "replay:attached.explain.outcome".to_string(),
         run_id: RunId::new("run:attached.explain").unwrap(),
         controllers: &controllers,
-        data_provider: &provider(&fixture),
+        data_provider: &current_replay_provider(&fixture),
         artifact_store: &store,
         data_envelopes: &envelopes,
         warnings: Vec::new(),
@@ -5819,6 +5849,59 @@ fn explicit_selection_output_controls_multi_producer_ranking() {
 }
 
 #[test]
+fn training_report_families_follow_each_bound_output_in_a_mixed_operation() {
+    let mut fixture = fixture(false, true);
+    let mut auxiliary = fixture.request.options.outputs[0].clone();
+    auxiliary.output_id = "output:aux".into();
+    auxiliary.node_id = node("transform:snv");
+    auxiliary.port_name = Some("oof_aux".into());
+    auxiliary.prediction_kind = PredictionKind::ClassLabel;
+    auxiliary.target_names = vec!["aux".into()];
+    auxiliary.class_labels = vec![vec!["0".into(), "5".into()]];
+    fixture.request.options.outputs.insert(0, auxiliary);
+    rebuild(&mut fixture);
+    let state = Arc::new(CallState::default());
+    *state.score_auxiliary.lock().unwrap() = true;
+    let mut store = InMemoryArtifactStore::new();
+    let outcome = run(&fixture, state, &provider(&fixture), &mut store).unwrap();
+    assert_eq!(outcome.selected_variant_id, fixture.preferred);
+    assert_eq!(
+        outcome.execution_bundle.selections["selection:rmse"]
+            .selected_score
+            .to_bits(),
+        0.0_f64.to_bits()
+    );
+    let mut seen = BTreeSet::new();
+    for report in &outcome.score_set.reports {
+        seen.insert(report.producer_node.clone());
+        let allowed: &[&str] = if report.producer_node == node("transform:snv") {
+            &["accuracy", "balanced_accuracy", "f1"]
+        } else {
+            assert_eq!(report.producer_node, node("model:base"));
+            &["mae", "mse", "r2", "rmse"]
+        };
+        assert_eq!(
+            report
+                .metrics
+                .keys()
+                .filter(|name| !name.contains(':'))
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            allowed
+        );
+        assert!(report
+            .metrics
+            .keys()
+            .all(|name| allowed.contains(&name.split(':').next().unwrap())));
+    }
+    assert_eq!(
+        seen,
+        BTreeSet::from([node("transform:snv"), node("model:base")])
+    );
+    outcome.validate().unwrap();
+}
+
+#[test]
 fn native_training_materializes_operator_parameter_patches_before_execution() {
     let mut fixture = fixture(true, false);
     fixture.request.parameter_patches = vec![ParameterPatch {
@@ -5964,6 +6047,23 @@ fn outcome_rejects_selection_score_rank_and_producer_drift() {
     resign_outcome(&mut mixed_output);
     assert!(mixed_output.validate().is_err());
 
+    let mut incomplete_family = outcome.clone();
+    let average = incomplete_family
+        .score_set
+        .reports
+        .iter_mut()
+        .find(|report| {
+            report
+                .fold_id
+                .as_ref()
+                .is_some_and(|fold| fold.as_str() == "avg")
+        })
+        .unwrap();
+    assert!(average.metrics.remove("mae").is_some());
+    incomplete_family.execution_bundle.scores = Some(incomplete_family.score_set.clone());
+    resign_outcome(&mut incomplete_family);
+    assert!(incomplete_family.validate().is_err());
+
     let mut producer = outcome;
     producer
         .score_set
@@ -5980,6 +6080,111 @@ fn outcome_rejects_selection_score_rank_and_producer_drift() {
     producer.execution_bundle.scores = Some(producer.score_set.clone());
     resign_outcome(&mut producer);
     assert!(producer.validate().is_err());
+}
+
+#[test]
+fn training_outcome_checks_required_family_and_each_provided_metric() {
+    for kind in [PredictionKind::RegressionPoint, PredictionKind::ClassLabel] {
+        let mut fixture = fixture(false, false);
+        if kind == PredictionKind::ClassLabel {
+            fixture.request.options.outputs[0].prediction_kind = kind;
+            fixture.request.options.outputs[0].class_labels = vec![vec!["0".into(), "1".into()]];
+            fixture.request.options.selection.metric = SelectionMetric {
+                name: "balanced_accuracy".into(),
+                objective: MetricObjective::Maximize,
+            };
+            rebuild(&mut fixture);
+        }
+        let mut store = InMemoryArtifactStore::new();
+        let outcome = run(
+            &fixture,
+            Arc::new(CallState::default()),
+            &provider(&fixture),
+            &mut store,
+        )
+        .unwrap();
+        let average = outcome
+            .oof_averages
+            .iter()
+            .find(|average| {
+                average
+                    .predictions
+                    .fold_id
+                    .as_ref()
+                    .is_some_and(|fold| fold.as_str() == "avg")
+            })
+            .unwrap();
+        let recomputed = score_regression_aggregated_block(
+            &average.predictions,
+            &average.y_true,
+            &[
+                RegressionMetricKind::Mse,
+                RegressionMetricKind::Rmse,
+                RegressionMetricKind::Mae,
+                RegressionMetricKind::R2,
+                RegressionMetricKind::Accuracy,
+                RegressionMetricKind::BalancedAccuracy,
+                RegressionMetricKind::F1,
+            ],
+        )
+        .unwrap();
+        let report_index = outcome
+            .score_set
+            .reports
+            .iter()
+            .position(|report| {
+                report.variant_id.as_ref() == Some(&outcome.selected_variant_id)
+                    && report
+                        .fold_id
+                        .as_ref()
+                        .is_some_and(|fold| fold.as_str() == "avg")
+            })
+            .unwrap();
+        let required = outcome.score_set.reports[report_index].metrics.clone();
+        let with_metrics = |metrics: BTreeMap<String, f64>| {
+            let mut changed = outcome.clone();
+            changed.score_set.reports[report_index].metrics = metrics;
+            changed.execution_bundle.scores = Some(changed.score_set.clone());
+            resign_outcome(&mut changed);
+            changed
+        };
+        with_metrics(required.clone()).validate().unwrap();
+        // Any supplied generic extra must be supported and correctly recomputed.
+        // No exact metric count, artifact age or version selects this behavior.
+        for (name, value) in recomputed
+            .metrics
+            .iter()
+            .filter(|(name, _)| !required.contains_key(*name))
+        {
+            let mut supplied = required.clone();
+            supplied.insert(name.clone(), *value);
+            with_metrics(supplied.clone()).validate().unwrap();
+            supplied.insert(name.clone(), *value + 0.25);
+            assert!(with_metrics(supplied).validate().is_err());
+        }
+        with_metrics(recomputed.metrics.clone()).validate().unwrap();
+        for missing in required.keys() {
+            let mut supplied = recomputed.metrics.clone();
+            supplied.remove(missing);
+            assert!(
+                with_metrics(supplied).validate().is_err(),
+                "missing required {missing}"
+            );
+        }
+        for name in ["unknown_metric", "rmse:unknown_target"] {
+            let mut supplied = required.clone();
+            supplied.insert(name.into(), 0.0);
+            assert!(with_metrics(supplied).validate().is_err());
+        }
+        let mut supplied = required.clone();
+        let metric = supplied.values_mut().next().unwrap();
+        *metric += 0.25;
+        assert!(with_metrics(supplied).validate().is_err());
+        let mut supplied = required;
+        let metric = supplied.values_mut().next().unwrap();
+        *metric += f64::EPSILON;
+        with_metrics(supplied).validate().unwrap();
+    }
 }
 
 #[test]
@@ -6190,6 +6395,25 @@ fn classification_selection_is_native_when_columns_are_coherent() {
         outcome.outputs[0].binding.prediction_kind,
         PredictionKind::ClassLabel
     );
+    assert_eq!(outcome.selected_variant_id, fixture.preferred);
+    for report in &outcome.score_set.reports {
+        assert!(report.target_domain.is_none());
+        assert_eq!(
+            report
+                .metrics
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            [
+                "accuracy",
+                "accuracy:protein",
+                "balanced_accuracy",
+                "balanced_accuracy:protein",
+                "f1",
+                "f1:protein"
+            ]
+        );
+    }
 }
 
 #[test]
@@ -6782,6 +7006,214 @@ fn portable_package_independently_requires_predict_replayability() {
 }
 
 #[test]
+fn trained_target_missing_packages_preserve_external_test_refusal_precedence() {
+    struct ReplayProvider<'a> {
+        inner: &'a AttestedProvider,
+        cohort: PredictCohort,
+        calls: AtomicU64,
+    }
+
+    impl RuntimeDataProvider for ReplayProvider<'_> {
+        fn materialize(&self, request: &DataMaterializationRequest) -> Result<HandleRef> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.inner.materialize(request)
+        }
+
+        fn make_view(&self, request: &DataViewRequest) -> Result<HandleRef> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.inner.make_view(request)
+        }
+
+        fn training_data_identity(
+            &self,
+            binding: &DataBinding,
+        ) -> Result<Option<TrainingDataIdentity>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.inner.training_data_identity(binding)
+        }
+
+        fn coordinator_relations(
+            &self,
+            binding: &DataBinding,
+        ) -> Result<Option<SampleRelationSet>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.inner.coordinator_relations(binding)
+        }
+
+        fn predict_cohort(
+            &self,
+            _binding: &DataBinding,
+            _phase: Phase,
+        ) -> Result<Option<PredictCohort>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(Some(self.cohort.clone()))
+        }
+    }
+
+    for keep_missing_in_relations in [true, false] {
+        let mut case = fixture(true, false);
+        let missing = sample("sample:4");
+        let split = case.request.campaign.split_invocation.as_mut().unwrap();
+        split.fold_set = Some(
+            split
+                .fold_set
+                .as_ref()
+                .unwrap()
+                .exclude_target_missing(&BTreeSet::from([missing.clone()]))
+                .unwrap(),
+        );
+        if !keep_missing_in_relations {
+            case.relations
+                .records
+                .retain(|relation| relation.sample_id != missing);
+        }
+        let relation_fingerprint = case.relations.fingerprint().unwrap();
+        for binding in case.request.campaign.data_bindings.values_mut().flatten() {
+            binding.relation_fingerprint = Some(relation_fingerprint.clone());
+        }
+        for identity in &mut case.request.data_identities {
+            identity.relation_fingerprint = relation_fingerprint.clone();
+            identity.identity_fingerprint = identity.compute_fingerprint().unwrap();
+        }
+        rebuild(&mut case);
+
+        let state = Arc::new(CallState::default());
+        state
+            .scoped_validation_samples
+            .lock()
+            .unwrap()
+            .insert(FoldId::new("fold:1").unwrap(), vec![sample("sample:3")]);
+        *state.refit_sample_ids.lock().unwrap() = Some(vec![
+            sample("sample:1"),
+            sample("sample:2"),
+            sample("sample:3"),
+        ]);
+        let mut store = InMemoryArtifactStore::new();
+        // Produce the complete outcome through execute_training; do not forge
+        // a target-missing FoldSet into an already trained package.
+        let source = run(&case, state.clone(), &provider(&case), &mut store)
+            .expect("genuine target-missing source training must succeed");
+        source.validate().unwrap();
+        assert_eq!(
+            source
+                .effective_plan
+                .fold_set
+                .as_ref()
+                .unwrap()
+                .target_missing_sample_ids,
+            vec![missing.clone()]
+        );
+        assert!(state.count(Phase::FitCv, "model:base") > 0);
+        assert_eq!(state.count(Phase::Refit, "model:base"), 1);
+        assert!(source
+            .outputs
+            .iter()
+            .flat_map(|output| &output.predictions)
+            .all(|block| !block.sample_ids.contains(&missing)));
+        let package = source
+            .to_portable_predictor_package(
+                "predictor:target-missing.authority",
+                FittedArtifactMode::AllowHostSidecar,
+                ArtifactLoadMode::HostSidecar,
+            )
+            .unwrap();
+        package.validate().unwrap();
+        let package =
+            PortablePredictorPackage::from_json(&serde_json::to_string(&package).unwrap()).unwrap();
+        let loaded = package
+            .clone()
+            .load_with(|record| {
+                store
+                    .get(&record.artifact.id)
+                    .map(|stored| stored.handle.clone())
+                    .ok_or_else(|| {
+                        DagMlError::RuntimeValidation(format!(
+                            "missing target-missing fixture sidecar `{}`",
+                            record.artifact.id
+                        ))
+                    })
+            })
+            .unwrap();
+        let request = replay_request(&source, Phase::Predict);
+        let controllers = controllers(&case, state.clone(), true);
+        *state.predict_sample_ids.lock().unwrap() = Some(vec![missing.clone()]);
+        let current_provider = provider(&case);
+        for role in [
+            PredictCohortRole::ExternalTest,
+            PredictCohortRole::Inference,
+        ] {
+            let cohort = PredictCohort::from_relations(
+                role,
+                SampleRelationSet {
+                    records: vec![SampleRelation::new(
+                        ObservationId::new("observation:target-missing.predict").unwrap(),
+                        missing.clone(),
+                    )],
+                },
+                vec!["protein".to_string()],
+                "c".repeat(64),
+                (role == PredictCohortRole::ExternalTest).then(|| "d".repeat(64)),
+            )
+            .unwrap();
+            let mut envelopes = replay_envelopes_with_relations(&source, &case.relations);
+            for envelope in envelopes.values_mut() {
+                envelope.schema_version = EXTERNAL_DATA_PLAN_ENVELOPE_SCHEMA_VERSION_V2;
+                envelope.data_content_fingerprint = Some(cohort.data_content_fingerprint.clone());
+                envelope.target_content_fingerprint = cohort.target_content_fingerprint.clone();
+                envelope.predict_cohort = Some(cohort.clone());
+            }
+            let replay_provider = ReplayProvider {
+                inner: &current_provider,
+                cohort,
+                calls: AtomicU64::new(0),
+            };
+            let before = state.total();
+            let result = execute_loaded_predictor_replay(LoadedPredictorReplayInput {
+                predictor: &loaded,
+                request: &request,
+                outcome_id: "outcome:target-missing.replay".into(),
+                run_id: RunId::new("run:target-missing.replay").unwrap(),
+                controllers: &controllers,
+                data_provider: &replay_provider,
+                data_envelopes: &envelopes,
+                warnings: Vec::new(),
+                diagnostics: BTreeMap::new(),
+            });
+            if role == PredictCohortRole::ExternalTest {
+                let error = result.unwrap_err().to_string();
+                let expected = if keep_missing_in_relations {
+                    "external_test predict cohort overlaps CV relation identity closure `sample:4`"
+                } else {
+                    "external_test predict cohort contains target-missing sample or origin `sample:4`; predict it through an inference cohort"
+                };
+                assert_eq!(
+                    error,
+                    DagMlError::CampaignValidation(expected.to_string()).to_string()
+                );
+                if keep_missing_in_relations {
+                    assert!(!error.contains("target-missing"), "{error}");
+                }
+                assert_eq!(state.total() - before, 0, "controller callbacks on refusal");
+                assert_eq!(
+                    replay_provider.calls.load(Ordering::SeqCst),
+                    0,
+                    "provider callbacks on refusal"
+                );
+            } else {
+                let replay = result.expect("target-missing inference must succeed");
+                replay.validate_against_package(&package, &request).unwrap();
+                assert_eq!(
+                    replay.outputs[0].predictions[0].sample_ids,
+                    vec![missing.clone()]
+                );
+                assert!(state.total() > before, "inference controller callbacks");
+                assert!(replay_provider.calls.load(Ordering::SeqCst) > 0);
+            }
+        }
+    }
+}
+
+#[test]
 fn d8_training_outcome_exports_loadable_host_sidecar_package() {
     let fixture = fixture(true, false);
     let state = Arc::new(CallState::default());
@@ -6886,8 +7318,8 @@ fn d8_loaded_predictor_replays_predict_without_source_training_outcome() {
         })
         .unwrap();
 
-    let current_relation = "e".repeat(64);
-    let envelopes = replay_envelopes_with_relation(&source, &current_relation);
+    let current_relation = current_replay_relations(&fixture).fingerprint().unwrap();
+    let envelopes = replay_envelopes_for_fixture(&source, &fixture);
     let request = replay_request(&source, Phase::Predict);
     let controllers = controllers(&fixture, state.clone(), true);
     let replay = execute_loaded_predictor_replay(LoadedPredictorReplayInput {
@@ -6896,7 +7328,7 @@ fn d8_loaded_predictor_replays_predict_without_source_training_outcome() {
         outcome_id: "replay:loaded.predict.outcome".to_string(),
         run_id: RunId::new("run:loaded.predict").unwrap(),
         controllers: &controllers,
-        data_provider: &provider(&fixture),
+        data_provider: &current_replay_provider(&fixture),
         data_envelopes: &envelopes,
         warnings: Vec::new(),
         diagnostics: BTreeMap::from([("loaded_package".to_string(), serde_json::json!(true))]),
@@ -6947,7 +7379,7 @@ fn d8_loaded_predictor_replays_predict_without_source_training_outcome() {
         outcome_id: "replay:loaded.explain.outcome".to_string(),
         run_id: RunId::new("run:loaded.explain").unwrap(),
         controllers: &controllers,
-        data_provider: &provider(&fixture),
+        data_provider: &current_replay_provider(&fixture),
         data_envelopes: &envelopes,
         warnings: Vec::new(),
         diagnostics: BTreeMap::new(),
@@ -7021,7 +7453,7 @@ fn portable_package_replays_all_named_outputs_and_only_explicit_selection() {
                 })
         })
         .unwrap();
-    let envelopes = replay_envelopes_with_relation(&source, &"e".repeat(64));
+    let envelopes = replay_envelopes_for_fixture(&source, &fixture);
     let controllers = controllers(&fixture, state, true);
     let request = replay_request(&source, Phase::Predict);
     let replay = execute_loaded_predictor_replay(LoadedPredictorReplayInput {
@@ -7030,7 +7462,7 @@ fn portable_package_replays_all_named_outputs_and_only_explicit_selection() {
         outcome_id: "replay:independent_outputs.all".to_string(),
         run_id: RunId::new("run:independent_outputs.all").unwrap(),
         controllers: &controllers,
-        data_provider: &provider(&fixture),
+        data_provider: &current_replay_provider(&fixture),
         data_envelopes: &envelopes,
         warnings: Vec::new(),
         diagnostics: BTreeMap::new(),
@@ -7060,7 +7492,7 @@ fn portable_package_replays_all_named_outputs_and_only_explicit_selection() {
         outcome_id: "replay:independent_outputs.selected".to_string(),
         run_id: RunId::new("run:independent_outputs.selected").unwrap(),
         controllers: &controllers,
-        data_provider: &provider(&fixture),
+        data_provider: &current_replay_provider(&fixture),
         data_envelopes: &envelopes,
         warnings: Vec::new(),
         diagnostics: BTreeMap::new(),
@@ -7530,7 +7962,7 @@ fn public_replay_outcome_refuses_training_markers_and_empty_prediction_payload()
 /// XL03 witnesses use genuine native FIT/REFIT and exported states. Core's
 /// container round-trip is exercised separately by the public SDK witness;
 /// this lane preserves the registry-only Core dev dependency unchanged.
-#[cfg(feature = "methods-optimizer-local")]
+#[cfg(feature = "methods-optimizer")]
 mod xl03_native_refit_families {
     use super::*;
 
@@ -7742,31 +8174,29 @@ mod xl03_native_refit_families {
             execution: &execution,
         })
         .unwrap();
-        let archive =
-            build_archive_v3_native_refit_payloads(format!("archive:xl03.{family}"), &child)
-                .unwrap();
-        let path = record.artifact.uri.as_deref().unwrap();
-        assert_eq!(&archive.members[path], raw);
-        let list = if role_pipeline {
-            "role_pipelines"
-        } else {
-            "n4me"
-        };
-        let reference = &archive.manifest["payloads"]["methods"][list][0];
-        let inventory = archive.manifest["member_inventory"]
-            .as_array()
-            .unwrap()
+        let child_bytes = serde_json::to_vec(&child).unwrap();
+        let facets = build_native_refit_facets(&child_bytes).unwrap();
+        let closure = native_fixture_closure(&facets, "full_refit");
+        let state = closure
+            .state_members()
             .iter()
-            .find(|entry| entry["path"] == path)
+            .find(|state| state.artifact_id == record.artifact.id)
             .unwrap();
-        for key in ["raw_sha256", "semantic_fingerprint", "semantic_profile"] {
-            assert_eq!(reference[key], inventory[key]);
-        }
-        assert_eq!(reference["raw_sha256"], content_hash_bytes(raw));
-        let loaded = PortableRefitPackageV3::from_json(
-            std::str::from_utf8(&archive.members[ARCHIVE_V3_PACKAGE_MEMBER]).unwrap(),
-        )
-        .unwrap();
+        assert_eq!(&facets.members[&state.member_path], raw);
+        assert_eq!(state.sha256, content_hash_bytes(raw));
+        let requirement = closure
+            .methods_requirements()
+            .iter()
+            .find(|requirement| requirement.artifact_id == record.artifact.id)
+            .unwrap();
+        assert_eq!(requirement.artifact_kind, record.artifact.kind);
+        assert_eq!(requirement.abi_major, 2);
+        assert_eq!(
+            requirement.abi_min_minor,
+            if role_pipeline { 14 } else { 13 }
+        );
+        assert_eq!(closure.root().original_bytes(), child_bytes);
+        let loaded = closure.root().refit_package().unwrap().clone();
         assert_eq!(loaded, child);
         assert_eq!(
             loaded.outcome.execution_bundle.raw_artifact_payloads,
@@ -7837,7 +8267,7 @@ mod xl03_native_refit_families {
             .get_mut(&record.artifact.id)
             .unwrap()[0] ^= 1;
         assert!(forged.validate().is_err());
-        assert!(build_archive_v3_native_refit_payloads("archive:xl03.tampered", &forged).is_err());
+        assert!(build_native_refit_facets(&serde_json::to_vec(&forged).unwrap()).is_err());
         let mut foreign_request = replay_request.clone();
         foreign_request.source_outcome_fingerprint = parent.outcome_fingerprint.clone();
         foreign_request.request_fingerprint = foreign_request.compute_fingerprint().unwrap();
@@ -7895,25 +8325,9 @@ mod xl03_native_refit_families {
             }).collect::<BTreeMap<_, _>>();
             write("replay-inputs", serde_json::to_value(&inputs_json).unwrap());
             write("replay-outcome", serde_json::to_value(&replay).unwrap());
-            write("v3-manifest", archive.manifest.clone());
-            let write_members = |version: &str, members: &BTreeMap<String, Vec<u8>>| {
-                let root = directory.join(format!("{family}-{version}-members"));
-                for (relative, bytes) in members {
-                    let output = root.join(relative);
-                    std::fs::create_dir_all(output.parent().unwrap()).unwrap();
-                    std::fs::write(output, bytes).unwrap();
-                }
-            };
-            write_members("v3", &archive.members);
             if role_pipeline {
                 // V2's real trained parent is an independent cross-host replay
                 // fixture, not an alias of the freshly refitted V3 state.
-                let parent_archive = build_archive_v2_native_portable_payloads(
-                    "archive:xl03.role-pls.parent",
-                    &parent,
-                    &source_package,
-                )
-                .unwrap();
                 let parent_request = super::replay_request(&parent, Phase::Predict);
                 let parent_replay =
                     execute_loaded_methods_predictor_replay(MethodsPortablePredictorReplayInput {
@@ -7932,8 +8346,6 @@ mod xl03_native_refit_families {
                     .lineage
                     .iter()
                     .all(|entry| entry.phase == Phase::Predict));
-                write("v2-manifest", parent_archive.manifest);
-                write_members("v2", &parent_archive.members);
                 write(
                     "v2-replay-request",
                     serde_json::to_value(parent_request).unwrap(),
@@ -8074,8 +8486,8 @@ fn native_methods_hpo_chained_resume_binds_immediate_parent_without_nested_packa
             outcome_id: format!("replay:chain.{budget}"),
             run_id: RunId::new(format!("run:chain.{budget}")).unwrap(),
             controllers: &registry,
-            data_provider: &provider(&fixture),
-            data_envelopes: &replay_envelopes_with_relation(&source, &"a".repeat(64)),
+            data_provider: &current_replay_provider(&fixture),
+            data_envelopes: &replay_envelopes_for_fixture(&source, &fixture),
             warnings: Vec::new(),
             diagnostics: BTreeMap::new(),
         })
@@ -8098,6 +8510,79 @@ fn native_methods_hpo_chained_resume_binds_immediate_parent_without_nested_packa
 
 #[cfg(feature = "methods-optimizer-local")]
 #[derive(serde::Deserialize)]
+struct FrozenCorePayload {
+    path: String,
+    bytes: Vec<u8>,
+}
+
+#[cfg(feature = "methods-optimizer-local")]
+#[derive(serde::Deserialize)]
+struct FrozenCoreRequest {
+    schema_version: u32,
+    manifest: serde_json::Value,
+    payloads: Vec<FrozenCorePayload>,
+}
+
+#[cfg(feature = "methods-optimizer-local")]
+#[test]
+fn frozen_core_oracles_preserve_exact_legacy_members_and_reject_tampering() {
+    for (input, version) in [
+        (
+            include_bytes!("fixtures/legacy_core_oracles/current-core-oracle-input.json")
+                .as_slice(),
+            "0.4.6",
+        ),
+        (
+            include_bytes!("fixtures/legacy_core_oracles/historical-core-oracle-input.json")
+                .as_slice(),
+            "0.4.3",
+        ),
+    ] {
+        // Send captured protocol bytes unchanged; do not fit, re-sign or
+        // construct a physical manifest using the current DAG implementation.
+        let request: FrozenCoreRequest = serde_json::from_slice(input).unwrap();
+        assert_eq!(request.schema_version, 1);
+        let response = core_transport_roundtrip(input, &request.manifest);
+        assert_eq!(response.oracle_version, version);
+        assert_eq!(response.writer_reference, response.loaded_reference);
+        assert!(response.loaded_is_v2);
+        assert!(response.tampered_member_rejected);
+        let expected = request
+            .payloads
+            .into_iter()
+            .map(|payload| (payload.path, payload.bytes))
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(response.members, expected);
+        assert_eq!(
+            response.portable_package,
+            expected["dagml/portable_predictor_package.json"]
+        );
+        let package = PortablePredictorPackage::from_json(
+            std::str::from_utf8(&response.portable_package).unwrap(),
+        )
+        .unwrap();
+        let outcome = TrainingOutcome::from_json(
+            std::str::from_utf8(&expected["dagml/training_outcome.json"]).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(package.training_outcome, outcome.to_reference().unwrap());
+        let caches: BundlePredictionCachePayloadSet =
+            serde_json::from_slice(&expected["dagml/prediction_cache_payload_set.json"]).unwrap();
+        caches
+            .validate_against_bundle(&outcome.execution_bundle)
+            .unwrap();
+        assert!(caches.caches.is_empty());
+        if let Some(retained) = &outcome.portable_prediction_caches {
+            assert_eq!(
+                retained, &caches,
+                "frozen owner cache presence stays unchanged"
+            );
+        }
+    }
+}
+
+#[cfg(feature = "methods-optimizer-local")]
+#[derive(serde::Deserialize)]
 struct CoreTransportRoundtrip {
     tampered_member_rejected: bool,
     schema_version: u32,
@@ -8111,10 +8596,7 @@ struct CoreTransportRoundtrip {
 }
 
 #[cfg(feature = "methods-optimizer-local")]
-fn core_transport_roundtrip(
-    manifest: &serde_json::Value,
-    members: &BTreeMap<String, Vec<u8>>,
-) -> CoreTransportRoundtrip {
+fn core_transport_roundtrip(input: &[u8], manifest: &serde_json::Value) -> CoreTransportRoundtrip {
     use std::io::{Read, Write};
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
@@ -8137,10 +8619,6 @@ fn core_transport_roundtrip(
                 "../../tools/historical-core-oracle/target/debug/dag-ml-historical-core-oracle",
             )
         });
-    let input = serde_json::to_vec(&serde_json::json!({
-        "schema_version": 1, "manifest": manifest,
-        "payloads": members.iter().map(|(path, bytes)| serde_json::json!({"path": path, "bytes": bytes})).collect::<Vec<_>>(),
-    })).unwrap();
     assert!(
         input.len() <= 16 * 1024 * 1024,
         "trusted fixture exceeds oracle transport bound"
@@ -8156,7 +8634,7 @@ fn core_transport_roundtrip(
                 binary.display()
             )
         });
-    child.stdin.take().unwrap().write_all(&input).unwrap();
+    child.stdin.take().unwrap().write_all(input).unwrap();
     // Drain concurrently so a bounded response cannot deadlock a pipe before wait.
     let stdout = child.stdout.take().unwrap();
     let reader = std::thread::spawn(move || {
@@ -8191,10 +8669,6 @@ fn core_transport_roundtrip(
     assert_eq!(
         response.oracle_version,
         if requires_v3 { "0.4.6" } else { "0.4.3" }
-    );
-    assert_eq!(
-        &response.members, members,
-        "historical Core must preserve every witness member byte-for-byte"
     );
     response
 }

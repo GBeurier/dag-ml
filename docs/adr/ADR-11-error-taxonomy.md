@@ -35,6 +35,27 @@ Every error variant carries a `remediation_hint` — a single sentence telling t
 - `repetition_leakage` → "Pass `respect_repetition=True` to your splitter; see ADR-05."
 - `target_missing_exclusion` → "Keep target-missing samples out of the CV universe (FoldSet.target_missing_sample_ids) and keep enough target-observed samples for every fold."
 
+### Captured host HPO refusals
+
+Both codes are in the existing `runtime` category. The packed values follow the `(category << 16) | code` rule above.
+
+| Code | Packed | Meaning |
+| --- | --- | --- |
+| `host_hpo_capture_abort` | `(1, 3)` | A captured search propagated an error. The report keeps primary, secondary, cleanup and evidence errors separate and carries no score, completion or commitment. |
+| `host_hpo_predecessor_refused` | `(1, 4)` | A restored predecessor failed qualified resume before any ask, recovery or seal. The detail starts with a stable refusal code such as `pair_mismatch`. |
+
+`host_hpo_capture_abort` reports one disposition:
+
+- `aborted`: nothing new was sealed for the failure, or cleanup moved the owner beyond the last publication. The owner may hold rows that no publication covers, and its pair no longer holds.
+- `published_failed_prefix`: the failing trial reached an ordinary sealed Failed publication, no cleanup ran, and every observation lies inside it, so a paired resume may be possible.
+- `evidence_incomplete`: the search itself returned, but its evidence stream could not be completed.
+
+The report also lists `uncaptured_pending`: restored trials the owner still holds RUNNING. They lie outside the failed window, so they are not touched, and they keep the stream from closing.
+
+A returned outcome is not an error. When the owner still holds RUNNING trials that no stream closed, it returns no completion, names them in `uncaptured_pending`, and reports the stream's refusal code and flush result in `refusal`.
+
+`host_hpo_predecessor_refused` has two known limits. A prior attempt of unknown ownership refuses even when the pair verifies, so a host that reports a raised ask is refused while one that omits it passes on the digest alone. A publication does not name its publisher, so reuse of a capture id whose publication holds only unterminated replays cannot be detected.
+
 ## Consequences
 
 - Workstream A task 6 introduces the `DagMlError` enum + builders.

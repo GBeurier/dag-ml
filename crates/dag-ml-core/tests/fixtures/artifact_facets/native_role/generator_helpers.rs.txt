@@ -1,0 +1,430 @@
+// Adapted from dag-ml-core 0.3.44 native-training fixture helpers.
+struct Fixture {
+    request: TrainingRequest,
+    relations: SampleRelationSet,
+    influence: TrainingInfluenceManifest,
+    preferred: VariantId,
+}
+
+fn fixture(refit: bool, stacking: bool) -> Fixture {
+    let graph: GraphSpec =
+        serde_json::from_str(include_str!("../fixtures/package/minimal_graph.json")).unwrap();
+    let mut campaign: CampaignSpec = serde_json::from_str(include_str!(
+        "../fixtures/package/campaign_oof_generation.json"
+    ))
+    .unwrap();
+    let mut controller_manifests: Vec<ControllerManifest> =
+        serde_json::from_str(include_str!("../fixtures/package/controller_manifests.json")).unwrap();
+    controller_manifests.sort_by(|left, right| left.controller_id.cmp(&right.controller_id));
+    let relations = relations();
+    let relation_fingerprint = relations.fingerprint().unwrap();
+    for bindings in campaign.data_bindings.values_mut() {
+        for binding in bindings {
+            binding.relation_fingerprint = Some(relation_fingerprint.clone());
+        }
+    }
+    let mut data_identities = campaign
+        .data_bindings
+        .values()
+        .flatten()
+        .map(|binding| {
+            let mut identity = TrainingDataIdentity {
+                requirement_key: data_binding_requirement_key(
+                    &binding.node_id,
+                    &binding.input_name,
+                ),
+                schema_fingerprint: binding.schema_fingerprint.clone(),
+                plan_fingerprint: binding.plan_fingerprint.clone(),
+                relation_fingerprint: relation_fingerprint.clone(),
+                data_content_fingerprint: "a".repeat(64),
+                target_content_fingerprint: "b".repeat(64),
+                identity_fingerprint: "0".repeat(64),
+            };
+            identity.identity_fingerprint = identity.compute_fingerprint().unwrap();
+            identity
+        })
+        .collect::<Vec<_>>();
+    data_identities.sort_by(|left, right| left.requirement_key.cmp(&right.requirement_key));
+    let options: TrainingOptions = serde_json::from_value(serde_json::json!({
+        "refit": refit,
+        "refit_strategy": if refit { serde_json::json!("refit_one") } else { serde_json::Value::Null },
+        "seed": 12345,
+        "selection": {
+            "id": "selection:rmse",
+            "metric": {"name": "rmse", "objective": "minimize"},
+            "require_finite": true
+        },
+        "selection_output_id": "output:prediction",
+        "outputs": [{
+            "output_id": "output:prediction",
+            "node_id": "model:base",
+            "prediction_level": "sample",
+            "unit_level": "physical_sample",
+            "prediction_kind": "regression_point",
+            "target_names": ["protein"],
+            "target_units": ["percent"],
+            "class_labels": [[]],
+            "output_order": "target_order",
+            "target_space": "raw"
+        }],
+        "scheduler": {"kind": "sequential", "backend": null, "workers": 1},
+        "resources": {"cpu_threads": 1, "memory_bytes": null, "gpu_devices": [], "wall_time_ms": null},
+        "artifacts": {"cv_artifacts": "discard", "prediction_caches": "retain", "fitted_artifacts": "allow_host_sidecar"}
+    }))
+    .unwrap();
+    let mut request = TrainingRequest {
+        schema_version: TRAINING_REQUEST_SCHEMA_VERSION,
+        request_id: "training:package.synthetic".to_string(),
+        plan_id: "plan:training.package.synthetic".to_string(),
+        graph,
+        campaign,
+        controller_manifests,
+        data_identities,
+        parameter_patches: Vec::new(),
+        patch_policies: Vec::new(),
+        influence_requirements: Vec::new(),
+        training_losses: Vec::new(),
+        options,
+        request_fingerprint: "0".repeat(64),
+    };
+    request.options.refit = refit;
+    request.options.refit_strategy = refit.then_some(RefitStrategy::RefitOne);
+    request.options.selection.required_metric_level = Some(PredictionLevel::Sample);
+    request.options.selection.evaluation_scope = Some(EvaluationScope::Oof);
+    request.options.resources.memory_bytes = None;
+    request.options.resources.wall_time_ms = None;
+    request.options.artifacts.cv_artifacts = CvArtifactRetention::Discard;
+    request.options.artifacts.fitted_artifacts = FittedArtifactMode::AllowHostSidecar;
+    for dimension in &mut request.campaign.generation.dimensions {
+        if dimension.name == "model_family" {
+            for (index, choice) in dimension.choices.iter_mut().enumerate() {
+                choice.param_overrides = vec![GenerationParamOverride {
+                    node_id: node("model:base"),
+                    params: BTreeMap::from([(
+                        "n_estimators".to_string(),
+                        serde_json::json!(10 + index),
+                    )]),
+                }];
+            }
+        }
+    }
+    if stacking {
+        panic!("Stacking is outside this fixture generator");
+    }
+    resign_request(&mut request);
+    let projection = request.project().unwrap();
+    let preferred = projection.plan.variants[0].variant_id.clone();
+    let influence = influence_manifest(&request, &projection, &relations);
+    Fixture {
+        request,
+        relations,
+        influence,
+        preferred,
+    }
+}
+
+struct AttestedProvider {
+    identity: Option<TrainingDataIdentity>,
+    relations: SampleRelationSet,
+    contradictory_relations: Option<SampleRelationSet>,
+    omit_relations: bool,
+    next_handle: AtomicU64,
+    methods_pls_enabled: bool,
+    /// Provider-owned numerical source.  Deliberately keyed by the signed
+    /// sample identity instead of deriving values from a sample-id spelling.
+    methods_rows: BTreeMap<SampleId, [f64; 4]>,
+    methods_pls_feature_count: usize,
+    /// Variant-attested OOF target offsets for the native-HPO test operation.
+    /// The scheduler still computes the report from real Methods PLS
+    /// predictions; this provider only supplies the selected validation labels.
+    methods_hpo_oof_target_offsets: BTreeMap<i64, f64>,
+    /// A real provider-boundary refusal keyed by the scheduler-attested HPO
+    /// variant identity. It qualifies failed-trial/resume paths without
+    /// relying on obsolete model-rank errors or fabricating optimizer states.
+    fail_methods_hpo_trial_id: Option<i64>,
+}
+
+impl RuntimeDataProvider for AttestedProvider {
+    fn materialize(&self, _request: &DataMaterializationRequest) -> Result<HandleRef> {
+        Ok(self.handle(HandleKind::Data))
+    }
+
+    fn make_view(&self, _request: &DataViewRequest) -> Result<HandleRef> {
+        Ok(self.handle(HandleKind::DataView))
+    }
+
+    fn training_data_identity(
+        &self,
+        _binding: &DataBinding,
+    ) -> Result<Option<TrainingDataIdentity>> {
+        Ok(self.identity.clone())
+    }
+
+    fn coordinator_relations(&self, _binding: &DataBinding) -> Result<Option<SampleRelationSet>> {
+        if self.omit_relations {
+            return Ok(None);
+        }
+        Ok(Some(
+            self.contradictory_relations
+                .clone()
+                .unwrap_or_else(|| self.relations.clone()),
+        ))
+    }
+
+    fn methods_pls_capability(&self) -> Result<()> {
+        if self.methods_pls_enabled {
+            Ok(())
+        } else {
+            Err(DagMlError::RuntimeValidation(
+                "test provider intentionally has no portable Methods PLS view".to_string(),
+            ))
+        }
+    }
+
+    fn methods_pls_data(&self, request: &MethodsPlsDataRequest) -> Result<MethodsPlsData> {
+        self.methods_pls_capability()?;
+        if self.fail_methods_hpo_trial_id.is_some_and(|trial_id| {
+            request
+                .variant_id
+                .as_ref()
+                .is_some_and(|variant| variant.as_str() == format!("hpo:trial:{trial_id}"))
+        }) {
+            return Err(DagMlError::RuntimeValidation(format!(
+                "test provider refused attested Methods HPO variant `{}`",
+                request.variant_id.as_ref().expect("checked above")
+            )));
+        }
+        let hpo_target_offset = request.variant_id.as_ref().and_then(|variant| {
+            variant
+                .as_str()
+                .strip_prefix("hpo:trial:")
+                .and_then(|trial_id| trial_id.parse::<i64>().ok())
+                .and_then(|trial_id| self.methods_hpo_oof_target_offsets.get(&trial_id))
+                .copied()
+        });
+        let rows = |view: &DataProviderViewSpec,
+                    include_targets: bool,
+                    prediction_targets: bool|
+         -> Result<MethodsPlsDataset> {
+            // Replay PREDICT deliberately delegates the new cohort to the
+            // provider, so it has no training-fold sample-id list.  This
+            // fixture treats an absent Predict view selection as its current
+            // attested cohort in stable identity order.
+            let sample_ids = view
+                .sample_ids
+                .clone()
+                .unwrap_or_else(|| self.methods_rows.keys().cloned().collect::<Vec<SampleId>>());
+            let mut x = Vec::with_capacity(sample_ids.len() * self.methods_pls_feature_count);
+            let mut y = Vec::with_capacity(sample_ids.len());
+            for sample_id in &sample_ids {
+                let row = self.methods_rows.get(sample_id).ok_or_else(|| {
+                    DagMlError::RuntimeValidation(format!(
+                        "portable Methods PLS provider has no attested numerical row for `{sample_id}`"
+                    ))
+                })?;
+                // These values are provider-owned source rows.  DAG-ML only
+                // supplies the scheduler-selected identity view.
+                x.extend_from_slice(&row[..self.methods_pls_feature_count]);
+                if include_targets {
+                    y.push(match hpo_target_offset {
+                        // A small non-constant native fit target keeps Methods
+                        // PLS numerically well-posed. The provider then
+                        // supplies an attested validation target offset for
+                        // this HPO variant, and DAG-ML's ordinary RMSE
+                        // collector emits the score delivered to native Median.
+                        Some(offset) if request.phase == Phase::FitCv => {
+                            let baseline = row[0] * 1e-3;
+                            if prediction_targets {
+                                baseline + offset
+                            } else {
+                                baseline
+                            }
+                        }
+                        _ => row[3],
+                    });
+                }
+            }
+            let row_count = sample_ids.len();
+            Ok(MethodsPlsDataset {
+                y_validity_masks: None,
+                sample_ids,
+                x: MethodsPlsMatrix {
+                    values: x,
+                    rows: row_count,
+                    cols: self.methods_pls_feature_count,
+                },
+                y: include_targets.then_some(MethodsPlsMatrix {
+                    values: y,
+                    rows: row_count,
+                    cols: 1,
+                }),
+                target_names: vec!["protein".to_string()],
+            })
+        };
+        Ok(MethodsPlsData {
+            fit: rows(&request.fit_view, request.phase != Phase::Predict, false)?,
+            prediction: request
+                .prediction_view
+                .as_ref()
+                .map(|view| rows(view, true, true))
+                .transpose()?,
+        })
+    }
+}
+
+impl AttestedProvider {
+    fn handle(&self, kind: HandleKind) -> HandleRef {
+        HandleRef {
+            handle: self.next_handle.fetch_add(1, Ordering::SeqCst) + 1,
+            kind,
+            owner_controller: ControllerId::new("controller:data.provider").unwrap(),
+        }
+    }
+}
+
+fn provider(fixture: &Fixture) -> AttestedProvider {
+    AttestedProvider {
+        identity: Some(fixture.request.data_identities[0].clone()),
+        relations: fixture.relations.clone(),
+        contradictory_relations: None,
+        omit_relations: false,
+        next_handle: AtomicU64::new(0),
+        methods_pls_enabled: fixture.request.controller_manifests.iter().any(|manifest| {
+            manifest.controller_id.as_str() == METHODS_PLS_CONTROLLER_ID
+                || manifest.controller_id.as_str() == "controller:methods.native.regression"
+        }),
+        methods_rows: BTreeMap::from([
+            (SampleId::new("sample:1").unwrap(), [1.0, 1.0, 2.0, 2.0]),
+            (SampleId::new("sample:2").unwrap(), [2.0, 4.0, -1.0, 1.0]),
+            (SampleId::new("sample:3").unwrap(), [3.0, 9.0, 2.0, -2.0]),
+            (SampleId::new("sample:4").unwrap(), [4.0, 16.0, -1.0, -7.0]),
+            (
+                SampleId::new("sample:5").unwrap(),
+                [5.0, 25.0, -14.0, -14.0],
+            ),
+            (SampleId::new("sample:6").unwrap(), [6.0, 36.0, 23.0, -23.0]),
+            (
+                SampleId::new("sample:7").unwrap(),
+                [7.0, 49.0, -14.0, -34.0],
+            ),
+            (SampleId::new("sample:8").unwrap(), [8.0, 64.0, 23.0, -47.0]),
+        ]),
+        methods_pls_feature_count: 2,
+        methods_hpo_oof_target_offsets: BTreeMap::new(),
+        fail_methods_hpo_trial_id: None,
+    }
+}
+
+fn relations() -> SampleRelationSet {
+    SampleRelationSet {
+        records: (1..=4)
+            .map(|index| {
+                let mut relation = SampleRelation::new(
+                    ObservationId::new(format!("observation:{index}")).unwrap(),
+                    sample(&format!("sample:{index}")),
+                );
+                relation.group_id =
+                    Some(GroupId::new(if index <= 2 { "group:0" } else { "group:1" }).unwrap());
+                relation
+            })
+            .collect(),
+    }
+}
+
+fn influence_manifest(
+    request: &TrainingRequest,
+    projection: &TrainingContractProjection,
+    relations: &SampleRelationSet,
+) -> TrainingInfluenceManifest {
+    TrainingInfluenceManifest::derive_for_projection(projection, request, relations).unwrap()
+}
+
+fn resign_request(request: &mut TrainingRequest) {
+    request.request_fingerprint = "0".repeat(64);
+    request.request_fingerprint = request.compute_fingerprint().unwrap();
+}
+
+fn rebuild(fixture: &mut Fixture) {
+    fixture
+        .request
+        .controller_manifests
+        .sort_by(|left, right| left.controller_id.cmp(&right.controller_id));
+    resign_request(&mut fixture.request);
+    let projection = fixture.request.project().unwrap();
+    fixture.preferred = projection.plan.variants[0].variant_id.clone();
+    fixture.influence = influence_manifest(&fixture.request, &projection, &fixture.relations);
+}
+
+fn sample(value: &str) -> SampleId {
+    SampleId::new(value).unwrap()
+}
+
+fn node(value: &str) -> NodeId {
+    NodeId::new(value).unwrap()
+}
+
+fn give_methods_hpo_four_train_rows(fixture: &mut Fixture) {
+    let fold_set = fixture
+        .request
+        .campaign
+        .split_invocation
+        .as_mut()
+        .unwrap()
+        .fold_set
+        .as_mut()
+        .unwrap();
+    fold_set.sample_ids = (1..=8)
+        .map(|index| sample(&format!("sample:{index}")))
+        .collect();
+    fold_set.folds = vec![
+        FoldAssignment {
+            fold_id: FoldId::new("fold:0").unwrap(),
+            train_sample_ids: vec![
+                sample("sample:5"),
+                sample("sample:6"),
+                sample("sample:7"),
+                sample("sample:8"),
+            ],
+            validation_sample_ids: vec![
+                sample("sample:1"),
+                sample("sample:2"),
+                sample("sample:3"),
+                sample("sample:4"),
+            ],
+            metadata: BTreeMap::new(),
+        },
+        FoldAssignment {
+            fold_id: FoldId::new("fold:1").unwrap(),
+            train_sample_ids: vec![
+                sample("sample:1"),
+                sample("sample:2"),
+                sample("sample:3"),
+                sample("sample:4"),
+            ],
+            validation_sample_ids: vec![
+                sample("sample:5"),
+                sample("sample:6"),
+                sample("sample:7"),
+                sample("sample:8"),
+            ],
+            metadata: BTreeMap::new(),
+        },
+    ];
+    for index in 5..=8 {
+        fixture.relations.records.push(SampleRelation::new(
+            ObservationId::new(format!("observation:{index}")).unwrap(),
+            sample(&format!("sample:{index}")),
+        ));
+    }
+    let relation_fingerprint = fixture.relations.fingerprint().unwrap();
+    for bindings in fixture.request.campaign.data_bindings.values_mut() {
+        for binding in bindings {
+            binding.relation_fingerprint = Some(relation_fingerprint.clone());
+        }
+    }
+    for identity in &mut fixture.request.data_identities {
+        identity.relation_fingerprint = relation_fingerprint.clone();
+        identity.identity_fingerprint = "0".repeat(64);
+        identity.identity_fingerprint = identity.compute_fingerprint().unwrap();
+    }
+}

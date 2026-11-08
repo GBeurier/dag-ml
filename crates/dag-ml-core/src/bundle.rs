@@ -3526,8 +3526,7 @@ fn validate_prediction_units(
     for unit_id in unit_ids {
         if unit_id.level() != expected_level {
             return Err(DagMlError::RuntimeValidation(format!(
-                "{label} `{unit_id}` does not match prediction level {:?}",
-                expected_level
+                "{label} `{unit_id}` does not match prediction level {expected_level:?}"
             )));
         }
     }

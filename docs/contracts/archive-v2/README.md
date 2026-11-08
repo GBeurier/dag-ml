@@ -104,12 +104,13 @@ is `dagml.methods.wasm.regression`, `dagml.methods.r.regression`,
 `dagml.methods.octave.regression` or `dagml.methods.native.regression`, version
 `1.0.0`; controller identities and explicit trust remain host-specific. The original package
 retains its controller trust and exact recipe/state identities. DAG-ML validates
-the bounded wrapper; Methods hydrates opaque N4ME states. Core checks storage
-bounds/inventory and exposes bytes. Consumers then call
-`validate_archive_v2_portable_payloads(manifest, package, members)` before any
-callbacks. It accepts only the exact standalone canonical transport, including
-all six companions. Python `replay_loaded_predictor_package` additionally accepts
-`trusted_controller_manifests`; archive consumers supply them explicitly.
+the bounded wrapper; Methods hydrates opaque N4ME states. The historical Archive V2 transport carried six exact companions and required
+its physical manifest validator before callbacks. Those physical builders and
+validators have been removed from the active API. Current native packages use
+Core V1 containers and DAG-ML native facet closure validation before execution;
+Package V2/V3 semantics and explicit controller trust remain owner contracts.
+Python `replay_loaded_predictor_package` accepts
+`trusted_controller_manifests`; consumers supply them explicitly.
 
 The process-separated Node/web qualification is:
 

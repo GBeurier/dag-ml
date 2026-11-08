@@ -132,8 +132,7 @@ pub(crate) fn operator_pipeline_step_for_node_kind(
         NodeKind::Tuner => Ok(PipelineDslStep::Tuner(step)),
         NodeKind::Chart => Ok(PipelineDslStep::Chart(step)),
         unsupported => Err(DagMlError::GraphValidation(format!(
-            "minimal operator alias matched unsupported node kind {:?}; use explicit DSL syntax",
-            unsupported
+            "minimal operator alias matched unsupported node kind {unsupported:?}; use explicit DSL syntax"
         ))),
     }
 }
@@ -149,8 +148,7 @@ pub(crate) fn compat_keyword_for_node_kind(kind: &NodeKind) -> Result<&'static s
         NodeKind::Tuner => Ok("tuner"),
         NodeKind::Chart => Ok("chart"),
         unsupported => Err(DagMlError::GraphValidation(format!(
-            "minimal operator alias matched unsupported node kind {:?}; use explicit DSL syntax",
-            unsupported
+            "minimal operator alias matched unsupported node kind {unsupported:?}; use explicit DSL syntax"
         ))),
     }
 }

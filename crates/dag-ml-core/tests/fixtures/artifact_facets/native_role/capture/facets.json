@@ -1,0 +1,294 @@
+{
+  "artifacts": [
+    {
+      "id": "recipe",
+      "kind": "recipe",
+      "owner": "dag-ml",
+      "content_type": {
+        "id": "dagml.graph_spec",
+        "version": 1
+      },
+      "identity": {
+        "owner": "dag-ml",
+        "schema": "dagml.graph_spec",
+        "schema_version": 1,
+        "fingerprint_profile": "dagml.facet.graph-spec.tcv1.v1",
+        "fingerprint": "ca85b7d4140bd60b06cb20842afa34ad3b0b6e94cf78fd022a3611459acdc737"
+      },
+      "storage": {
+        "kind": "embedded",
+        "root_member": "dagml/recipe.json",
+        "member_paths": [
+          "dagml/recipe.json"
+        ]
+      },
+      "requirements": null
+    },
+    {
+      "id": "bundle",
+      "kind": "attachment",
+      "owner": "dag-ml",
+      "content_type": {
+        "id": "dagml.execution_bundle",
+        "version": 2
+      },
+      "identity": {
+        "owner": "dag-ml",
+        "schema": "dagml.execution_bundle",
+        "schema_version": 2,
+        "fingerprint_profile": "dagml.facet.execution-bundle.tcv1.v1",
+        "fingerprint": "84162d6eb78eb46f99e23e5d7760511eecc60cd01a730d278ef2a69f49b88d4b"
+      },
+      "storage": {
+        "kind": "embedded",
+        "root_member": "dagml/run.json",
+        "member_paths": [
+          "dagml/run.json"
+        ]
+      },
+      "requirements": null
+    },
+    {
+      "id": "score",
+      "kind": "score",
+      "owner": "dag-ml",
+      "content_type": {
+        "id": "dagml.score_set",
+        "version": 2
+      },
+      "identity": {
+        "owner": "dag-ml",
+        "schema": "dagml.score_set",
+        "schema_version": 2,
+        "fingerprint_profile": "dagml.facet.score-set.tcv1.v1",
+        "fingerprint": "dbdd5a6cae2e021f3acce42432b214e24ae3c864913c8ea820c7d59d9b1be6e5"
+      },
+      "storage": {
+        "kind": "embedded",
+        "root_member": "dagml/score.json",
+        "member_paths": [
+          "dagml/score.json"
+        ]
+      },
+      "requirements": null
+    },
+    {
+      "id": "prediction",
+      "kind": "prediction",
+      "owner": "dag-ml",
+      "content_type": {
+        "id": "dagml.prediction_cache_payload_set",
+        "version": 2
+      },
+      "identity": {
+        "owner": "dag-ml",
+        "schema": "dagml.prediction_cache_payload_set",
+        "schema_version": 2,
+        "fingerprint_profile": "dagml.facet.prediction-cache-payload-set.tcv1.v1",
+        "fingerprint": "68790348ca5c8de35c7fe4c30d85ef96b24266f53ae83aa60904e0556c2c2347"
+      },
+      "storage": {
+        "kind": "embedded",
+        "root_member": "dagml/prediction.json",
+        "member_paths": [
+          "dagml/prediction.json"
+        ]
+      },
+      "requirements": null
+    },
+    {
+      "id": "plan",
+      "kind": "attachment",
+      "owner": "dag-ml",
+      "content_type": {
+        "id": "dagml.execution_plan",
+        "version": 1
+      },
+      "identity": {
+        "owner": "dag-ml",
+        "schema": "dagml.execution_plan",
+        "schema_version": 1,
+        "fingerprint_profile": "dagml.facet.execution-plan.tcv1.v1",
+        "fingerprint": "5c1ddad1947850e1859bd607ffd51c012a3b02926d01e1a69852bd72a2675538"
+      },
+      "storage": {
+        "kind": "embedded",
+        "root_member": "dagml/plan.json",
+        "member_paths": [
+          "dagml/plan.json"
+        ]
+      },
+      "requirements": null
+    },
+    {
+      "id": "run",
+      "kind": "run",
+      "owner": "dag-ml",
+      "content_type": {
+        "id": "dagml.training_outcome",
+        "version": 2
+      },
+      "identity": {
+        "owner": "dag-ml",
+        "schema": "dagml.training_outcome",
+        "schema_version": 2,
+        "fingerprint_profile": "dagml_tcv1",
+        "fingerprint": "5718ce69c7801f3892b33736b70e47ce81840bf565b6f7fa3b6d9c87a1e27c9f"
+      },
+      "storage": {
+        "kind": "reference",
+        "root_sha256": "41b7de234d2a760e75c9fe43a03a0ed147eca679dc2cc830f072659a9b3ee1f1"
+      },
+      "requirements": null
+    },
+    {
+      "id": "result",
+      "kind": "result",
+      "owner": "dag-ml",
+      "content_type": {
+        "id": "dagml.training_outcome",
+        "version": 2
+      },
+      "identity": {
+        "owner": "dag-ml",
+        "schema": "dagml.training_outcome",
+        "schema_version": 2,
+        "fingerprint_profile": "dagml_tcv1",
+        "fingerprint": "5718ce69c7801f3892b33736b70e47ce81840bf565b6f7fa3b6d9c87a1e27c9f"
+      },
+      "storage": {
+        "kind": "embedded",
+        "root_member": "dagml/result.json",
+        "member_paths": [
+          "dagml/result.json"
+        ]
+      },
+      "requirements": null
+    },
+    {
+      "id": "evidence",
+      "kind": "training_evidence",
+      "owner": "dag-ml",
+      "content_type": {
+        "id": "dagml.training_outcome",
+        "version": 2
+      },
+      "identity": {
+        "owner": "dag-ml",
+        "schema": "dagml.training_outcome",
+        "schema_version": 2,
+        "fingerprint_profile": "dagml_tcv1",
+        "fingerprint": "5718ce69c7801f3892b33736b70e47ce81840bf565b6f7fa3b6d9c87a1e27c9f"
+      },
+      "storage": {
+        "kind": "reference",
+        "root_sha256": "41b7de234d2a760e75c9fe43a03a0ed147eca679dc2cc830f072659a9b3ee1f1"
+      },
+      "requirements": null
+    },
+    {
+      "id": "model",
+      "kind": "model",
+      "owner": "dag-ml",
+      "content_type": {
+        "id": "dagml.portable_predictor_package",
+        "version": 2
+      },
+      "identity": {
+        "owner": "dag-ml",
+        "schema": "dagml.portable_predictor_package",
+        "schema_version": 2,
+        "fingerprint_profile": "dagml_tcv1",
+        "fingerprint": "204e68aab980faa639bf0736b33fe7a307671fccecf3da5e33e2fbb2b0390af6"
+      },
+      "storage": {
+        "kind": "embedded",
+        "root_member": "dagml/model.json",
+        "member_paths": [
+          "dagml/model.json",
+          "dagml/facets/9372c470eeadd5ecd9c3c74c2b3cb633f8e2f2fad799250a0f70d652b6b825e4/states/6b30609253276c3da627257ada78ad1ee1eaa8ffff70515fc491c30e9d666905.bin"
+        ]
+      },
+      "requirements": null
+    }
+  ],
+  "links": [
+    {
+      "id": "link:0",
+      "owner": "dag-ml",
+      "relation": "produced_by",
+      "source_artifact": "prediction",
+      "target_artifact": "run"
+    },
+    {
+      "id": "link:1",
+      "owner": "dag-ml",
+      "relation": "recipe_of",
+      "source_artifact": "recipe",
+      "target_artifact": "run"
+    },
+    {
+      "id": "link:2",
+      "owner": "dag-ml",
+      "relation": "recipe_of",
+      "source_artifact": "recipe",
+      "target_artifact": "result"
+    },
+    {
+      "id": "link:3",
+      "owner": "dag-ml",
+      "relation": "recipe_of",
+      "source_artifact": "recipe",
+      "target_artifact": "evidence"
+    },
+    {
+      "id": "link:4",
+      "owner": "dag-ml",
+      "relation": "recipe_of",
+      "source_artifact": "recipe",
+      "target_artifact": "model"
+    },
+    {
+      "id": "link:5",
+      "owner": "dag-ml",
+      "relation": "produced_by",
+      "source_artifact": "model",
+      "target_artifact": "run"
+    },
+    {
+      "id": "link:6",
+      "owner": "dag-ml",
+      "relation": "produced_by",
+      "source_artifact": "result",
+      "target_artifact": "run"
+    },
+    {
+      "id": "link:7",
+      "owner": "dag-ml",
+      "relation": "produced_by",
+      "source_artifact": "evidence",
+      "target_artifact": "run"
+    },
+    {
+      "id": "link:8",
+      "owner": "dag-ml",
+      "relation": "produced_by",
+      "source_artifact": "score",
+      "target_artifact": "run"
+    },
+    {
+      "id": "link:9",
+      "owner": "dag-ml",
+      "relation": "evidence_for",
+      "source_artifact": "evidence",
+      "target_artifact": "model"
+    },
+    {
+      "id": "link:10",
+      "owner": "dag-ml",
+      "relation": "evaluates",
+      "source_artifact": "score",
+      "target_artifact": "result"
+    }
+  ]
+}

@@ -1,0 +1,68 @@
+{
+  "records": [
+    {
+      "unit_level": "observation",
+      "unit_id": null,
+      "observation_id": "observation:1",
+      "sample_id": "sample:1",
+      "source_id": null,
+      "rep_id": null,
+      "target_id": null,
+      "group_id": "group:0",
+      "origin_sample_id": null,
+      "derived_unit_id": null,
+      "component_observation_ids": [],
+      "sample_influence_weight": null,
+      "quality_flag": null,
+      "is_augmented": false
+    },
+    {
+      "unit_level": "observation",
+      "unit_id": null,
+      "observation_id": "observation:2",
+      "sample_id": "sample:2",
+      "source_id": null,
+      "rep_id": null,
+      "target_id": null,
+      "group_id": "group:0",
+      "origin_sample_id": null,
+      "derived_unit_id": null,
+      "component_observation_ids": [],
+      "sample_influence_weight": null,
+      "quality_flag": null,
+      "is_augmented": false
+    },
+    {
+      "unit_level": "observation",
+      "unit_id": null,
+      "observation_id": "observation:3",
+      "sample_id": "sample:3",
+      "source_id": null,
+      "rep_id": null,
+      "target_id": null,
+      "group_id": "group:1",
+      "origin_sample_id": null,
+      "derived_unit_id": null,
+      "component_observation_ids": [],
+      "sample_influence_weight": null,
+      "quality_flag": null,
+      "is_augmented": false
+    },
+    {
+      "unit_level": "observation",
+      "unit_id": null,
+      "observation_id": "observation:4",
+      "sample_id": "sample:4",
+      "source_id": null,
+      "rep_id": null,
+      "target_id": null,
+      "group_id": "group:1",
+      "origin_sample_id": null,
+      "derived_unit_id": null,
+      "component_observation_ids": [],
+      "sample_influence_weight": null,
+      "quality_flag": null,
+      "is_augmented": false
+    }
+  ]
+}

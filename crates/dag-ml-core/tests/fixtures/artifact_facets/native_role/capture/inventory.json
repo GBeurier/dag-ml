@@ -1,0 +1,34 @@
+{
+  "dagml/facets/9372c470eeadd5ecd9c3c74c2b3cb633f8e2f2fad799250a0f70d652b6b825e4/states/6b30609253276c3da627257ada78ad1ee1eaa8ffff70515fc491c30e9d666905.bin": {
+    "byte_length": 2021,
+    "sha256": "6b30609253276c3da627257ada78ad1ee1eaa8ffff70515fc491c30e9d666905"
+  },
+  "dagml/model.json": {
+    "byte_length": 31287,
+    "sha256": "66169d521d94d5f74361f144934828ded0851b0f63ccadec43d05d0568b8c4e9"
+  },
+  "dagml/plan.json": {
+    "byte_length": 7819,
+    "sha256": "de0093397b66ee8d362921cbeb2fce300d5349cc6c2b7c2e555143124c9ad2ac"
+  },
+  "dagml/prediction.json": {
+    "byte_length": 73,
+    "sha256": "53e7f34640d1929670c9b7ee087bdc2c430cdd618297b899645897702becb207"
+  },
+  "dagml/recipe.json": {
+    "byte_length": 943,
+    "sha256": "29e551bf063cc719d05d314f41e3bd31665b3ebff2ad859c7ab73a385df6107f"
+  },
+  "dagml/result.json": {
+    "byte_length": 39799,
+    "sha256": "41b7de234d2a760e75c9fe43a03a0ed147eca679dc2cc830f072659a9b3ee1f1"
+  },
+  "dagml/run.json": {
+    "byte_length": 15079,
+    "sha256": "91d35414486b717ccb9488c4b2ac92437647262657f8cb025163f54c24f7825f"
+  },
+  "dagml/score.json": {
+    "byte_length": 6807,
+    "sha256": "9e5a69596dbbc13db759caaa518294ff1c6d8c17da37cf842fe31572b5ea1903"
+  }
+}

@@ -61,15 +61,7 @@ pub const METHODS_ESTIMATOR_UNSAFE_FLAGS_PARAM: &str = "unsafe_flags";
 /// methods). Without it such methods are refused before any fit.
 pub const METHODS_ESTIMATOR_ALLOW_TRAINING_ROWS: &str = "allow_training_rows_in_artifact";
 
-/// Roles executed natively. Splitters and augmenters are derived as
-/// controller specs but have no native execution path yet.
-pub const METHODS_ESTIMATOR_EXECUTABLE_ROLES: [N4mRole; 5] = [
-    N4mRole::Transformer,
-    N4mRole::Selector,
-    N4mRole::Regressor,
-    N4mRole::Classifier,
-    N4mRole::SampleFilter,
-];
+pub use crate::n4m_roles::METHODS_ESTIMATOR_EXECUTABLE_ROLES;
 
 const CAPABILITY_NAMES: [(u64, &str); 10] = [
     (roles::CAP_TRANSFORM, "transform"),
@@ -1060,13 +1052,21 @@ impl MethodsEstimatorController {
     ) -> Result<NodeResult> {
         let selected;
         let features = if let Some(index) = method.target_index {
+            let project = |rows: &MethodsPlsDataset| {
+                if matches!(task.phase, Phase::Predict | Phase::Explain)
+                    && rows.y.is_none()
+                    && rows.target_names.len() == 1
+                {
+                    // The inference cohort already carries the selected bound
+                    // target name; there is no target column left to project.
+                    Ok(rows.clone())
+                } else {
+                    target_column(rows, index)
+                }
+            };
             selected = FeatureSet {
-                fit: target_column(&features.fit, index)?,
-                prediction: features
-                    .prediction
-                    .as_ref()
-                    .map(|rows| target_column(rows, index))
-                    .transpose()?,
+                fit: project(&features.fit)?,
+                prediction: features.prediction.as_ref().map(project).transpose()?,
             };
             &selected
         } else {

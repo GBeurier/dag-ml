@@ -445,6 +445,16 @@ jobs:
           out_dir="$PWD/target/wasm/dag-ml-wasm"
           wasm-pack build crates/dag-ml-wasm --target nodejs --out-dir "$out_dir" --release
           node scripts/smoke_wasm_package.cjs "$out_dir"
+      - name: Test HPO callback ingress and contextual replay
+        env:
+          DAG_ML_WASM_PKG: ${{ github.workspace }}/target/wasm/dag-ml-wasm/dag_ml_wasm.js
+        run: |
+          test -s "$DAG_ML_WASM_PKG"
+          node tests/test_hpo_callback_ingress.mjs
+          node tests/test_contextual_replay.mjs
+          node tests/test_external_test_authority_wasm.mjs
+          node tests/test_n4m_hpo_optimizer_tokens.mjs
+          node tests/test_wasm_input_boundary.mjs
       - name: Build WASM web package
         run: |
           out_dir="$PWD/crates/dag-ml-wasm/pkg-web"

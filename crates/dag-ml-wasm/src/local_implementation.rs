@@ -46,104 +46,78 @@ impl LocalImplementationRegistry {
 
     pub fn register_loss(
         &mut self,
-        loss_reference_json: &str,
+        loss_reference_json: &js_sys::JsString,
         implementation: js_sys::Function,
     ) -> Result<(), JsValue> {
-        let loss = parse_loss_reference(loss_reference_json)?;
-        validate_javascript_descriptor(&loss.implementation)?;
-        self.registry
-            .register_loss(&loss, implementation)
-            .map_err(js_core_error)
+        let loss_reference_json =
+            crate::js_text::text_argument(loss_reference_json, "loss_reference_json")?;
+        self.register_loss_impl(&loss_reference_json, implementation)
     }
 
     pub fn register_metric(
         &mut self,
-        metric_reference_json: &str,
+        metric_reference_json: &js_sys::JsString,
         implementation: js_sys::Function,
     ) -> Result<(), JsValue> {
-        let metric = parse_metric_reference(metric_reference_json)?;
-        validate_javascript_descriptor(&metric.implementation)?;
-        self.registry
-            .register_metric(&metric, implementation)
-            .map_err(js_core_error)
+        let metric_reference_json =
+            crate::js_text::text_argument(metric_reference_json, "metric_reference_json")?;
+        self.register_metric_impl(&metric_reference_json, implementation)
     }
 
-    pub fn resolve_loss(&self, loss_reference_json: &str) -> Result<js_sys::Function, JsValue> {
-        let loss = parse_loss_reference(loss_reference_json)?;
-        validate_javascript_descriptor(&loss.implementation)?;
-        self.registry
-            .resolve_loss(&loss)
-            .cloned()
-            .map_err(js_core_error)
+    pub fn resolve_loss(
+        &self,
+        loss_reference_json: &js_sys::JsString,
+    ) -> Result<js_sys::Function, JsValue> {
+        let loss_reference_json =
+            crate::js_text::text_argument(loss_reference_json, "loss_reference_json")?;
+        self.resolve_loss_impl(&loss_reference_json)
     }
 
     pub fn resolve_training_loss(
         &self,
-        training_loss_role_json: &str,
-        phase: &str,
+        training_loss_role_json: &js_sys::JsString,
+        phase: &js_sys::JsString,
     ) -> Result<js_sys::Function, JsValue> {
-        let role = parse_training_loss_role(training_loss_role_json)?;
-        let phase = parse_phase(phase)?;
-        validate_javascript_descriptor(&role.loss.implementation)?;
-        LossExecutionAttestation::for_role(&role, phase).map_err(js_core_error)?;
-        self.registry
-            .resolve_loss(&role.loss)
-            .cloned()
-            .map_err(js_core_error)
+        let training_loss_role_json =
+            crate::js_text::text_argument(training_loss_role_json, "training_loss_role_json")?;
+        let phase = crate::js_text::text_argument(phase, "phase")?;
+        self.resolve_training_loss_impl(&training_loss_role_json, &phase)
     }
 
     pub fn bind_training_loss(
         &self,
-        node_task_json: &str,
+        node_task_json: &js_sys::JsString,
         #[wasm_bindgen(unchecked_param_type = "number")] role_index: JsValue,
     ) -> Result<TrainingLossBinding, JsValue> {
-        let role_index = parse_role_index(role_index).map_err(js_core_error)?;
-        let task = parse_node_task(node_task_json)?;
-        let (role, attestation) = task
-            .training_loss_binding(role_index)
-            .map_err(js_core_error)?;
-        validate_javascript_descriptor(&role.loss.implementation)?;
-        let implementation = self
-            .registry
-            .resolve_loss(&role.loss)
-            .cloned()
-            .map_err(js_core_error)?;
-        let attestation_json = serde_json::to_string(attestation).map_err(js_serde_error)?;
-        Ok(TrainingLossBinding {
-            implementation,
-            required_attestation_json: attestation_json,
-        })
+        let node_task_json = crate::js_text::text_argument(node_task_json, "node_task_json")?;
+        self.bind_training_loss_impl(&node_task_json, role_index)
     }
 
-    pub fn resolve_metric(&self, metric_reference_json: &str) -> Result<js_sys::Function, JsValue> {
-        let metric = parse_metric_reference(metric_reference_json)?;
-        validate_javascript_descriptor(&metric.implementation)?;
-        self.registry
-            .resolve_metric(&metric)
-            .cloned()
-            .map_err(js_core_error)
+    pub fn resolve_metric(
+        &self,
+        metric_reference_json: &js_sys::JsString,
+    ) -> Result<js_sys::Function, JsValue> {
+        let metric_reference_json =
+            crate::js_text::text_argument(metric_reference_json, "metric_reference_json")?;
+        self.resolve_metric_impl(&metric_reference_json)
     }
 
     pub fn unregister_loss(
         &mut self,
-        loss_reference_json: &str,
+        loss_reference_json: &js_sys::JsString,
     ) -> Result<js_sys::Function, JsValue> {
-        let loss = parse_loss_reference(loss_reference_json)?;
-        validate_javascript_descriptor(&loss.implementation)?;
-        self.registry
-            .unregister(&loss.implementation)
-            .map_err(js_core_error)
+        let loss_reference_json =
+            crate::js_text::text_argument(loss_reference_json, "loss_reference_json")?;
+        self.unregister_loss_impl(&loss_reference_json)
     }
 
     pub fn unregister_metric(
         &mut self,
-        metric_reference_json: &str,
+        metric_reference_json: &js_sys::JsString,
     ) -> Result<js_sys::Function, JsValue> {
-        let metric = parse_metric_reference(metric_reference_json)?;
-        validate_javascript_descriptor(&metric.implementation)?;
-        self.registry
-            .unregister(&metric.implementation)
-            .map_err(js_core_error)
+        let metric_reference_json =
+            crate::js_text::text_argument(metric_reference_json, "metric_reference_json")?;
+        self.unregister_metric_impl(&metric_reference_json)
     }
 
     pub fn descriptors_json(&self) -> Result<String, JsValue> {
@@ -176,6 +150,16 @@ impl Default for LocalImplementationRegistry {
 
 #[wasm_bindgen]
 pub fn loss_execution_attestation_json(
+    training_loss_role_json: &js_sys::JsString,
+    phase: &js_sys::JsString,
+) -> Result<String, JsValue> {
+    let training_loss_role_json =
+        crate::js_text::text_argument(training_loss_role_json, "training_loss_role_json")?;
+    let phase = crate::js_text::text_argument(phase, "phase")?;
+    loss_execution_attestation_json_impl(&training_loss_role_json, &phase)
+}
+
+fn loss_execution_attestation_json_impl(
     training_loss_role_json: &str,
     phase: &str,
 ) -> Result<String, JsValue> {
@@ -265,6 +249,113 @@ fn validate_javascript_descriptor(descriptor: &ImplementationDescriptor) -> Resu
         )));
     }
     Ok(())
+}
+
+impl LocalImplementationRegistry {
+    fn bind_training_loss_impl(
+        &self,
+        node_task_json: &str,
+        role_index: JsValue,
+    ) -> Result<TrainingLossBinding, JsValue> {
+        let role_index = parse_role_index(role_index).map_err(js_core_error)?;
+        let task = parse_node_task(node_task_json)?;
+        let (role, attestation) = task
+            .training_loss_binding(role_index)
+            .map_err(js_core_error)?;
+        validate_javascript_descriptor(&role.loss.implementation)?;
+        let implementation = self
+            .registry
+            .resolve_loss(&role.loss)
+            .cloned()
+            .map_err(js_core_error)?;
+        let attestation_json = serde_json::to_string(attestation).map_err(js_serde_error)?;
+        Ok(TrainingLossBinding {
+            implementation,
+            required_attestation_json: attestation_json,
+        })
+    }
+
+    fn register_loss_impl(
+        &mut self,
+        loss_reference_json: &str,
+        implementation: js_sys::Function,
+    ) -> Result<(), JsValue> {
+        let loss = parse_loss_reference(loss_reference_json)?;
+        validate_javascript_descriptor(&loss.implementation)?;
+        self.registry
+            .register_loss(&loss, implementation)
+            .map_err(js_core_error)
+    }
+
+    fn register_metric_impl(
+        &mut self,
+        metric_reference_json: &str,
+        implementation: js_sys::Function,
+    ) -> Result<(), JsValue> {
+        let metric = parse_metric_reference(metric_reference_json)?;
+        validate_javascript_descriptor(&metric.implementation)?;
+        self.registry
+            .register_metric(&metric, implementation)
+            .map_err(js_core_error)
+    }
+
+    fn resolve_loss_impl(&self, loss_reference_json: &str) -> Result<js_sys::Function, JsValue> {
+        let loss = parse_loss_reference(loss_reference_json)?;
+        validate_javascript_descriptor(&loss.implementation)?;
+        self.registry
+            .resolve_loss(&loss)
+            .cloned()
+            .map_err(js_core_error)
+    }
+
+    fn resolve_metric_impl(
+        &self,
+        metric_reference_json: &str,
+    ) -> Result<js_sys::Function, JsValue> {
+        let metric = parse_metric_reference(metric_reference_json)?;
+        validate_javascript_descriptor(&metric.implementation)?;
+        self.registry
+            .resolve_metric(&metric)
+            .cloned()
+            .map_err(js_core_error)
+    }
+
+    fn resolve_training_loss_impl(
+        &self,
+        training_loss_role_json: &str,
+        phase: &str,
+    ) -> Result<js_sys::Function, JsValue> {
+        let role = parse_training_loss_role(training_loss_role_json)?;
+        let phase = parse_phase(phase)?;
+        validate_javascript_descriptor(&role.loss.implementation)?;
+        LossExecutionAttestation::for_role(&role, phase).map_err(js_core_error)?;
+        self.registry
+            .resolve_loss(&role.loss)
+            .cloned()
+            .map_err(js_core_error)
+    }
+
+    fn unregister_loss_impl(
+        &mut self,
+        loss_reference_json: &str,
+    ) -> Result<js_sys::Function, JsValue> {
+        let loss = parse_loss_reference(loss_reference_json)?;
+        validate_javascript_descriptor(&loss.implementation)?;
+        self.registry
+            .unregister(&loss.implementation)
+            .map_err(js_core_error)
+    }
+
+    fn unregister_metric_impl(
+        &mut self,
+        metric_reference_json: &str,
+    ) -> Result<js_sys::Function, JsValue> {
+        let metric = parse_metric_reference(metric_reference_json)?;
+        validate_javascript_descriptor(&metric.implementation)?;
+        self.registry
+            .unregister(&metric.implementation)
+            .map_err(js_core_error)
+    }
 }
 
 #[cfg(test)]

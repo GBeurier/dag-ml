@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "request_id": "replay:explain-selected",
+  "source_outcome_fingerprint": "6dc9f720d02cbe2ad38102403df617d7f7518626f8ba5b6a155dfdd7f85902c3",
+  "phase": "EXPLAIN",
+  "data_envelope_keys": [
+    "transform:snv.x"
+  ],
+  "output_binding_ids": [
+    "output:a"
+  ],
+  "request_fingerprint": "6b0bf7c58d0bbec59b9f369f5f8934fd33d5cc49b72c955426080512eb485a35"
+}

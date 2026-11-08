@@ -933,14 +933,12 @@ pub(crate) fn compile_pick_arrange_generator(
     validate_count(node_id, name, count)?;
     if values.is_empty() {
         return Err(DagMlError::GraphValidation(format!(
-            "pipeline DSL {:?} generator for `{node_id}.{param}` has no values",
-            mode
+            "pipeline DSL {mode:?} generator for `{node_id}.{param}` has no values"
         )));
     }
     if sizes.is_empty() {
         return Err(DagMlError::GraphValidation(format!(
-            "pipeline DSL {:?} generator for `{node_id}.{param}` has no sizes",
-            mode
+            "pipeline DSL {mode:?} generator for `{node_id}.{param}` has no sizes"
         )));
     }
     let mut selections = Vec::<Vec<usize>>::new();
@@ -952,8 +950,7 @@ pub(crate) fn compile_pick_arrange_generator(
     for size in sizes {
         if *size == 0 || *size > values.len() || *size > 256 {
             return Err(DagMlError::GraphValidation(format!(
-                "pipeline DSL {:?} generator for `{node_id}.{param}` has invalid size `{size}`",
-                mode
+                "pipeline DSL {mode:?} generator for `{node_id}.{param}` has invalid size `{size}`"
             )));
         }
         match mode {
@@ -1008,8 +1005,7 @@ pub(crate) fn compile_pick_arrange_generator(
                 ),
                 value: serde_json::to_value(&params).map_err(|error| {
                     DagMlError::GraphValidation(format!(
-                        "failed to serialize pipeline DSL {:?} generator choice for `{node_id}.{param}`: {error}",
-                        mode
+                        "failed to serialize pipeline DSL {mode:?} generator choice for `{node_id}.{param}`: {error}"
                     ))
                 })?,
                 param_overrides: vec![GenerationParamOverride {
