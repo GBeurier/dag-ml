@@ -836,3 +836,134 @@ fn feature_graph_compile_and_bank_keep_declared_ports_native_ordinals_and_first_
         .is_err()
     );
 }
+
+#[test]
+fn graph_accuracy_uses_fitted_domain_first_tie_and_canonical_graph_identity() {
+    let (legacy, _) = bank();
+    let mut registry = crate::ControllerRegistry::new();
+    for (id, kind) in [
+        ("controller:n4m.transformer", NodeKind::Transform),
+        ("controller:n4m.classifier", NodeKind::Model),
+        (
+            crate::METHODS_FEATURE_JOIN_CONTROLLER,
+            NodeKind::FeatureJoin,
+        ),
+    ] {
+        let mut spec = crate::HostControllerSpec::new(
+            id,
+            if kind == NodeKind::FeatureJoin {
+                "1.0.0"
+            } else {
+                "n4m-abi-2.14.0"
+            },
+            kind.clone(),
+        );
+        if kind == NodeKind::FeatureJoin {
+            spec.output_ports =
+                Some(crate::manifest_kind_template(&NodeKind::Transform).output_ports);
+        }
+        registry.register(spec.derive().unwrap()).unwrap();
+    }
+    let admission = crate::admit_portable_pipeline(&json!([
+        {"class":"n4m.KennardStone"},
+        {"branch":[{"name":"z_msc","steps":[{"class":"n4m.MSC"}]},
+            {"name":"a_snv","steps":[{"class":"n4m.SNV"}]}]}, {"merge":"features"},
+        {"model":{"class":"n4m.SparsePLSDA"},"param":"n_components","_range_":[1,2,1]}
+    ]))
+    .unwrap();
+    let binding = serde_json::from_value(json!({"node_id":"model:portable","input_name":"x","request_id":"io:classgraph",
+        "schema_fingerprint":"a".repeat(64),"plan_fingerprint":"b".repeat(64),"relation_fingerprint":"c".repeat(64),
+        "output_representation":"tabular_numeric","feature_set_id":"x","source_ids":["nir"],"require_relations":false})).unwrap();
+    let compiled =
+        crate::compile_portable_linear(&admission, binding, legacy.fold_set.clone(), &registry)
+            .unwrap();
+    let plan = build_execution_plan(
+        "plan:graph.classification",
+        compiled.graph,
+        compiled.campaign_template,
+        &registry,
+    )
+    .unwrap();
+    let request = ClassificationBankRequest {
+        schema_version: 1,
+        profile: SINGLE_HOLDOUT_GRAPH_CLASSIFICATION_BANK_PROFILE.into(),
+        failure_group_dimension: "chain".into(),
+        target_node: NodeId::new("model:portable").unwrap(),
+    };
+    for (validation_truth, expected_accuracy, expected_unseen) in
+        [(0.0, 1.0, vec![]), (2.0, 0.0, vec![2])]
+    {
+        let mut calls = 0;
+        let mut domains = 0;
+        let result = select_classification_holdout_with_runner(
+            &plan,
+            &request,
+            &RunId::new("run:graph.classification").unwrap(),
+            Some(7),
+            |candidate, ctx| {
+                calls += 1;
+                let mut scored = candidate.clone();
+                scored.graph_plan.graph.nodes.swap(0, 3);
+                emit_labels(&scored, ctx, 0.0, validation_truth, 2.0)
+            },
+            |fold| {
+                domains += 1;
+                assert_eq!(fold, &plan.fold_set.as_ref().unwrap().folds[0].fold_id);
+                // The fitted domain, not raw training labels (2), is authoritative.
+                Ok(vec![0])
+            },
+        )
+        .unwrap();
+        assert_eq!(calls, 2);
+        assert_eq!(domains, calls);
+        assert_eq!(
+            result.profile,
+            SINGLE_HOLDOUT_GRAPH_CLASSIFICATION_BANK_PROFILE
+        );
+        let decision = result.decision.as_ref().unwrap();
+        assert_eq!(decision.selected_candidate_id, "ord:00000");
+        assert_eq!(
+            decision.policy_id,
+            "select:single_resampled_holdout_graph_classification_bank.v1:accuracy"
+        );
+        assert_eq!(
+            decision.objective,
+            crate::selection::MetricObjective::Maximize
+        );
+        assert_eq!(decision.selected_score, expected_accuracy);
+        assert_eq!(
+            result
+                .unseen_validation_classes
+                .as_ref()
+                .unwrap()
+                .iter()
+                .map(|c| c.class_id)
+                .collect::<Vec<_>>(),
+            expected_unseen
+        );
+        for (i, evidence) in result.variants.iter().enumerate() {
+            assert_eq!(evidence.identity.variant_id, plan.variants[i].variant_id);
+            assert_eq!(evidence.identity.recipe[0], admission.recipe[0]);
+            assert_eq!(
+                evidence.selection_report.as_ref().unwrap().metrics["accuracy"],
+                expected_accuracy
+            );
+            assert!(evidence.report.is_none());
+            assert_eq!(
+                evidence.validation_predictions.as_ref().unwrap().sample_ids,
+                plan.fold_set.as_ref().unwrap().folds[0].validation_sample_ids
+            );
+        }
+    }
+    let mut wrong = request;
+    wrong.profile = SINGLE_HOLDOUT_BANK_V2_PROFILE.into();
+    assert!(select_classification_holdout_with_runner(
+        &plan,
+        &wrong,
+        &RunId::new("run:graph.wrong.profile").unwrap(),
+        None,
+        |_, _| panic!("profile conflict must refuse before fitting"),
+        |_| panic!("profile conflict must refuse before fitting")
+    )
+    .is_err());
+}

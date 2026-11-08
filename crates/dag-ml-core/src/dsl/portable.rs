@@ -658,7 +658,10 @@ pub fn compile_portable_linear(
     fold_set: Option<crate::FoldSet>,
     registry: &ControllerRegistry,
 ) -> Result<CompiledPipelineDsl> {
-    if admission.profile == PORTABLE_FEATURE_PROFILE {
+    if matches!(
+        admission.profile.as_str(),
+        PORTABLE_FEATURE_PROFILE | PORTABLE_FEATURE_CLASSIFICATION_PROFILE
+    ) {
         return compile_portable_feature_graph(admission, binding, fold_set, registry);
     }
     let target = binding.node_id.clone();
@@ -796,6 +799,7 @@ mod portable_tests {
 
 /// Regression topology profile; linear/classifier contracts remain separate.
 pub const PORTABLE_FEATURE_PROFILE: &str = "portable_feature_regression.v1";
+pub const PORTABLE_FEATURE_CLASSIFICATION_PROFILE: &str = "portable_feature_classification.v1";
 pub const PORTABLE_GRAPH_RECIPE_PARAM: &str = "portable_graph_recipe_v1";
 
 fn portable_ks(class: &str) -> bool {
@@ -1129,12 +1133,6 @@ pub fn admit_portable_feature_graph(value: &Value) -> Result<PortableLinearAdmis
                 "train augmentation + feature_branch remains a declared residual profile",
             ));
         }
-        if let Some((path, _)) = &fit_inputs {
-            return Err(refuse(
-                path,
-                "extra fit inputs + feature_branch remain a declared residual profile",
-            ));
-        }
     }
     let native_paths = flat
         .iter()
@@ -1163,16 +1161,7 @@ pub fn admit_portable_feature_graph(value: &Value) -> Result<PortableLinearAdmis
         }
         refuse("$", message)
     })?;
-    if admitted.profile == PORTABLE_CLASSIFICATION_PROFILE {
-        return Err(refuse(
-            "$.pipeline",
-            if branches_seen {
-                "feature_branch + classification remains a declared residual profile"
-            } else {
-                "train augmentation + classification remains a declared residual profile"
-            },
-        ));
-    }
+    let classification = admitted.profile == PORTABLE_CLASSIFICATION_PROFILE;
     let mut lowered = admitted.recipe.clone();
     for (step, path) in lowered.iter().zip(&native_paths) {
         // These are controller policy/routing keys, not native estimator
@@ -1228,7 +1217,12 @@ pub fn admit_portable_feature_graph(value: &Value) -> Result<PortableLinearAdmis
             }).collect::<Vec<_>>()})),
         }
     }
-    admitted.profile = PORTABLE_FEATURE_PROFILE.into();
+    admitted.profile = if classification {
+        PORTABLE_FEATURE_CLASSIFICATION_PROFILE
+    } else {
+        PORTABLE_FEATURE_PROFILE
+    }
+    .into();
     admitted.owner_profile = "feature_graph.v1".into();
     admitted.recipe = topology;
     admitted.preprocessing = admitted.recipe[..admitted.recipe.len() - 1].to_vec();
@@ -1243,7 +1237,10 @@ pub fn compile_portable_feature_graph(
     fold_set: Option<crate::FoldSet>,
     registry: &ControllerRegistry,
 ) -> Result<CompiledPipelineDsl> {
-    if admission.profile != PORTABLE_FEATURE_PROFILE {
+    if !matches!(
+        admission.profile.as_str(),
+        PORTABLE_FEATURE_PROFILE | PORTABLE_FEATURE_CLASSIFICATION_PROFILE
+    ) {
         return Err(refuse("$", "feature graph profile required"));
     }
     let target = binding.node_id.clone();
@@ -1588,10 +1585,6 @@ mod feature_graph_admission_tests {
                 "$.pipeline[1]: train augmentation + feature selector",
             ),
             (
-                json!([gaussian, {"model":{"class":"n4m.SparsePLSDA"}}]),
-                "train augmentation + classification",
-            ),
-            (
                 json!([
                     augmentation("gaussian_noise", json!([0.01]), json!(9007199254740992_u64)),
                     pls
@@ -1675,16 +1668,54 @@ mod feature_graph_admission_tests {
                 group(json!({"group_assignment":[0, 1],"groups":[0, 1]})),
                 "$.pipeline[0].model.params.groups",
             ),
-            (
-                json!([{"branch":[[{"class":"n4m.SNV"}],[{"class":"n4m.MSC"}]]},{"merge":"features"},
-                    {"model":{"class":"n4m.MBPLS","params":{"block_sizes":[10, 18]}}}]),
-                "$.pipeline[2].model.params: extra fit inputs + feature_branch",
-            ),
         ] {
             let error = admit_portable_pipeline(&definition)
                 .unwrap_err()
                 .to_string();
             assert!(error.contains(expected), "{expected}: {error}");
+        }
+    }
+
+    #[test]
+    fn residual_combinations_keep_declared_role_and_joined_fit_inputs() {
+        let branch = json!({"branch":[
+            {"name":"z_first","steps":[{"class":"n4m.SNV"}]},
+            {"name":"a_second","steps":[{"class":"n4m.MSC"}]}]});
+        let class = json!({"model":{"class":"n4m.SparsePLSDA"}});
+        for definition in [
+            json!([branch, {"merge":"features"}, class]),
+            json!([
+                augmentation("gaussian_noise", json!([0.01]), json!(7)),
+                class
+            ]),
+        ] {
+            let admission = admit_portable_pipeline(&definition).unwrap();
+            assert_eq!(admission.profile, PORTABLE_FEATURE_CLASSIFICATION_PROFILE);
+            assert_eq!(admission.owner_profile, "feature_graph.v1");
+            assert_eq!(admission.recipe.last().unwrap()["methodId"], SPARSE_PLS_DA);
+        }
+        for (model, carrier) in [
+            (
+                json!({"class":"n4m.MBPLS","params":{"block_sizes":[4,4,4]}}),
+                json!({"blocks":[4,4,4]}),
+            ),
+            (
+                json!({"class":"n4m.GroupSparsePLS","params":{"group_assignment":[2,2,0,0]}}),
+                json!({"feature_groups":[2,2,0,0]}),
+            ),
+        ] {
+            // Admission does not infer widths or groups from branch count.
+            let admission = admit_portable_pipeline(&json!([
+                branch,{"merge":"features"},{"model":model}]))
+            .unwrap();
+            assert_eq!(admission.profile, PORTABLE_FEATURE_PROFILE);
+            assert_eq!(admission.recipe[0]["branch"][0]["id"], "z_first");
+            assert_eq!(admission.recipe[0]["branch"][1]["id"], "a_second");
+            assert_eq!(
+                admission.recipe.last().unwrap()["params"]["fit_inputs_v1"],
+                carrier
+            );
+            assert_eq!(admission.candidates[0]["fit_inputs_v1"], carrier);
         }
     }
 
