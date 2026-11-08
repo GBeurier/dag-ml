@@ -220,6 +220,7 @@ pub fn register_methods_estimator_controllers(
         run_leases: Mutex::default(),
         exported: Mutex::default(),
         hydrated: Mutex::default(),
+        fitted_classes: Mutex::default(),
     });
     for role in METHODS_ESTIMATOR_EXECUTABLE_ROLES {
         registry.register(Box::new(MethodsEstimatorController {
@@ -303,6 +304,8 @@ struct FeatureSet {
     fit_scoring: Option<MethodsPlsDataset>,
 }
 
+type FittedClasses = Mutex<BTreeMap<(crate::NodeId, Phase, Option<crate::FoldId>), Vec<i64>>>;
+
 struct SharedState {
     catalog: NativeCatalog,
     next_handle: AtomicU64,
@@ -310,6 +313,9 @@ struct SharedState {
     run_leases: Mutex<BTreeMap<RunId, Weak<MethodsRunLease>>>,
     exported: Mutex<BTreeMap<ArtifactId, Vec<u8>>>,
     hydrated: Mutex<BTreeMap<u64, Vec<u8>>>,
+    // Same node/phase/fold take-once key as the linear classifier hook.
+    // Keep it past the scheduler context so the training bank can take it.
+    fitted_classes: FittedClasses,
 }
 
 struct MethodsRunLease {
@@ -1362,6 +1368,23 @@ impl MethodsEstimatorController {
         let (estimator, artifact, surfaces) = match task.phase {
             Phase::FitCv => {
                 let estimator = method.fit(&context, &features.fit)?;
+                if self.role == N4mRole::Classifier {
+                    let classes = estimator
+                        .classes()
+                        .map_err(|error| native_error("classes", error))?;
+                    self.shared
+                        .fitted_classes
+                        .lock()
+                        .map_err(|_| lock_poisoned("fitted class domain"))?
+                        .insert(
+                            (
+                                task.node_plan.node_id.clone(),
+                                task.phase,
+                                task.fold_id.clone(),
+                            ),
+                            classes,
+                        );
+                }
                 let mut surfaces = Vec::new();
                 if let Some(validation) = &features.prediction {
                     surfaces.push((Cow::Borrowed(validation), PredictionPartition::Validation));
@@ -1381,6 +1404,23 @@ impl MethodsEstimatorController {
             }
             Phase::Refit => {
                 let estimator = method.fit(&context, &features.fit)?;
+                if self.role == N4mRole::Classifier {
+                    let classes = estimator
+                        .classes()
+                        .map_err(|error| native_error("classes", error))?;
+                    self.shared
+                        .fitted_classes
+                        .lock()
+                        .map_err(|_| lock_poisoned("fitted class domain"))?
+                        .insert(
+                            (
+                                task.node_plan.node_id.clone(),
+                                task.phase,
+                                task.fold_id.clone(),
+                            ),
+                            classes,
+                        );
+                }
                 let artifact = self.refit_artifact(task, &context, &estimator, method)?;
                 let mut surfaces = vec![(Cow::Borrowed(scoring), PredictionPartition::Final)];
                 // A REFIT prediction view is an explicitly held-out cohort.
@@ -1611,6 +1651,17 @@ impl RuntimeController for MethodsEstimatorController {
         provider: &dyn RuntimeDataProvider,
         prediction_ports: &[String],
     ) -> Result<NodeResult> {
+        if self.role == N4mRole::Classifier && matches!(task.phase, Phase::FitCv | Phase::Refit) {
+            self.shared
+                .fitted_classes
+                .lock()
+                .map_err(|_| lock_poisoned("fitted class domain"))?
+                .remove(&(
+                    task.node_plan.node_id.clone(),
+                    task.phase,
+                    task.fold_id.clone(),
+                ));
+        }
         if Some(&task.node_plan.kind) != self.role.node_kind().as_ref() {
             return Err(DagMlError::RuntimeValidation(format!(
                 "native Methods {} controller cannot serve {:?} node `{}`",
@@ -1633,7 +1684,7 @@ impl RuntimeController for MethodsEstimatorController {
         }
         let method = NodeMethod::from_task(task, self.role, &self.shared.catalog)?;
         let features = self.input_features(task, provider)?;
-        match self.role {
+        let result = match self.role {
             N4mRole::Transformer | N4mRole::Selector => self.transform(task, &method, &features),
             N4mRole::Regressor | N4mRole::Classifier => {
                 self.model(task, &method, &features, &prediction_ports[0])
@@ -1643,7 +1694,39 @@ impl RuntimeController for MethodsEstimatorController {
                 "native Methods {} role has no native execution path",
                 role.as_str()
             ))),
+        };
+        if result.is_err()
+            && self.role == N4mRole::Classifier
+            && matches!(task.phase, Phase::FitCv | Phase::Refit)
+        {
+            self.shared
+                .fitted_classes
+                .lock()
+                .map_err(|_| lock_poisoned("fitted class domain"))?
+                .remove(&(
+                    task.node_plan.node_id.clone(),
+                    task.phase,
+                    task.fold_id.clone(),
+                ));
         }
+        result
+    }
+
+    fn take_fitted_class_domain(
+        &self,
+        node_id: &crate::NodeId,
+        phase: Phase,
+        fold_id: Option<&crate::FoldId>,
+    ) -> Result<Option<Vec<i64>>> {
+        if self.role != N4mRole::Classifier {
+            return Ok(None);
+        }
+        Ok(self
+            .shared
+            .fitted_classes
+            .lock()
+            .map_err(|_| lock_poisoned("fitted class domain"))?
+            .remove(&(node_id.clone(), phase, fold_id.cloned())))
     }
 
     fn export_artifact_payload(&self, artifact_id: &ArtifactId) -> Result<Option<Vec<u8>>> {
@@ -1751,6 +1834,7 @@ mod tests {
             run_leases: Mutex::default(),
             exported: Mutex::default(),
             hydrated: Mutex::default(),
+            fitted_classes: Mutex::default(),
         });
         let first_run = RunId::new("run:first").unwrap();
         let second_run = RunId::new("run:second").unwrap();
@@ -2712,6 +2796,44 @@ mod tests {
                 &select(&train),
                 &train.iter().map(|i| class_ids[*i]).collect::<Vec<_>>(),
             );
+            let target = NodeId::new("model:logistic").unwrap();
+            let controller = controllers
+                .get(&ControllerId::new("controller:n4m.classifier").unwrap())
+                .unwrap();
+            if fold.fold_id
+                == plan
+                    .fold_set
+                    .as_ref()
+                    .unwrap()
+                    .folds
+                    .last()
+                    .unwrap()
+                    .fold_id
+            {
+                // A refused next invocation must clear the preceding candidate's domain.
+                let task: NodeTask = serde_json::from_value(json!({
+                    "run_id":ctx.run_id,"node_plan":plan.node_plans[&target],
+                    "phase":Phase::FitCv,"variant_id":null,"fold_id":fold.fold_id,"seed":null
+                }))
+                .unwrap();
+                let error = controller
+                    .invoke_with_data_provider_and_prediction_ports(&task, &provider, &[])
+                    .unwrap_err();
+                assert!(error
+                    .to_string()
+                    .contains("exactly one prediction output port"));
+            } else {
+                assert_eq!(
+                    controller
+                        .take_fitted_class_domain(&target, Phase::FitCv, Some(&fold.fold_id))
+                        .unwrap(),
+                    Some(direct.classifier.classes().unwrap())
+                );
+            }
+            assert!(controller
+                .take_fitted_class_domain(&target, Phase::FitCv, Some(&fold.fold_id))
+                .unwrap()
+                .is_none());
             let fold_id = Some(fold.fold_id.as_str());
             for (partition, expected) in [
                 (PredictionPartition::Validation, &validation),
@@ -2777,6 +2899,20 @@ mod tests {
             )
             .unwrap();
         let direct = DirectClassifier::fit(&x, &class_ids);
+        let controller = controllers
+            .get(&ControllerId::new("controller:n4m.classifier").unwrap())
+            .unwrap();
+        let target = NodeId::new("model:logistic").unwrap();
+        assert_eq!(
+            controller
+                .take_fitted_class_domain(&target, Phase::Refit, None)
+                .unwrap(),
+            Some(direct.classifier.classes().unwrap())
+        );
+        assert!(controller
+            .take_fitted_class_domain(&target, Phase::Refit, None)
+            .unwrap()
+            .is_none());
         let final_block = node_block(
             refit.prediction_store.blocks(),
             "model:logistic",
@@ -3654,6 +3790,44 @@ mod tests {
     }
 
     #[test]
+    fn feature_classification_preflight_uses_the_declared_live_terminal_role() {
+        let admission = crate::admit_portable_pipeline(&json!([
+            {"branch":[[{"class":"n4m.SNV"}],[{"class":"n4m.MSC"}]]},
+            {"merge":"features"},{"model":{"class":"n4m.SparsePLSDA"}}
+        ]))
+        .unwrap();
+        assert_eq!(
+            preflight_methods_feature_graph_for(
+                &admission.profile,
+                &admission.recipe,
+                &admission.candidates
+            )
+            .unwrap(),
+            admission.recipe
+        );
+        let error = preflight_methods_feature_graph_for(
+            crate::PORTABLE_FEATURE_PROFILE,
+            &admission.recipe,
+            &admission.candidates,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("$.recipe[2]"), "{error}");
+        assert!(error.contains("declared terminal role"), "{error}");
+        let mut wrong_role = admission.recipe.clone();
+        wrong_role[2]["methodId"] = json!("models.pls.pls_regression");
+        let error = preflight_methods_feature_graph_for(
+            &admission.profile,
+            &wrong_role,
+            &admission.candidates,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("$.recipe[2]"), "{error}");
+        assert!(error.contains("declared terminal role"), "{error}");
+    }
+
+    #[test]
     fn terminal_fit_inputs_reach_methods_which_alone_checks_width_and_use() {
         let fixture = fixture();
         let x = rows(&fixture["x_train"]);
@@ -3869,8 +4043,27 @@ pub fn preflight_methods_feature_graph(
     recipe: &[serde_json::Value],
     candidates: &[BTreeMap<String, serde_json::Value>],
 ) -> Result<Vec<serde_json::Value>> {
+    preflight_methods_feature_graph_for(crate::PORTABLE_FEATURE_PROFILE, recipe, candidates)
+}
+
+/// The declared profile selects the terminal role; the live manifest validates it.
+pub fn preflight_methods_feature_graph_for(
+    profile: &str,
+    recipe: &[serde_json::Value],
+    candidates: &[BTreeMap<String, serde_json::Value>],
+) -> Result<Vec<serde_json::Value>> {
+    let terminal_role = match profile {
+        crate::PORTABLE_FEATURE_PROFILE => N4mRole::Regressor,
+        crate::PORTABLE_FEATURE_CLASSIFICATION_PROFILE => N4mRole::Classifier,
+        _ => {
+            return Err(DagMlError::RuntimeValidation(
+                "unsupported feature graph profile".into(),
+            ))
+        }
+    };
     let catalog = NativeCatalog::live()?;
     let context = Context::new().map_err(|e| native_error("context_create", e))?;
+    #[allow(clippy::too_many_arguments)]
     fn check(
         step: &serde_json::Value,
         model: bool,
@@ -3879,6 +4072,7 @@ pub fn preflight_methods_feature_graph(
         context: &Context,
         extra: Option<&BTreeMap<String, serde_json::Value>>,
         augmented: bool,
+        terminal_role: N4mRole,
     ) -> Result<()> {
         let invalid = |message: String| DagMlError::RuntimeValidation(format!("{path}: {message}"));
         let method = step["methodId"]
@@ -3886,7 +4080,7 @@ pub fn preflight_methods_feature_graph(
             .ok_or_else(|| invalid("native methodId required".into()))?;
         let info = catalog.method(method)?;
         let role = if model {
-            N4mRole::Regressor
+            terminal_role
         } else if info.roles.contains(&N4mRole::Transformer) {
             N4mRole::Transformer
         } else {
@@ -3894,7 +4088,7 @@ pub fn preflight_methods_feature_graph(
         };
         if !info.roles.contains(&role) {
             return Err(invalid(
-                "feature graph accepts preprocessing/selection and a terminal regressor only"
+                "feature graph requires preprocessing/selection and the declared terminal role"
                     .into(),
             ));
         }
@@ -4092,6 +4286,7 @@ pub fn preflight_methods_feature_graph(
                         &context,
                         None,
                         augmented,
+                        terminal_role,
                     )?;
                 }
             }
@@ -4106,6 +4301,7 @@ pub fn preflight_methods_feature_graph(
                         &context,
                         Some(params),
                         augmented,
+                        terminal_role,
                     )?;
                 }
             } else {
@@ -4117,6 +4313,7 @@ pub fn preflight_methods_feature_graph(
                     &context,
                     None,
                     augmented,
+                    terminal_role,
                 )?;
             }
         }
