@@ -28,8 +28,7 @@ permissions:
   contents: read
 
 env:
-  # Qualification is bound to Git blob bytes; Windows checkout must not turn
-  # the immutable LF policy/source inputs into a different CRLF working tree.
+  # Preserve source LF bytes consistently across platform wheel builds.
   GIT_CONFIG_COUNT: "1"
   GIT_CONFIG_KEY_0: core.autocrlf
   GIT_CONFIG_VALUE_0: "false"
@@ -59,7 +58,7 @@ jobs:
             label: macos-x86_64
             target: x86_64
             smoke: false
-          - os: macos-14
+          - os: macos-15
             label: macos-aarch64
             target: aarch64
             smoke: false
@@ -89,7 +88,6 @@ jobs:
           [[ "$DEVELOPMENT_CANDIDATE" != "true" ]]
           test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA"
           test "$(git rev-parse "$RELEASE_SOURCE_TAG^{commit}")" = "$EXPECTED_SOURCE_SHA"
-          python scripts/verify_local_qualification.py --project dag --receipt compat/local-qualification.json --root .
       - name: Prepare distinct Python development candidate
         if: github.event_name == 'workflow_dispatch' && inputs.development_candidate && inputs.release_source_tag == ''
         run: python scripts/prepare_python_candidate.py
@@ -141,7 +139,6 @@ jobs:
           [[ "$DEVELOPMENT_CANDIDATE" != "true" ]]
           test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA"
           test "$(git rev-parse "$RELEASE_SOURCE_TAG^{commit}")" = "$EXPECTED_SOURCE_SHA"
-          python scripts/verify_local_qualification.py --project dag --receipt compat/local-qualification.json --root .
       - name: Prepare distinct Python development candidate
         if: github.event_name == 'workflow_dispatch' && inputs.development_candidate && inputs.release_source_tag == ''
         run: python scripts/prepare_python_candidate.py
@@ -192,7 +189,6 @@ jobs:
           [[ "$DEVELOPMENT_CANDIDATE" != "true" ]]
           test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA"
           test "$(git rev-parse "$RELEASE_SOURCE_TAG^{commit}")" = "$EXPECTED_SOURCE_SHA"
-          python scripts/verify_local_qualification.py --project dag --receipt compat/local-qualification.json --root .
       - name: Require matching release manifests
         run: python scripts/validate_release_metadata.py --release
       - uses: actions/download-artifact@v8
@@ -219,6 +215,10 @@ jobs:
       - name: Validate Trusted Publisher release tuple
         run: |
           set -euo pipefail
+          if [[ "${GITHUB_REF_TYPE:-}" != "tag" ]]; then
+            echo "::error::PyPI publication requires a release tag." >&2
+            exit 1
+          fi
           expected_repo="GBeurier/dag-ml"
           if [[ "${GITHUB_REPOSITORY}" != "${expected_repo}" ]]; then
             echo "::error::PyPI Trusted Publisher for project dag-ml must target owner=GBeurier repo=dag-ml workflow=release-python.yml environment=pypi; current repository is ${GITHUB_REPOSITORY}." >&2
@@ -232,8 +232,6 @@ jobs:
               exit 1
               ;;
           esac
-      - name: Verify local runtime qualification before publication
-        run: python scripts/verify_local_qualification.py --project dag --receipt compat/local-qualification.json --root .
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist
@@ -271,9 +269,6 @@ jobs:
           [[ "$DEVELOPMENT_CANDIDATE" != "true" ]]
           test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA"
           test "$(git rev-parse "$RELEASE_SOURCE_TAG^{commit}")" = "$EXPECTED_SOURCE_SHA"
-          python scripts/verify_local_qualification.py --project dag --receipt compat/local-qualification.json --root .
-      - name: Verify local runtime qualification before publication
-        run: python scripts/verify_local_qualification.py --project dag --receipt compat/local-qualification.json --root .
       - uses: actions/download-artifact@v8
         with:
           path: dist

@@ -19,7 +19,7 @@ generators. See [structural host HPO](HOST_STRUCTURAL_HPO.md) for the immutable
 catalogue, active parameter axes, checkpoint identities and winner REFIT path.
 
 The `dag-ml-core` crate exposes the opt-in public `methods-optimizer` Cargo
-feature through the published dynamic `n4m` 0.4.1 binding (Methods ABI 2.20,
+feature through the published dynamic `n4m` 0.4.2 binding (Methods ABI 2.22,
 generic estimator roles and authoritative runtime ABI querying). Both tracked
 lockfiles resolve the immutable crates.io checksum. Default builds leave
 that feature disabled and refuse HPO before an

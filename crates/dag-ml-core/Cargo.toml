@@ -30,7 +30,7 @@ sha2.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 unicode-normalization.workspace = true
-n4m = { version = "0.4.1", default-features = false, features = ["dynamic"], optional = true }
+n4m = { version = "0.4.2", default-features = false, features = ["dynamic"], optional = true }
 
 # The exact historical Core 0.4.3 archive oracle runs through the bounded
 # tools/historical-core-oracle subprocess, never linked into this workspace.

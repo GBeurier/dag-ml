@@ -1388,7 +1388,7 @@ mod direct_scheduler_authority {
         BTreeMap<String, ExternalDataPlanEnvelope>,
     ) {
         let mut envelope: ExternalDataPlanEnvelope = serde_json::from_str(include_str!(
-            "../../../examples/fixtures/data/coordinator_data_plan_envelope_sample12.json"
+            "fixtures/package/data/coordinator_data_plan_envelope_sample12.json"
         ))
         .unwrap();
         envelope.relation_fingerprint = if missing_authority {
@@ -1404,7 +1404,7 @@ mod direct_scheduler_authority {
             )
         };
         let mut campaign: CampaignSpec = serde_json::from_str(include_str!(
-            "../../../examples/campaign_oof_generation.json"
+            "fixtures/package/campaign_oof_generation.json"
         ))
         .unwrap();
         let model = NodeId::new("model:base").unwrap();
@@ -1419,19 +1419,21 @@ mod direct_scheduler_authority {
                 .insert(second.node_id.clone(), vec![second]);
         }
         let manifests: Vec<ControllerManifest> =
-            serde_json::from_str(include_str!("../../../examples/controller_manifests.json"))
+            serde_json::from_str(include_str!("fixtures/package/controller_manifests.json"))
                 .unwrap();
         let mut registry = ControllerRegistry::new();
         for mut manifest in manifests {
             manifest.supported_phases.insert(Phase::Explain);
             registry.register(manifest).unwrap();
         }
-        let graph =
-            serde_json::from_str(include_str!("../../../examples/minimal_graph.json")).unwrap();
+        let graph = serde_json::from_str(include_str!(
+            "fixtures/package/direct_authority/minimal_graph.json"
+        ))
+        .unwrap();
         let plan =
             build_execution_plan("plan:direct.authority", graph, campaign, &registry).unwrap();
         let spec: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../examples/fixtures/bundle/bundle_build_spec_minimal.json"
+            "fixtures/package/direct_authority/bundle_build_spec_minimal.json"
         ))
         .unwrap();
         let bundle = build_execution_bundle(

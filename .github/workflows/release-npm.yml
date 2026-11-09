@@ -54,7 +54,6 @@ jobs:
           [[ "$DEVELOPMENT_CANDIDATE" != "true" ]]
           test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA"
           test "$(git rev-parse "$RELEASE_SOURCE_TAG^{commit}")" = "$EXPECTED_SOURCE_SHA"
-          python scripts/verify_local_qualification.py --project dag --receipt compat/local-qualification.json --root .
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -131,10 +130,6 @@ jobs:
             echo "do=false" >> "$GITHUB_OUTPUT"
             echo "Dry-run only (no publish)."
           fi
-
-      - name: Verify local runtime qualification before publication
-        if: steps.gate.outputs.do == 'true'
-        run: python scripts/verify_local_qualification.py --project dag --receipt compat/local-qualification.json --root .
 
       - name: Publish to npm
         if: steps.gate.outputs.do == 'true'

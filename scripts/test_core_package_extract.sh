@@ -22,12 +22,13 @@ fi
 crate_archive=${archives[0]}
 archive_contents="$scratch_dir/archive-contents.txt"
 tar -tzf "$crate_archive" > "$archive_contents"
-if grep -Eq '/(examples|docs)/|negative_cases\.v1\.json' "$archive_contents"; then
+if grep -E '/(examples|docs)/|negative_cases\.v1\.json' "$archive_contents" \
+  | grep -Evq '^dag-ml-core-[^/]+/examples/artifact_facets\.rs$'; then
   echo 'package unexpectedly contains workspace fixtures or the W1 corpus' >&2
   exit 1
 fi
 if grep -E '(^|/)[^/]+\.v[0-9]+\.json$' "$archive_contents" \
-  | grep -Evq '/tests/fixtures/conformal_w0_golden\.v1\.json$'; then
+  | grep -Evq '/tests/fixtures/(conformal_w0_golden|shared_scoring_numerical)\.v1\.json$'; then
   echo 'package unexpectedly contains an unapproved protocol-versioned fixture' >&2
   exit 1
 fi

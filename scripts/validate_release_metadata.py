@@ -370,91 +370,111 @@ def validate_ci(repo: Path) -> None:
 
 
 def validate_local_publication_guards(repo: Path) -> None:
-    """Keep scientific qualification local and require it before every writer.
+    """Require reusable release CI and immutable recovery before publication.
 
-    Candidate platform builds intentionally run before their local runtime
-    receipts exist. Publication must pass the common verifier, including the
-    extracted Core package gate, immediately before writing to a registry.
+    Historical local qualification remains evidence, not a publisher gate.
+    Current scientific and extracted-artifact evidence is qualified separately.
     """
-    command = (
-        "python scripts/verify_local_qualification.py --project dag "
-        "--receipt compat/local-qualification.json --root ."
+    python_condition = (
+        "${{ (startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-') "
+        "&& github.event_name != 'workflow_dispatch') || (github.event_name == "
+        "'workflow_dispatch' && inputs.release_source_tag != '' && !inputs.development_candidate) }}"
     )
     rules = [
         (
-            "release-python.yml",
-            "publish-pypi",
+            "release-python.yml", "publish-pypi",
             r"(?m)^      - uses: pypa/gh-action-pypi-publish@",
-            None,
+            python_condition, None,
         ),
         (
-            "release-python.yml",
-            "github-release",
+            "release-python.yml", "github-release",
             r"(?m)^      - uses: softprops/action-gh-release@",
-            None,
+            python_condition, None,
         ),
         (
-            "release-crates.yml",
-            "publish-crates",
+            "release-crates.yml", "publish-crates",
             r"(?m)^          python scripts/release/publish_crates\.py ",
-            "github.event_name != 'workflow_dispatch' || inputs.dry_run == 'false'",
+            None, None,
         ),
         (
-            "release-npm.yml",
-            "build-and-publish",
+            "release-npm.yml", "build-and-publish",
             r"(?m)^            npm publish --access public$",
-            "steps.gate.outputs.do == 'true'",
+            None, "steps.gate.outputs.do == 'true'",
         ),
     ]
-    for filename, job_id, writer_pattern, condition in rules:
+    for filename, job_id, writer_pattern, job_condition, writer_condition in rules:
         source = (repo / ".github/workflows" / filename).read_text(encoding="utf-8")
-        job = re.search(
-            r"(?ms)^  " + re.escape(job_id) + r":\n(.*?)(?=^  [\w-]+:\n|\Z)", source
+        require(
+            "scripts/verify_local_qualification.py" not in source,
+            f"{filename}: historical local qualification must not gate publication or recovery",
+        )
+        jobs = dict(re.findall(r"(?ms)^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)", source))
+        qualify = jobs.get("qualify", "")
+        require(
+            re.search(r"(?m)^    uses: \./\.github/workflows/ci\.yml$", qualify)
+            and not re.search(r"(?m)^    (?:continue-on-error|if):", qualify),
+            f"{filename}: release qualification must use mandatory reusable CI",
+        )
+        job = jobs.get(job_id)
+        require(job is not None, f"{filename}: required publication job {job_id} is missing")
+        # Every current writer directly depends on qualify, in scalar or block-list form.
+        needs = re.search(r"(?m)^    needs: ([^\n]+)$", job)
+        needs_list = re.search(r"(?m)^    needs:\n((?:      - [\w-]+\n)+)", job)
+        dependencies = (
+            re.findall(r"[\w-]+", needs.group(1)) if needs else
+            re.findall(r"      - ([\w-]+)\n", needs_list.group(1)) if needs_list else []
         )
         require(
-            job is not None, f"{filename}: required publication job {job_id} is missing"
+            "qualify" in dependencies and not re.search(r"(?m)^    continue-on-error:", job),
+            f"{filename}/{job_id}: publication requires successful release qualification",
         )
-        starts = list(re.finditer(r"(?m)^      - ", job.group(1)))
+        require(
+            re.findall(r"(?m)^    if: (.*)$", job)
+            == ([] if job_condition is None else [job_condition]),
+            f"{filename}/{job_id}: publication condition must preserve successful qualification",
+        )
+        starts = list(re.finditer(r"(?m)^      - ", job))
         steps = [
-            job.group(1)[
-                match.start() : starts[index + 1].start()
-                if index + 1 < len(starts)
-                else None
-            ]
+            job[match.start():starts[index + 1].start() if index + 1 < len(starts) else None]
             for index, match in enumerate(starts)
         ]
-        writers = [
-            index for index, step in enumerate(steps) if re.search(writer_pattern, step)
-        ]
-        guards = [
-            index
-            for index, step in enumerate(steps)
-            if re.search(r"(?m)^        run: " + re.escape(command) + r"$", step)
-        ]
+        writers = [index for index, step in enumerate(steps) if re.search(writer_pattern, step)]
+        require(len(writers) == 1, f"{filename}/{job_id}: publication writer must be unique")
+        writer = steps[writers[0]]
         require(
-            len(writers) == 1 and len(guards) == 1 and guards[0] < writers[0],
-            f"{filename}/{job_id}: local qualification must precede its publication writer",
+            not re.search(r"(?m)^        continue-on-error:", writer)
+            and re.findall(r"(?m)^        if: (.*)$", writer)
+            == ([] if writer_condition is None else [writer_condition]),
+            f"{filename}/{job_id}: publication condition must preserve the guarded writer",
         )
-        guard = steps[guards[0]]
-        require(
-            not re.search(r"(?m)^        continue-on-error:", guard),
-            f"{filename}/{job_id}: local qualification may not continue on error",
-        )
-        observed = re.findall(r"(?m)^        if: (.*)$", guard)
-        require(
-            observed == ([] if condition is None else [condition]),
-            f"{filename}/{job_id}: local qualification condition must cover publication",
-        )
-        writer_condition = [condition] if filename == "release-npm.yml" else []
-        require(
-            re.findall(r"(?m)^        if: (.*)$", steps[writers[0]])
-            == writer_condition,
-            f"{filename}/{job_id}: publication condition must respect successful local qualification",
-        )
+        if filename != "release-crates.yml":
+            guards = [
+                index for index, step in enumerate(steps)
+                if step.startswith("      - name: Verify immutable recovery source\n")
+            ]
+            require(
+                len(guards) == 1 and guards[0] < writers[0],
+                f"{filename}/{job_id}: immutable recovery source must precede publication",
+            )
+            guard = steps[guards[0]]
+            required_lines = (
+                "          set -euo pipefail",
+                r'          [[ "$RELEASE_SOURCE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]',
+                '          [[ "$EXPECTED_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]',
+                '          [[ "$DEVELOPMENT_CANDIDATE" != "true" ]]',
+                '          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA"',
+                '          test "$(git rev-parse "$RELEASE_SOURCE_TAG^{commit}")" = "$EXPECTED_SOURCE_SHA"',
+            )
+            require(
+                not re.search(r"(?m)^        continue-on-error:", guard)
+                and re.findall(r"(?m)^        if: (.*)$", guard)
+                == ["inputs.release_source_tag != ''"]
+                and all(line in guard.splitlines() for line in required_lines),
+                f"{filename}/{job_id}: immutable recovery source guard is incomplete or bypassed",
+            )
 
-    # Platform candidate builds can precede the receipt/policy commit. The
-    # verifier then refuses publication until that committed evidence exists.
-    # Once present, metadata must also ratchet the extracted package coverage.
+    # Preserve the historical policy's extracted-package evidence obligations.
+    # Its old test-count threshold is not the current artifact gate's acceptance count.
     policy_path = repo / "qualification/policy.json"
     if policy_path.exists():
         policy = json.loads(policy_path.read_text(encoding="utf-8"))

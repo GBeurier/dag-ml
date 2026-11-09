@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -163,8 +164,8 @@ def test_ci_preserves_runtime_msrv_and_historical_oracle_targets() -> None:
     ("old", "new", "message"),
     [
         (
-            "run: cargo check --workspace --locked\n",
-            "run: cargo check --workspace\n",
+            "run: cargo check --workspace --exclude dag-ml-results --locked\n",
+            "run: cargo check --workspace --exclude dag-ml-results\n",
             "runtime targets",
         ),
         (
@@ -196,22 +197,28 @@ def test_ci_refuses_loss_of_locked_runtime_or_oracle_checks(
         release_metadata.validate_ci(tmp_path)
 
 
-def test_local_qualification_guards_precede_each_publication_writer() -> None:
+def test_release_qualification_guards_precede_each_publication_writer() -> None:
     release_metadata.validate_local_publication_guards(ROOT)
 
 
 @pytest.mark.parametrize(
-    "filename,job",
+    "filename,job,writer",
     [
-        ("release-python.yml", "publish-pypi"),
-        ("release-python.yml", "github-release"),
-        ("release-crates.yml", "publish-crates"),
-        ("release-npm.yml", "build-and-publish"),
+        ("release-python.yml", "publish-pypi", "      - uses: pypa/gh-action-pypi-publish@release/v1"),
+        ("release-python.yml", "github-release", "      - uses: softprops/action-gh-release@v3"),
+        ("release-crates.yml", "publish-crates", "      - name: Publish workspace crates to crates.io"),
+        ("release-npm.yml", "build-and-publish", "      - name: Publish to npm"),
     ],
 )
-@pytest.mark.parametrize("mutation", ["remove", "disable", "continue", "move_after"])
-def test_publication_refuses_bypassed_local_qualification(
-    tmp_path: Path, filename: str, job: str, mutation: str
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "remove_needs", "disable_qualify", "replace_qualify", "job_continue",
+        "job_always", "writer_continue", "writer_always",
+    ],
+)
+def test_publication_refuses_bypassed_release_qualification(
+    tmp_path: Path, filename: str, job: str, writer: str, mutation: str
 ) -> None:
     target = tmp_path / ".github/workflows"
     target.mkdir(parents=True)
@@ -219,36 +226,35 @@ def test_publication_refuses_bypassed_local_qualification(
         shutil.copyfile(ROOT / ".github/workflows" / name, target / name)
     p = target / filename
     source = p.read_text()
-    marker = "  " + job + ":\n"
-    prefix, content = source.split(marker, 1)
-    command = "        run: python scripts/verify_local_qualification.py --project dag --receipt compat/local-qualification.json --root ."
-    assert command in content
-    if mutation == "remove":
-        content = content.replace(command, "        run: echo removed", 1)
-    elif mutation == "disable":
-        start = content.index(
-            "      - name: Verify local runtime qualification before publication"
-        )
-        end = content.index(command, start)
-        content = (
-            content[:start]
-            + content[start:end].replace("        if:", "        # old condition:")
-            + "        if: false\n"
-            + content[end:]
-        )
-    elif mutation == "continue":
-        content = content.replace(
-            command, "        continue-on-error: true\n" + command, 1
-        )
-    else:
-        start = content.index(
-            "      - name: Verify local runtime qualification before publication"
-        )
-        end = content.index(command, start) + len(command) + 1
-        guard = content[start:end]
-        content = content[:start] + content[end:] + guard
-    p.write_text(prefix + marker + content)
-    with pytest.raises(SystemExit, match="local qualification"):
+    match = re.search(r"(?ms)^  " + job + r":\n(.*?)(?=^  [\w-]+:\n|\Z)", source)
+    assert match is not None
+    content = match.group(1)
+    if mutation == "remove_needs":
+        content = content.replace("    needs: qualify\n", "    needs: []\n", 1)
+        content = content.replace("      - qualify\n", "", 1)
+    elif mutation == "job_continue":
+        content = "    continue-on-error: true\n" + content
+    elif mutation == "job_always":
+        content, count = re.subn(r"(?m)^    if: .*\n", "    if: always()\n", content, count=1)
+        if not count:
+            content = "    if: always()\n" + content
+    elif mutation == "writer_continue":
+        content = content.replace(writer + "\n", writer + "\n        continue-on-error: true\n", 1)
+    elif mutation == "writer_always":
+        if job == "build-and-publish":
+            content = content.replace(
+                writer + "\n        if: steps.gate.outputs.do == 'true'",
+                writer + "\n        if: always()", 1,
+            )
+        else:
+            content = content.replace(writer + "\n", writer + "\n        if: always()\n", 1)
+    source = source[:match.start(1)] + content + source[match.end(1):]
+    if mutation == "disable_qualify":
+        source = source.replace("  qualify:\n", "  qualify:\n    if: false\n", 1)
+    elif mutation == "replace_qualify":
+        source = source.replace("uses: ./.github/workflows/ci.yml", "uses: ./.github/workflows/other.yml", 1)
+    p.write_text(source)
+    with pytest.raises(SystemExit, match="qualification|publication condition"):
         release_metadata.validate_local_publication_guards(tmp_path)
 
 
@@ -257,38 +263,43 @@ def test_publication_refuses_bypassed_local_qualification(
     [
         ("release-python.yml", "publish-pypi"),
         ("release-python.yml", "github-release"),
-        ("release-crates.yml", "publish-crates"),
+        ("release-npm.yml", "build-and-publish"),
     ],
 )
-def test_writer_cannot_run_after_failed_local_qualification(
-    tmp_path: Path, filename: str, job: str
+@pytest.mark.parametrize("mutation", ["remove", "disable", "continue", "source_sha", "move_after"])
+def test_publication_refuses_unsafe_immutable_recovery(
+    tmp_path: Path, filename: str, job: str, mutation: str
 ) -> None:
     target = tmp_path / ".github/workflows"
     target.mkdir(parents=True)
     for name in ["release-python.yml", "release-crates.yml", "release-npm.yml"]:
         shutil.copyfile(ROOT / ".github/workflows" / name, target / name)
     p = target / filename
-    prefix, content = p.read_text().split("  " + job + ":\n", 1)
-    if job == "publish-pypi":
-        content = content.replace(
-            "      - uses: pypa/gh-action-pypi-publish@release/v1",
-            "      - uses: pypa/gh-action-pypi-publish@release/v1\n        if: always()",
-            1,
+    source = p.read_text()
+    match = re.search(r"(?ms)^  " + job + r":\n(.*?)(?=^  [\w-]+:\n|\Z)", source)
+    assert match is not None
+    content = match.group(1)
+    guard_match = re.search(
+        r"(?ms)^      - name: Verify immutable recovery source\n.*?(?=^      - |\Z)", content
+    )
+    assert guard_match is not None
+    guard = guard_match.group(0)
+    if mutation == "remove":
+        content = content.replace(guard, "", 1)
+    elif mutation == "disable":
+        changed = guard.replace("        if: inputs.release_source_tag != ''", "        if: false", 1)
+        content = content.replace(guard, changed, 1)
+    elif mutation == "continue":
+        changed = guard.replace(
+            "        shell: bash\n", "        continue-on-error: true\n        shell: bash\n", 1,
         )
-    elif job == "github-release":
-        content = content.replace(
-            "      - uses: softprops/action-gh-release@v3",
-            "      - uses: softprops/action-gh-release@v3\n        if: always()",
-            1,
-        )
+        content = content.replace(guard, changed, 1)
+    elif mutation == "source_sha":
+        content = content.replace('          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA"', "          true", 1)
     else:
-        content = content.replace(
-            "      - name: Publish workspace crates to crates.io",
-            "      - name: Publish workspace crates to crates.io\n        if: always()",
-            1,
-        )
-    p.write_text(prefix + "  " + job + ":\n" + content)
-    with pytest.raises(SystemExit, match="publication condition"):
+        content = content.replace(guard, "", 1) + guard
+    p.write_text(source[:match.start(1)] + content + source[match.end(1):])
+    with pytest.raises(SystemExit, match="immutable recovery source"):
         release_metadata.validate_local_publication_guards(tmp_path)
 
 

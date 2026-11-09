@@ -3,7 +3,7 @@ use super::*;
 
 fn fixture(name: &str) -> Value {
     let schema: Value = serde_json::from_str(include_str!(
-        "../../../docs/contracts/realization_evidence.v1.schema.json"
+        "../tests/fixtures/package/realization_evidence.schema.json"
     ))
     .unwrap();
     schema["x-conformance"]["valid"]

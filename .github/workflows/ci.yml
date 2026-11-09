@@ -14,8 +14,8 @@ env:
   RUST_ORACLE_TOOLCHAIN: "1.88.0"
   WASM_PACK_VERSION: "0.15.0"
 
-# Full runtime/parity suites run locally. Release workflows reuse these build gates.
-# Publication steps verify a source-bound local Linux/Windows receipt. Build-only runs need no receipt.
+# Full runtime/parity suites have separately scoped local evidence.
+# Release workflows reuse these build gates; historical local receipts are not publisher prerequisites.
 jobs:
   contract-lockstep:
     name: Shared contract lockstep

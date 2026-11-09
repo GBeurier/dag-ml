@@ -7,7 +7,7 @@ use serde_json::Value;
 use std::io::{self, Write};
 fn schema() -> Value {
     serde_json::from_str(include_str!(
-        "../../../docs/contracts/realization_evidence.v1.schema.json"
+        "fixtures/package/realization_evidence.schema.json"
     ))
     .unwrap()
 }
