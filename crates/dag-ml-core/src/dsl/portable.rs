@@ -2,6 +2,11 @@
 use super::*;
 use serde_json::{json, Map, Value};
 
+/// Qualified SparsePLSDA width refusal and canonical MBPLS require Methods 1.3.15.
+/// This ABI floor does not qualify private numerical snapshots sharing that ABI.
+pub const PORTABLE_RUN_METHODS_MIN_ABI: (u32, u32) =
+    (crate::METHODS_ABI_MAJOR, crate::METHODS_RUNTIME_ABI_MINOR);
+
 pub const PORTABLE_LINEAR_PROFILE: &str = "portable_linear_regression.v1";
 pub const PORTABLE_STEPS_CONTROLLER: &str = "controller:methods.native.pipeline_steps";
 pub const PORTABLE_STEPS_VERSION: &str = "1.1.0";

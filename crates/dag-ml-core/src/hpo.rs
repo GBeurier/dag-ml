@@ -25,7 +25,7 @@ pub const N4MOPT_CHECKPOINT_SCHEMA_VERSION: u32 = 1;
 pub const N4MOPT_ARTIFACT_KIND: &str = "n4m_optimizer_checkpoint";
 pub const N4MOPT_FORMAT: &str = "N4MOPT";
 pub const METHODS_ABI_MAJOR: u32 = 2;
-pub const METHODS_RUNTIME_ABI_MINOR: u32 = 20;
+pub const METHODS_RUNTIME_ABI_MINOR: u32 = 22;
 pub const METHODS_PLS_N4MM_MIN_ABI_MINOR: u32 = 0;
 pub const METHODS_PIPELINE_N4MM_MIN_ABI_MINOR: u32 = 5;
 /// N4MM v3 records component resolution and requires the Methods 2.20 reader.
