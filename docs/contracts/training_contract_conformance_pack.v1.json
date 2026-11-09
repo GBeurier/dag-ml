@@ -296,7 +296,7 @@
     },
     {
       "path": "docs/TRAINING_CONTRACTS.md",
-      "sha256": "f458df9b89cd2d30b7f60dc4a6fb117158d85ee8215bee15ee61b50368b52a6d",
+      "sha256": "08c449bfe0b07aeacfc6537c0334787388b562515ae6a90ed0a0ddc375b8b846",
       "kind": "documentation"
     },
     {
@@ -729,5 +729,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "6cd130df32d832cef3ce722d62425a399b2368d30d5881c66133221586b0181e"
+  "pack_checksum": "d6d9c9207d643d5abed8282c01307a833c53e6558444ba13168e1e2edf14bc96"
 }

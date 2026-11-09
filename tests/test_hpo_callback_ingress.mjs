@@ -884,7 +884,8 @@ add('error-render-worker-fingerprint-distinct', 'worker-reject', 'distinct check
 add('error-render-single-property-read', 'worker-reject', 'one read per property', 'exception', async () => {
   const counts = { name: 0, message: 0, stack: 0, toJSON: 0 };
   const error = new Error();
-  for (const key of ['name', 'message', 'stack']) Object.defineProperty(error, key, { get() { counts[key]++; return key; } });
+  // Install stack first: some V8 versions materialize it by reading name and message.
+  for (const key of ['stack', 'name', 'message']) Object.defineProperty(error, key, { get() { counts[key]++; return key; } });
   const object = {}; Object.defineProperty(object, 'toJSON', { get() { counts.toJSON++; return () => ({ value: 1 }); } });
   const errorRun = await boundedErrorRun('worker-reject', error), objectRun = await boundedErrorRun('worker-reject', object);
   return { counts, errorRun, objectRun };

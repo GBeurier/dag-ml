@@ -22,7 +22,7 @@ TrainingRequest
   -> TrainingOutcome reference + PortablePredictorPackage
 ```
 
-### Initial full-refit relation identities
+## Initial full-refit relation identities
 
 The initial full-refit envelope, plan bindings and `TrainingDataIdentity` keep
 the data producer's source relation-table replay key (S) unchanged. The full

@@ -97,9 +97,13 @@ DAG_ML_NODE_CATEGORIES
 
 contracts/README
 TRAINING_CONTRACTS
+SINGLE_HOLDOUT_BANK
 FOLD_LOCAL_TARGET_DOMAINS
 TRAINING_REPLAY_CONTRACTS
 contracts/initial-full-refit-v1
+contracts/artifact-facets-v1/README
+contracts/contextual-replay-validation
+contracts/shared_scoring_numerical.v1
 CRITERIA_CONTRACTS
 HPO_METHODS_ADAPTER
 NATIVE_PLS_PHASE_CONTROLS

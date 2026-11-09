@@ -615,6 +615,10 @@ where
     )
 }
 
+type FittedClassDomainHook<'a> = &'a mut dyn FnMut(&FoldId) -> Result<Vec<i64>>;
+
+// Preserve the explicit bank scope, as in the public holdout entrypoints.
+#[allow(clippy::too_many_arguments)]
 fn select_holdout_with_identities<F>(
     plan: &ExecutionPlan,
     identities: Vec<HoldoutVariantIdentity>,
@@ -623,7 +627,7 @@ fn select_holdout_with_identities<F>(
     run_id: &RunId,
     root_seed: Option<u64>,
     mut run: F,
-    mut fitted: Option<&mut dyn FnMut(&FoldId) -> Result<Vec<i64>>>,
+    mut fitted: Option<FittedClassDomainHook<'_>>,
 ) -> Result<SingleHoldoutBankResult>
 where
     F: FnMut(&ExecutionPlan, &mut RunContext) -> Result<()>,
@@ -1100,149 +1104,6 @@ fn select_training_scores_for(
     Ok(decision)
 }
 
-#[cfg(test)]
-mod training_contract_tests {
-    use super::*;
-    use serde_json::json;
-    #[test]
-    fn training_admission_has_no_folds_and_reuses_bank_ordinals() {
-        let admission=crate::admit_portable_linear(&json!({"pipeline":[{"model":{"class":"n4m.PLS"},"param":"n_components","_range_":[1,3,1]}]})).unwrap();
-        let mut spec = crate::HostControllerSpec::new(
-            crate::PORTABLE_STEPS_CONTROLLER,
-            crate::PORTABLE_STEPS_VERSION,
-            crate::NodeKind::Model,
-        );
-        spec.output_ports=Some(serde_json::from_value(json!([{"name":"oof","kind":"prediction","representation":null,"cardinality":"one","description":""}])).unwrap());
-        let mut registry = crate::ControllerRegistry::new();
-        registry.register(spec.derive().unwrap()).unwrap();
-        let hash = "0".repeat(64);
-        let binding=serde_json::from_value(json!({"node_id":"model:portable","input_name":"x","request_id":"test:opaque",
-            "schema_fingerprint":hash,"plan_fingerprint":hash,"relation_fingerprint":hash,"output_representation":"tabular_numeric","source_ids":["x"],"require_relations":true})).unwrap();
-        let compiled =
-            crate::compile_portable_linear(&admission, binding, None, &registry).unwrap();
-        let plan = crate::build_execution_plan(
-            "plan:training.test",
-            compiled.graph,
-            compiled.campaign_template,
-            &registry,
-        )
-        .unwrap();
-        assert!(plan.fold_set.is_none());
-        assert!(plan.campaign.split_invocation.is_none());
-        let request = SingleHoldoutBankRequest {
-            schema_version: 1,
-            profile: SINGLE_HOLDOUT_BANK_PROFILE.into(),
-            report_profile: RegressionReportProfile::PopulationRmseRatiosV1,
-            failure_group_dimension: "chain".into(),
-            target_node: NodeId::new("model:portable").unwrap(),
-        };
-        let identities = bank_identities_for_scope(&plan, &request, false).unwrap();
-        assert_eq!(identities.len(), 3);
-        assert_eq!(identities[0].ordinal, "ord:00000");
-        assert_eq!(identities[2].recipe[0]["params"]["n_components"], 3);
-        assert!(
-            bank_identities(&plan, &request).is_err(),
-            "bank v1 must still require its real holdout"
-        );
-    }
-    #[test]
-    fn native_training_select_keeps_first_tie_and_training_scope() {
-        let candidate = |ordinal: &str| CandidateScore {
-            candidate_id: ordinal.into(),
-            metrics: BTreeMap::from([("rmse".into(), 1.0)]),
-            metadata: BTreeMap::from([("metric_level".into(), json!("sample"))]),
-        };
-        let decision =
-            select_training_scores(&[candidate("ord:00000"), candidate("ord:00001")]).unwrap();
-        assert_eq!(decision.selected_candidate_id, "ord:00000");
-        assert_eq!(
-            decision.evaluation_scope,
-            Some(crate::EvaluationScope::Train)
-        );
-        let mut invalid = candidate("ord:00000");
-        invalid.metrics.insert("rmse".into(), f64::INFINITY);
-        assert!(select_training_scores(&[invalid]).is_err());
-    }
-    #[test]
-    fn training_v2_admits_only_the_classifier_and_maximizes_accuracy_first_tie() {
-        let admission = crate::admit_portable_pipeline(&json!({"pipeline":[{"class":"n4m.SNV"},
-            {"model":{"class":"n4m.SparsePLSDA"},"param":"n_components","_range_":[1,3,1]}]}))
-        .unwrap();
-        assert_eq!(admission.profile, crate::PORTABLE_CLASSIFICATION_PROFILE);
-        let mut spec = crate::HostControllerSpec::new(
-            crate::PORTABLE_CLASSIFIER_CONTROLLER,
-            crate::PORTABLE_CLASSIFIER_VERSION,
-            crate::NodeKind::Model,
-        );
-        spec.output_ports=Some(serde_json::from_value(json!([{"name":"oof","kind":"prediction","representation":null,"cardinality":"one","description":""}])).unwrap());
-        let mut registry = crate::ControllerRegistry::new();
-        registry.register(spec.derive().unwrap()).unwrap();
-        let hash = "0".repeat(64);
-        let binding=serde_json::from_value(json!({"node_id":"model:portable","input_name":"x","request_id":"test:opaque",
-            "schema_fingerprint":hash,"plan_fingerprint":hash,"relation_fingerprint":hash,"output_representation":"tabular_numeric","source_ids":["x"],"require_relations":true})).unwrap();
-        let compiled =
-            crate::compile_portable_linear(&admission, binding, None, &registry).unwrap();
-        let plan = crate::build_execution_plan(
-            "plan:training.classification.test",
-            compiled.graph,
-            compiled.campaign_template,
-            &registry,
-        )
-        .unwrap();
-        let target = NodeId::new("model:portable").unwrap();
-        let identities =
-            bank_identities_core(&plan, "chain", &target, false, None, BankMetric::Accuracy)
-                .unwrap();
-        assert_eq!(identities.len(), 3);
-        assert_eq!(
-            identities[1].recipe[1]["methodId"],
-            "models.sparse.sparse_pls_da"
-        );
-        assert_eq!(identities[1].recipe[1]["params"]["n_components"], 2);
-        assert_eq!(identities[1].recipe[1]["params"]["sparsity_lambda"], 0.05);
-        let error = bank_identities_core(&plan, "chain", &target, false, None, BankMetric::Rmse)
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("controller version 1.1.0"), "{error}");
-        let score = |ordinal: &str, accuracy: f64| CandidateScore {
-            candidate_id: ordinal.into(),
-            metrics: BTreeMap::from([("accuracy".into(), accuracy)]),
-            metadata: BTreeMap::from([("metric_level".into(), json!("sample"))]),
-        };
-        let decision = select_training_scores_for(
-            &[
-                score("ord:00000", 0.5),
-                score("ord:00001", 0.9),
-                score("ord:00002", 0.9),
-            ],
-            BankMetric::Accuracy,
-        )
-        .unwrap();
-        assert_eq!(decision.selected_candidate_id, "ord:00001");
-        assert_eq!(decision.policy_id, "select:training_bank.v2:accuracy");
-        assert_eq!(
-            decision.evaluation_scope,
-            Some(crate::EvaluationScope::Train)
-        );
-        let graph = select_training_scores_for(
-            &[
-                score("ord:00000", 0.5),
-                score("ord:00001", 0.9),
-                score("ord:00002", 0.9),
-            ],
-            BankMetric::GraphAccuracy,
-        )
-        .unwrap();
-        assert_eq!(graph.selected_candidate_id, "ord:00001");
-        assert_eq!(
-            graph.policy_id,
-            "select:training_graph_classification_bank.v1:accuracy"
-        );
-        assert_eq!(graph.objective, crate::selection::MetricObjective::Maximize);
-        assert_eq!(graph.evaluation_scope, Some(crate::EvaluationScope::Train));
-    }
-}
-
 pub const SINGLE_HOLDOUT_GRAPH_BANK_PROFILE: &str = "single_resampled_holdout_graph_bank.v1";
 pub const TRAINING_GRAPH_BANK_PROFILE: &str = "training_graph_bank.v1";
 
@@ -1487,4 +1348,147 @@ pub fn execute_training_graph_classification_bank(
         controllers,
         provider,
     )
+}
+
+#[cfg(test)]
+mod training_contract_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn training_admission_has_no_folds_and_reuses_bank_ordinals() {
+        let admission=crate::admit_portable_linear(&json!({"pipeline":[{"model":{"class":"n4m.PLS"},"param":"n_components","_range_":[1,3,1]}]})).unwrap();
+        let mut spec = crate::HostControllerSpec::new(
+            crate::PORTABLE_STEPS_CONTROLLER,
+            crate::PORTABLE_STEPS_VERSION,
+            crate::NodeKind::Model,
+        );
+        spec.output_ports=Some(serde_json::from_value(json!([{"name":"oof","kind":"prediction","representation":null,"cardinality":"one","description":""}])).unwrap());
+        let mut registry = crate::ControllerRegistry::new();
+        registry.register(spec.derive().unwrap()).unwrap();
+        let hash = "0".repeat(64);
+        let binding=serde_json::from_value(json!({"node_id":"model:portable","input_name":"x","request_id":"test:opaque",
+            "schema_fingerprint":hash,"plan_fingerprint":hash,"relation_fingerprint":hash,"output_representation":"tabular_numeric","source_ids":["x"],"require_relations":true})).unwrap();
+        let compiled =
+            crate::compile_portable_linear(&admission, binding, None, &registry).unwrap();
+        let plan = crate::build_execution_plan(
+            "plan:training.test",
+            compiled.graph,
+            compiled.campaign_template,
+            &registry,
+        )
+        .unwrap();
+        assert!(plan.fold_set.is_none());
+        assert!(plan.campaign.split_invocation.is_none());
+        let request = SingleHoldoutBankRequest {
+            schema_version: 1,
+            profile: SINGLE_HOLDOUT_BANK_PROFILE.into(),
+            report_profile: RegressionReportProfile::PopulationRmseRatiosV1,
+            failure_group_dimension: "chain".into(),
+            target_node: NodeId::new("model:portable").unwrap(),
+        };
+        let identities = bank_identities_for_scope(&plan, &request, false).unwrap();
+        assert_eq!(identities.len(), 3);
+        assert_eq!(identities[0].ordinal, "ord:00000");
+        assert_eq!(identities[2].recipe[0]["params"]["n_components"], 3);
+        assert!(
+            bank_identities(&plan, &request).is_err(),
+            "bank v1 must still require its real holdout"
+        );
+    }
+    #[test]
+    fn native_training_select_keeps_first_tie_and_training_scope() {
+        let candidate = |ordinal: &str| CandidateScore {
+            candidate_id: ordinal.into(),
+            metrics: BTreeMap::from([("rmse".into(), 1.0)]),
+            metadata: BTreeMap::from([("metric_level".into(), json!("sample"))]),
+        };
+        let decision =
+            select_training_scores(&[candidate("ord:00000"), candidate("ord:00001")]).unwrap();
+        assert_eq!(decision.selected_candidate_id, "ord:00000");
+        assert_eq!(
+            decision.evaluation_scope,
+            Some(crate::EvaluationScope::Train)
+        );
+        let mut invalid = candidate("ord:00000");
+        invalid.metrics.insert("rmse".into(), f64::INFINITY);
+        assert!(select_training_scores(&[invalid]).is_err());
+    }
+    #[test]
+    fn training_v2_admits_only_the_classifier_and_maximizes_accuracy_first_tie() {
+        let admission = crate::admit_portable_pipeline(&json!({"pipeline":[{"class":"n4m.SNV"},
+            {"model":{"class":"n4m.SparsePLSDA"},"param":"n_components","_range_":[1,3,1]}]}))
+        .unwrap();
+        assert_eq!(admission.profile, crate::PORTABLE_CLASSIFICATION_PROFILE);
+        let mut spec = crate::HostControllerSpec::new(
+            crate::PORTABLE_CLASSIFIER_CONTROLLER,
+            crate::PORTABLE_CLASSIFIER_VERSION,
+            crate::NodeKind::Model,
+        );
+        spec.output_ports=Some(serde_json::from_value(json!([{"name":"oof","kind":"prediction","representation":null,"cardinality":"one","description":""}])).unwrap());
+        let mut registry = crate::ControllerRegistry::new();
+        registry.register(spec.derive().unwrap()).unwrap();
+        let hash = "0".repeat(64);
+        let binding=serde_json::from_value(json!({"node_id":"model:portable","input_name":"x","request_id":"test:opaque",
+            "schema_fingerprint":hash,"plan_fingerprint":hash,"relation_fingerprint":hash,"output_representation":"tabular_numeric","source_ids":["x"],"require_relations":true})).unwrap();
+        let compiled =
+            crate::compile_portable_linear(&admission, binding, None, &registry).unwrap();
+        let plan = crate::build_execution_plan(
+            "plan:training.classification.test",
+            compiled.graph,
+            compiled.campaign_template,
+            &registry,
+        )
+        .unwrap();
+        let target = NodeId::new("model:portable").unwrap();
+        let identities =
+            bank_identities_core(&plan, "chain", &target, false, None, BankMetric::Accuracy)
+                .unwrap();
+        assert_eq!(identities.len(), 3);
+        assert_eq!(
+            identities[1].recipe[1]["methodId"],
+            "models.sparse.sparse_pls_da"
+        );
+        assert_eq!(identities[1].recipe[1]["params"]["n_components"], 2);
+        assert_eq!(identities[1].recipe[1]["params"]["sparsity_lambda"], 0.05);
+        let error = bank_identities_core(&plan, "chain", &target, false, None, BankMetric::Rmse)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("controller version 1.1.0"), "{error}");
+        let score = |ordinal: &str, accuracy: f64| CandidateScore {
+            candidate_id: ordinal.into(),
+            metrics: BTreeMap::from([("accuracy".into(), accuracy)]),
+            metadata: BTreeMap::from([("metric_level".into(), json!("sample"))]),
+        };
+        let decision = select_training_scores_for(
+            &[
+                score("ord:00000", 0.5),
+                score("ord:00001", 0.9),
+                score("ord:00002", 0.9),
+            ],
+            BankMetric::Accuracy,
+        )
+        .unwrap();
+        assert_eq!(decision.selected_candidate_id, "ord:00001");
+        assert_eq!(decision.policy_id, "select:training_bank.v2:accuracy");
+        assert_eq!(
+            decision.evaluation_scope,
+            Some(crate::EvaluationScope::Train)
+        );
+        let graph = select_training_scores_for(
+            &[
+                score("ord:00000", 0.5),
+                score("ord:00001", 0.9),
+                score("ord:00002", 0.9),
+            ],
+            BankMetric::GraphAccuracy,
+        )
+        .unwrap();
+        assert_eq!(graph.selected_candidate_id, "ord:00001");
+        assert_eq!(
+            graph.policy_id,
+            "select:training_graph_classification_bank.v1:accuracy"
+        );
+        assert_eq!(graph.objective, crate::selection::MetricObjective::Maximize);
+        assert_eq!(graph.evaluation_scope, Some(crate::EvaluationScope::Train));
+    }
 }
