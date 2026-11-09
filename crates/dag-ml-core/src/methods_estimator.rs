@@ -3355,7 +3355,7 @@ mod tests {
             vec!["z_msc", "a_spa", "m_selector"]
         );
         assert!(
-            join.metadata.get("merge_mode").is_none(),
+            !join.metadata.contains_key("merge_mode"),
             "row-partition join path must remain uninvolved"
         );
         let plan = build_execution_plan(
@@ -3921,8 +3921,7 @@ mod tests {
             let admission = admit(model);
             preflight_methods_feature_graph(&admission.recipe, &admission.candidates).unwrap();
             let error = run_portable_graph_fold(&admission, &provider, &ids, nfit, 0, 7)
-                .err()
-                .expect("Methods refuses this fit input")
+                .expect_err("Methods refuses this fit input")
                 .to_string();
             assert!(error.contains("incompatible length"), "{error}");
             assert!(error.contains(name), "{error}");
@@ -3941,8 +3940,7 @@ mod tests {
         unused.owner_profile = "feature_graph.v1".into();
         preflight_methods_feature_graph(&unused.recipe, &unused.candidates).unwrap();
         let error = run_portable_graph_fold(&unused, &provider, &ids, nfit, 0, 7)
-            .err()
-            .expect("Methods refuses an unused fit input")
+            .expect_err("Methods refuses an unused fit input")
             .to_string();
         assert!(error.contains("not used by this method"), "{error}");
         // A carrier key outside the closed set is refused before any fit.
@@ -4500,7 +4498,7 @@ impl RuntimeController for MethodsFeatureJoinController {
             if branches.iter().any(|b| {
                 b.prediction
                     .as_ref()
-                    .map_or(true, |p| p.x.cols != b.fit.x.cols)
+                    .is_none_or(|p| p.x.cols != b.fit.x.cols)
             }) || prediction.x.cols != fit.x.cols
             {
                 return Err(DagMlError::RuntimeValidation(
