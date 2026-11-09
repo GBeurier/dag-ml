@@ -6,7 +6,7 @@ use dag_ml_core::{
 use serde_json::{json, Value};
 
 fn scores() -> Value {
-    serde_json::from_str(include_str!("../../../examples/fixtures/score_set.json")).unwrap()
+    serde_json::from_str(include_str!("fixtures/package/score_set.json")).unwrap()
 }
 
 fn trial() -> Value {

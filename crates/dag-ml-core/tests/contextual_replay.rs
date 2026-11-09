@@ -360,23 +360,23 @@ fn newly_generated_v2_fixture_passes_each_additive_current_row_api() {
 #[test]
 fn stored_current_cohort_rejects_incomplete_and_unknown_request_keys_without_panicking() {
     let package = PortablePredictorPackage::from_json(include_str!(
-        "../../../examples/fixtures/training/portable_predictor_package.v1.json"
+        "fixtures/package/training/portable_predictor_package.json"
     ))
     .unwrap();
     let source = TrainingOutcome::from_json(include_str!(
-        "../../../examples/fixtures/training/training_outcome_refit.v1.json"
+        "fixtures/package/training/training_outcome_refit.json"
     ))
     .unwrap();
     let outcome = TrainingReplayOutcome::from_json(include_str!(
-        "../../../examples/fixtures/training/replay/training_replay_outcome_predict.v1.json"
+        "fixtures/package/training/replay/training_replay_outcome_predict.json"
     ))
     .unwrap();
     let request = TrainingReplayRequest::from_json(include_str!(
-        "../../../examples/fixtures/training/replay/training_replay_request_predict.v1.json"
+        "fixtures/package/training/replay/training_replay_request_predict.json"
     ))
     .unwrap();
     let value: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../examples/fixtures/training/replay/training_replay_input_envelopes.v1.json"
+        "fixtures/package/training/replay/training_replay_input_envelopes.json"
     ))
     .unwrap();
     let envelopes: BTreeMap<String, ExternalDataPlanEnvelope> =

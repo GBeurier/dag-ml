@@ -2,6 +2,21 @@
 
 ## 0.4.0 - Unreleased
 
+- Retire the obsolete local-machine qualification receipt as a publication
+  prerequisite across Rust, Python, npm and immutable recovery. Its 0.3.44
+  policy, receipt, verifier and logs remain historical evidence. Proportionate
+  release qualification reuses accepted scientific work instead of rebuilding
+  the old 58-command machine campaign: pooled DAG 921 / Core 108 suites and the
+  accepted class, graph, augmentation, combination, E1 and F1 WORK evidence.
+  Earlier gates used registry n4m 0.4.1 with the qualified ABI 2.22 library;
+  F1 first qualified the selected ABI-22 binding source. Reusable release CI
+  retains build, contract, ABI, packaging and smoke checks; it does not run
+  `cargo test --workspace` or full Methods science and does not establish
+  universal platform or historical performance coverage. Current extracted
+  package qualification records its actual pass/skip counts separately.
+- Move the Python macOS arm64 release wheel runner from retired `macos-14`
+  to `macos-15`; other workflow toolchain/action versions are unchanged.
+
 - Correct the opt-in `regression_report.population_rmse_ratios.v1` diagnostics:
   omit undefined constant-target R² and zero-RMSE ratios, retaining explicit
   reasons in optional owner report fields. RMSE selection, legacy report bytes

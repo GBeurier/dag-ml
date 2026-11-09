@@ -10,7 +10,7 @@ fn events(name: &str) -> Vec<Event> {
 
 #[test]
 fn legacy_28_positive_60_negative_objects_remain_byte_identical() {
-    let raw = include_str!("../../../../docs/contracts/realization_evidence.v1.schema.json");
+    let raw = include_str!("../fixtures/package/realization_evidence.schema.json");
     let pins: Value =
         serde_json::from_str(include_str!("../fixtures/realization_legacy_pins.json")).unwrap();
     for (section, count) in [("valid", 28), ("invalid", 60)] {

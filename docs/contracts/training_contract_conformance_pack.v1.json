@@ -6,7 +6,7 @@
   "artifacts": [
     {
       "path": ".github/workflows/ci.yml",
-      "sha256": "097ce1fd3d3730381655b9ba13889bafd3f69bfb74eaecd21f86520ff5a36103",
+      "sha256": "07008f46ba272882c39fb3c28540db2b99740f10e4eb8bbb2fa27b416fd946d8",
       "kind": "ci_gate"
     },
     {
@@ -41,7 +41,7 @@
     },
     {
       "path": "crates/dag-ml-core/Cargo.toml",
-      "sha256": "f1065a122048d1c37253381fd9363b2fcf061ba6c0541d2d6b9b8e46bd6a9547",
+      "sha256": "55ef16e511261304bbaed352171f48104b8679f32b46d75159b03a81bc4b2d1f",
       "kind": "published_native_manifest"
     },
     {
@@ -101,7 +101,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/hpo.rs",
-      "sha256": "ff284ca12062c2244224545eeb3efde9422be19147152c8f044af80064590934",
+      "sha256": "7456ba5b474cecef84138f8f0c55d0081234052c9fa92025fd1f362aa7ea1ff3",
       "kind": "native_hpo_controller"
     },
     {
@@ -156,7 +156,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/runtime/dataview.rs",
-      "sha256": "5b5cbb418c97f7cf8b9a553f6fa4e370b75f82ee595d9527c0468fd05dd7f124",
+      "sha256": "77317677a90280a08030b5ca1ec4ccb3516302fb5810867db3c6478d96aaea07",
       "kind": "native_hpo_runtime_session"
     },
     {
@@ -181,7 +181,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/runtime/scoring.rs",
-      "sha256": "530b8f74cddb41d491c98f0906a4524e1d973f975432c6b2111184571302ba1a",
+      "sha256": "7a24bf146de61d085f0e752909da3b74a288bc38126fcceb9c720a4daae660eb",
       "kind": "native_global_oof_scoring"
     },
     {
@@ -226,7 +226,7 @@
     },
     {
       "path": "crates/dag-ml-py/Cargo.lock",
-      "sha256": "6661e94457566ca8cdb161eaf7279ff5e4dd5116d080e5745225ffad74f22101",
+      "sha256": "830bac3792b20da16ef7cbe97997476f2459bbdf7f9d1a04311769d7af2f58fe",
       "kind": "python_binding_lockfile"
     },
     {
@@ -291,7 +291,7 @@
     },
     {
       "path": "docs/HPO_METHODS_ADAPTER.md",
-      "sha256": "90668b9584254acd274f161f97de39fb6a858216b6d4bf63a7e6dc37d8413183",
+      "sha256": "55f4c8d2caf001ae7746f20bf3b9c38bd58f7f0782113b147002bf4e9c375c9d",
       "kind": "hpo_documentation"
     },
     {
@@ -729,5 +729,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "42a3247380dcf5ace36cb2df17f5a09a5f751b4b6147fbeb78c83556c77e3f31"
+  "pack_checksum": "6cd130df32d832cef3ce722d62425a399b2368d30d5881c66133221586b0181e"
 }
