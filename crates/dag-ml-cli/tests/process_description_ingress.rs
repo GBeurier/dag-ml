@@ -50,7 +50,7 @@ fn scenario(raw: &[u8], persistent: bool, parallel: bool, exit: Option<i32>) -> 
             "--envelope",
             "examples/fixtures/data/coordinator_data_plan_envelope_sample12.json",
             "--adapter",
-            "crates/dag-ml-cli/tests/fixtures/process_description_ingress/operator.py",
+            "crates/dag-ml-cli/tests/fixtures/process_description_ingress/ingress_adapter.py",
             "--plan-id",
             "plan:desc",
         ])
@@ -347,7 +347,7 @@ fn invalid_description_keeps_label_through_host_hpo() {
         .arg("--plan").arg(capi.join("plan.json"))
         .arg("--envelope").arg(root.join("crates/dag-ml-core/tests/fixtures/package/data/coordinator_data_plan_envelope_sample12.json"))
         .arg("--request").arg(fixtures.join("request.json"))
-        .arg("--operator-adapter").arg(root.join("crates/dag-ml-cli/tests/fixtures/process_description_ingress/operator.py"))
+        .arg("--operator-adapter").arg(root.join("crates/dag-ml-cli/tests/fixtures/process_description_ingress/ingress_adapter.py"))
         .arg("--optimizer-adapter").arg(fixtures.join("opt.py"))
         .arg("--checkpoint").arg(dir.join("checkpoint.json")).arg("--output").arg(dir.join("output.json"))
         .env("DESCFILE",desc).env("PROBELOG",&log).env("DESC_HPO_DELEGATE","1").env("SC","control").env("PYTHONDONTWRITEBYTECODE","1").output().unwrap();

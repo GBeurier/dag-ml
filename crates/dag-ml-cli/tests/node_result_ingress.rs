@@ -32,7 +32,7 @@ fn campaign(case: &str, persistent: bool, retries: usize, once: bool) -> (Output
             "--envelope",
             "examples/fixtures/data/coordinator_data_plan_envelope_sample12.json",
             "--adapter",
-            "crates/dag-ml-cli/tests/fixtures/node_result_ingress/operator.py",
+            "crates/dag-ml-cli/tests/fixtures/node_result_ingress/ingress_adapter.py",
             "--plan-id",
             "plan:probe",
         ])

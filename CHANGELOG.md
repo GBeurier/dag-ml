@@ -2,6 +2,9 @@
 
 ## 0.4.0 - Unreleased
 
+- Rename CLI ingress fixtures and generated test wrappers to avoid shadowing
+  Python's standard-library `operator` module during adapter startup.
+
 - Retire the obsolete local-machine qualification receipt as a publication
   prerequisite across Rust, Python, npm and immutable recovery. Its 0.3.44
   policy, receipt, verifier and logs remain historical evidence. Proportionate

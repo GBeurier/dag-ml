@@ -68,7 +68,7 @@ fn typed_optimizer_members_preserve_shape_and_recovery() {
     );
     let dir = std::env::temp_dir().join(format!("dag-ml-cli-hpo-typed-{}", std::process::id()));
     fs::create_dir_all(&dir).unwrap();
-    let wrapper = dir.join("operator.py");
+    let wrapper = dir.join("operator_probe.py");
     let operator = fixtures.join("op.py").canonicalize().unwrap();
     fs::write(&wrapper, format!("#!/usr/bin/env python3\nimport os, sys\nif sys.argv[1:] != ['--describe']:\n    open(os.environ['OPLOG'], 'a').write('fit\\n')\nos.execv({:?}, [{:?}] + sys.argv[1:])\n", operator.to_str().unwrap(), operator.to_str().unwrap())).unwrap();
     fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
@@ -192,7 +192,7 @@ fn unknown_evidence_refuses_saved_and_prepared_before_fit() {
     fs::write(&wrapper, format!("#!/usr/bin/env python3\nimport os, sys\nopen(os.environ['SPAWN'], 'a').write('spawned\\n')\nos.execv({:?}, [{:?}])\n", optimizer.to_str().unwrap(), optimizer.to_str().unwrap())).unwrap();
     fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
     let operator = fixtures.join("op.py").canonicalize().unwrap();
-    let operator_wrapper = dir.join("operator.py");
+    let operator_wrapper = dir.join("operator_probe.py");
     fs::write(&operator_wrapper, format!("#!/usr/bin/env python3\nimport os, sys\nif sys.argv[1:] != ['--describe']:\n    open(os.environ['FITS'], 'a').write('fit\\n')\nos.execv({:?}, [{:?}] + sys.argv[1:])\n", operator.to_str().unwrap(), operator.to_str().unwrap())).unwrap();
     fs::set_permissions(&operator_wrapper, fs::Permissions::from_mode(0o755)).unwrap();
     let fits = dir.join("fits");
