@@ -16,6 +16,9 @@ updates:
       - dependency-name: "clap"
       - dependency-name: "pyo3"
       - dependency-name: "indexmap"
+      # TCV1 fingerprints freeze the Unicode normalization tables.
+      # Updates require an explicit cross-language contract review.
+      - dependency-name: "unicode-normalization"
       # MSRV is held at 1.85. Minor/major bumps may raise dependency MSRVs
       # (Rust 1.85) crates — e.g. sha2 0.11, cpufeatures 0.3 — and break the
       # MSRV gate. Take patch-level (security) updates only for everything else.
@@ -43,6 +46,9 @@ updates:
       - dependency-name: "clap"
       - dependency-name: "pyo3"
       - dependency-name: "indexmap"
+      # TCV1 fingerprints freeze the Unicode normalization tables.
+      # Updates require an explicit cross-language contract review.
+      - dependency-name: "unicode-normalization"
       # MSRV is held at 1.85. Minor/major bumps may raise dependency MSRVs
       # (Rust 1.85) crates — e.g. sha2 0.11, cpufeatures 0.3 — and break the
       # MSRV gate. Take patch-level (security) updates only for everything else.
