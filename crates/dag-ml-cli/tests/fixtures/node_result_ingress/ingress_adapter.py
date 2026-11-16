@@ -98,7 +98,10 @@ def jsonl():
             else:
                 emit(b'{"type":"result","schema_version":1,"result":' + body + b'}')
         elif kind == "close":
-            emit(b'{"type":"ack","schema_version":1,"status":"closed"}'); log("close"); return
+            # The host may reap the adapter immediately after receiving this ACK.
+            log("close")
+            emit(b'{"type":"ack","schema_version":1,"status":"closed"}')
+            return
 def main():
     a = sys.argv[1:]
     if a[:1] == ["--describe"]:
