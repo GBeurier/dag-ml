@@ -3,16 +3,57 @@
 Version `0.3.34` includes these adapters. The older `dag-ml-wasm@0.3.32`
 package does not include them.
 
-The Node and browser npm builds expose two optional subpaths:
+The Node and browser npm builds expose these optional subpaths:
 
 ```js
 import { N4mWasmRegressionController } from "dag-ml-wasm/n4m-controller";
+import { N4mWasmSourceController } from "dag-ml-wasm/n4m-source-controller";
 import { N4mWasmHostOptimizer } from "dag-ml-wasm/n4m-optimizer";
 ```
 
 Install `@nirs4all/methods` separately when using these adapters. DAG-ML's base
 WASM API continues to work without this optional peer. Initialize both WASM
 modules before constructing a controller.
+
+`N4mWasmSourceController` is the separate `source_composition.v1` profile for
+ordered source preprocessing, structural multiblock fit inputs and raw+OOF hybrid
+heads. Its operator is `N4mSourcePipeline`, carrying ordered
+`sourceOps:[{source_id,steps:[{methodId,params}]}]`, independent `sourceSchemas`,
+the head `steps`, and an explicit `hybrid` flag. Each node's entire parameter map
+is `{source_composition_v1: completeOperatorRecipe}`; the controller validates
+this immutable declaration and never passes it to numerical head params.
+`resolveSource({sourceId,sampleIds,task})` returns exact ordered sample IDs,
+source feature names and a finite Float64 matrix. Source chains fit on the native
+training identities only; a hybrid uses the exact inner-OOF prediction cohort.
+The native method manifest determines whether post-transform block widths are
+passed through the `blocks` fit input. Refit artifacts retain every source chain
+state, source layout/order and head state. Existing regression v1/v2 and closed
+U07 artifact meanings are unchanged. This profile refuses additional FIT_CV
+`:test` prediction streams; cancellation of synchronous fitting belongs to the
+host's worker lifecycle.
+
+Source transformers use individual generic Methods estimators, not a predictor
+RolePipeline: `methodClass`, `NativeEstimator.fit`/`transform`/`toN4me`, and
+`NativeEstimator.fromN4me` for replay. The head remains a RolePipeline. The
+manifest admits optional multisource numeric `x` and `x_original` ports;
+prediction-only meta heads bind neither, and hybrid heads bind `x_original`.
+
+When a native fixed fusion merge binds fitted-training Final predictions,
+declare graph/DSL merge metadata `refit_prediction_partition: "final"`. This
+explicit REFIT mode consumes only current-invocation branch results and requires
+every branch to contribute; mean/probability fusion requires identical sample
+cohorts. It never substitutes stale Final store blocks or labels training rows
+as Test. Default REFIT external-Test fusion and PREDICT Final fusion keep their
+existing semantics. Fitted-training Final output is descriptive; selection still
+uses native OOF evidence and retained-test metrics require fresh package replay.
+
+A recognized native reduction output carries no fitted artifact of its own.
+Its portable predictor retains the complete upstream closure and the exact
+artifacts of every REFIT state emitter. Export accepts that root only when the
+reduction is stateless and its own closure contains fitted upstream artifacts.
+Package validation and replay still require all upstream inference state;
+native reduction runs again on the branches' new-cohort predictions. A custom
+or stateful prediction join cannot use this exemption.
 
 Source builds must run `node scripts/stage_wasm_host_adapters.mjs <package-dir>`
 after `wasm-pack build` to add the public modules and package exports. The

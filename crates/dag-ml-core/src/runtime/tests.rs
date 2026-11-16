@@ -21404,15 +21404,15 @@ fn concat_merge_reassembles_and_scores_refit_test_predictions() {
     );
 }
 
-#[test]
-fn fusion_merge_averages_and_scores_refit_test_predictions() {
-    // Backlog #16 (a), fusion half: in REFIT two duplication branches each predict
-    // the FULL test set; the off-fold fusion reassembly averages their Test
-    // predictions per sample into one scored Test block. Branch A offset +2, branch
-    // B offset -2 -> the mean equals y_true exactly (RMSE 0).
+fn fusion_refit_fixture(final_profile: bool) -> (ExecutionPlan, InMemoryDataProvider) {
     let node_a = duplication_model_node("model:dup__A");
     let node_b = duplication_model_node("model:dup__B");
-    let merge = fusion_merge_node("merge:dup", &["model:dup__A", "model:dup__B"], "fusion");
+    let mut merge = fusion_merge_node("merge:dup", &["model:dup__A", "model:dup__B"], "fusion");
+    if final_profile {
+        merge
+            .metadata
+            .insert("refit_prediction_partition".to_string(), json!("final"));
+    }
     let graph = GraphSpec {
         id: "graph:fusion.refit".to_string(),
         interface: GraphInterface::default(),
@@ -21489,6 +21489,17 @@ fn fusion_merge_averages_and_scores_refit_test_predictions() {
     )
     .unwrap();
 
+    (plan, provider)
+}
+
+#[test]
+fn fusion_merge_averages_and_scores_refit_test_predictions() {
+    // Backlog #16 (a), fusion half: in REFIT two duplication branches each predict
+    // the FULL test set; the off-fold fusion reassembly averages their Test
+    // predictions per sample into one scored Test block. Branch A offset +2, branch
+    // B offset -2 -> the mean equals y_true exactly (RMSE 0).
+    let (plan, provider) = fusion_refit_fixture(false);
+
     let merge_id = NodeId::new("merge:dup").unwrap();
     let mut controllers = RuntimeControllerRegistry::new();
     // No branch_view: both duplication branches see the FULL test set. Offsets
@@ -21545,6 +21556,104 @@ fn fusion_merge_averages_and_scores_refit_test_predictions() {
         test_reports[0].metrics["rmse"].abs() < 1e-9,
         "averaged offsets cancel -> test RMSE 0"
     );
+}
+
+#[test]
+fn fusion_merge_explicit_final_refit_uses_current_complete_branch_results() {
+    struct FinalController {
+        inner: OffFoldDuplicationController,
+        omit_final_b: bool,
+        shorten_b: bool,
+    }
+    impl RuntimeController for FinalController {
+        fn controller_id(&self) -> &ControllerId {
+            self.inner.controller_id()
+        }
+        fn invoke(&self, task: &NodeTask) -> Result<NodeResult> {
+            let mut result = self.inner.invoke(task)?;
+            if !(self.omit_final_b && task.node_plan.node_id.as_str() == "model:dup__B") {
+                for block in &mut result.predictions {
+                    block.partition = PredictionPartition::Final;
+                    if self.shorten_b && task.node_plan.node_id.as_str() == "model:dup__B" {
+                        block.sample_ids.pop();
+                        block.values.pop();
+                    }
+                }
+                if self.shorten_b && task.node_plan.node_id.as_str() == "model:dup__B" {
+                    for block in &mut result.regression_targets {
+                        block.unit_ids.pop();
+                        block.values.pop();
+                    }
+                }
+            }
+            Ok(result)
+        }
+    }
+    for (omit_final_b, shorten_b) in [(false, false), (true, false), (false, true)] {
+        let (plan, provider) = fusion_refit_fixture(true);
+        let mut controllers = RuntimeControllerRegistry::new();
+        controllers
+            .register(Box::new(FinalController {
+                inner: OffFoldDuplicationController {
+                    id: ControllerId::new("controller:model").unwrap(),
+                    handle: 1,
+                    offsets: BTreeMap::from([
+                        ("model:dup__A".to_string(), 2.0),
+                        ("model:dup__B".to_string(), -2.0),
+                    ]),
+                },
+                omit_final_b,
+                shorten_b,
+            }))
+            .unwrap();
+        let mut ctx = RunContext::new(RunId::new("run:fusion.final.refit").unwrap(), Some(7));
+        // A stale Final prediction in the shared store must never replace the
+        // missing current REFIT block, nor enter the valid numerical reduction.
+        ctx.prediction_store
+            .append(PredictionBlock {
+                prediction_id: Some("stale:predict".to_string()),
+                producer_node: NodeId::new("model:dup__B").unwrap(),
+                producer_port: None,
+                partition: PredictionPartition::Final,
+                fold_id: None,
+                sample_ids: vec![SampleId::new("sample:1").unwrap()],
+                values: vec![vec![99999.0]],
+                target_names: vec!["y".to_string()],
+            })
+            .unwrap();
+        let result = SequentialScheduler.execute_campaign_phase_with_data_provider(
+            &plan,
+            &controllers,
+            &provider,
+            &mut ctx,
+            Phase::Refit,
+        );
+        if omit_final_b || shorten_b {
+            let error = result.unwrap_err().to_string();
+            assert!(
+                error.contains(if omit_final_b {
+                    "requires a current Final block"
+                } else {
+                    "identical branch sample cohorts"
+                }),
+                "{error}"
+            );
+            continue;
+        }
+        result.unwrap();
+        let merged = ctx
+            .prediction_store
+            .blocks()
+            .iter()
+            .find(|block| block.producer_node.as_str() == "merge:dup")
+            .unwrap();
+        assert_eq!(merged.partition, PredictionPartition::Final);
+        assert!(merged.fold_id.is_none());
+        assert_eq!(merged.sample_ids.len(), 2);
+        for (id, row) in merged.sample_ids.iter().zip(&merged.values) {
+            assert!((row[0] - ScoringBranchController::y_true(id.as_str())).abs() < 1e-9);
+        }
+    }
 }
 
 /// A duplication-branch controller that, in REFIT, emits a full-test-set `Test`

@@ -2612,7 +2612,7 @@ impl SequentialScheduler {
                 // which is a stacking contract the branch inputs do not satisfy).
                 if let Some(reduction) = merge_reduction_mode(plan, node_plan) {
                     if let Some(mut result) =
-                        reassemble_branch_merge(plan, node_plan, ctx, &scope, reduction)?
+                        reassemble_branch_merge(plan, node_plan, ctx, &scope, reduction, &results)?
                     {
                         let task_node_plan = effective_node_plan_for_scope(node_plan, &scope)?;
                         let task = NodeTask {
@@ -3621,7 +3621,7 @@ impl ParallelScheduler {
                     .get(node_id)
                     .expect("execution plan was validated");
                 if let Some(mut result) =
-                    reassemble_branch_merge(plan, node_plan, ctx, &scope, *reduction)?
+                    reassemble_branch_merge(plan, node_plan, ctx, &scope, *reduction, &results)?
                 {
                     let task_node_plan = effective_node_plan_for_scope(node_plan, &scope)?;
                     let task = NodeTask {

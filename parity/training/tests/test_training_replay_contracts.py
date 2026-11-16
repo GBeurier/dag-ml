@@ -52,10 +52,10 @@ def test_base_pack_remains_byte_current() -> None:
     # Current W1 bytes and its 131 artifacts are pinned independently of D4.
     pack = load_json(BASE_PACK)
     assert _sha256(BASE_PACK) == (
-        "8fe32e2c208e9b12318acf7cb23e7dd37a64995b4580610ce1764582aec93891"
+        "2936336c32f585c09c98c2a6601cda317225d9cf0b9256c29f0d738aebd75d9e"
     )
     assert pack["pack_checksum"] == (
-        "42a3247380dcf5ace36cb2df17f5a09a5f751b4b6147fbeb78c83556c77e3f31"
+        "484b9261405e2b45e7a0a50f9eb605c45bba7cf03257027dfcf53d82bcde5713"
     )
     assert len(pack["artifacts"]) == 131
     assert all(
@@ -772,15 +772,20 @@ def _without_independent_unit_report_extension(value: dict[str, Any]) -> dict[st
         {"$ref": "#/$defs/aggregation_grouping_key"},
         grouping,
     )
-    assert result.pop("allOf") == [
-        {
-            "if": {"required": ["grouping_key"]},
-            "then": {
-                "required": ["level"],
-                "properties": {"level": {"const": "group"}},
-            },
-        }
-    ]
+    grouping_guard = {
+        "if": {"required": ["grouping_key"]},
+        "then": {
+            "required": ["level"],
+            "properties": {"level": {"const": "group"}},
+        },
+    }
+    # V1 and V2 also share the metric-profile guards. Preserve their exact
+    # content/order so the callers' V1 comparison still catches any drift.
+    constraints = result["allOf"]
+    assert constraints.count(grouping_guard) == 1
+    constraints.remove(grouping_guard)
+    if not constraints:
+        result.pop("allOf")
     return result
 
 

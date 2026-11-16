@@ -3,6 +3,7 @@ import { execFileSync } from "child_process";
 import fs from "fs";
 import path from "path";
 import process from "process";
+import { fileURLToPath } from "node:url";
 
 function fail(message) {
   throw new Error(message);
@@ -38,6 +39,8 @@ const requiredFiles = new Set([
   "LICENSE",
   "README.md",
   "package.json",
+  "n4m_source_controller.mjs",
+  "n4m_source_controller.d.ts",
   ...packageJson.files,
 ]);
 
@@ -60,6 +63,16 @@ for (const requiredFile of requiredFiles) {
   const file = fileByPath.get(requiredFile);
   requireCondition(file, `npm tarball is missing ${requiredFile}`);
   requireCondition(file.size > 0, `npm tarball file ${requiredFile} is empty`);
+}
+requireCondition(
+  packageJson.exports?.["./n4m-source-controller"]?.import === "./n4m_source_controller.mjs" &&
+  packageJson.exports?.["./n4m-source-controller"]?.types === "./n4m_source_controller.d.ts",
+  "public source-controller subpath must expose runtime and declarations",
+);
+for (const name of ["n4m_source_controller.mjs", "n4m_source_controller.d.ts"]) {
+  const owner = fileURLToPath(new URL(`../bindings/js/${name}`, import.meta.url));
+  requireCondition(fs.readFileSync(path.join(pkgDir, name)).equals(fs.readFileSync(owner)),
+    `packaged source-controller bytes differ from the current owner: ${name}`);
 }
 for (const file of pack.files) {
   requireCondition(

@@ -223,6 +223,7 @@ pub(crate) fn reassemble_branch_merge(
     ctx: &RunContext,
     scope: &PhaseScope,
     reduction: MergeReduction,
+    phase_results: &[NodeResult],
 ) -> Result<Option<NodeResult>> {
     // FIT_CV is the OOF (Validation, per-fold) reassembly the merge handlers were
     // built for. REFIT and PREDICT have no fold scope: the base branches predicted
@@ -233,7 +234,14 @@ pub(crate) fn reassemble_branch_merge(
     // untouched, so the FIT_CV meta-features stay Validation-only (the leakage
     // invariant): the test/predict reassembly only ever reads non-fold blocks.
     if scope.phase != Phase::FitCv {
-        return reassemble_branch_merge_off_fold(plan, node_plan, ctx, scope, reduction);
+        return reassemble_branch_merge_off_fold(
+            plan,
+            node_plan,
+            ctx,
+            scope,
+            reduction,
+            phase_results,
+        );
     }
     match reduction {
         MergeReduction::Concat => reassemble_separation_merge(plan, node_plan, ctx, scope),
@@ -284,15 +292,34 @@ pub(crate) fn reassemble_branch_merge_off_fold(
     ctx: &RunContext,
     scope: &PhaseScope,
     reduction: MergeReduction,
+    phase_results: &[NodeResult],
 ) -> Result<Option<NodeResult>> {
     let variant_id = scope.variant_id.clone();
+    let declared_partition = plan
+        .graph_plan
+        .graph
+        .nodes
+        .iter()
+        .find(|node| node.id == node_plan.node_id)
+        .and_then(|node| node.metadata.get("refit_prediction_partition"));
+    if declared_partition.is_some_and(|value| !matches!(value.as_str(), Some("test" | "final"))) {
+        return Err(DagMlError::RuntimeValidation(
+            "native merge refit_prediction_partition must be test or final".to_string(),
+        ));
+    }
+    let final_refit = scope.phase == Phase::Refit
+        && declared_partition.and_then(serde_json::Value::as_str) == Some("final");
     // The phase pins EXACTLY which off-fold partition to consume: REFIT predicts
     // the held-out test set (`Test`), PREDICT new data (`Final`). Filtering by the
     // phase-expected partition (not just "non-Validation") keeps a stale `Final`
     // (from a prior REFIT/PREDICT in the same context) or any `Train` block out of
     // a REFIT merge, and lets a PREDICT-after-REFIT in one context pick `Final`
     // cleanly without tripping the multi-block "mixes variants" guard.
-    let expected_partition = expected_off_fold_partition(scope.phase);
+    let expected_partition = if final_refit {
+        PredictionPartition::Final
+    } else {
+        expected_off_fold_partition(scope.phase)
+    };
 
     // Gather each branch's off-fold (test / predict) block: `fold_id == None`,
     // partition == the phase-expected partition, scoped to the active variant. A
@@ -305,14 +332,36 @@ pub(crate) fn reassemble_branch_merge_off_fold(
 
     for branch_id in &node_plan.input_nodes {
         let edge = native_merge_prediction_edge(plan, node_plan, branch_id)?;
-        let blocks: Vec<&PredictionBlock> = ctx
-            .prediction_store
-            .find(Some(branch_id), Some(&expected_partition), None)
-            .into_iter()
-            .filter(|block| block.fold_id.is_none())
-            .collect();
+        // The explicit fitted-output profile reads this invocation's REFIT
+        // results, never Final blocks left by an earlier PREDICT in the store.
+        let blocks: Vec<&PredictionBlock> = if final_refit {
+            phase_results
+                .iter()
+                .filter(|result| {
+                    result.node_id == *branch_id
+                        && result.lineage.phase == Phase::Refit
+                        && result.lineage.variant_id == variant_id
+                        && result.lineage.fold_id.is_none()
+                })
+                .flat_map(|result| &result.predictions)
+                .filter(|block| {
+                    block.partition == PredictionPartition::Final && block.fold_id.is_none()
+                })
+                .collect()
+        } else {
+            ctx.prediction_store
+                .find(Some(branch_id), Some(&expected_partition), None)
+                .into_iter()
+                .filter(|block| block.fold_id.is_none())
+                .collect()
+        };
         let blocks = filter_prediction_blocks_for_edge_source_port(plan, edge, blocks)?;
         if blocks.is_empty() {
+            if final_refit {
+                return Err(DagMlError::RuntimeValidation(format!(
+                    "explicit Final REFIT merge requires a current Final block from branch `{branch_id}`"
+                )));
+            }
             continue;
         }
         if blocks.len() > 1 {
@@ -324,6 +373,20 @@ pub(crate) fn reassemble_branch_merge_off_fold(
         }
         let block = blocks[0];
         block.validate_content()?;
+        if final_refit
+            && matches!(
+                reduction,
+                MergeReduction::Fusion | MergeReduction::FusionProbaMean
+            )
+            && branch_blocks.first().is_some_and(|first| {
+                first.sample_ids.iter().collect::<BTreeSet<_>>()
+                    != block.sample_ids.iter().collect::<BTreeSet<_>>()
+            })
+        {
+            return Err(DagMlError::RuntimeValidation(
+                "explicit Final REFIT fusion requires identical branch sample cohorts".to_string(),
+            ));
+        }
         match &partition {
             None => partition = Some(block.partition.clone()),
             Some(existing) if existing != &block.partition => {
@@ -340,7 +403,11 @@ pub(crate) fn reassemble_branch_merge_off_fold(
         // variant, no fold). The branches predict the SAME samples, so a per-sample
         // insert is correct (concat partitions are disjoint; fusion targets are
         // identical).
-        for record in &ctx.regression_target_records {
+        for record in ctx
+            .regression_target_records
+            .iter()
+            .filter(|_| !final_refit)
+        {
             if &record.producer_node != branch_id
                 || record.fold_id.is_some()
                 || record.partition != expected_partition

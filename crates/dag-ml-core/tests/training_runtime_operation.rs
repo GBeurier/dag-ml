@@ -7400,6 +7400,289 @@ fn d8_loaded_predictor_replays_predict_without_source_training_outcome() {
 }
 
 #[test]
+fn native_mean_final_output_trains_packages_and_replays_upstream_fitted_artifacts() {
+    struct MergeGuard {
+        id: ControllerId,
+        calls: Arc<AtomicU64>,
+    }
+    impl RuntimeController for MergeGuard {
+        fn controller_id(&self) -> &ControllerId {
+            &self.id
+        }
+        fn invoke(&self, _task: &NodeTask) -> Result<NodeResult> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Err(DagMlError::RuntimeValidation(
+                "native mean must never invoke a host reducer".to_string(),
+            ))
+        }
+    }
+    struct BranchController(TrainingController);
+    impl RuntimeController for BranchController {
+        fn controller_id(&self) -> &ControllerId {
+            self.0.controller_id()
+        }
+        fn invoke(&self, task: &NodeTask) -> Result<NodeResult> {
+            if task.phase == Phase::Predict {
+                assert!(
+                    !task.artifact_inputs.is_empty(),
+                    "each branch reloads its fitted state"
+                );
+            }
+            let mut result = self.0.invoke(task)?;
+            if task.node_plan.node_id.as_str() == "model:peer" {
+                let mut handle = result.outputs.remove("x_out").unwrap();
+                handle.kind = HandleKind::Prediction;
+                result.outputs.insert("oof".to_string(), handle);
+            }
+            let offset = if task.node_plan.node_id.as_str() == "model:base" {
+                2.0
+            } else {
+                6.0
+            };
+            for block in &mut result.predictions {
+                for row in &mut block.values {
+                    row[0] += offset;
+                }
+            }
+            Ok(result)
+        }
+    }
+    struct BranchProvider {
+        inner: AttestedProvider,
+        identities: BTreeMap<String, TrainingDataIdentity>,
+    }
+    impl RuntimeDataProvider for BranchProvider {
+        fn materialize(&self, request: &DataMaterializationRequest) -> Result<HandleRef> {
+            self.inner.materialize(request)
+        }
+        fn make_view(&self, request: &DataViewRequest) -> Result<HandleRef> {
+            self.inner.make_view(request)
+        }
+        fn training_data_identity(
+            &self,
+            binding: &DataBinding,
+        ) -> Result<Option<TrainingDataIdentity>> {
+            Ok(self
+                .identities
+                .get(&data_binding_requirement_key(
+                    &binding.node_id,
+                    &binding.input_name,
+                ))
+                .cloned())
+        }
+        fn coordinator_relations(
+            &self,
+            binding: &DataBinding,
+        ) -> Result<Option<SampleRelationSet>> {
+            self.inner.coordinator_relations(binding)
+        }
+    }
+    let mut fixture = fixture(true, false);
+    fixture.request.campaign.generation.dimensions.clear();
+    fixture.request.campaign.generation.strategy = GenerationStrategy::None;
+    fixture.request.campaign.shape_plans.clear();
+    fixture
+        .request
+        .graph
+        .nodes
+        .retain(|node| node.id.as_str() == "model:base");
+    fixture.request.graph.edges.clear();
+    let mut peer = fixture.request.graph.nodes[0].clone();
+    peer.id = node("model:peer");
+    fixture.request.graph.nodes.push(peer);
+    let mut binding = fixture.request.campaign.data_bindings[&node("model:base")][0].clone();
+    binding.node_id = node("model:peer");
+    fixture
+        .request
+        .campaign
+        .data_bindings
+        .insert(node("model:peer"), vec![binding.clone()]);
+    let mut identity = fixture.request.data_identities[0].clone();
+    identity.requirement_key = data_binding_requirement_key(&binding.node_id, &binding.input_name);
+    identity.identity_fingerprint = identity.compute_fingerprint().unwrap();
+    fixture.request.data_identities.push(identity);
+    fixture
+        .request
+        .data_identities
+        .sort_by(|a, b| a.requirement_key.cmp(&b.requirement_key));
+    fixture.request.graph.nodes.push(serde_json::from_value(serde_json::json!({
+        "id":"merge:mean", "kind":"prediction_join", "operator":{"type":"NativeMean"}, "params":{},
+        "ports":{"inputs":[{"name":"oof","kind":"prediction","representation":null,"cardinality":"many","description":""}],
+                 "outputs":[{"name":"oof","kind":"prediction","representation":null,"cardinality":"one","description":""}]},
+        "metadata":{"merge_mode":"fusion","refit_prediction_partition":"final","controller_id":"controller:merge.native"}, "seed_label":null
+    })).unwrap());
+    for source in ["model:base", "model:peer"] {
+        fixture.request.graph.edges.push(EdgeSpec {
+            source: PortRef {
+                node_id: node(source),
+                port_name: "oof".to_string(),
+            },
+            target: PortRef {
+                node_id: node("merge:mean"),
+                port_name: "oof".to_string(),
+            },
+            contract: EdgeContract {
+                requires_oof: true,
+                requires_fold_alignment: true,
+                ..EdgeContract::new(PortKind::Prediction, None)
+            },
+        });
+    }
+    fixture.request.controller_manifests.push(
+        dag_ml_core::controller_adapter::HostControllerSpec::new(
+            "controller:merge.native",
+            "1.0.0",
+            NodeKind::PredictionJoin,
+        )
+        .derive()
+        .unwrap(),
+    );
+    fixture.request.options.outputs[0].node_id = node("merge:mean");
+    for (id, source) in [
+        ("output:source_a", "model:base"),
+        ("output:source_b", "model:peer"),
+    ] {
+        let mut output = fixture.request.options.outputs[0].clone();
+        output.output_id = id.to_string();
+        output.node_id = node(source);
+        fixture.request.options.outputs.push(output);
+    }
+    rebuild(&mut fixture);
+    let state = Arc::new(CallState::default());
+    *state.preferred.lock().unwrap() = Some(fixture.preferred.clone());
+    let mut controllers = RuntimeControllerRegistry::new();
+    controllers
+        .register(Box::new(BranchController(TrainingController {
+            id: ControllerId::new("controller:model.mock").unwrap(),
+            state: state.clone(),
+            emits_predictions: true,
+            emits_artifact: true,
+            prediction_name: "protein".to_string(),
+        })))
+        .unwrap();
+    // Match the Web controller registry: preflight sees the declared controller,
+    // but the native reducer must intercept it before any host invocation.
+    let merge_calls = Arc::new(AtomicU64::new(0));
+    controllers
+        .register(Box::new(MergeGuard {
+            id: ControllerId::new("controller:merge.native").unwrap(),
+            calls: merge_calls.clone(),
+        }))
+        .unwrap();
+    let training_provider = BranchProvider {
+        inner: provider(&fixture),
+        identities: fixture
+            .request
+            .data_identities
+            .iter()
+            .map(|id| (id.requirement_key.clone(), id.clone()))
+            .collect(),
+    };
+    let mut store = InMemoryArtifactStore::new();
+    let source = execute_training(TrainingExecutionInput {
+        request: &fixture.request,
+        outcome_id: "outcome:native.mean".to_string(),
+        run_id: RunId::new("run:native.mean").unwrap(),
+        bundle_id: BundleId::new("bundle:native.mean").unwrap(),
+        controllers: &controllers,
+        data_provider: &training_provider,
+        relations: &fixture.relations,
+        training_influence: &fixture.influence,
+        artifact_store: &mut store,
+        warnings: Vec::new(),
+        diagnostics: BTreeMap::new(),
+    })
+    .expect("native mean completes training with fitted upstream state only");
+    assert_eq!(merge_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(source.execution_bundle.refit_artifacts.len(), 2);
+    assert!(source
+        .execution_bundle
+        .refit_artifacts
+        .iter()
+        .all(|record| record.node_id.as_str() != "merge:mean"));
+    let package = source
+        .to_portable_predictor_package(
+            "package:native.mean",
+            FittedArtifactMode::AllowHostSidecar,
+            ArtifactLoadMode::HostSidecar,
+        )
+        .unwrap();
+    let package =
+        PortablePredictorPackage::from_json(&serde_json::to_string(&package).unwrap()).unwrap();
+    let loaded = package
+        .clone()
+        .load_with(|record| Ok(store.get(&record.artifact.id).unwrap().handle.clone()))
+        .unwrap();
+    let before_fit = state.count(Phase::FitCv, "model:base")
+        + state.count(Phase::Refit, "model:base")
+        + state.count(Phase::FitCv, "model:peer")
+        + state.count(Phase::Refit, "model:peer");
+    let request = replay_request(&source, Phase::Predict);
+    let replay_provider = BranchProvider {
+        inner: current_replay_provider(&fixture),
+        identities: training_provider.identities.clone(),
+    };
+    let replay = execute_loaded_predictor_replay(LoadedPredictorReplayInput {
+        predictor: &loaded,
+        request: &request,
+        outcome_id: "outcome:native.mean.replay".to_string(),
+        run_id: RunId::new("run:native.mean.replay").unwrap(),
+        controllers: &controllers,
+        data_provider: &replay_provider,
+        data_envelopes: &replay_envelopes_for_fixture(&source, &fixture),
+        warnings: Vec::new(),
+        diagnostics: BTreeMap::new(),
+    })
+    .expect("serialized composite package replays native mean");
+    assert_eq!(merge_calls.load(Ordering::SeqCst), 0);
+    replay
+        .validate_against_package(loaded.package(), &request)
+        .unwrap();
+    for (id, expected) in [
+        ("output:prediction", 4.0),
+        ("output:source_a", 2.0),
+        ("output:source_b", 6.0),
+    ] {
+        let output = replay
+            .outputs
+            .iter()
+            .find(|output| output.binding.binding_id == id)
+            .unwrap();
+        assert_eq!(output.predictions.len(), 1);
+        assert_eq!(output.predictions[0].partition, PredictionPartition::Final);
+        assert_eq!(output.predictions[0].sample_ids.len(), 4);
+        assert!(output.predictions[0]
+            .values
+            .iter()
+            .all(|row| row.as_slice() == [expected]));
+    }
+    assert_eq!(
+        before_fit,
+        state.count(Phase::FitCv, "model:base")
+            + state.count(Phase::Refit, "model:base")
+            + state.count(Phase::FitCv, "model:peer")
+            + state.count(Phase::Refit, "model:peer")
+    );
+    assert_eq!(state.count(Phase::Predict, "model:base"), 1);
+    assert_eq!(state.count(Phase::Predict, "model:peer"), 1);
+    let mut missing_state = package;
+    let removed = missing_state
+        .execution_bundle
+        .refit_artifacts
+        .pop()
+        .unwrap();
+    missing_state
+        .artifact_bindings
+        .retain(|binding| binding.artifact_id != removed.artifact.id);
+    resign_package(&mut missing_state);
+    let error = missing_state.validate().unwrap_err();
+    assert!(
+        error.to_string().contains("PREDICT-replayable"),
+        "composite package must retain every upstream fitted state: {error}"
+    );
+}
+
+#[test]
 fn portable_package_replays_all_named_outputs_and_only_explicit_selection() {
     let mut fixture = fixture(true, false);
     add_model_probability_port(&mut fixture);
