@@ -6,6 +6,16 @@ The WASM package exposes validation, DSL compilation, execution-plan
 construction and synchronous host-controller execution over UTF-8 JSON strings.
 Artifacts and data-buffer ownership remain outside the binding.
 
+The staged npm package also exposes optional Methods-backed host adapters:
+`dag-ml-wasm/n4m-controller`, `dag-ml-wasm/n4m-source-controller` and
+`dag-ml-wasm/n4m-optimizer`. The source controller has a distinct
+`source_composition.v1` fitted-state profile for ordered native source chains,
+manifest-declared block inputs and identity-aligned raw+OOF hybrid heads. See
+`docs/N4M_WASM_CONTROLLERS.md` in the repository for its immutable recipe and
+resolver contract. These entrypoints are copied, declared and exported by
+`scripts/stage_wasm_host_adapters.mjs` for both nodejs and web package targets;
+the base WASM package does not require the optional Methods peer to import.
+
 For parallel browser HPO, call `host_hpo_search_parallel_json` with a
 dispatcher that returns a Promise for each serialized candidate task. Each Web
 Worker loads its own WASM instance and calls `host_hpo_evaluate_worker_task_json`

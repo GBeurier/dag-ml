@@ -4,6 +4,11 @@ import {
   type MethodsRegressionControllerOptions,
 } from "dag-ml-wasm/n4m-controller";
 import {
+  N4mWasmSourceController,
+  type SourceControllerOptions,
+  type SourcePipelineOperator,
+} from "dag-ml-wasm/n4m-source-controller";
+import {
   N4mWasmHostOptimizer,
   type N4mWasmHpoOptions,
 } from "dag-ml-wasm/n4m-optimizer";
@@ -36,5 +41,17 @@ const optimizerOptions: N4mWasmHpoOptions = {
   objective: {},
   persist: snapshot => { console.log(snapshot.schema); },
 };
+const sourceRecipe: SourcePipelineOperator = {
+  type: "N4mSourcePipeline", hybrid: false,
+  sourceOps: [{ source_id: "measurement", steps: [] }],
+  sourceSchemas: { measurement: { representation: "tabular_numeric", input_shape: [1], feature_names: ["x"], identity: "{\"feature_names\":[\"x\"]}" } },
+  steps: [{ methodId: "models.regularized.ridge", params: { alpha: 1 } }],
+};
+const sourceOptions: SourceControllerOptions = {
+  methods, operators: { "model:source": sourceRecipe }, digest: () => "0".repeat(64),
+  resolveSource: ({ sampleIds }) => ({ sampleIds, matrix: { data: new Float64Array(sampleIds.length), rows: sampleIds.length, cols: 1 }, featureNames: ["x"] }),
+  resolveTargets: ({ sampleIds }) => ({ sampleIds, matrix: { data: new Float64Array(sampleIds.length), rows: sampleIds.length, cols: 1 } }),
+};
 new N4mWasmRegressionController(controllerOptions).close();
+new N4mWasmSourceController(sourceOptions).close();
 new N4mWasmHostOptimizer(optimizerOptions).close();

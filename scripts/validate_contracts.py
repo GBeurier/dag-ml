@@ -8143,9 +8143,30 @@ def validate_training_outcome(value: Any, label: str) -> dict[str, Any]:
             bundle["refit_artifacts"], f"{label} completed refit requires artifacts"
         )
         artifact_nodes = {record["node_id"] for record in bundle["refit_artifacts"]}
+        graph_nodes = {node["id"]: node for node in plan["graph_plan"]["graph"]["nodes"]}
+
+        def has_fitted_output_closure(node_id: str) -> bool:
+            if node_id in artifact_nodes:
+                return True
+            node = graph_nodes[node_id]
+            node_plan = plan["node_plans"][node_id]
+            return (
+                node["kind"] == "prediction_join"
+                and node.get("metadata", {}).get("merge_mode")
+                in {"concat", "fusion", "fusion_proba_mean", "residual_fusion"}
+                and not {"stateful", "emits_artifacts"}.intersection(
+                    node_plan["controller_capabilities"]
+                )
+                and bool(
+                    artifact_nodes.intersection(
+                        w10_predictor_closure(plan["graph_plan"]["graph"], [node_id])
+                    )
+                )
+            )
+
         require(
-            all(output["binding"]["node_id"] in artifact_nodes for output in outputs),
-            f"{label} final output has no refit artifact",
+            all(has_fitted_output_closure(output["binding"]["node_id"]) for output in outputs),
+            f"{label} final output has no refit artifact or native stateless reduction with fitted upstream artifacts",
         )
     else:
         require(

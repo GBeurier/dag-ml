@@ -41,11 +41,11 @@ jobs:
           set -euo pipefail
           peer_repo="GBeurier/dag-ml-data"
           branch="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
-          # Immutable, qualified V1 Data peer (default when no paired branch exists).
+          # Qualified dag-ml-data v0.2.16, pinned to its immutable release commit.
           ref="eb2ad7835ca85feebf6f626d9f43f61575a1c9a9"
           paired="false"
 
-          if git ls-remote --exit-code --heads "https://github.com/${peer_repo}.git" "$branch" >/dev/null 2>&1; then
+          if [ "$branch" != "main" ] && git ls-remote --exit-code --heads "https://github.com/${peer_repo}.git" "$branch" >/dev/null 2>&1; then
             ref="$branch"
             paired="true"
           fi
@@ -53,15 +53,30 @@ jobs:
           contract_changed="false"
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
+            # These artifacts participate in the DMD contract comparison below.
+            # DAG-only execution packs, release ABI metadata and validator code
+            # still run their checks, but do not require a companion DMD change.
             changed="$(
               git diff --name-only FETCH_HEAD HEAD -- \
-                docs/contracts \
-                examples/fixtures \
-                examples/fixtures/robustness \
+                docs/contracts/coordinator_data_plan_envelope.schema.json \
+                docs/contracts/coordinator_data_plan_envelope.v2.schema.json \
+                docs/contracts/feature_fusion_selector.schema.json \
+                docs/contracts/coordinator_branch_view.schema.json \
+                docs/contracts/fitted_adapter_ref.schema.json \
+                docs/contracts/model_input_spec.schema.json \
+                docs/contracts/data_output_provenance.schema.json \
+                docs/contracts/conformance_pack.v1.json \
+                docs/contracts/parity_oracle.v1.json \
+                docs/contracts/representation_registry.v1.json \
+                examples/fixtures/data/coordinator_data_plan_envelope_nir.json \
+                examples/fixtures/data/coordinator_data_plan_envelope_multisource_repetitions.json \
+                examples/fixtures/data/feature_fusion_selector_nir_chem.json \
+                examples/fixtures/data/model_input_spec_tabular_regressor.json \
+                examples/fixtures/runtime/data_output_provenance_augmented_view.json \
+                examples/fixtures/shared \
                 parity/conformal \
                 parity/canonical \
                 parity/robustness_rng \
-                scripts/validate_contracts.py \
                 crates/dag-ml-capi/include \
                 crates/dag-ml-core/src/runtime/prediction_store.rs
             )"
@@ -460,6 +475,7 @@ jobs:
           out_dir="$PWD/crates/dag-ml-wasm/pkg-web"
           rm -rf "$out_dir"
           wasm-pack build crates/dag-ml-wasm --target web --out-dir "$out_dir" --release
+          node scripts/stage_wasm_host_adapters.mjs "$out_dir"
           node scripts/smoke_wasm_web_bindings.mjs "$out_dir"
           (cd crates/dag-ml-wasm && wasm-pack pack --pkg-dir pkg-web .)
           node scripts/smoke_wasm_tarball_metadata.mjs "$out_dir"

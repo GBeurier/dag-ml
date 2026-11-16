@@ -5778,7 +5778,26 @@ impl TrainingOutcome {
         }
         for output in &self.outputs {
             if !artifact_nodes.contains(&output.binding.node_id) {
-                return contract_error("final output node has no refit artifact");
+                let output_plan = &self.effective_plan.node_plans[&output.binding.node_id];
+                // A native reduction has no fitted state of its own. Its
+                // deployable predictor is the validated upstream closure;
+                // every REFIT artifact emitter in that closure is checked above.
+                let native_stateless_reduction =
+                    crate::runtime::merge_reduction_mode(&self.effective_plan, output_plan)
+                        .is_some()
+                        && !output_plan
+                            .controller_capabilities
+                            .contains(&ControllerCapability::Stateful)
+                        && !output_plan
+                            .controller_capabilities
+                            .contains(&ControllerCapability::EmitsArtifacts);
+                let has_upstream_artifact =
+                    predictor_closure(&self.effective_plan, [output.binding.node_id.clone()])?
+                        .iter()
+                        .any(|node_id| artifact_nodes.contains(node_id));
+                if !native_stateless_reduction || !has_upstream_artifact {
+                    return contract_error("final output node has no refit artifact or native stateless reduction with fitted upstream artifacts");
+                }
             }
         }
         Ok(())
