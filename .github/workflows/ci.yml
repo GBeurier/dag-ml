@@ -475,6 +475,7 @@ jobs:
           out_dir="$PWD/crates/dag-ml-wasm/pkg-web"
           rm -rf "$out_dir"
           wasm-pack build crates/dag-ml-wasm --target web --out-dir "$out_dir" --release
+          node scripts/stage_wasm_host_adapters.mjs "$out_dir"
           node scripts/smoke_wasm_web_bindings.mjs "$out_dir"
           (cd crates/dag-ml-wasm && wasm-pack pack --pkg-dir pkg-web .)
           node scripts/smoke_wasm_tarball_metadata.mjs "$out_dir"

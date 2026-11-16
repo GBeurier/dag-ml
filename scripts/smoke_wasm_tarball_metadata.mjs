@@ -39,10 +39,13 @@ const requiredFiles = new Set([
   "LICENSE",
   "README.md",
   "package.json",
-  "n4m_source_controller.mjs",
-  "n4m_source_controller.d.ts",
   ...packageJson.files,
 ]);
+const isDagPackage = packageJson.name === "dag-ml-wasm";
+if (isDagPackage) {
+  requiredFiles.add("n4m_source_controller.mjs");
+  requiredFiles.add("n4m_source_controller.d.ts");
+}
 
 requireCondition(pack.name === packageJson.name, "npm tarball name does not match package.json");
 requireCondition(
@@ -64,15 +67,17 @@ for (const requiredFile of requiredFiles) {
   requireCondition(file, `npm tarball is missing ${requiredFile}`);
   requireCondition(file.size > 0, `npm tarball file ${requiredFile} is empty`);
 }
-requireCondition(
-  packageJson.exports?.["./n4m-source-controller"]?.import === "./n4m_source_controller.mjs" &&
-  packageJson.exports?.["./n4m-source-controller"]?.types === "./n4m_source_controller.d.ts",
-  "public source-controller subpath must expose runtime and declarations",
-);
-for (const name of ["n4m_source_controller.mjs", "n4m_source_controller.d.ts"]) {
-  const owner = fileURLToPath(new URL(`../bindings/js/${name}`, import.meta.url));
-  requireCondition(fs.readFileSync(path.join(pkgDir, name)).equals(fs.readFileSync(owner)),
-    `packaged source-controller bytes differ from the current owner: ${name}`);
+if (isDagPackage) {
+  requireCondition(
+    packageJson.exports?.["./n4m-source-controller"]?.import === "./n4m_source_controller.mjs" &&
+    packageJson.exports?.["./n4m-source-controller"]?.types === "./n4m_source_controller.d.ts",
+    "public source-controller subpath must expose runtime and declarations",
+  );
+  for (const name of ["n4m_source_controller.mjs", "n4m_source_controller.d.ts"]) {
+    const owner = fileURLToPath(new URL(`../bindings/js/${name}`, import.meta.url));
+    requireCondition(fs.readFileSync(path.join(pkgDir, name)).equals(fs.readFileSync(owner)),
+      `packaged source-controller bytes differ from the current owner: ${name}`);
+  }
 }
 for (const file of pack.files) {
   requireCondition(

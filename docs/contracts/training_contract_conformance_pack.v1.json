@@ -6,7 +6,7 @@
   "artifacts": [
     {
       "path": ".github/workflows/ci.yml",
-      "sha256": "ae0d1448ed2ea1cd701d6b6df0a18f954cd86fc1e2fba82ff1e9f15957e04d28",
+      "sha256": "24812e1628d697c3c893f7a445d0080bf52f41d4e920ecb1232fb131fa488021",
       "kind": "ci_gate"
     },
     {
@@ -226,7 +226,7 @@
     },
     {
       "path": "crates/dag-ml-py/Cargo.lock",
-      "sha256": "d4ed353f79901f57b421914db4bfac811a53dd24f41b47a4104807ac70de1000",
+      "sha256": "363e1163c7a49b50fd4230e9ee8c0a1e3430c9b1fe5ffeda9ac08925e40dcbe7",
       "kind": "python_binding_lockfile"
     },
     {
@@ -306,7 +306,7 @@
     },
     {
       "path": "docs/contracts/abi_snapshot.v1.json",
-      "sha256": "f0daa5b251722e76a7eee77c4a37941a92e714e2c7f3ff1c94714bd4c8974863",
+      "sha256": "c49e0ea30f160d40864e85a3926e1254765ac90c91d049618cdc7d50ef1c7d61",
       "kind": "c_abi_snapshot"
     },
     {
@@ -729,5 +729,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "3b9688bf57963d0876e9a297018a95333721f3235d39d4f095f953fc9dee2a21"
+  "pack_checksum": "fb9d1a5d357b5e7cfb491b63d65350c736f82649293f4b734b8d7266cf2f4241"
 }
