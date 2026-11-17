@@ -81,7 +81,7 @@ writers up to ABI 2.22, where population scaling was implicit, and
 `{with_mean, with_std, ddof=0}` from ABI 2.22 on. A state recording any other
 `ddof`, a non-integer `ddof`, or a set inconsistent with its writer ABI is
 refused with a message naming the disagreement. The Python contract validator
-stays pinned to the ABI 2.17.0 fixture writer, which predates the parameter.
+applies the same writer-ABI minima, N4MM formats 1 and 3, and `ddof` rule.
 
 Archive V2 retains `multimodal_pipelines` and `role_pipelines` inventory keys and
 adds exact classifier kind/profile pairs, without changing historical regression
