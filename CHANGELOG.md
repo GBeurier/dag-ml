@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.4.3 - Unreleased
+
+- Accept multimodal classifier states written by Methods ABI 2.22 and later
+  (nirs4all-methods 1.3.15+), whose nested `standard_scale` state records the
+  integer `ddof`. The bounded N4MC validator accepted only
+  `{with_mean, with_std}`, so the portable export of every multimodal
+  classifier that scales a source failed with "classifier learned state differs
+  from its signed recipe". The closed `standard_scaler` and `column_transformer`
+  recipes sign population scaling: the validator accepts the two-parameter set
+  from writers up to ABI 2.22 and `{with_mean, with_std, ddof=0}` from ABI 2.22
+  on, and refuses any other `ddof`, a non-integer `ddof` or a set inconsistent
+  with its writer ABI with a message naming the disagreement. Genuine Methods
+  1.3.14, 1.3.15 and 1.3.18 states are retained as fixtures. No schema, ABI or
+  wire format changes.
+- The nirs4all-compat lowerer no longer drops a named branch silently. In
+  `{"branch": {name: steps, ...}}` every key is a branch, including `mode`,
+  `selector` and `metadata`, which were discarded: a source called `metadata`
+  now keeps its branch. Lowering refuses, with the offending path, an
+  option-shaped (non-list) value under those three names, a non-array
+  `branches`, and a `branches` list mixed with named branches, whose siblings
+  were discarded. Step options stay beside `branch`; other recipes lower
+  unchanged.
+- Align the independent Python classifier-state validator with the Rust one:
+  writer-ABI minima instead of an exact ABI 2.17.0 writer, N4MM format 3 and
+  the `ddof` rule above. Update binding tests that had drifted from the
+  owner: the always-derived `controller:n4m.feature_join` spec and the
+  terminal-predict owner-authority test, which now alters the source relation
+  key as documented in `TRAINING_CONTRACTS`.
+- Declare `n4m` at minor granularity (`0.4`) and the optional
+  `nirs4all-methods` Python peer as `>=1.3,<2` (ADR-29); exact qualified
+  versions stay in the lockfiles. The training-fixture byte-identity test
+  excludes the recorded host-HPO capture. `cargo audit --deny unsound` fails
+  on vulnerabilities and unsound advisories only; informational advisories
+  such as the chrono `RUSTSEC-2026-0543` notice are reported without blocking.
+
 ## 0.4.0 - Unreleased
 
 - Rename CLI ingress fixtures and generated test wrappers to avoid shadowing

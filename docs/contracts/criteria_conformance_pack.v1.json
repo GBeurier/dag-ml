@@ -121,7 +121,7 @@
     },
     {
       "path": "crates/dag-ml-wasm/src/lib.rs",
-      "sha256": "ba6ff1807cd477f9f7f219ce4e9c901980c9e802e5bd734b41abba45252efea8",
+      "sha256": "27c88ca3200f80468331e19268a1ce4b2f49186e316240815881174bab25dd0d",
       "kind": "javascript_binding"
     },
     {
@@ -310,5 +310,5 @@
   "runtime_only_negative_cases": [
     "provider_result_non_finite"
   ],
-  "pack_checksum": "039f08c576b4d6b64f74421a7b93b87d1a8634279b7e93ac5dd22806d139a8fd"
+  "pack_checksum": "55f355956ce71413a9fb4c8d3132b9de2431c8b21a45248501c25480bc8822d0"
 }
