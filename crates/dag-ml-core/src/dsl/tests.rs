@@ -5112,3 +5112,84 @@ fn fan_out_rejects_generation_override_collision_with_explicit_clone() {
         "{error}"
     );
 }
+
+fn compat_branch_ids(branch: serde_json::Value) -> Result<Vec<String>> {
+    let spec = lower_nirs4all_compat_pipeline_dsl(&serde_json::json!([{ "branch": branch }]))?;
+    let PipelineDslStep::Branch(step) = &spec.steps[0] else {
+        panic!("expected a branch step");
+    };
+    assert!(step.branches.iter().all(|branch| branch.steps.len() == 1));
+    Ok(step
+        .branches
+        .iter()
+        .map(|branch| branch.id.clone())
+        .collect())
+}
+
+#[test]
+fn compat_named_branches_keep_option_like_names() {
+    // Step options live beside `branch`, so every key here is a user branch:
+    // a dataset source called `metadata` must not vanish from its topology.
+    for name in ["mode", "selector", "metadata"] {
+        let mut ids =
+            compat_branch_ids(serde_json::json!({"nir": ["SNV"], name: ["MSC"]})).unwrap();
+        ids.sort();
+        let mut expected = vec!["nir".to_string(), name.to_string()];
+        expected.sort();
+        assert_eq!(ids, expected);
+    }
+    let ids = compat_branch_ids(serde_json::json!({
+        "metadata": ["A"], "mode": ["B"], "nir": ["C"], "selector": ["D"]
+    }))
+    .unwrap();
+    assert_eq!(ids.len(), 4);
+}
+
+#[test]
+fn compat_branch_object_refuses_misplaced_options_and_mixed_forms() {
+    // An option value is not a step list: refuse it instead of dropping it or
+    // lowering it as an operator alias.
+    for (name, value) in [
+        ("mode", serde_json::json!("by_metadata")),
+        ("selector", serde_json::json!({"metadata_key": "site"})),
+        ("metadata", serde_json::json!({"auto_separate": true})),
+    ] {
+        for branch in [
+            serde_json::json!({"nir": ["SNV"], name: value.clone()}),
+            serde_json::json!({"branches": [["SNV"], ["MSC"]], name: value.clone()}),
+        ] {
+            let error = compat_branch_ids(branch).unwrap_err().to_string();
+            assert!(
+                error.contains(&format!("pipeline[0].branch.{name}"))
+                    && error.contains("beside `branch`"),
+                "{error}"
+            );
+        }
+    }
+    // A `branches` list selects the list form; named siblings would be lost.
+    let error =
+        compat_branch_ids(serde_json::json!({"branches": [["SNV"], ["MSC"]], "nir": ["D"]}))
+            .unwrap_err()
+            .to_string();
+    assert!(
+        error.contains("pipeline[0].branch mixes the `branches` list with named branch `nir`"),
+        "{error}"
+    );
+    let error = compat_branch_ids(serde_json::json!({"branches": "SNV", "nir": ["D"]}))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("pipeline[0].branch.branches must be an array"),
+        "{error}"
+    );
+    // The established forms are unchanged.
+    assert_eq!(
+        compat_branch_ids(serde_json::json!({"branches": [["SNV"], ["MSC"]]})).unwrap(),
+        ["choice0", "choice1"]
+    );
+    assert_eq!(
+        compat_branch_ids(serde_json::json!({"branches": [{"id": "mode", "steps": ["SNV"]}]}))
+            .unwrap(),
+        ["mode"]
+    );
+}
