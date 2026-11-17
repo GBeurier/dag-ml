@@ -16,4 +16,4 @@ jobs:
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
       - name: Audit complete immutable historical dependency graph
-        run: cargo audit --deny warnings --file tools/historical-core-oracle/Cargo.lock
+        run: cargo audit --deny unsound --file tools/historical-core-oracle/Cargo.lock

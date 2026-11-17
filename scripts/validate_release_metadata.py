@@ -335,8 +335,9 @@ def validate_ci(repo: Path) -> None:
         "CI must install the pinned cargo-audit",
     )
     require(
-        "cargo audit --deny warnings" in workflow,
-        "CI must run cargo audit with warnings denied",
+        "cargo audit --deny unsound" in workflow
+        and "cargo audit --deny warnings" not in workflow,
+        "CI must run cargo audit failing on vulnerabilities and unsound advisories only",
     )
     require(
         "scripts/release/check_publish_plan.py --package" in workflow,

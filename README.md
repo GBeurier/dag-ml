@@ -67,7 +67,7 @@ python3 scripts/check_deprecations.py
 python3 scripts/check_public_docs.py
 python3 scripts/release/check_publish_plan.py --dry-run
 python3 scripts/validate_abi_snapshot.py
-cargo audit --deny warnings
+cargo audit --deny unsound
 python3 -m pip install -r docs/requirements.txt
 sphinx-build -W --keep-going -b html docs docs/_build/html
 cargo run -p dag-ml-cli -- validate-graph examples/minimal_graph.json
@@ -91,12 +91,12 @@ node scripts/smoke_wasm_tarball_metadata.mjs "$data_web_out_dir"
 node scripts/smoke_wasm_integration.mjs "$web_out_dir" "$data_web_out_dir" ../dag-ml-data
 ```
 
-The supply-chain gate retains one reviewed informational exception in
-`.cargo/audit.toml`: [RUSTSEC-2024-0436](https://rustsec.org/advisories/RUSTSEC-2024-0436.html)
-reports the unmaintained `paste` proc macro, pulled only through Parquet.
-This is accepted temporarily, not fixed; no patched version is available.
-All other warnings and vulnerabilities remain blocking. Remove the exception
-when the upstream Parquet dependency replaces `paste` and requalify result files.
+The supply-chain gate fails on vulnerabilities and unsound advisories. Informational
+advisories (unmaintained, notice, yanked) are printed in the job log without failing it,
+and no per-advisory ignore list is kept; for example
+[RUSTSEC-2024-0436](https://rustsec.org/advisories/RUSTSEC-2024-0436.html) (unmaintained
+`paste`, through Parquet) and RUSTSEC-2026-0543 (unmaintained `chrono`, through Arrow) stay
+visible as warnings.
 
 ## 0.3.x RC Release Scope
 

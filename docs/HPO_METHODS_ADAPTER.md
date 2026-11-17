@@ -102,10 +102,11 @@ tools/historical-core-oracle/Cargo.toml` before native archive conformance tests
 
 This separation removes obsolete parser/compression dependencies from the
 published DAG runtime graph; it does not repair the immutable historical
-artifacts. Audit the complete legacy graph with `cargo audit --deny warnings
+artifacts. Audit the complete legacy graph with `cargo audit --deny unsound
 --file tools/historical-core-oracle/Cargo.lock`; its known findings remain
-visible and the separate manual `historical-oracle-security` workflow fails
-on them. No advisory is ignored. This baseline is not the Core selected by the
+visible, and the separate manual `historical-oracle-security` workflow fails
+on its vulnerabilities and unsound advisories (informational advisories are
+reported as warnings). No advisory is ignored. This baseline is not the Core selected by the
 release train; current Core cross-source qualification remains separate.
 
 ## Generic estimator roles

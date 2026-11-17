@@ -6,7 +6,7 @@
   "artifacts": [
     {
       "path": ".github/workflows/ci.yml",
-      "sha256": "24812e1628d697c3c893f7a445d0080bf52f41d4e920ecb1232fb131fa488021",
+      "sha256": "0b6b9781a096dbc02ad2bcb244f6b2c597638e0d266a4e641d94e9ca8224db7d",
       "kind": "ci_gate"
     },
     {
@@ -291,7 +291,7 @@
     },
     {
       "path": "docs/HPO_METHODS_ADAPTER.md",
-      "sha256": "05b64b4926ec4732d4c8dfcadf81db0a271c0e0ca95f5901bb626ac19c84996d",
+      "sha256": "5aa448e5d300fc7d2c03d505729eb88245100d9b2722eb73300abd143866e813",
       "kind": "hpo_documentation"
     },
     {
@@ -729,5 +729,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "b85842cfe9326feb25f81f68eee76c936071e13756f01699e7f4637cd73b08ec"
+  "pack_checksum": "c86df32fcd262ab727a6cb40c3bc3a0accd4455d53ab9fffefb7d613d9f6c08e"
 }
