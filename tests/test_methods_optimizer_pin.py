@@ -51,7 +51,7 @@ def test_ci_and_local_selector_use_the_published_dynamic_binding() -> None:
         (ROOT / "crates" / "dag-ml-core" / "Cargo.toml").read_text(encoding="utf-8")
     )
     dependency = primary["dependencies"]["n4m"]
-    assert dependency["version"] == "0.4.1"
+    assert dependency["version"] == "0.4"
     assert dependency["default-features"] is False
     assert dependency["features"] == ["dynamic"]
     assert "git" not in dependency
@@ -80,12 +80,12 @@ def test_ci_and_local_selector_use_the_published_dynamic_binding() -> None:
         package for package in python_lock["package"] if package["name"] == "n4m"
     ]
     assert len(locked_n4m) == 1
-    assert locked_n4m[0]["version"] == dependency["version"]
+    assert locked_n4m[0]["version"].startswith(f"{dependency['version']}.")
     assert locked_n4m[0]["source"] == (
         "registry+https://github.com/rust-lang/crates.io-index"
     )
     assert locked_n4m[0]["checksum"] == (
-        "4d036a20611f734738741f0b70e8e0393a7fbf6dcf06bb41051a4eeae6d880b8"
+        "dfb4564672f8d6c167d3e292d0eeed2e6029f97841efd966accbce4b724d48a8"
     )
 
     workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
