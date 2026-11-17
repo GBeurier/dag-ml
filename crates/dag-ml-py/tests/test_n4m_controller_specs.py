@@ -20,7 +20,9 @@ def test_n4m_manifest_derives_one_resolvable_controller_per_role() -> None:
         "controller:n4m.transformer",
         "controller:n4m.regressor",
         "controller:n4m.sample_filter",
+        # The data-only native feature join is always derived.
+        "controller:n4m.feature_join",
     ]
     assert specs[1]["operator_selectors"] == [{"refs": ["n4m:models.pls.pls_regression"]}]
     manifests = dag_ml.derive_controller_manifests(specs).to_dict()
-    assert [manifest["operator_kind"] for manifest in manifests] == ["transform", "model", "exclude"]
+    assert [manifest["operator_kind"] for manifest in manifests] == ["transform", "model", "exclude", "feature_join"]

@@ -467,12 +467,16 @@ class TerminalPredictFacadeTests(unittest.TestCase):
             owner_fingerprint,
             _terminal_training_envelope()["relation_fingerprint"],
         )
-        self.assertNotEqual(
-            dag_ml.sample_relation_set_fingerprint_json(
-                json.dumps(altered["coordinator_relations"])
-            ),
-            owner_fingerprint,
+        altered_canonical = dag_ml.sample_relation_set_fingerprint_json(
+            json.dumps(altered["coordinator_relations"])
         )
+        self.assertNotEqual(altered_canonical, owner_fingerprint)
+        # This profile stores no independent canonical record set, and the
+        # source key is never compared with a canonical one (TRAINING_CONTRACTS,
+        # "Initial full-refit relation identities"). The owner authority here
+        # is the source key: a producer that re-keys its altered table no
+        # longer matches the plan binding.
+        altered["relation_fingerprint"] = altered_canonical
 
         refused_calls: list[dict[str, Any]] = []
 

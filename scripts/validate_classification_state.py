@@ -67,19 +67,39 @@ class Reader:
         check(self.pos == len(self.data))
 
 
-def checked_reader(data, magic):
+# Writer ABI minima mirror dag-ml-core: classifier N4MC/N4ME writers need ABI
+# 2.17, other N4ME states 2.13, N4MM format 1 any 2.x and format 3 ABI 2.20.
+# The patch selects no wire layout; runtime admission remains Methods-owned.
+CLASSIFIER_MIN_ABI_MINOR = 17
+N4ME_MIN_ABI_MINOR = 13
+N4MM_MIN_ABI_MINOR = {1: 0, 3: 20}
+# First ABI minor whose standard_scale resolves the integer ddof. It landed
+# inside the 2.22 cycle without a bump, so 2.22 writers may emit either set.
+STANDARD_SCALE_DDOF_ABI_MINOR = 22
+
+
+def checked_reader(data, magic, minimum_minor=CLASSIFIER_MIN_ABI_MINOR):
+    """Return the checksummed body reader, its format and its writer ABI minor."""
     check(28 <= len(data) <= 67_108_864 and data[:4] == magic)
     hashed = 0xcbf29ce484222325
     for byte in data[:-8]:
         hashed = ((hashed ^ byte) * 0x100000001b3) & ((1 << 64) - 1)
     check(hashed == struct.unpack("<Q", data[-8:])[0])
     value = Reader(data[:-8])
-    check(value.take(4) == magic and value.u32() == 1 and [value.u32() for _ in range(3)] == [2, 17, 0])
-    return value
+    check(value.take(4) == magic)
+    layout = value.u32()
+    if magic == b"N4MM":
+        check(layout in N4MM_MIN_ABI_MINOR)
+        minimum_minor = N4MM_MIN_ABI_MINOR[layout]
+    else:
+        check(layout == 1)
+    major, minor, _patch = value.u32(), value.u32(), value.u32()
+    check(major == 2 and minor >= minimum_minor)
+    return value, layout, minor
 
 
 def estimator(data, method):
-    reader = checked_reader(data, b"N4ME")
+    reader, _, minor = checked_reader(data, b"N4ME", CLASSIFIER_MIN_ABI_MINOR if method == METHOD else N4ME_MIN_ABI_MINOR)
     check(reader.text(True) == method)
     count = reader.u32()
     check(count <= 256)
@@ -98,11 +118,11 @@ def estimator(data, method):
         check(tag not in blocks)
         blocks[tag] = reader.block()
     reader.end()
-    return params, caps, width, outputs, blocks
+    return params, caps, width, outputs, blocks, minor
 
 
 def latent(data, width, classes, components):
-    reader = checked_reader(data, b"N4MM")
+    reader, layout, _ = checked_reader(data, b"N4MM")
     check([reader.u32() for _ in range(3)] == [0, 1, 0])
     check(reader.u64() > components and [reader.u64() for _ in range(3)] == [width, classes, components])
     check([reader.u32() for _ in range(5)] == [1, 0, 1, 0, 0] and reader.f64() > 0 and reader.u32() > 0)
@@ -110,12 +130,22 @@ def latent(data, width, classes, components):
         check(reader.u64() == count)
         for _ in range(count):
             reader.f64()
+    if layout == 3:
+        # One finite nonnegative resolution, one +0/1 unresolved flag per
+        # component, and no embedded pipeline in a classifier latent model.
+        check(reader.u64() == 1)
+        resolution = reader.f64()
+        check(resolution >= 0 and math.copysign(1.0, resolution) > 0 and reader.u64() == components)
+        for _ in range(components):
+            flag = reader.f64()
+            check(flag == 1.0 or (flag == 0.0 and math.copysign(1.0, flag) > 0))
+        check(reader.u32() == 0)
     reader.end()
 
 
 def classifier(data, parameters, width, classes):
     check(isinstance(parameters, dict) and set(parameters) == {"n_components", "max_iter"} and all(type(x) is int and 0 < x <= 2**31-1 for x in parameters.values()))
-    params, caps, actual_width, outputs, blocks = estimator(data, METHOD)
+    params, caps, actual_width, outputs, blocks, _ = estimator(data, METHOD)
     check(params == {name: (1, value) for name, value in parameters.items()} and caps == 156 and actual_width == width and outputs == len(classes) and set(blocks) == {0x31534c43})
     reader = Reader(blocks[0x31534c43])
     check(reader.number("q") == width and reader.u64() == len(classes) and [reader.number("q") for _ in classes] == classes)
@@ -135,7 +165,18 @@ def classifier(data, parameters, width, classes):
 
 def encoder(data, declaration, width):
     pca = declaration["kind"] == "tensor_pca"
-    params, caps, actual, outputs, blocks = estimator(data, "preprocessing.feature_selection.flexible_pca" if pca else "preprocessing.scaling.standard_scale")
+    params, caps, actual, outputs, blocks, minor = estimator(data, "preprocessing.feature_selection.flexible_pca" if pca else "preprocessing.scaling.standard_scale")
+    if not pca:
+        # The closed recipes sign population scaling: ddof is absent up to ABI
+        # 2.22 and recorded as the integer 0 from ABI 2.22 on.
+        ddof = params.pop("ddof", None)
+        if ddof is None:
+            check(minor <= STANDARD_SCALE_DDOF_ABI_MINOR, f"Classifier standard_scale state omits ddof, which every Methods ABI 2.{minor} writer records")
+        else:
+            check(minor >= STANDARD_SCALE_DDOF_ABI_MINOR, f"Classifier standard_scale state records ddof under Methods ABI 2.{minor}, which predates the parameter")
+            check(ddof[0] == 1)
+            signed = ddof[1] - (1 << 64) if ddof[1] >> 63 else ddof[1]
+            check(signed == 0, f"Classifier standard_scale state records ddof={signed}, but its signed recipe implies population scaling (ddof=0)")
     expected = {"n_components": (2, struct.unpack("<Q", struct.pack("<d", float(declaration["n_components"])))[0])} if pca else {"with_mean": (3, 1), "with_std": (3, 1)}
     count = declaration["n_components"] if pca else width
     check(actual == width and outputs == 0 and caps == 129 and params == expected and set(blocks) == {0x31545354})
@@ -180,7 +221,7 @@ def canonical_recipe(recipe, schemas):
 
 
 def raw_classifier(data, recipe, schemas, classes):
-    reader = checked_reader(data, b"N4MC")
+    reader, _, _ = checked_reader(data, b"N4MC")
     check(reader.block() == canonical_recipe(recipe, schemas))
     width = 0
     for source in recipe["source_order"]:

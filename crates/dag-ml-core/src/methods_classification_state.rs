@@ -119,6 +119,7 @@ pub(crate) fn validated_n4mc_abi_requirement(bytes: &[u8]) -> Result<(u32, u32)>
 }
 
 struct EstimatorState<'a> {
+    writer_minor: u32,
     params: BTreeMap<String, (u32, u64)>,
     capabilities: u64,
     width: u64,
@@ -136,7 +137,7 @@ fn estimator<'a>(bytes: &'a [u8], method: &str) -> Result<EstimatorState<'a>> {
     } else {
         crate::hpo::METHODS_N4ME_MIN_ABI_MINOR
     };
-    writer_abi(&mut input, minimum_minor)?;
+    let (_, writer_minor) = writer_abi(&mut input, minimum_minor)?;
     if input.short_string()? != method {
         return invalid();
     }
@@ -174,6 +175,7 @@ fn estimator<'a>(bytes: &'a [u8], method: &str) -> Result<EstimatorState<'a>> {
     }
     input.end()?;
     Ok(EstimatorState {
+        writer_minor,
         params,
         capabilities,
         width,
@@ -332,6 +334,42 @@ pub(crate) fn validate_classifier_n4me(
     head.end()
 }
 
+/// First Methods ABI minor whose `standard_scale` resolves the integer `ddof`
+/// (nirs4all-methods 1.3.15). It landed inside the 2.22 cycle without an ABI
+/// bump, so only 2.22 writers may emit either parameter set.
+const METHODS_STANDARD_SCALE_DDOF_ABI_MINOR: u32 = 22;
+
+/// The closed `standard_scaler` and `column_transformer` recipes declare no
+/// `ddof`: they sign population scaling, the only convention before the
+/// parameter existed and the one Methods requires of every nested scaler.
+const RECIPE_STANDARD_SCALE_DDOF: u64 = 0;
+
+/// `ddof` is fit provenance: the divisor `rows - ddof` behind the stored scales.
+/// It cannot be recomputed from the state, so the record must agree exactly.
+fn validate_standard_scale_ddof(state: &mut EstimatorState<'_>) -> Result<()> {
+    let minor = state.writer_minor;
+    let refuse = |detail: String| {
+        Err(DagMlError::RuntimeValidation(format!(
+            "classifier standard_scale state {detail}"
+        )))
+    };
+    match state.params.remove("ddof") {
+        None if minor > METHODS_STANDARD_SCALE_DDOF_ABI_MINOR => refuse(format!(
+            "omits ddof, which every Methods ABI 2.{minor} writer records"
+        )),
+        None => Ok(()),
+        Some(_) if minor < METHODS_STANDARD_SCALE_DDOF_ABI_MINOR => refuse(format!(
+            "records ddof under Methods ABI 2.{minor}, which predates the parameter"
+        )),
+        Some((1, RECIPE_STANDARD_SCALE_DDOF)) => Ok(()),
+        Some((1, ddof)) => refuse(format!(
+            "records ddof={}, but its signed recipe implies population scaling (ddof={RECIPE_STANDARD_SCALE_DDOF})",
+            ddof as i64
+        )),
+        Some(_) => invalid(),
+    }
+}
+
 fn validate_encoder(bytes: &[u8], encoder: &Value, input_width: u64) -> Result<u64> {
     let pca = encoder["kind"] == "tensor_pca";
     let method = if pca {
@@ -339,7 +377,10 @@ fn validate_encoder(bytes: &[u8], encoder: &Value, input_width: u64) -> Result<u
     } else {
         "preprocessing.scaling.standard_scale"
     };
-    let state = estimator(bytes, method)?;
+    let mut state = estimator(bytes, method)?;
+    if !pca {
+        validate_standard_scale_ddof(&mut state)?;
+    }
     let expected = if pca {
         BTreeMap::from([(
             "n_components".into(),
@@ -614,6 +655,26 @@ mod tests {
     }
 
     fn estimator_state(classifier: bool, minor: u32, model: &[u8]) -> Vec<u8> {
+        let params: &[(&str, u32, u64)] = if classifier {
+            &[("n_components", 1, 1), ("max_iter", 1, 1000)]
+        } else {
+            &[("with_mean", 3, 1), ("with_std", 3, 1)]
+        };
+        estimator_state_with(classifier, minor, model, params)
+    }
+
+    fn scaler_state(minor: u32, ddof: Option<(u32, u64)>) -> Vec<u8> {
+        let mut params = vec![("with_mean", 3_u32, 1_u64), ("with_std", 3, 1)];
+        params.extend(ddof.map(|(kind, value)| ("ddof", kind, value)));
+        estimator_state_with(false, minor, &[], &params)
+    }
+
+    fn estimator_state_with(
+        classifier: bool,
+        minor: u32,
+        model: &[u8],
+        params: &[(&str, u32, u64)],
+    ) -> Vec<u8> {
         let mut bytes = header(b"N4ME", 1, minor);
         short_string(
             &mut bytes,
@@ -623,13 +684,8 @@ mod tests {
                 "preprocessing.scaling.standard_scale"
             },
         );
-        bytes.extend(2_u32.to_le_bytes());
-        let params = if classifier {
-            [("n_components", 1_u32, 1_u64), ("max_iter", 1, 1000)]
-        } else {
-            [("with_mean", 3_u32, 1_u64), ("with_std", 3, 1)]
-        };
-        for (name, kind, value) in params {
+        bytes.extend((params.len() as u32).to_le_bytes());
+        for &(name, kind, value) in params {
             short_string(&mut bytes, name);
             bytes.extend(kind.to_le_bytes());
             bytes.extend(1_u64.to_le_bytes());
@@ -775,5 +831,129 @@ mod tests {
             )
             .is_err());
         }
+    }
+
+    /// Genuine `MultimodalClassifierPipeline.export_state()` bytes; see the
+    /// fixture README for provenance.
+    fn methods_state(fixture: &str) -> (Vec<u8>, Value, Value, Vec<usize>) {
+        let fixture: Value = serde_json::from_str(fixture).unwrap();
+        let hex = fixture["state_hex"].as_str().unwrap();
+        let bytes = (0..hex.len())
+            .step_by(2)
+            .map(|at| u8::from_str_radix(&hex[at..at + 2], 16).unwrap())
+            .collect();
+        let classes = serde_json::from_value(fixture["class_labels"].clone()).unwrap();
+        (
+            bytes,
+            fixture["recipe"].clone(),
+            fixture["source_schemas"].clone(),
+            classes,
+        )
+    }
+
+    /// Rewrite the `ddof` value of the first nested scaler and restore both
+    /// checksums, as a writer fitted with another convention would emit it.
+    fn with_first_scaler_ddof(state: &[u8], ddof: u64) -> Vec<u8> {
+        let recipe = 20 + 8 + u64::from_le_bytes(state[20..28].try_into().unwrap()) as usize;
+        let size = u64::from_le_bytes(state[recipe..recipe + 8].try_into().unwrap()) as usize;
+        let (start, end) = (recipe + 8, recipe + 8 + size);
+        let mut encoder = state[start..end - 8].to_vec();
+        let name = encoder
+            .windows(4)
+            .position(|bytes| bytes == b"ddof")
+            .unwrap();
+        encoder[name + 16..name + 24].copy_from_slice(&ddof.to_le_bytes());
+        let mut changed = state[..start].to_vec();
+        changed.extend(seal(encoder));
+        changed.extend(&state[end..state.len() - 8]);
+        seal(changed)
+    }
+
+    #[test]
+    fn genuine_methods_states_validate_before_and_after_standard_scale_ddof() {
+        for (fixture, minor) in [
+            (
+                include_str!("../tests/fixtures/methods_classifier_state/methods_1_3_14.json"),
+                20,
+            ),
+            (
+                include_str!("../tests/fixtures/methods_classifier_state/methods_1_3_15.json"),
+                22,
+            ),
+            (
+                include_str!("../tests/fixtures/methods_classifier_state/methods_1_3_18.json"),
+                23,
+            ),
+        ] {
+            let (bytes, recipe, schemas, classes) = methods_state(fixture);
+            assert_eq!(validated_n4mc_abi_requirement(&bytes).unwrap(), (2, minor));
+            validate_classifier_n4mc(&bytes, &recipe, &schemas, &classes).unwrap();
+        }
+    }
+
+    #[test]
+    fn genuine_methods_state_fitted_with_another_ddof_is_refused() {
+        let (bytes, recipe, schemas, classes) = methods_state(include_str!(
+            "../tests/fixtures/methods_classifier_state/methods_1_3_18.json"
+        ));
+        let unchanged = with_first_scaler_ddof(&bytes, 0);
+        assert_eq!(unchanged, bytes);
+        let sample = with_first_scaler_ddof(&bytes, 1);
+        let error = validate_classifier_n4mc(&sample, &recipe, &schemas, &classes).unwrap_err();
+        assert!(
+            error.to_string().contains(
+                "records ddof=1, but its signed recipe implies population scaling (ddof=0)"
+            ),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn standard_scale_ddof_is_exact_for_each_writer_generation() {
+        let encoder = json!({"kind":"standard_scaler","with_mean":true,"with_std":true});
+        let check = |minor, ddof| validate_encoder(&scaler_state(minor, ddof), &encoder, 2);
+        // Before the parameter existed, population scaling was the only convention.
+        for minor in [13, 20, 21, 22] {
+            assert_eq!(check(minor, None).unwrap(), 2);
+        }
+        // The parameter landed inside the ABI 2.22 cycle without a bump.
+        for minor in [22, 23, 40] {
+            assert_eq!(check(minor, Some((1, 0))).unwrap(), 2);
+        }
+        for (minor, ddof, message) in [
+            (
+                22,
+                Some((1, 1)),
+                "records ddof=1, but its signed recipe implies population",
+            ),
+            (
+                23,
+                Some((1, u64::MAX)),
+                "records ddof=-1, but its signed recipe implies population",
+            ),
+            (
+                23,
+                None,
+                "omits ddof, which every Methods ABI 2.23 writer records",
+            ),
+            (
+                21,
+                Some((1, 0)),
+                "records ddof under Methods ABI 2.21, which predates the parameter",
+            ),
+        ] {
+            let error = check(minor, ddof).unwrap_err().to_string();
+            assert!(error.contains(message), "{error}");
+        }
+        // `ddof` is an integer parameter: no other kind can restate zero.
+        for kind in [2, 3, 4] {
+            assert!(check(23, Some((kind, 0))).is_err());
+        }
+        // The metadata numeric column uses the same nested scaler.
+        let metadata = json!({"kind":"column_transformer","numeric_columns":[0],
+            "categorical_columns":[1],"with_mean":true,"with_std":true,
+            "handle_unknown":"ignore","sparse_output":false,"drop":null});
+        assert!(validate_encoder(&scaler_state(23, Some((1, 2))), &metadata, 2).is_err());
+        validate_encoder(&scaler_state(23, Some((1, 0))), &metadata, 2).unwrap();
     }
 }

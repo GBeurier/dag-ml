@@ -71,6 +71,18 @@ Independent Rust and Python validators check bounds, nested state checksums,
 canonical recipe bytes, encoder state widths, the class table, head capabilities,
 parameters and embedded PLS state structure. Methods owns numerical hydration.
 
+The closed `standard_scaler` and `column_transformer` recipes declare no `ddof`:
+they sign population scaling. Methods ABI 2.22 (nirs4all-methods 1.3.15) added
+the integer `ddof` to `preprocessing.scaling.standard_scale` as fit provenance,
+the divisor `rows - ddof` behind the stored scales, and its multimodal loader
+requires a nested scaler resolved to `ddof=0`. The Rust validator therefore
+accepts exactly two nested scaler parameter sets: `{with_mean, with_std}` from
+writers up to ABI 2.22, where population scaling was implicit, and
+`{with_mean, with_std, ddof=0}` from ABI 2.22 on. A state recording any other
+`ddof`, a non-integer `ddof`, or a set inconsistent with its writer ABI is
+refused with a message naming the disagreement. The Python contract validator
+applies the same writer-ABI minima, N4MM formats 1 and 3, and `ddof` rule.
+
 Archive V2 retains `multimodal_pipelines` and `role_pipelines` inventory keys and
 adds exact classifier kind/profile pairs, without changing historical regression
 fixtures. A late REFIT keeps genuine foldless Test output when present, or the

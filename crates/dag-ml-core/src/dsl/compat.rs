@@ -762,10 +762,29 @@ impl CompatDslLowerer {
                 })
                 .collect::<Result<Vec<_>>>()?,
             serde_json::Value::Object(branch_object) => {
-                if let Some(values) = branch_object
-                    .get("branches")
-                    .and_then(serde_json::Value::as_array)
-                {
+                // Step options are read beside `branch`, never inside it, so
+                // an option-shaped value here would otherwise be lost.
+                for name in ["mode", "selector", "metadata"] {
+                    if branch_object
+                        .get(name)
+                        .is_some_and(|value| !value.is_array())
+                    {
+                        return Err(DagMlError::GraphValidation(format!(
+                            "{path}.branch.{name} is not a step list: declare the `{name}` option beside `branch`, or give a branch named `{name}` a step list"
+                        )));
+                    }
+                }
+                if let Some(value) = branch_object.get("branches") {
+                    let values = value.as_array().ok_or_else(|| {
+                        DagMlError::GraphValidation(format!(
+                            "{path}.branch.branches must be an array of branches"
+                        ))
+                    })?;
+                    if let Some(name) = branch_object.keys().find(|key| *key != "branches") {
+                        return Err(DagMlError::GraphValidation(format!(
+                            "{path}.branch mixes the `branches` list with named branch `{name}`: use one form, with an explicit `id` for each listed branch"
+                        )));
+                    }
                     values
                         .iter()
                         .enumerate()
@@ -780,9 +799,6 @@ impl CompatDslLowerer {
                 } else {
                     branch_object
                         .iter()
-                        .filter(|(key, _)| {
-                            !matches!(key.as_str(), "mode" | "selector" | "metadata")
-                        })
                         .enumerate()
                         .map(|(index, (key, value))| {
                             Ok(PipelineDslBranch {

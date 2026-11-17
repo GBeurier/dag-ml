@@ -297,6 +297,12 @@ this default before graph ports are frozen: a custom bare alias such as
 `ElasticSpectra` may become a model if exactly one operator kind claims it
 through `operator_selectors`. Cross-kind matches are rejected and must use
 explicit DSL syntax.
+A compatibility `branch` value is a list of branches, a `{"branches": [...]}`
+object holding only that list, or an object whose every key names a branch.
+The `mode`, `selector` and `metadata` step options are read beside `branch`;
+inside a named branch object those keys are branches and need a step list. A
+non-list value there, a non-array `branches`, or a `branches` list mixed with
+named branches is refused rather than dropped.
 Rust validation remains the semantic authority: it lowers
 compatibility JSON into canonical DSL, compiles the graph/campaign/generation
 artifact, rejects unsafe augmentation/shape contracts and enforces OOF graph

@@ -1521,7 +1521,9 @@ mod tests {
             vec![
                 "controller:n4m.transformer",
                 "controller:n4m.regressor",
-                "controller:n4m.sample_filter"
+                "controller:n4m.sample_filter",
+                // The data-only native feature join is always derived.
+                dag_ml_core::METHODS_FEATURE_JOIN_CONTROLLER,
             ]
         );
         assert!(contract_manifest()["wasm_exports"]
