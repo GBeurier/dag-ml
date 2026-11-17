@@ -1754,9 +1754,19 @@ def test_portable_package_rejects_integer_tokens_deserialized_as_f64_scores() ->
         )
 
 
+# Fixtures in the shared directory that this generator does not own. The host
+# HPO capture is produced by the host HPO lineage and checked by
+# scripts/validate_contracts.py and crates/dag-ml-core/tests/host_hpo_capture.rs.
+EXTERNALLY_OWNED_FIXTURES = {"host_hpo_capture.v1.json"}
+
+
 def test_generator_is_byte_identical(tmp_path: Path) -> None:
     generate(tmp_path)
-    committed = sorted(path.name for path in FIXTURE_DIR.glob("*.json"))
+    committed = sorted(
+        path.name
+        for path in FIXTURE_DIR.glob("*.json")
+        if path.name not in EXTERNALLY_OWNED_FIXTURES
+    )
     generated = sorted(path.name for path in tmp_path.glob("*.json"))
     assert generated == committed
     for name in committed:

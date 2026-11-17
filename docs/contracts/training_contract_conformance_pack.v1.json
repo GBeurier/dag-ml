@@ -41,7 +41,7 @@
     },
     {
       "path": "crates/dag-ml-core/Cargo.toml",
-      "sha256": "55ef16e511261304bbaed352171f48104b8679f32b46d75159b03a81bc4b2d1f",
+      "sha256": "fc26d7ae796925fccea83b0ef559d9da4050ffd5042fc288975075568217eb0c",
       "kind": "published_native_manifest"
     },
     {
@@ -291,7 +291,7 @@
     },
     {
       "path": "docs/HPO_METHODS_ADAPTER.md",
-      "sha256": "55f4c8d2caf001ae7746f20bf3b9c38bd58f7f0782113b147002bf4e9c375c9d",
+      "sha256": "05b64b4926ec4732d4c8dfcadf81db0a271c0e0ca95f5901bb626ac19c84996d",
       "kind": "hpo_documentation"
     },
     {
@@ -621,7 +621,7 @@
     },
     {
       "path": "parity/training/tests/test_training_contracts.py",
-      "sha256": "03ce612e6e88fb1c5c2cd974c22f6c9322c4b158cae3021b7c65e586eaf84426",
+      "sha256": "bfa9d3b2983b11fd6f6c3606059b2f3ff7d78ffd9cd24c49147effdfecd06b36",
       "kind": "test"
     },
     {
@@ -729,5 +729,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "fb9d1a5d357b5e7cfb491b63d65350c736f82649293f4b734b8d7266cf2f4241"
+  "pack_checksum": "b85842cfe9326feb25f81f68eee76c936071e13756f01699e7f4637cd73b08ec"
 }
