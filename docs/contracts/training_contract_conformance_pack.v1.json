@@ -6,7 +6,7 @@
   "artifacts": [
     {
       "path": ".github/workflows/ci.yml",
-      "sha256": "24812e1628d697c3c893f7a445d0080bf52f41d4e920ecb1232fb131fa488021",
+      "sha256": "0b6b9781a096dbc02ad2bcb244f6b2c597638e0d266a4e641d94e9ca8224db7d",
       "kind": "ci_gate"
     },
     {
@@ -41,7 +41,7 @@
     },
     {
       "path": "crates/dag-ml-core/Cargo.toml",
-      "sha256": "55ef16e511261304bbaed352171f48104b8679f32b46d75159b03a81bc4b2d1f",
+      "sha256": "fc26d7ae796925fccea83b0ef559d9da4050ffd5042fc288975075568217eb0c",
       "kind": "published_native_manifest"
     },
     {
@@ -291,7 +291,7 @@
     },
     {
       "path": "docs/HPO_METHODS_ADAPTER.md",
-      "sha256": "55f4c8d2caf001ae7746f20bf3b9c38bd58f7f0782113b147002bf4e9c375c9d",
+      "sha256": "5aa448e5d300fc7d2c03d505729eb88245100d9b2722eb73300abd143866e813",
       "kind": "hpo_documentation"
     },
     {
@@ -621,7 +621,7 @@
     },
     {
       "path": "parity/training/tests/test_training_contracts.py",
-      "sha256": "03ce612e6e88fb1c5c2cd974c22f6c9322c4b158cae3021b7c65e586eaf84426",
+      "sha256": "bfa9d3b2983b11fd6f6c3606059b2f3ff7d78ffd9cd24c49147effdfecd06b36",
       "kind": "test"
     },
     {
@@ -729,5 +729,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "fb9d1a5d357b5e7cfb491b63d65350c736f82649293f4b734b8d7266cf2f4241"
+  "pack_checksum": "c86df32fcd262ab727a6cb40c3bc3a0accd4455d53ab9fffefb7d613d9f6c08e"
 }

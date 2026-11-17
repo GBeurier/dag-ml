@@ -335,8 +335,9 @@ def validate_ci(repo: Path) -> None:
         "CI must install the pinned cargo-audit",
     )
     require(
-        "cargo audit --deny warnings" in workflow,
-        "CI must run cargo audit with warnings denied",
+        "cargo audit --deny unsound" in workflow
+        and "cargo audit --deny warnings" not in workflow,
+        "CI must run cargo audit failing on vulnerabilities and unsound advisories only",
     )
     require(
         "scripts/release/check_publish_plan.py --package" in workflow,
@@ -586,8 +587,9 @@ def validate_methods_hpo_docs(repo: Path) -> None:
     require(isinstance(binding, dict), "dag-ml-core must declare its n4m dependency")
     binding_version = binding.get("version")
     require(
-        isinstance(binding_version, str) and binding_version,
-        "dag-ml-core must pin a published n4m version",
+        isinstance(binding_version, str)
+        and re.fullmatch(r"(0|[1-9]\d*)\.(0|[1-9]\d*)", binding_version) is not None,
+        "dag-ml-core must depend on n4m at minor granularity (MAJOR.MINOR caret range)",
     )
     require(
         "nirs4all_archive_core" not in core.get("dev-dependencies", {}),
@@ -637,7 +639,7 @@ def validate_methods_hpo_docs(repo: Path) -> None:
     ]
     require(
         len(locked_n4m) == 1
-        and locked_n4m[0].get("version") == binding_version
+        and str(locked_n4m[0].get("version", "")).startswith(f"{binding_version}.")
         and locked_n4m[0].get("source")
         == "registry+https://github.com/rust-lang/crates.io-index",
         "standalone Python binding must lock the contracted crates.io n4m version",

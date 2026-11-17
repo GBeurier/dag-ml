@@ -30,7 +30,7 @@ metadata.exports = {
   // Preserve existing direct access to generated JS/WASM/package files.
   "./*": "./*",
 };
-metadata.peerDependencies = { ...metadata.peerDependencies, "@nirs4all/methods": "^1.2.1" };
+metadata.peerDependencies = { ...metadata.peerDependencies, "@nirs4all/methods": "^1.2.0" };
 metadata.peerDependenciesMeta = { ...metadata.peerDependenciesMeta, "@nirs4all/methods": { optional: true } };
 fs.writeFileSync(metadataPath, JSON.stringify(metadata, null, 2) + "\n");
 console.log("Staged optional Methods controllers and HPO optimizer: " + metadata.version);

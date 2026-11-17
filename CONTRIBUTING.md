@@ -122,4 +122,6 @@ Significant decisions are recorded in [`docs/adr/`](docs/adr/README.md). Eightee
 
 ## Releases
 
-Releases follow the cross-repo release train in [ADR-10](docs/adr/ADR-10-release-train.md): `dag-ml-data` publishes first, `dag-ml`'s pinned version bumps, then `dag-ml` publishes. Version/tag policy is documented there.
+Releases follow the cross-repo release train in [ADR-10](docs/adr/ADR-10-release-train.md): `dag-ml-data` publishes first, then `dag-ml` publishes. Version/tag policy is documented there.
+
+Cross-repository dependencies use minor-level ranges ([ADR-29](docs/adr/ADR-29-minor-level-version-constraints.md)): Rust `"0.4"` (`>=0.4.0, <0.5.0`; `"1.3"` for 1.x), Python `>=0.4,<0.5` (`>=1.3,<2` for 1.x), npm `^0.4.0`, R `pkg (>= 0.4.0), pkg (< 0.5.0)`; exact versions live in lockfiles. In return a **patch** release is backward compatible and changes no wire format, byte contract, persisted schema, `.n4a` payload semantics, C ABI or shared contract/fixture; any such change needs at least a **minor** release (for 0.x, every minor is breaking). A consumer raises its range only for a new minor, and a fix needed from a specific patch travels through lockfiles and the release order, not a patch floor.
