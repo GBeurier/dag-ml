@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: CECILL-2.1 OR AGPL-3.0-or-later
+#
+# Accepted RustSec advisories for `cargo audit --deny warnings` (CI runs it from
+# the repository root). Everything not listed here stays denied. Each entry
+# states why no update resolves it and when it must be removed.
+
+[advisories]
+ignore = [
+    # RUSTSEC-2026-0543 "chrono is unmaintained" (informational, assigned
+    # 2026-11-17, `patched = []`: no fixed chrono release exists, 0.4.45 is the
+    # latest). It reports maintenance status, not a vulnerability. chrono is a
+    # mandatory dependency of arrow-array (59.3.2 for dag-ml-arrow, 60.1.0 for
+    # dag-ml-results) and parquet 60.1.0; this repository has no direct chrono
+    # dependency to replace. Remove when Arrow/Parquet resolve without chrono or
+    # the advisory is withdrawn. A chrono vulnerability gets its own advisory
+    # identifier and is still denied.
+    "RUSTSEC-2026-0543",
+]
