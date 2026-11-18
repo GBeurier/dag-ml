@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Refresh current source receipts and W1/D4 packs after all code changes land.
 
-Run this only after the final core/binding edits.  The base pack records exact
-source bytes; D4 then pins that base pack and copies its artifact manifest.
-Changing these in a different order leaves the replay pack internally stale.
+Run this after changing a normative training artifact: a schema or contract
+JSON under docs/contracts, a conformance fixture, or the parity oracle and
+generators.  Rust sources, bindings, scripts, workflows and narrative docs are
+not hash-locked, so ordinary code or documentation edits need no refresh.  D4
+pins the base pack and copies its artifact manifest, so refresh both together.
 """
 
 from __future__ import annotations

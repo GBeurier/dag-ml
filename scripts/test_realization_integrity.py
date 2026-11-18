@@ -56,7 +56,7 @@ class IntegrityCorpus(unittest.TestCase):
                     {'path': 'artifact.txt', 'sha256': digest} for _ in range(count)]}
                 (contracts / name).write_text(json.dumps(packs[name]), encoding='utf-8')
             result = validator.scan_packs(root)
-            self.assertEqual(result['entries'], 439)
+            self.assertEqual(result['entries'], sum(validator.PACKS.values()))
             self.assertEqual(result['counts'], validator.PACKS)
             self.assertEqual(result['stale'], [])
             self.assertEqual(result['validator_sha256'], validator.VALIDATOR_SHA)

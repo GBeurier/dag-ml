@@ -46,8 +46,8 @@ FRAME_DOMAIN = b"DAGML-REALIZATION-FRAME-V1\0"
 COMPLETION_DOMAIN = b"DAGML-REALIZATION-COMPLETE-V1\0"
 SCOPE_DOMAIN = b"DAGML-REALIZATION-SCOPES-V1\0"
 PACKS = {
-    "training_contract_conformance_pack.v1.json": 131,
-    "training_replay_contract_conformance_pack.v1.json": 186,
+    "training_contract_conformance_pack.v1.json": 64,
+    "training_replay_contract_conformance_pack.v1.json": 104,
     "conformal_robustness_conformance_pack.v1.json": 66,
     "criteria_conformance_pack.v1.json": 56,
 }
@@ -549,8 +549,8 @@ def scan_packs(root):
                 stale.append([name, artifact["path"]])
             checked += 1
     require(not stale, "unexpected_stale_set")
-    require(sum(counts.values()) == 439, "pack_total")
-    require(checked == 439, "pack_entries_checked")
+    require(sum(counts.values()) == sum(PACKS.values()), "pack_total")
+    require(checked == sum(PACKS.values()), "pack_entries_checked")
     require(hashlib.sha256((root / "scripts/validate_contracts.py").read_bytes()).hexdigest() == VALIDATOR_SHA, "pinned_validator")
     return {"entries": checked, "counts": counts, "stale": stale, "validator_sha256": VALIDATOR_SHA}
 

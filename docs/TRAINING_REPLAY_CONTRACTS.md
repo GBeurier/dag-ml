@@ -273,6 +273,15 @@ exact transitive D4 closure. Paths are repository-confined regular files: absolu
 traversal and symlink paths are rejected. The pack also freezes the complete positive
 and negative case ID sets.
 
+Both packs hash-lock normative contract artifacts only: schemas and contract JSON under
+`docs/contracts` (including the C ABI snapshot), the conformance fixtures under
+`examples/fixtures`, and the parity oracle, generators and tests under `parity/`.
+Rust sources, bindings, scripts, workflows, tests and narrative documentation are not
+byte-pinned; replay semantics stay protected by the schema, positive/negative fixture
+and oracle validation above and by the Rust, binding and cross-repository CI gates.
+After changing a normative artifact, refresh both packs together with
+`python scripts/refresh_current_training_packs.py`.
+
 The production validator and `training_replay_oracle.py` implement the semantics
 independently and must agree on every positive and negative case. JSON Schema validation
 is offline; unresolved or remote-only references fail the gate.

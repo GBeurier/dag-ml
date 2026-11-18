@@ -45,8 +45,8 @@ PACK_PATH = (
 BASE_PACK_ID = "dag-ml.training-contracts.v1"
 # Derived from the current base pack by generate_fixtures.py.  Keep the replay
 # pack pinned to those bytes/checksum; do not edit a replay artifact hash by hand.
-BASE_PACK_SHA256 = "d52d98f50a074e791bb27b3894385d3c3fdfe5780cbdbb43eadbc9a71a8c5e15"
-BASE_PACK_CHECKSUM = "e2bfc3e4006eb8dc33f4e2db82786ba13a61ae5c1c7c45b602ebb429fb746627"
+BASE_PACK_SHA256 = "c2dd567af77a693e444860ce0fa2e6adc06bcff675f9250b9a8b9903f7540405"
+BASE_PACK_CHECKSUM = "67db4b0d07edef689aada6e1fdebd75cfa0cc09fdd3e5a03ddfab65ae40fa968"
 serde_json_sha256 = _serde_sha256
 LEGACY_AUTHORITY_SHA256 = {
     "docs/contracts/replay_outcome.schema.json": "c57279e8c76e4e2467af0eca5eb59804a2f7bb97bec6cce9d8b23975f223c36a",
@@ -58,14 +58,9 @@ LEGACY_AUTHORITY_SHA256 = {
     "docs/contracts/process_adapter_frame.schema.json": "210616154f82135d9fcae7e4685b23c2ff72773b895177656b0fbcd5248bea3e",
 }
 
+# Normative D4 artifacts only (schemas, fixtures, parity oracle/generator);
+# see BASE_PACK_ARTIFACTS in parity/training/generate_fixtures.py.
 D4_ARTIFACTS = {
-    ".github/workflows/training-replay-contracts.yml": "ci_gate",
-    "docs/TRAINING_REPLAY_CONTRACTS.md": "documentation",
-    "docs/adr/ADR-21-forward-replay-ownership.md": "architecture_decision",
-    "docs/adr/README.md": "documentation_index",
-    "docs/index.md": "documentation_index",
-    "crates/dag-ml-core/src/lib.rs": "training_replay_public_export",
-    "crates/dag-ml-core/src/replay.rs": "training_replay_core_contract",
     "docs/contracts/aggregation_controller_result.v2.schema.json": "schema",
     "docs/contracts/aggregation_controller_result.schema.json": "legacy_schema_authority",
     "docs/contracts/aggregation_controller_task.v2.schema.json": "schema",
@@ -103,14 +98,6 @@ D4_ARTIFACTS = {
     "parity/training/generate_training_replay_fixtures.py": "generator",
     "parity/training/training_replay_oracle.py": "test_oracle",
     "parity/training/tests/test_training_replay_contracts.py": "test",
-    "scripts/requirements-contracts.txt": "ci_dependency",
-    "scripts/validate_training_replay_contracts.py": "production_validator",
-    "crates/dag-ml-core/src/terminal_prediction.rs": "training_replay_terminal_authority",
-    "crates/dag-ml-core/src/initial_refit.rs": "training_replay_initial_refit_authority",
-    "crates/dag-ml-core/tests/external_test_training_authority.rs": "training_replay_authority_test",
-    "crates/dag-ml-cli/tests/cli_contracts.rs": "training_replay_cli_authority_test",
-    "crates/dag-ml-py/tests/test_terminal_predict_facade.py": "training_replay_python_authority_test",
-    "tests/test_external_test_authority_wasm.mjs": "training_replay_wasm_authority_test",
 }
 
 
@@ -1682,15 +1669,9 @@ def _base_pack() -> dict[str, Any]:
         raise ValueError("unexpected base training pack checksum")
     if file_sha256(BASE_PACK_PATH) != BASE_PACK_SHA256:
         raise ValueError("base training pack bytes changed")
-    required_runtime_sources = {
-        "crates/dag-ml-core/src/conformal.rs",
-        "crates/dag-ml-core/src/conformal_runtime.rs",
-        "docs/contracts/coordinator_data_plan_envelope.v2.schema.json",
-        "crates/dag-ml-core/src/runtime/scoring.rs",
-    }
     artifact_paths = {artifact["path"] for artifact in pack.get("artifacts", [])}
-    if not required_runtime_sources <= artifact_paths:
-        raise ValueError("base training pack omits conformal runtime authority")
+    if "docs/contracts/coordinator_data_plan_envelope.v2.schema.json" not in artifact_paths:
+        raise ValueError("base training pack omits the data-plan envelope v2 schema")
     for artifact in pack.get("artifacts", []):
         if artifact_sha256(artifact["path"]) != artifact["sha256"]:
             raise ValueError(f"base training artifact changed: {artifact['path']}")

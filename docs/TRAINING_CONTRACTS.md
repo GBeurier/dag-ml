@@ -901,9 +901,13 @@ and future versions fail closed.
 ## Conformance gates
 
 The dedicated pack is
-`contracts/training_contract_conformance_pack.v1.json`. It hashes the schemas,
-positive and re-fingerprinted negative fixtures, independent oracle, generator,
-tests and this documentation. The primary gates are:
+`contracts/training_contract_conformance_pack.v1.json`. It hashes only normative
+contract artifacts: the schemas and contract JSON under `docs/contracts` (including
+the C ABI snapshot), the positive and re-fingerprinted negative fixtures, and the
+independent parity oracle, generators and tests. Rust sources, bindings, scripts,
+workflows and narrative documentation are covered by their own CI gates and are not
+hash-locked, so editing them needs no pack refresh. After a normative change, run
+`python3 scripts/refresh_current_training_packs.py`. The primary gates are:
 
 ```bash
 python3 parity/training/generate_fixtures.py
