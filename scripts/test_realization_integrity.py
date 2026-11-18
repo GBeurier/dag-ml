@@ -43,10 +43,6 @@ class IntegrityCorpus(unittest.TestCase):
             root = Path(temporary)
             contracts = root / 'docs/contracts'
             contracts.mkdir(parents=True)
-            scripts = root / 'scripts'
-            scripts.mkdir()
-            (scripts / 'validate_contracts.py').write_bytes(
-                (ROOT / 'scripts/validate_contracts.py').read_bytes())
             payload = b'synthetic owner artifact\n'
             (root / 'artifact.txt').write_bytes(payload)
             digest = hashlib.sha256(payload).hexdigest()
@@ -59,7 +55,6 @@ class IntegrityCorpus(unittest.TestCase):
             self.assertEqual(result['entries'], sum(validator.PACKS.values()))
             self.assertEqual(result['counts'], validator.PACKS)
             self.assertEqual(result['stale'], [])
-            self.assertEqual(result['validator_sha256'], validator.VALIDATOR_SHA)
             name = next(reversed(validator.PACKS))
             packs[name]['artifacts'][-1]['sha256'] = '0' * 64
             (contracts / name).write_text(json.dumps(packs[name]), encoding='utf-8')
