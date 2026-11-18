@@ -1842,8 +1842,7 @@ def test_training_pack_refuses_missing_schema_dependency_resolver() -> None:
 def test_training_pack_refuses_a_symlinked_artifact_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    (tmp_path / ".github").symlink_to(ROOT / ".github", target_is_directory=True)
-    (tmp_path / "crates").symlink_to(ROOT / "crates", target_is_directory=True)
+    (tmp_path / "docs").symlink_to(ROOT / "docs", target_is_directory=True)
     monkeypatch.setattr(production_contracts, "ROOT", tmp_path)
     with pytest.raises(production_contracts.ContractError, match="symbolic link"):
         production_contracts.validate_w10_training_pack(

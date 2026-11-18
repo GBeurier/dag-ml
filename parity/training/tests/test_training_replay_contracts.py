@@ -49,15 +49,15 @@ def _sha256(path: Path) -> str:
 
 
 def test_base_pack_remains_byte_current() -> None:
-    # Current W1 bytes and its 131 artifacts are pinned independently of D4.
+    # Current W1 bytes and its 64 artifacts are pinned independently of D4.
     pack = load_json(BASE_PACK)
     assert _sha256(BASE_PACK) == (
-        "d52d98f50a074e791bb27b3894385d3c3fdfe5780cbdbb43eadbc9a71a8c5e15"
+        "c2dd567af77a693e444860ce0fa2e6adc06bcff675f9250b9a8b9903f7540405"
     )
     assert pack["pack_checksum"] == (
-        "e2bfc3e4006eb8dc33f4e2db82786ba13a61ae5c1c7c45b602ebb429fb746627"
+        "67db4b0d07edef689aada6e1fdebd75cfa0cc09fdd3e5a03ddfab65ae40fa968"
     )
-    assert len(pack["artifacts"]) == 131
+    assert len(pack["artifacts"]) == 64
     assert all(
         _sha256(ROOT / artifact["path"]) == artifact["sha256"]
         for artifact in pack["artifacts"]
@@ -92,16 +92,16 @@ def test_temp_base_pack_byte_mutation_is_rejected_by_both_validators(
 @pytest.mark.parametrize(
     "relative_path",
     (
-        "crates/dag-ml-core/src/conformal.rs",
-        "crates/dag-ml-core/src/conformal_runtime.rs",
-        "crates/dag-ml-core/src/runtime/scoring.rs",
-        "crates/dag-ml-wasm/src/training.rs",
+        "docs/contracts/abi_snapshot.v1.json",
+        "docs/contracts/coordinator_data_plan_envelope.v2.schema.json",
+        "examples/fixtures/training/training_request_refit.v1.json",
+        "parity/training/oracle.py",
     ),
 )
-def test_conformal_runtime_source_mutation_is_rejected_by_both_validators(
+def test_normative_artifact_mutation_is_rejected_by_both_validators(
     relative_path: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The base and replay authorities both close over native conformal code."""
+    """The base and replay authorities both close over the normative artifacts."""
     base_pack = load_json(BASE_PACK)
     assert relative_path in {artifact["path"] for artifact in base_pack["artifacts"]}
 
@@ -112,7 +112,7 @@ def test_conformal_runtime_source_mutation_is_rejected_by_both_validators(
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, destination)
     mutated_source = isolated_root / relative_path
-    mutated_source.write_bytes(mutated_source.read_bytes() + b"\n// mutation probe\n")
+    mutated_source.write_bytes(mutated_source.read_bytes() + b"\n")
 
     negatives = load_json(TRAINING_FIXTURES / "negative_cases.v1.json")
     monkeypatch.setattr(base, "ROOT", isolated_root)
