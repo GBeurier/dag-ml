@@ -17,7 +17,11 @@ The canonical positive and negative fixtures are
 `examples/fixtures/criteria/metric_provider_contracts.v1.json`. The exact
 artifact closure is pinned by
 `docs/contracts/criteria_conformance_pack.v1.json` and is validated
-independently by `parity/criteria/oracle.py`.
+independently by `parity/criteria/oracle.py`. The pack hash-locks only
+normative artifacts: the schemas, the generated conformance fixtures (including
+the R and MATLAB host fixtures) and the parity oracle, generator and test. Rust
+sources, bindings, scripts and narrative docs are covered by their own CI gates
+and need no pack refresh when edited.
 
 Metric providers receive a self-fingerprinted `MetricEvaluationTask` containing
 the semantic and implementation references, exact scope, unit identities,

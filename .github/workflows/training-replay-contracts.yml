@@ -21,3 +21,5 @@ jobs:
         run: python scripts/validate_contracts.py
       - name: Validate training replay schemas, semantics and pack
         run: python scripts/validate_training_replay_contracts.py
+      - name: Realization evidence integrity
+        run: python scripts/test_realization_integrity.py

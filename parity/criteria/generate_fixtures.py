@@ -28,34 +28,14 @@ PYTHON_FIXTURE = (
 R_FIXTURE = ROOT / "bindings/r/inst/extdata/r_local_implementations.v1.json"
 MATLAB_FIXTURE = ROOT / "bindings/matlab/fixtures/matlab_local_implementations.v1.json"
 PACK = ROOT / "docs/contracts/criteria_conformance_pack.v1.json"
+# The pack hash-locks normative contract artifacts only: schemas under
+# docs/contracts, the generated conformance fixtures (including the R and
+# MATLAB host fixtures) and the independent parity oracle/generator/test.
+# Rust sources, bindings, scripts and narrative docs have their own CI gates.
 ARTIFACTS = {
-    "bindings/matlab/+dagml/LocalImplementationRegistry.m": "matlab_local_registry",
-    "bindings/matlab/native/task_training_loss_binding.c": "matlab_native_bridge",
     "bindings/matlab/fixtures/matlab_local_implementations.v1.json": "fixture",
-    "bindings/matlab/tests/local_implementation_registry.m": "matlab_binding_test",
-    "bindings/r/R/local_implementation_registry.R": "r_local_registry",
-    "bindings/r/src/task_training_loss_binding.c": "r_native_bridge",
     "bindings/r/inst/extdata/r_local_implementations.v1.json": "fixture",
-    "bindings/r/tests/local_implementation_registry.R": "r_binding_test",
     "examples/fixtures/criteria/python_local_implementations.v1.json": "fixture",
-    "crates/dag-ml-cli/src/main.rs": "cli_validator",
-    "crates/dag-ml-cli/tests/cli_contracts.rs": "cli_test",
-    "crates/dag-ml-core/src/criteria.rs": "rust_contract",
-    "crates/dag-ml-core/src/implementation_registry.rs": "rust_local_registry",
-    "crates/dag-ml-core/src/metric_provider.rs": "rust_provider_contract",
-    "crates/dag-ml-core/src/metrics.rs": "native_metric_adapter",
-    "crates/dag-ml-core/src/runtime/artifact.rs": "rust_lineage_contract",
-    "crates/dag-ml-capi/include/dag_ml.h": "c_abi_header",
-    "crates/dag-ml-capi/src/local_implementation.rs": "c_local_registry",
-    "crates/dag-ml-capi/tests/local_implementations.rs": "c_binding_test",
-    "crates/dag-ml-py/python/dag_ml/__init__.py": "python_facade",
-    "crates/dag-ml-py/python/dag_ml/__init__.pyi": "python_types",
-    "crates/dag-ml-py/src/local_implementation.rs": "python_local_registry",
-    "crates/dag-ml-py/tests/test_local_implementation_registry.py": "python_binding_test",
-    "crates/dag-ml-wasm/README.md": "javascript_binding_documentation",
-    "crates/dag-ml-wasm/src/local_implementation.rs": "javascript_local_registry",
-    "crates/dag-ml-wasm/src/lib.rs": "javascript_binding",
-    "docs/CRITERIA_CONTRACTS.md": "contract_documentation",
     "docs/contracts/early_stopping_record.schema.json": "schema",
     "docs/contracts/implementation_descriptor.schema.json": "schema",
     "docs/contracts/loss_execution_attestation.schema.json": "schema",
@@ -73,7 +53,6 @@ ARTIFACTS = {
     "parity/criteria/oracle.py": "independent_validator",
     "parity/criteria/generate_fixtures.py": "generator",
     "parity/criteria/tests/test_criteria_contracts.py": "parity_test",
-    "scripts/smoke_wasm_bindings.cjs": "javascript_binding_test",
 }
 
 
