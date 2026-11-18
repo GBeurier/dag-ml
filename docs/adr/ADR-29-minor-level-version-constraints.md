@@ -1,6 +1,7 @@
 # ADR-29: Minor-level cross-repository version constraints
 
 **Status**: accepted (2026-11-18)
+**Amended by**: [ADR-30](ADR-30-compatibility-versioning-and-series-ranges.md) (2026-11-18, maintainer rule) — 1.x ranges stop at the next minor (`>=X.Y[.Z],<X.(Y+1)`), a patch floor is allowed when required, and any compatibility break, including an additive ABI version change, needs a minor.
 **Supersedes**: ADR-10 steps 2 and 4 (consumer pin bumps after every release) and its "version pinning becomes a hard CI constraint" consequence.
 **Blocks**: all releases.
 **Scope**: every dependency of a `dag-ml` package on a package from another repository, and every consumer's dependency on `dag-ml`.

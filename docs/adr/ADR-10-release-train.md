@@ -2,7 +2,7 @@
 
 **Status**: accepted (2026-05-28)
 **Blocks**: workstream C (release process), workstream D (Python packaging).
-**Amended by**: [ADR-29](ADR-29-minor-level-version-constraints.md) — consumers use minor-level ranges, so steps 2 and 4 apply only to a new minor.
+**Amended by**: [ADR-29](ADR-29-minor-level-version-constraints.md) and [ADR-30](ADR-30-compatibility-versioning-and-series-ranges.md) — consumers accept one tested minor series, so steps 2 and 4 apply only to a new minor or a required patch floor.
 
 ## Context
 

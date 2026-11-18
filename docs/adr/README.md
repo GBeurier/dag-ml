@@ -13,7 +13,7 @@ Phase 0 of the nirs4all integration roadmap closes the load-bearing decisions be
 | 07 | [Aggregation reducers in contract](ADR-07-aggregation-reducers.md) | accepted | B, E |
 | 08 | [Session / workspace persistence](ADR-08-session-persistence.md) | accepted | E |
 | 09 | [Docs stack](ADR-09-docs-stack.md) | accepted | C |
-| 10 | [Cross-repo release train](ADR-10-release-train.md) | accepted (pin steps superseded by ADR-29) | C, D |
+| 10 | [Cross-repo release train](ADR-10-release-train.md) | accepted (pin steps superseded by ADR-29/ADR-30) | C, D |
 | 11 | [Unified error taxonomy](ADR-11-error-taxonomy.md) | accepted | A, D, E, G |
 | 12 | [Observability hooks](ADR-12-observability-hooks.md) | accepted | A, G |
 | 13 | [Process-adapter security boundary](ADR-13-process-adapter-security.md) | accepted | A, G |
@@ -32,7 +32,8 @@ Phase 0 of the nirs4all integration roadmap closes the load-bearing decisions be
 | 26 | [PREDICT cohort relation boundary](ADR-26-predict-cohort-relation-boundary.md) | proposed | holdout/vote aggregation and PREDICT relation evolution |
 | 27 | [Nested stacking OOF ownership](ADR-27-nested-stacking-oof-ownership.md) | proposed | API-001 stacking, R2 native-default flip |
 | 28 | [Methods RolePipeline archive transport](ADR-28-methods-role-pipeline-archive-v2.md) | accepted | HPO-01 complete native predictor-package persistence |
-| 29 | [Minor-level cross-repository version constraints](ADR-29-minor-level-version-constraints.md) | accepted | all releases |
+| 29 | [Minor-level cross-repository version constraints](ADR-29-minor-level-version-constraints.md) | accepted (decisions 1 and 3 superseded by ADR-30) | all releases |
+| 30 | [Compatibility versioning and tested-series ranges](ADR-30-compatibility-versioning-and-series-ranges.md) | accepted | all releases |
 
 ADR-19 onward extends the registry for feature roadmaps that build on this
 Phase-0 baseline; ADR-19 freezes the unit vocabulary and migration posture for
@@ -76,4 +77,5 @@ ADR-26-predict-cohort-relation-boundary
 ADR-27-nested-stacking-oof-ownership
 ADR-28-methods-role-pipeline-archive-v2
 ADR-29-minor-level-version-constraints
+ADR-30-compatibility-versioning-and-series-ranges
 ```
