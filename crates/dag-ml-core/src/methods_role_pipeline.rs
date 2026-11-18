@@ -552,7 +552,7 @@ impl RuntimeController for MethodsNativeRegressionController {
                     let method = steps
                         .last()
                         .and_then(|step| step["methodId"].as_str())
-                        .expect("preflighted recipe");
+                        .expect("validated recipe");
                     let labels = crate::methods_estimator::class_labels(&data.fit, method)?;
                     model
                         .fit(

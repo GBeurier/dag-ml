@@ -3,8 +3,8 @@
   "pack_id": "dag-ml.training-replay-contracts.v1",
   "mode": "current",
   "base_pack_id": "dag-ml.training-contracts.v1",
-  "base_pack_sha256": "1510c8b7f342655bb1eb90938cac07f4564537b83cd17f82bb5b0eb764a4326d",
-  "base_pack_checksum": "2f7c90a5e63f5d6eb19977e9b81ae10a8e1625f45d890fa2f952dfbf0522a3f5",
+  "base_pack_sha256": "d52d98f50a074e791bb27b3894385d3c3fdfe5780cbdbb43eadbc9a71a8c5e15",
+  "base_pack_checksum": "e2bfc3e4006eb8dc33f4e2db82786ba13a61ae5c1c7c45b602ebb429fb746627",
   "base_pack_mode": "current",
   "hash_algorithm": "sha256-file-bytes",
   "canonical_profile": "DAG-ML TCV1",
@@ -126,7 +126,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/initial_refit.rs",
-      "sha256": "40404ed5e7e8fcf53e6978de18b698ee7bc7ec9a165b9798d332d11a3dcf8e72",
+      "sha256": "616ccd1a34039011f670bf123b5e37e595c8dc2aa865708b770d20e43e314356",
       "kind": "training_replay_initial_refit_authority"
     },
     {
@@ -206,7 +206,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/runtime/scheduler.rs",
-      "sha256": "147644e396cabaf7b9ba7021972d1c9e66a19e66f9efe90b392c83ac04657f14",
+      "sha256": "c2189c51a4e26b65fffa2a665fd7f5b1a08d2914d54686bba4f3438fb1ec7145",
       "kind": "base_native_hpo_scheduler"
     },
     {
@@ -241,7 +241,7 @@
     },
     {
       "path": "crates/dag-ml-core/src/training_runtime.rs",
-      "sha256": "64f7476af0eb5f15092fb87c44e6e1e2b8d62f09b5212c8941362daa46b08ea4",
+      "sha256": "d3d2935f89230c0f2fc8f8b8191a6a79b9ab5589673455485b04ea466bd6ca5f",
       "kind": "base_native_runtime_contract"
     },
     {
@@ -261,12 +261,12 @@
     },
     {
       "path": "crates/dag-ml-core/tests/training_runtime_operation.rs",
-      "sha256": "71278988f40c075d58218e90e8479a2e722458c1a3eac04868586777c799cc80",
+      "sha256": "ce11c685dc4ddabf94aee26a72810b15331fd99b0b7023fdef059acb370843fa",
       "kind": "base_native_integration_test"
     },
     {
       "path": "crates/dag-ml-py/Cargo.lock",
-      "sha256": "1cb94eb8d74e9e97fe7bb31cfee4db18575c62e089c0f19327a350922df64ae8",
+      "sha256": "d1935d3f54b3543193d382d72f654117640816f73dab76424c23f64fa89808fb",
       "kind": "base_python_binding_lockfile"
     },
     {
@@ -366,7 +366,7 @@
     },
     {
       "path": "docs/contracts/abi_snapshot.v1.json",
-      "sha256": "ad2e113dd879137a4159a56709645b5f72dd7d4227ac81123e56c79cb405d438",
+      "sha256": "c0c24754698ad8d1fc6ba7d0bed1b3166de161bbbb4f6f328035c7939a3ac2c4",
       "kind": "base_c_abi_snapshot"
     },
     {
@@ -636,7 +636,7 @@
     },
     {
       "path": "docs/contracts/training_contract_conformance_pack.v1.json",
-      "sha256": "1510c8b7f342655bb1eb90938cac07f4564537b83cd17f82bb5b0eb764a4326d",
+      "sha256": "d52d98f50a074e791bb27b3894385d3c3fdfe5780cbdbb43eadbc9a71a8c5e15",
       "kind": "base_conformance_pack"
     },
     {
@@ -866,7 +866,7 @@
     },
     {
       "path": "parity/training/generate_training_replay_fixtures.py",
-      "sha256": "93aad21de2c094318b35665477ea9a6dad23f3ba05c35cbac11ce37abd155260",
+      "sha256": "612547615a9dd5efcb4e369914798bb3aec53f30ebac90571dc0bafe340371d4",
       "kind": "generator"
     },
     {
@@ -881,7 +881,7 @@
     },
     {
       "path": "parity/training/tests/test_training_replay_contracts.py",
-      "sha256": "9817a27e302d4315cce8f294d5aa5bdffc3dacd0b97adfbcf3e8f44013c19013",
+      "sha256": "dceabaf1168e1e4f9593bd8ee2e533e207c1ccf7f7716862805cda5fc76636d8",
       "kind": "test"
     },
     {
@@ -926,7 +926,7 @@
     },
     {
       "path": "scripts/validate_training_replay_contracts.py",
-      "sha256": "e4f7524452e40c6e74fc1fab90e0d854fb44474b08a9d18d9704958ccef08686",
+      "sha256": "5a3dda76ed0bb5271403da556b73342dfc0e95842ea0a1eb2c8a971c5002a779",
       "kind": "production_validator"
     },
     {
@@ -1016,5 +1016,5 @@
     "d4_replay_legacy_wrapper_rejects_explicit_port",
     "d4_score_set_v2_duplicate_port_aware_key"
   ],
-  "pack_checksum": "4339c6647082dbc63a9d7d5cb1ae29e368d14082de6aad19eb5e13ae0d0b1b82"
+  "pack_checksum": "24cc0b70089dcf09533f7ba1388263122890defe623bad71ec9e8e6b4ba9dddf"
 }

@@ -4627,7 +4627,7 @@ fn native_training_refuses_methods_hpo_before_provider_data_work() {
 
     assert!(error
         .to_string()
-        .contains("native Methods HPO preflight failed before data access"));
+        .contains("native Methods HPO availability check failed before data access"));
     assert_eq!(provider.next_handle.load(Ordering::SeqCst), 0);
     assert_eq!(state.total(), 0);
     assert!(store.is_empty());

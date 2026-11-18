@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.4 - Unreleased
+
+- Error messages no longer use the word "preflight", which users read as the
+  separate nirs4all-preflight library. The native Methods HPO refusals now
+  read "native Methods HPO availability check failed before data access" and
+  "native Methods HPO lacks its validated descriptor"; internal invariant
+  messages that a WASM panic could surface say "validated" instead of
+  "preflighted". Messages only: identifiers, API names, schema fields, error
+  codes and fixture keys are unchanged. No schema, ABI or wire format changes.
+
 ## 0.4.3 - Unreleased
 
 - Accept multimodal classifier states written by Methods ABI 2.22 and later

@@ -532,7 +532,7 @@ pub fn execute_initial_full_refit(
             let controller = input
                 .controllers
                 .get(&artifact.record.controller_id)
-                .expect("preflighted controller");
+                .expect("validated controller");
             let payload = controller
                 .export_artifact_payload(&artifact.record.artifact.id)?
                 .ok_or_else(|| {
@@ -840,7 +840,7 @@ pub fn execute_initial_full_refit_prediction(
             .outputs
             .iter()
             .find(|binding| binding.output_id == *output_id)
-            .expect("preflighted output");
+            .expect("validated output");
         let mut matches = results
             .iter()
             .flat_map(|result| result.predictions.iter())

@@ -690,7 +690,7 @@ impl HpoExecutionContext<'_> {
             descriptor
                 .refit_inner_fold_set
                 .as_ref()
-                .expect("preflighted REFIT folds"),
+                .expect("validated REFIT folds"),
             previous.as_ref().map(|p| &p.refit_scope),
             metric,
             producer,
@@ -939,7 +939,7 @@ impl HpoExecutionContext<'_> {
         // refusal must not be masked by unrelated host state.
         methods_optimizer_preflight().map_err(|error| {
             DagMlError::RuntimeValidation(format!(
-                "native Methods HPO preflight failed before data access: {error}"
+                "native Methods HPO availability check failed before data access: {error}"
             ))
         })?;
 
@@ -2310,7 +2310,7 @@ fn consume_methods_hpo_resume_transport(plan: &mut ExecutionPlan) -> Result<()> 
         .get_mut("methods_hpo_operation")
         .ok_or_else(|| {
             DagMlError::RuntimeValidation(
-                "native Methods HPO lacks its preflighted descriptor".into(),
+                "native Methods HPO lacks its validated descriptor".into(),
             )
         })?;
     let raw = operation.as_object_mut().ok_or_else(|| {
