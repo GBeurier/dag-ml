@@ -738,7 +738,7 @@ impl SequentialScheduler {
         let fold_ids = candidate_plan
             .fold_set
             .as_ref()
-            .expect("progressive HPO topology was preflighted")
+            .expect("progressive HPO topology was validated")
             .folds
             .iter()
             .map(|fold| Some(fold.fold_id.clone()))
