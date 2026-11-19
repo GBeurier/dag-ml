@@ -51,7 +51,7 @@ def test_ci_and_local_selector_use_the_published_dynamic_binding() -> None:
         (ROOT / "crates" / "dag-ml-core" / "Cargo.toml").read_text(encoding="utf-8")
     )
     dependency = primary["dependencies"]["n4m"]
-    assert dependency["version"] == "0.4"
+    assert dependency["version"] == "0.5"
     assert dependency["default-features"] is False
     assert dependency["features"] == ["dynamic"]
     assert "git" not in dependency
@@ -85,7 +85,7 @@ def test_ci_and_local_selector_use_the_published_dynamic_binding() -> None:
         "registry+https://github.com/rust-lang/crates.io-index"
     )
     assert locked_n4m[0]["checksum"] == (
-        "dfb4564672f8d6c167d3e292d0eeed2e6029f97841efd966accbce4b724d48a8"
+        "9ef0776a28102b3593a3bb5468aa96910bc6e1e10a0ef488ff174157794c3f5a"
     )
 
     workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")

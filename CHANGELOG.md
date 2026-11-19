@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.5.0 - 2026-11-19
+
+- Qualify the Methods 1.5 series: Rust consumers use the published `n4m` 0.5
+  series, the optional Python `multimodal` extra requires
+  `nirs4all-methods>=1.5.0,<1.6`, and packaged WASM host adapters declare the
+  optional npm peer `@nirs4all/methods~1.5.0`.
+- This is a numerical compatibility change from the previously qualified
+  Methods 1.3 series: Methods 1.4 corrected near-constant-column autoscaling
+  used by native role pipelines, including StandardScale and Ridge. Advancing
+  the tested runtime cohort therefore requires a DAG-ML minor release even
+  though its orchestration, public function signatures, schema and ABI symbols
+  are unchanged.
+  Existing scientific fixtures, declared algorithms and tolerances are retained.
+- The native `methods-optimizer` runtime and portable-profile admission now
+  require Methods ABI 2.24, matching the `n4m` 0.5 binding. Older ABI 2.22/2.23
+  runtimes are explicitly refused; historical model artifact reader minima
+  remain independent and unchanged.
+- Methods 1.5 separately corrects Preflight PCA diagnostic score entry points;
+  DAG-ML's native and multimodal PCA controllers use generic estimator roles
+  instead and do not call those diagnostic entry points.
+- Qualify shared contracts against DMD 0.2.17. W1/D4 release-byte receipts
+  follow the package-version metadata; scientific fixture bytes are unchanged.
+
 ## 0.4.5 - Unreleased
 
 - Add an opt-in classification mode to `N4mWasmSourceController`
