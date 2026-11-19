@@ -38,7 +38,7 @@ RolePipeline: `methodClass`, `NativeEstimator.fit`/`transform`/`toN4me`, and
 manifest admits optional multisource numeric `x` and `x_original` ports;
 prediction-only meta heads bind neither, and hybrid heads bind `x_original`.
 
-### Source-composition classification (0.4.5)
+## Source-composition classification (0.4.5)
 
 `new N4mWasmSourceController({..., task: "classification", classLabels})`
 opts into classification; the default `task: "regression"` and its payloads are
