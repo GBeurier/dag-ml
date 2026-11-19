@@ -16,12 +16,18 @@ export interface SourceControllerOptions {
   resolveTargets(request: {sampleIds: string[]; targetNames: string[]; task: Record<string, any>}): HostRows;
   targetNames?: string[]; controllerId?: string; digest(bytes: Uint8Array): string;
   onTask?: ((task: {nodeId: string; phase: string; foldId: string | null}) => void) | null;
+  /** Default 'regression'. Classification needs one target whose values are class ids 0..k-1. */
+  task?: 'regression' | 'classification';
+  /** Classification only: ordered vocabulary; class id i is classLabels[i]. */
+  classLabels?: string[] | null;
 }
 export declare class N4mWasmSourceController {
   constructor(options: SourceControllerOptions);
   readonly controllerId: string; readonly controllerVersion: string;
   readonly callback: (controllerId: string, taskJson: string, exactSeed?: string | null) => string;
   readonly audit: Array<Record<string, unknown>>;
+  readonly task: 'regression' | 'classification';
+  readonly classification: boolean;
   manifest(dagMl: {derive_controller_manifest_json(json: string): string}): Record<string, unknown>;
   artifactPayload(id: string): Uint8Array;
   hydrate(request: ControllerArtifactRequest, payload: Uint8Array): ControllerModelHandle;

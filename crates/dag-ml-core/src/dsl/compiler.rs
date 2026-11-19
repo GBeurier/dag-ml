@@ -1131,11 +1131,24 @@ impl PipelineCompiler {
     ) -> Result<MergeOutputSource> {
         let consumes_predictions = merge_consumes_predictions(step);
         let consumes_branch_data = merge_consumes_branch_data(step);
+        let label_fusion = step.merge_mode == FUSION_PROBA_MEAN_LABEL;
+        if label_fusion && step.output_as != PipelineDslMergeOutput::Predictions {
+            return Err(DagMlError::GraphValidation(format!(
+                "pipeline DSL merge `{}` merge_mode `{FUSION_PROBA_MEAN_LABEL}` requires output_as=predictions",
+                step.id
+            )));
+        }
         let prediction_inputs = if consumes_predictions {
-            predictions
+            self.route_merge_source_ports(&step.id, predictions, &step.source_ports)?
+        } else if !step.source_ports.is_empty() {
+            return Err(DagMlError::GraphValidation(format!(
+                "pipeline DSL merge `{}` source_ports require prediction inputs",
+                step.id
+            )));
         } else {
-            &[]
+            Vec::new()
         };
+        let prediction_inputs = prediction_inputs.as_slice();
         let branch_data_inputs = if consumes_branch_data {
             branch_data
         } else {
@@ -1245,6 +1258,12 @@ impl PipelineCompiler {
         }
         let branch_id = branch_id_from_metadata(&extra_metadata);
         metadata.extend(extra_metadata);
+        if label_fusion {
+            metadata.insert(
+                "auxiliary_prediction_ports".to_string(),
+                serde_json::json!([FUSION_PROBABILITY_PORT]),
+            );
+        }
         let node = NodeSpec {
             id: step.id.clone(),
             kind: merge_node_kind(
@@ -1256,7 +1275,13 @@ impl PipelineCompiler {
             params: BTreeMap::new(),
             ports: PortSchema {
                 inputs: input_ports,
-                outputs: if outputs_prediction {
+                outputs: if label_fusion {
+                    // Scored class ids plus the auxiliary mean distribution.
+                    vec![
+                        prediction_port("prediction", ""),
+                        prediction_port(FUSION_PROBABILITY_PORT, ""),
+                    ]
+                } else if outputs_prediction {
                     vec![prediction_port("prediction", "")]
                 } else {
                     vec![data_port("x_out", representation.clone(), "")]
@@ -1305,6 +1330,46 @@ impl PipelineCompiler {
                 representation,
             }))
         }
+    }
+
+    /// Apply a merge's per-source prediction-port overrides to its pending sources.
+    fn route_merge_source_ports(
+        &self,
+        merge_id: &NodeId,
+        predictions: &[PredictionSource],
+        source_ports: &BTreeMap<NodeId, String>,
+    ) -> Result<Vec<PredictionSource>> {
+        if source_ports
+            .keys()
+            .any(|id| !predictions.iter().any(|source| &source.node_id == id))
+        {
+            return Err(DagMlError::GraphValidation(format!(
+                "pipeline DSL merge `{merge_id}` source_ports names an undeclared source"
+            )));
+        }
+        predictions
+            .iter()
+            .map(|pending| {
+                let mut source = pending.clone();
+                if let Some(requested_port) = source_ports.get(&source.node_id) {
+                    let node = self
+                        .nodes
+                        .iter()
+                        .find(|node| node.id == source.node_id)
+                        .expect("pending prediction source is compiled");
+                    if !node.ports.outputs.iter().any(|port| {
+                        port.kind == PortKind::Prediction && port.name == *requested_port
+                    }) {
+                        return Err(DagMlError::GraphValidation(format!(
+                            "pipeline DSL merge `{merge_id}` source `{}` has no prediction output `{requested_port}`",
+                            source.node_id
+                        )));
+                    }
+                    source.port_name = requested_port.clone();
+                }
+                Ok(source)
+            })
+            .collect()
     }
 
     fn compile_merge_model_with_extra(
@@ -2367,6 +2432,10 @@ pub(crate) fn same_data_source(left: &DataSource, right: &DataSource) -> bool {
         && left.port_name == right.port_name
         && left.representation == right.representation
 }
+/// Native class-probability mean fusion that also emits argmax class ids.
+pub(crate) const FUSION_PROBA_MEAN_LABEL: &str = "fusion_proba_mean_label";
+/// Auxiliary distribution port of [`FUSION_PROBA_MEAN_LABEL`] merges.
+pub(crate) const FUSION_PROBABILITY_PORT: &str = "probabilities";
 pub(crate) fn merge_consumes_predictions(step: &PipelineDslMergeStep) -> bool {
     match step.output_as {
         PipelineDslMergeOutput::Predictions => true,

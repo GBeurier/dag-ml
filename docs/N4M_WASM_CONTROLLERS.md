@@ -38,6 +38,45 @@ RolePipeline: `methodClass`, `NativeEstimator.fit`/`transform`/`toN4me`, and
 manifest admits optional multisource numeric `x` and `x_original` ports;
 prediction-only meta heads bind neither, and hybrid heads bind `x_original`.
 
+### Source-composition classification (0.4.5)
+
+`new N4mWasmSourceController({..., task: "classification", classLabels})`
+opts into classification; the default `task: "regression"` and its payloads are
+unchanged. `classLabels` is the ordered vocabulary (at least two unique strings)
+and class id `i` names `classLabels[i]`, as the IO categorical target gives them.
+`resolveTargets` returns one column of class ids. Every head's terminal Methods
+role must be `classifier` (regression refuses a classifier-only head); a source
+or head pre-step whose manifest requires a continuous `y` is refused, and class
+ids reach a transform only when its manifest requires `labels`. After every fit
+and hydration the head's `classes()` must equal `0..k-1`: a fit scope missing a
+class or a wrong vocabulary is refused, never padded or reordered. Use
+stratified folds (`stratified_kfold_split_json`, inner
+`{kind: "stratified_kfold", strata}`) so each fit scope sees each class.
+
+Each node emits scored class ids on `oof` and, when the head declares native
+`predict_proba` (`pls_logistic`, `pls_qda`), vocabulary-ordered distributions on
+the auxiliary `probabilities` port with columns `<target>:<label>`. Declare it on
+such nodes with `prediction_output_ports: ["probabilities"]`. `regression_targets`
+carries the class ids. Bind training outputs as
+`{port_name: "oof", prediction_kind: "class_label", class_labels: [classLabels]}`
+(select with `balanced_accuracy`, `maximize`) and optionally
+`{port_name: "probabilities", prediction_kind: "class_probability",
+output_order: "target_major_class_minor"}` to replay distributions. Payloads add
+`task` and `class_labels`; hydration requires both to match the controller.
+
+A classification stacking meta-model (`merge_model`) must route each base node
+through `source_ports: {<node>: "probabilities"}`; it admits only `k`-wide
+probability rows and refuses label inputs. Mean late fusion uses the native merge
+`{kind: "merge", merge_mode: "fusion_proba_mean_label", output_as: "predictions",
+source_ports: {<node>: "probabilities"}}`: the renormalized mean distribution is
+its auxiliary `probabilities` output and the scored `prediction` output is its
+argmax column as a class id (ties take the lowest id). Bind
+`port_name: "prediction"` as the `class_label` output.
+`scripts/test_wasm_n4m_source_classification.mjs <package> <methods-dist>` runs
+single-source, early-fusion, probability-stacking and mean-fusion classification
+through FIT_CV, balanced-accuracy selection, REFIT and no-fit package replay, and
+the refusals above.
+
 When a native fixed fusion merge binds fitted-training Final predictions,
 declare graph/DSL merge metadata `refit_prediction_partition: "final"`. This
 explicit REFIT mode consumes only current-invocation branch results and requires

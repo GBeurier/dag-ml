@@ -2224,6 +2224,7 @@ pub(crate) fn rewrite_step_node_refs(
             }
         }
         PipelineDslStep::Merge(step) => {
+            rewrite_source_ports(&step.id, &mut step.source_ports, node_map, "merge")?;
             rewrite_merge_selectors(&mut step.selectors, node_map);
         }
         PipelineDslStep::MergeModel(step) => {
@@ -2232,16 +2233,24 @@ pub(crate) fn rewrite_step_node_refs(
                     *source = mapped.clone();
                 }
             }
-            let source_ports = std::mem::take(&mut step.source_ports);
-            for (source, port) in source_ports {
-                let mapped = node_map.get(&source).unwrap_or(&source).clone();
-                if step.source_ports.insert(mapped.clone(), port).is_some() {
-                    return Err(DagMlError::GraphValidation(format!(
-                        "pipeline DSL generated merge_model `{}` source port references collide at `{mapped}`", step.id,
-                    )));
-                }
-            }
+            rewrite_source_ports(&step.id, &mut step.source_ports, node_map, "merge_model")?;
             rewrite_merge_selectors(&mut step.selectors, node_map);
+        }
+    }
+    Ok(())
+}
+fn rewrite_source_ports(
+    step_id: &NodeId,
+    source_ports: &mut BTreeMap<NodeId, String>,
+    node_map: &BTreeMap<NodeId, NodeId>,
+    kind: &str,
+) -> Result<()> {
+    for (source, port) in std::mem::take(source_ports) {
+        let mapped = node_map.get(&source).unwrap_or(&source).clone();
+        if source_ports.insert(mapped.clone(), port).is_some() {
+            return Err(DagMlError::GraphValidation(format!(
+                "pipeline DSL generated {kind} `{step_id}` source port references collide at `{mapped}`",
+            )));
         }
     }
     Ok(())

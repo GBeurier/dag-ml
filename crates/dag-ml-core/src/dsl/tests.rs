@@ -626,6 +626,110 @@ fn merge_model_routes_explicit_auxiliary_prediction_ports_without_changing_prima
 }
 
 #[test]
+fn label_fusion_merge_routes_branch_distributions_and_declares_label_and_probability_ports() {
+    let spec = |merge: serde_json::Value| -> PipelineDslSpec {
+        serde_json::from_value(serde_json::json!({
+            "id": "dsl-label-fusion",
+            "steps": [
+                {"kind": "branch", "branches": [
+                    {"id": "a", "steps": [{"kind": "model", "id": "model:a",
+                        "operator": {"type": "Classifier"}, "prediction_output_ports": ["probabilities"]}]},
+                    {"id": "b", "steps": [{"kind": "model", "id": "model:b",
+                        "operator": {"type": "Classifier"}, "prediction_output_ports": ["probabilities"]}]}
+                ]},
+                merge
+            ]
+        }))
+        .unwrap()
+    };
+    let graph = compile_pipeline_dsl(&spec(serde_json::json!({
+        "kind": "merge", "id": "merge:mean", "merge_mode": "fusion_proba_mean_label",
+        "output_as": "predictions", "include_original_data": false,
+        "source_ports": {"model:a": "probabilities", "model:b": "probabilities"}
+    })))
+    .unwrap();
+    let merge = graph
+        .nodes
+        .iter()
+        .find(|node| node.id.as_str() == "merge:mean")
+        .unwrap();
+    assert_eq!(merge.kind, NodeKind::PredictionJoin);
+    assert_eq!(
+        merge
+            .ports
+            .outputs
+            .iter()
+            .map(|port| port.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["prediction", "probabilities"]
+    );
+    assert_eq!(
+        merge.metadata["auxiliary_prediction_ports"],
+        serde_json::json!(["probabilities"])
+    );
+    let sources = graph
+        .edges
+        .iter()
+        .filter(|edge| edge.target.node_id == merge.id)
+        .map(|edge| (edge.source.node_id.as_str(), edge.source.port_name.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        sources,
+        vec![("model:a", "probabilities"), ("model:b", "probabilities")]
+    );
+    graph.validate().unwrap();
+
+    // Without overrides an ordinary merge keeps the primary `oof` edges and one output.
+    let plain = compile_pipeline_dsl(&spec(serde_json::json!({
+        "kind": "merge", "id": "merge:mean", "merge_mode": "fusion",
+        "output_as": "predictions", "include_original_data": false
+    })))
+    .unwrap();
+    assert!(plain
+        .edges
+        .iter()
+        .filter(|edge| edge.target.node_id.as_str() == "merge:mean")
+        .all(|edge| edge.source.port_name == "oof"));
+    let plain_merge = plain
+        .nodes
+        .iter()
+        .find(|node| node.id.as_str() == "merge:mean")
+        .unwrap();
+    assert_eq!(plain_merge.ports.outputs.len(), 1);
+    assert!(!plain_merge
+        .metadata
+        .contains_key("auxiliary_prediction_ports"));
+
+    for (merge, message) in [
+        (
+            serde_json::json!({"kind": "merge", "id": "merge:mean", "merge_mode": "fusion_proba_mean_label",
+                "output_as": "predictions", "include_original_data": false,
+                "source_ports": {"model:z": "probabilities"}}),
+            "source_ports names an undeclared source",
+        ),
+        (
+            serde_json::json!({"kind": "merge", "id": "merge:mean", "merge_mode": "fusion_proba_mean_label",
+                "output_as": "predictions", "include_original_data": false,
+                "source_ports": {"model:a": "proba"}}),
+            "has no prediction output `proba`",
+        ),
+        (
+            serde_json::json!({"kind": "merge", "id": "merge:mean", "merge_mode": "fusion_proba_mean_label",
+                "include_original_data": false}),
+            "requires output_as=predictions",
+        ),
+        (
+            serde_json::json!({"kind": "merge", "id": "merge:x", "merge_mode": "concat",
+                "source_ports": {"model:a": "probabilities"}}),
+            "source_ports require prediction inputs",
+        ),
+    ] {
+        let error = compile_pipeline_dsl(&spec(merge)).unwrap_err().to_string();
+        assert!(error.contains(message), "{error}");
+    }
+}
+
+#[test]
 fn merge_model_compiles_per_branch_probability_selector() {
     let spec: PipelineDslSpec = serde_json::from_value(serde_json::json!({
         "id": "dsl-branch-proba",

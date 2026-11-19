@@ -57,6 +57,26 @@ function operatorRecipe(operator) {
   return structuredClone(operator);
 }
 
+function refuseContinuousSupervision(declaration, role) {
+  require(declaration.inputs?.y !== 'required',
+    `Classification refuses ${role} method ${declaration.method_id} because it requires a continuous y; class ids are not a response`);
+}
+
+// One probability row per sample, ordered by the declared vocabulary. Rows are
+// never padded, reordered or renormalized here.
+const PROBABILITY_TOLERANCE = 1e-8;
+function requireDistributions(rows, width, label) {
+  require(rows.every(row => row.length === width && row.every(value => Number.isFinite(value) && value >= 0 && value <= 1) &&
+    Math.abs(row.reduce((sum, value) => sum + value, 0) - 1) <= PROBABILITY_TOLERANCE),
+  `${label} must be finite class-probability distributions over the ${width} declared classes`);
+}
+
+function classVocabulary(labels) {
+  require(Array.isArray(labels) && labels.length >= 2 && labels.every(label => typeof label === 'string' && label.length > 0) &&
+    new Set(labels).size === labels.length, 'Classification requires an ordered vocabulary of at least two unique nonempty class labels');
+  return [...labels];
+}
+
 function join(blocks) {
   require(blocks.length > 0, 'No raw or prediction features supplied');
   const sampleIds = ids(blocks[0].sampleIds, 'Joined rows');
@@ -89,11 +109,14 @@ class NativeSourceChain {
     this.estimators = [];
   }
 
-  fit(X, y, manifest) {
+  /** `labels` (class ids) is non-null only in classification mode. */
+  fit(X, y, manifest, labels = null) {
     let current = X;
     for (const step of this.declarations) {
       const declaration = manifest.get(step.methodId);
       require(declaration, `Method ${step.methodId} is absent from the loaded native manifest`);
+      // Class ids are not a continuous response: a y-supervised transform is refused.
+      if (labels !== null) refuseContinuousSupervision(declaration, 'source');
       const Estimator = this.methods.methodClass(step.methodId);
       const estimator = new Estimator();
       require(estimator instanceof this.methods.NativeEstimator && typeof estimator.transform === 'function',
@@ -101,7 +124,9 @@ class NativeSourceChain {
       this.estimators.push(estimator);
       estimator.params = structuredClone(step.params ?? {});
       // Route targets per step, never to target-independent preprocessing.
-      estimator.fit(current, declaration.inputs?.y === 'required' ? y : undefined);
+      // Classification routes class ids only to a step that declares labels.
+      estimator.fit(current, labels !== null ? (declaration.inputs?.labels === 'required' ? labels : undefined) :
+        declaration.inputs?.y === 'required' ? y : undefined);
       current = estimator.transform(current);
       matrix(current, X.rows);
     }
@@ -134,8 +159,10 @@ class NativeSourceChain {
 /** Separate artifact profile: source chains + ordered blocks + native head. */
 export class N4mWasmSourceController extends N4mWasmRegressionController {
   constructor({ methods, operators, resolveSource, resolveTargets, targetNames = ['y'], digest,
-    controllerId = 'controller:methods.wasm.sources', onTask = null }) {
+    controllerId = 'controller:methods.wasm.sources', onTask = null, task = 'regression', classLabels = null }) {
     require(typeof resolveSource === 'function' && typeof methods.manifest === 'function', 'Methods manifest and source resolver required');
+    require(task === 'regression' || task === 'classification', 'Source composition task must be regression or classification');
+    require(task === 'classification' || classLabels === null, 'Class labels are declared only in classification mode');
     const recipes = Object.fromEntries(Object.entries(operators).map(([id, operator]) => [id, operatorRecipe(operator)]));
     super({ methods, operators: recipes, resolveFeatures: () => { throw new Error('Use the declared source resolver'); },
       resolveTargets, targetNames, digest, controllerId, controllerVersion: N4M_SOURCE_CONTROLLER_VERSION });
@@ -143,7 +170,61 @@ export class N4mWasmSourceController extends N4mWasmRegressionController {
     this.methodManifest = new Map(methods.manifest().methods.map(method => [method.method_id, method]));
     this.onTask = onTask;
     this.audit = [];
+    this.task = task;
+    if (task === 'classification') {
+      // Class ids are the 0..k-1 positions of this declared vocabulary.
+      this.classLabels = classVocabulary(classLabels);
+      this.classIds = this.classLabels.map((_, id) => id);
+      require(this.targetNames.length === 1, 'Classification requires exactly one categorical target');
+    }
+    for (const recipe of Object.values(recipes)) {
+      this._headRole(recipe.steps);
+      if (this.classification) for (const step of recipe.sourceOps.flatMap(source => source.steps)) {
+        const declaration = this.methodManifest.get(step.methodId);
+        require(declaration, `Method ${step.methodId} is absent from the loaded native manifest`);
+        refuseContinuousSupervision(declaration, 'source');
+      }
+    }
     this.callback = this.invoke.bind(this);
+  }
+
+  get classification() { return this.task === 'classification'; }
+
+  /** Refuse a head whose terminal role disagrees with the declared task. */
+  _headRole(headSteps) {
+    const terminal = this.methodManifest.get(headSteps.at(-1).methodId);
+    if (!this.classification) {
+      require(!terminal || !(terminal.roles?.includes('classifier') && !terminal.roles?.includes('regressor')),
+        `Regression refuses classifier head ${headSteps.at(-1).methodId}; declare task: 'classification'`);
+      return null;
+    }
+    require(terminal && Array.isArray(terminal.roles) && terminal.roles.includes('classifier'),
+      `Classification requires a native classifier head; ${headSteps.at(-1).methodId} is not one`);
+    for (const step of headSteps.slice(0, -1)) {
+      const declaration = this.methodManifest.get(step.methodId);
+      require(declaration, `Method ${step.methodId} is absent from the loaded native manifest`);
+      refuseContinuousSupervision(declaration, 'head');
+    }
+    // Only a head with a native predict_proba emits the probability port.
+    return { probabilities: (terminal.capabilities ?? []).includes('predict_proba') };
+  }
+
+  _targets(sampleIds, task) {
+    const resolved = super._targets(sampleIds, task);
+    if (this.classification) require(resolved.data.every(value => Number.isInteger(value) && value >= 0 && value < this.classIds.length),
+      'Classification targets must be class ids of the declared vocabulary');
+    return resolved;
+  }
+
+  /** Classification meta-models consume only signed probability rows, never labels. */
+  _predictions(task, outer) {
+    if (this.classification) for (const [key, input] of Object.entries(task.prediction_inputs ?? {})) {
+      require(input.source_port === 'probabilities' && input.prediction_width === this.classIds.length,
+        `Classification meta-model refuses prediction input ${key}: only ${this.classIds.length}-class probabilities are admitted, never labels`);
+      require(Array.isArray(input.values), 'Native prediction inputs require rows');
+      requireDistributions(input.values, this.classIds.length, `Prediction input ${key}`);
+    }
+    return super._predictions(task, outer);
   }
 
   manifest(dagMl) {
@@ -221,12 +302,13 @@ export class N4mWasmSourceController extends N4mWasmRegressionController {
     let head;
     try {
       const y = this._targets(train.sampleIds, task);
+      const labels = this.classification ? Array.from(y.data) : null;
       for (let index = 0; index < recipe.sourceOps.length; index++) {
         const source = recipe.sourceOps[index], block = train.raw[index];
         if (!source.steps.length) { chains.push(null); continue; }
         const chain = new NativeSourceChain(this.methods, source.steps);
         chains.push(chain);
-        chain.fit(block.matrix, y, this.methodManifest);
+        chain.fit(block.matrix, y, this.methodManifest, labels);
       }
       const features = this._encoded(train, recipe, chains);
       const effectiveSteps = structuredClone(recipe.steps);
@@ -246,7 +328,8 @@ export class N4mWasmSourceController extends N4mWasmRegressionController {
         require(declaration, `Method ${step.methodId} is absent from the loaded native manifest`);
         return declaration.inputs?.blocks === 'required' || declaration.inputs?.blocks === 'optional';
       });
-      head.fit(features.matrix, y, { featureNames: features.featureNames, ...(acceptsBlocks ? { blocks: features.blocks } : {}) });
+      head.fit(features.matrix, labels ?? y, { featureNames: features.featureNames, ...(acceptsBlocks ? { blocks: features.blocks } : {}) });
+      if (labels !== null) this._requireVocabulary(head, `fit scope ${task.phase}/${task.fold_id ?? 'full'}`);
       this.audit.push({ nodeId: task.node_plan.node_id, phase: task.phase, foldId: task.fold_id,
         sampleIds: [...train.sampleIds], sourceIds: recipe.sourceOps.map(source => source.source_id),
         blockWidths: [...features.blocks], featureNames: [...features.featureNames], seed });
@@ -258,6 +341,45 @@ export class N4mWasmSourceController extends N4mWasmRegressionController {
 
   _dispose(entry) { entry.model.dispose(); entry.chains.forEach(chain => chain?.dispose()); }
 
+  /** Never pad or reorder: every fitted head must know exactly the declared class ids. */
+  _requireVocabulary(head, scope) {
+    const classes = Array.from(head.classes());
+    require(same(classes, this.classIds), `Classifier ${scope} knows classes ${JSON.stringify(classes)}, not the declared ` +
+      `vocabulary ids ${JSON.stringify(this.classIds)}; a fit scope lacks a class or the vocabulary is wrong`);
+  }
+
+  _result(task, features, model, artifacts, artifactHandles) {
+    if (!this.classification) return super._result(task, features, model, artifacts, artifactHandles);
+    const node = task.node_plan, k = this.classIds.length;
+    const recipe = operatorRecipe(this.operators[node.node_id]), head = this._headRole(recipe.steps);
+    const labels = Array.from(model.predictLabels(features.matrix, features.featureNames));
+    require(labels.length === features.sampleIds.length && labels.every(label => Number.isInteger(label) && label >= 0 && label < k),
+      'Native class predictions must be declared class ids');
+    const block = (port, values, targetNames) => ({ producer_node: node.node_id, producer_port: port,
+      partition: task.phase === 'FIT_CV' ? 'validation' : 'final', fold_id: task.fold_id,
+      sample_ids: features.sampleIds, values, target_names: targetNames });
+    const predictions = [block('oof', labels.map(label => [label]), this.targetNames)];
+    if (head.probabilities) {
+      const proba = model.predictProba(features.matrix, features.featureNames);
+      matrix(proba, features.sampleIds);
+      require(proba.cols === k, 'Native class probabilities disagree with the declared vocabulary width');
+      const rows = Array.from({ length: proba.rows }, (_, row) => Array.from(proba.data.subarray(row * k, (row + 1) * k)));
+      requireDistributions(rows, k, 'Native class probabilities');
+      // Column j is class id j; names follow the class_probability output contract.
+      predictions.push(block('probabilities', rows, this.classLabels.map(label => `${this.targetNames[0]}:${label}`)));
+    }
+    const targets = task.phase === 'FIT_CV' ? [{ level: 'sample', unit_ids: features.sampleIds.map(id => ({ level: 'sample', id })),
+      values: Array.from(this._targets(features.sampleIds, task).data, id => [id]), target_names: this.targetNames }] : [];
+    return JSON.stringify({ node_id: node.node_id, outputs: {}, predictions, regression_targets: targets, artifacts,
+      artifact_handles: artifactHandles, lineage: {
+        record_id: ['lineage:methods-wasm', task.run_id, node.node_id, task.phase, task.variant_id ?? 'base', task.fold_id ?? 'full'].join(':'),
+        run_id: task.run_id, node_id: node.node_id, phase: task.phase, controller_id: this.controllerId,
+        controller_version: this.controllerVersion, variant_id: task.variant_id, fold_id: task.fold_id, branch_path: task.branch_path,
+        input_lineage: [], artifact_refs: artifacts, params_fingerprint: node.params_fingerprint, data_model_shape_fingerprint: null,
+        aggregation_policy_fingerprint: null, seed: null, unsafe_flags: [], metrics: {}, loss_attestations: [], early_stopping_records: [],
+      } });
+  }
+
   hydrate(request, payload) {
     require(!this.closed && request.controller_id === this.controllerId && payload instanceof Uint8Array &&
       this._hash(payload) === request.artifact.content_fingerprint, 'Invalid source-composition payload owner or hash');
@@ -266,6 +388,10 @@ export class N4mWasmSourceController extends N4mWasmRegressionController {
       saved.controller_version === this.controllerVersion && saved.node_id === request.node_id &&
       saved.params_fingerprint === request.params_fingerprint && same(saved.target_names, this.targetNames),
     'Source-composition payload belongs to another profile/node/target');
+    // Classification fields exist only in classification payloads and bind the vocabulary.
+    require(this.classification ? saved.task === 'classification' && same(saved.class_labels, this.classLabels) :
+      !Object.hasOwn(saved, 'task') && !Object.hasOwn(saved, 'class_labels'),
+    'Source-composition payload task or class vocabulary differs from this controller');
     const recipe = operatorRecipe(saved.recipe);
     require(same(recipe, operatorRecipe(this.operators[request.node_id])),
       'Saved source operations, schemas or head parameters differ from the declared operator');
@@ -290,6 +416,7 @@ export class N4mWasmSourceController extends N4mWasmRegressionController {
         step.params.seed = BigInt.asIntN(64, BigInt(saved.execution_seed)).toString();
       require(same(expected, saved.effective_steps), 'Effective head recipe differs');
       head = this.methods.RolePipeline.fromStates(saved.effective_steps, saved.head_states.map(stateBytes), { featureNames: saved.feature_names });
+      if (this.classification) this._requireVocabulary(head, 'hydrated head');
       return this._handle({ model: head, chains, recipe, effectiveSteps: saved.effective_steps,
         featureNames: saved.feature_names, blockWidths: saved.block_widths, nodeId: saved.node_id,
         paramsFingerprint: saved.params_fingerprint, artifactId: request.artifact.id,
@@ -353,7 +480,8 @@ export class N4mWasmSourceController extends N4mWasmRegressionController {
           recipe, execution_seed: seed, effective_steps: entry.effectiveSteps, feature_names: entry.featureNames,
           block_widths: entry.blockWidths, prediction_width: cohort.prediction?.matrix.cols ?? 0,
           source_states: entry.chains.map(chain => chain ? chain.exportStates().map(state => Array.from(state.n4me)) : []),
-          head_states: entry.model.exportStates().map(state => Array.from(state.n4me)) };
+          head_states: entry.model.exportStates().map(state => Array.from(state.n4me)),
+          ...(this.classification ? { task: 'classification', class_labels: this.classLabels } : {}) };
         const payload = new TextEncoder().encode(JSON.stringify(state)), hash = this._hash(payload);
         const artifactId = `artifact:sources:${this._hash(new TextEncoder().encode(JSON.stringify([task.run_id, node.node_id, task.variant_id])))}`;
         require(!this.artifacts.has(artifactId), 'Duplicate source REFIT artifact');
@@ -361,7 +489,7 @@ export class N4mWasmSourceController extends N4mWasmRegressionController {
           backend: 'raw', uri: `artifacts/${hash}.json`, content_fingerprint: hash, size_bytes: payload.length,
           plugin: 'dagml.methods.wasm.sources', plugin_version: this.controllerVersion };
         const result = strictJson(this._result(task, features, entry.model, [artifact], {}));
-        if (cohort.refitPredict) result.predictions[0].partition = 'test';
+        if (cohort.refitPredict) result.predictions.forEach(block => { block.partition = 'test'; });
         // A native REFIT task may carry an explicitly admitted test data view.
         // Emit its predictions in addition to the final training-cohort rows;
         // no raw test row is ever used to fit a source chain or the head.
@@ -371,7 +499,7 @@ export class N4mWasmSourceController extends N4mWasmRegressionController {
           require(same(testFeatures.featureNames, entry.featureNames) && same(testFeatures.blocks, entry.blockWidths),
             'REFIT test feature/block contract differs');
           const testResult = strictJson(this._result(task, testFeatures, entry.model, [], {}));
-          testResult.predictions[0].partition = 'test';
+          testResult.predictions.forEach(block => { block.partition = 'test'; });
           result.predictions.push(...testResult.predictions);
         }
         const handle = this._handle({ ...entry, nodeId: node.node_id, paramsFingerprint: node.params_fingerprint,

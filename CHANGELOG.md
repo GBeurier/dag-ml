@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.4.5 - Unreleased
+
+- Add an opt-in classification mode to `N4mWasmSourceController`
+  (`task: "classification"`, ordered `classLabels`). Heads must be Methods
+  classifiers; nodes emit scored class ids on `oof` and vocabulary-ordered
+  `predict_proba` rows on the auxiliary `probabilities` port; fits whose
+  `classes()` differ from the declared vocabulary, y-supervised source steps and
+  label inputs to a classification meta-model are refused. Classification
+  payloads add `task` and `class_labels`. Regression mode, its payloads and
+  outputs are unchanged (byte-identical outcomes, packages and replays).
+- Pipeline DSL `merge` steps accept `source_ports` (as `merge_model` does) to
+  consume a non-primary prediction port of a pending source; absent overrides
+  keep the primary `oof` edges and the existing graph bytes.
+- New native merge mode `fusion_proba_mean_label`: the renormalized mean of the
+  branches' probability rows is emitted on the auxiliary `probabilities` port
+  and its argmax column (lowest column on ties) as a scored class-id
+  `prediction`, scored against the branches' label truth, so mean late fusion
+  can be a `class_label` training output. Existing merge modes are unchanged.
+  Purely additive: no schema, ABI or wire-format change.
+
 ## 0.4.4 - Unreleased
 
 - Error messages no longer use the word "preflight", which users read as the

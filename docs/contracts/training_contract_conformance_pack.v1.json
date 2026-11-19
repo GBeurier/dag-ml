@@ -6,7 +6,7 @@
   "artifacts": [
     {
       "path": "docs/contracts/abi_snapshot.v1.json",
-      "sha256": "c0c24754698ad8d1fc6ba7d0bed1b3166de161bbbb4f6f328035c7939a3ac2c4",
+      "sha256": "f8d17225b8d2bb26bcaabb1f53b8a62653a44f4e689e021f7289e796b13d69f4",
       "kind": "c_abi_snapshot"
     },
     {
@@ -394,5 +394,5 @@
     "d2_no_refit_without_refit_support",
     "d2_no_refit_missing_portable_oof_payload"
   ],
-  "pack_checksum": "67db4b0d07edef689aada6e1fdebd75cfa0cc09fdd3e5a03ddfab65ae40fa968"
+  "pack_checksum": "9c46ab3eaab8505c3af80b83eb6995fa8a689db88a77cb02ff99e9fb513b6520"
 }
