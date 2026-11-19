@@ -73,3 +73,12 @@ Decisions 2, 4 and 5 are unchanged. Existing ranges that predate the amendment
 at the next normal release; `n4m` is 0.x, so the `MAJOR.MINOR` requirement
 checked by `scripts/validate_release_metadata.py` already stops at the next
 minor.
+
+## Alignment (2026-11-19)
+
+The Methods 1.5 release cohort applies the amended rule: `dag-ml-core` and
+`dag-ml-cli` use `n4m = "0.5"`, the Python `multimodal` extra accepts
+`nirs4all-methods>=1.5.0,<1.6`, and the packaged WASM host adapters declare
+`@nirs4all/methods` as an optional `~1.5.0` peer. The historical decisions and
+examples above retain their provenance; the active manifests select only this
+tested series.

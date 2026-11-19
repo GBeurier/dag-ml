@@ -41,8 +41,8 @@ jobs:
           set -euo pipefail
           peer_repo="GBeurier/dag-ml-data"
           branch="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
-          # Qualified dag-ml-data v0.2.16, pinned to its immutable release commit.
-          ref="eb2ad7835ca85feebf6f626d9f43f61575a1c9a9"
+          # Qualified dag-ml-data v0.2.17, pinned to its immutable release commit.
+          ref="854d5bebd88e1de761283139189735c349a6226c"
           paired="false"
 
           if [ "$branch" != "main" ] && git ls-remote --exit-code --heads "https://github.com/${peer_repo}.git" "$branch" >/dev/null 2>&1; then

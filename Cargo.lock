@@ -459,14 +459,14 @@ dependencies = [
 
 [[package]]
 name = "dag-ml"
-version = "0.4.5"
+version = "0.5.0"
 dependencies = [
  "dag-ml-core",
 ]
 
 [[package]]
 name = "dag-ml-arrow"
-version = "0.4.5"
+version = "0.5.0"
 dependencies = [
  "arrow-array 59.3.2",
  "arrow-ipc 59.3.2",
@@ -479,7 +479,7 @@ dependencies = [
 
 [[package]]
 name = "dag-ml-capi"
-version = "0.4.5"
+version = "0.5.0"
 dependencies = [
  "dag-ml-core",
  "serde",
@@ -489,7 +489,7 @@ dependencies = [
 
 [[package]]
 name = "dag-ml-cli"
-version = "0.4.5"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -504,7 +504,7 @@ dependencies = [
 
 [[package]]
 name = "dag-ml-core"
-version = "0.4.5"
+version = "0.5.0"
 dependencies = [
  "indexmap",
  "n4m",
@@ -520,7 +520,7 @@ dependencies = [
 
 [[package]]
 name = "dag-ml-results"
-version = "0.4.5"
+version = "0.5.0"
 dependencies = [
  "arrow-array 60.1.0",
  "arrow-schema 60.1.0",
@@ -533,7 +533,7 @@ dependencies = [
 
 [[package]]
 name = "dag-ml-wasm"
-version = "0.4.5"
+version = "0.5.0"
 dependencies = [
  "dag-ml-core",
  "js-sys",
@@ -815,9 +815,9 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "n4m"
-version = "0.4.2"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dfb4564672f8d6c167d3e292d0eeed2e6029f97841efd966accbce4b724d48a8"
+checksum = "9ef0776a28102b3593a3bb5468aa96910bc6e1e10a0ef488ff174157794c3f5a"
 dependencies = [
  "cc",
  "libloading",

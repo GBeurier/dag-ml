@@ -19,8 +19,8 @@ generators. See [structural host HPO](HOST_STRUCTURAL_HPO.md) for the immutable
 catalogue, active parameter axes, checkpoint identities and winner REFIT path.
 
 The `dag-ml-core` crate exposes the opt-in public `methods-optimizer` Cargo
-feature through the published dynamic `n4m` 0.4 binding (a minor-level range,
-locked at 0.4.2: Methods ABI 2.22, generic estimator roles and authoritative
+feature through the published dynamic `n4m` 0.5 binding (a minor-level range,
+locked at 0.5.0: Methods ABI 2.24, generic estimator roles and authoritative
 runtime ABI querying). Both tracked lockfiles resolve the immutable crates.io
 checksum; the runtime ABI check, not the crate version, accepts a library. Default builds leave
 that feature disabled and refuse HPO before an
@@ -229,8 +229,8 @@ JSON-deserialized outcome replay in a new process/controller without retaining
 the refit controller's in-memory handles.
 
 The `dag-ml-core/Cargo.toml` manifest offers an opt-in `methods-optimizer`
-feature targeting the published `n4m` 0.4.1. The manifest
-declares the actual API minimum rather than calling a getter absent in 0.4.0.
+feature targeting the published `n4m` 0.5 series, qualified with Methods 1.5.
+The binding retains the descriptor getter introduced in 0.4.1 and absent in 0.4.0.
 Default builds and extracted crates do not link, load,
 or require a Methods checkout. A caller must explicitly configure an absolute
 `libn4m` file through `MethodsRuntime::configure` before constructing either Methods
@@ -238,18 +238,18 @@ controller; there is no `PATH`, current-directory, sibling-checkout, or
 legacy fallback.
 
 The local integration helper activates the published feature and that
-compiler-only test selector. The current cohort uses the Methods v1.3.9 source
+compiler-only test selector. The retained v1.3.9 qualification used source
 commit `b246b5029cc62cf0cc369df2611069498f2da183` (ABI 2.20);
 its C++ runtime is byte-identical to the preceding qualified `a286ec65` source.
 The separate historical registry qualification predates N4MM format 3;
-the new cohort requires the published 0.4.1 binding described above. The generic
+the current cohort uses Methods 1.5 (`n4m` 0.5, ABI 2.24). The generic
 estimator tests read `parity/fixtures/estimator_roles_n4me.json` from that
 checkout (`N4M_ESTIMATOR_ROLES_FIXTURE`, defaulting to
 `external/nirs4all-methods`). Build that checkout and invoke
 the helper from the workspace root:
 
 ```bash
-METHODS_SHA=09495e52bc1314612025f0fd1911b4811eb113e6
+METHODS_SHA=70b631cc36d0fed830bcacd34dd7bc4291a30dc3
 git -C /absolute/path/to/nirs4all-methods fetch --depth=1 origin "$METHODS_SHA"
 git -C /absolute/path/to/nirs4all-methods checkout --detach "$METHODS_SHA"
 make -C /absolute/path/to/nirs4all-methods build PRESET=dev-release

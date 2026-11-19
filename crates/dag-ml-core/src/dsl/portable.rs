@@ -2,7 +2,7 @@
 use super::*;
 use serde_json::{json, Map, Value};
 
-/// Qualified SparsePLSDA width refusal and canonical MBPLS require Methods 1.3.15.
+/// The qualified Methods 1.5 cohort uses the n4m 0.5 binding's ABI 2.24 floor.
 /// This ABI floor does not qualify private numerical snapshots sharing that ABI.
 pub const PORTABLE_RUN_METHODS_MIN_ABI: (u32, u32) =
     (crate::METHODS_ABI_MAJOR, crate::METHODS_RUNTIME_ABI_MINOR);
