@@ -8153,7 +8153,13 @@ def validate_training_outcome(value: Any, label: str) -> dict[str, Any]:
             return (
                 node["kind"] == "prediction_join"
                 and node.get("metadata", {}).get("merge_mode")
-                in {"concat", "fusion", "fusion_proba_mean", "residual_fusion"}
+                in {
+                    "concat",
+                    "fusion",
+                    "fusion_proba_mean",
+                    "fusion_proba_mean_label",
+                    "residual_fusion",
+                }
                 and not {"stateful", "emits_artifacts"}.intersection(
                     node_plan["controller_capabilities"]
                 )

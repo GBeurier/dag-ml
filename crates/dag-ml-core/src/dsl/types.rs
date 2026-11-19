@@ -547,6 +547,10 @@ pub struct PipelineDslMergeStep {
     pub on_missing: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub selectors: Vec<PipelineDslMergeSelector>,
+    /// Optional prediction-port override per pending prediction source, as for
+    /// `merge_model`. Missing entries keep each source's primary `oof` output.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub source_ports: BTreeMap<NodeId, String>,
     #[serde(default)]
     pub metadata: BTreeMap<String, serde_json::Value>,
     #[serde(default)]

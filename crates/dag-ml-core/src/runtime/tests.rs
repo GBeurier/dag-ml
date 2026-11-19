@@ -21053,6 +21053,327 @@ impl RuntimeController for ProbaBranchController {
     }
 }
 
+/// A classifier branch emitting scored class ids on `oof`, its distribution on
+/// the auxiliary `probabilities` port and the label truth, for label fusion.
+struct LabelProbaBranchController {
+    id: ControllerId,
+    rows: BTreeMap<String, Vec<f64>>,
+    truth: BTreeMap<String, f64>,
+    emit_labels: bool,
+}
+
+impl RuntimeController for LabelProbaBranchController {
+    fn controller_id(&self) -> &ControllerId {
+        &self.id
+    }
+
+    fn invoke(&self, task: &NodeTask) -> Result<NodeResult> {
+        let node_id = task.node_plan.node_id.to_string();
+        let samples: Vec<SampleId> = task
+            .data_views
+            .values()
+            .find(|view| view.partition == DataRequestPartition::FoldValidation)
+            .and_then(|view| view.sample_ids.clone())
+            .unwrap_or_default();
+        let row = self.rows[&node_id].clone();
+        let label = super::merge::class_id_of_distribution(&row) as f64;
+        let block = |port: &str, values: Vec<Vec<f64>>, names: Vec<String>| PredictionBlock {
+            prediction_id: Some(format!("pred:{node_id}:{port}")),
+            producer_node: task.node_plan.node_id.clone(),
+            producer_port: Some(port.to_string()),
+            partition: PredictionPartition::Validation,
+            fold_id: task.fold_id.clone(),
+            sample_ids: samples.clone(),
+            values,
+            target_names: names,
+        };
+        let mut predictions = Vec::new();
+        let mut regression_targets = Vec::new();
+        if task.phase == Phase::FitCv && !samples.is_empty() {
+            if self.emit_labels {
+                predictions.push(block(
+                    "oof",
+                    samples.iter().map(|_| vec![label]).collect(),
+                    vec!["y".into()],
+                ));
+                regression_targets.push(RegressionTargetBlock {
+                    level: PredictionLevel::Sample,
+                    unit_ids: samples
+                        .iter()
+                        .cloned()
+                        .map(PredictionUnitId::Sample)
+                        .collect(),
+                    values: samples
+                        .iter()
+                        .map(|sample| vec![self.truth[sample.as_str()]])
+                        .collect(),
+                    validity_masks: None,
+                    target_names: vec!["y".into()],
+                });
+            }
+            predictions.push(block(
+                "probabilities",
+                samples.iter().map(|_| row.clone()).collect(),
+                vec!["y:a".into(), "y:b".into(), "y:c".into()],
+            ));
+        }
+        let handle = HandleRef {
+            handle: 1,
+            kind: HandleKind::Prediction,
+            owner_controller: self.id.clone(),
+        };
+        Ok(NodeResult {
+            schema_version: None,
+            classification_probabilities: Vec::new(),
+            consumed_data_views: BTreeMap::new(),
+            node_id: task.node_plan.node_id.clone(),
+            outputs: BTreeMap::from([
+                ("oof".to_string(), handle.clone()),
+                ("probabilities".to_string(), handle),
+            ]),
+            predictions,
+            observation_predictions: Vec::new(),
+            aggregated_predictions: Vec::new(),
+            explanations: Vec::new(),
+            shape_deltas: Vec::new(),
+            artifacts: Vec::new(),
+            artifact_handles: BTreeMap::new(),
+            fit_influence_diagnostics: Vec::new(),
+            regression_targets,
+            lineage: LineageRecord {
+                record_id: LineageId::new(format!(
+                    "lineage:{node_id}:{}",
+                    task.fold_id.as_ref().map_or("full", |fold| fold.as_str())
+                ))
+                .unwrap(),
+                run_id: task.run_id.clone(),
+                node_id: task.node_plan.node_id.clone(),
+                phase: task.phase,
+                controller_id: self.id.clone(),
+                controller_version: task.node_plan.controller_version.clone(),
+                variant_id: task.variant_id.clone(),
+                fold_id: task.fold_id.clone(),
+                branch_path: task.branch_path.clone(),
+                input_lineage: Vec::new(),
+                artifact_refs: Vec::new(),
+                params_fingerprint: task.node_plan.params_fingerprint.clone(),
+                data_model_shape_fingerprint: None,
+                aggregation_policy_fingerprint: None,
+                seed: task.seed,
+                unsafe_flags: BTreeSet::new(),
+                metrics: BTreeMap::new(),
+                loss_attestations: Vec::new(),
+                early_stopping_records: Vec::new(),
+                target_domain: None,
+            },
+        })
+    }
+}
+
+fn run_label_fusion(emit_labels: bool) -> Result<RunContext> {
+    let classifier = |id: &str| {
+        let mut node = node(
+            id,
+            NodeKind::Model,
+            vec![port("x", PortKind::Data)],
+            vec![
+                port("oof", PortKind::Prediction),
+                port("probabilities", PortKind::Prediction),
+            ],
+        );
+        // Without labels the distributions are an ordinary declared output.
+        if emit_labels {
+            node.metadata.insert(
+                "auxiliary_prediction_ports".into(),
+                serde_json::json!(["probabilities"]),
+            );
+        }
+        node
+    };
+    let mut merge = node(
+        "merge:mean",
+        NodeKind::PredictionJoin,
+        ["A", "B"]
+            .iter()
+            .map(|branch| port(&format!("oof_model:{branch}"), PortKind::Prediction))
+            .collect(),
+        vec![
+            port("prediction", PortKind::Prediction),
+            port("probabilities", PortKind::Prediction),
+        ],
+    );
+    merge.metadata.insert(
+        "merge_mode".into(),
+        serde_json::json!(crate::dsl::FUSION_PROBA_MEAN_LABEL),
+    );
+    merge.metadata.insert(
+        "auxiliary_prediction_ports".into(),
+        serde_json::json!(["probabilities"]),
+    );
+    let edge = |branch: &str| {
+        let mut edge = branch_to_merge_edge(branch, "merge:mean");
+        edge.source.port_name = "probabilities".into();
+        edge
+    };
+    let graph = GraphSpec {
+        id: "graph:fusion.label".to_string(),
+        interface: GraphInterface::default(),
+        nodes: vec![classifier("model:A"), classifier("model:B"), merge],
+        edges: vec![edge("model:A"), edge("model:B")],
+        search_space_fingerprint: None,
+        metadata: BTreeMap::new(),
+    };
+    let samples: Vec<SampleId> = ["sample:1", "sample:2"]
+        .iter()
+        .map(|s| SampleId::new(*s).unwrap())
+        .collect();
+    let fold = |index: usize| FoldAssignment {
+        fold_id: FoldId::new(format!("fold:{index}")).unwrap(),
+        train_sample_ids: vec![samples[1 - index].clone()],
+        validation_sample_ids: vec![samples[index].clone()],
+        metadata: BTreeMap::new(),
+    };
+    let fold_set = FoldSet {
+        id: "folds:fusion.label".to_string(),
+        sample_ids: samples.clone(),
+        folds: vec![fold(0), fold(1)],
+        sample_groups: BTreeMap::new(),
+        partition_mode: FoldPartitionMode::Partition,
+        train_exclusion: FoldTrainExclusion::Relations,
+        target_missing_sample_ids: Vec::new(),
+    };
+    let (id_a, id_b) = (
+        NodeId::new("model:A").unwrap(),
+        NodeId::new("model:B").unwrap(),
+    );
+    let campaign = CampaignSpec {
+        inner_cv: None,
+        id: "campaign:fusion.label".to_string(),
+        root_seed: Some(7),
+        leakage_policy: Default::default(),
+        aggregation_policy: Default::default(),
+        split_invocation: Some(SplitInvocation {
+            id: "split:fusion.label".to_string(),
+            controller_id: None,
+            leakage_policy: Default::default(),
+            params: BTreeMap::new(),
+            fold_set: Some(fold_set),
+        }),
+        generation: Default::default(),
+        shape_plans: BTreeMap::new(),
+        data_bindings: BTreeMap::from([
+            (id_a.clone(), vec![data_binding(&id_a)]),
+            (id_b.clone(), vec![data_binding(&id_b)]),
+        ]),
+        branch_view_plans: Vec::new(),
+        metadata: BTreeMap::new(),
+    };
+    let mut registry = ControllerRegistry::new();
+    registry
+        .register(controller_manifest("controller:model", NodeKind::Model))
+        .unwrap();
+    registry
+        .register(merge_controller_manifest("controller:merge"))
+        .unwrap();
+    let plan = build_execution_plan("plan:fusion.label", graph, campaign, &registry).unwrap();
+    let provider = InMemoryDataProvider::with_envelope(
+        ControllerId::new("controller:data").unwrap(),
+        sample_relations_envelope(&[("sample:1", "A"), ("sample:2", "B")]),
+    )
+    .unwrap();
+    let mut controllers = RuntimeControllerRegistry::new();
+    controllers
+        .register(Box::new(LabelProbaBranchController {
+            id: ControllerId::new("controller:model").unwrap(),
+            // A favours class 0, B class 2; their mean [0.4, 0.2, 0.4] ties.
+            rows: BTreeMap::from([
+                ("model:A".to_string(), vec![0.7, 0.2, 0.1]),
+                ("model:B".to_string(), vec![0.1, 0.2, 0.7]),
+            ]),
+            truth: BTreeMap::from([("sample:1".into(), 0.0), ("sample:2".into(), 2.0)]),
+            emit_labels,
+        }))
+        .unwrap();
+    let mut ctx = RunContext::new(RunId::new("run:fusion.label").unwrap(), Some(7));
+    SequentialScheduler.execute_campaign_phase_with_data_provider(
+        &plan,
+        &controllers,
+        &provider,
+        &mut ctx,
+        Phase::FitCv,
+    )?;
+    ctx.collect_cross_fold_validation_scores(plan_oof_partition_mode(&plan))?;
+    Ok(ctx)
+}
+
+#[test]
+fn fusion_proba_mean_label_scores_argmax_class_ids_and_keeps_the_mean_distribution() {
+    let ctx = run_label_fusion(true).unwrap();
+    let merge_id = NodeId::new("merge:mean").unwrap();
+    let blocks = ctx
+        .prediction_store
+        .blocks()
+        .iter()
+        .filter(|block| block.producer_node == merge_id)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        blocks.len(),
+        4,
+        "one label and one distribution block per fold"
+    );
+    for block in &blocks {
+        assert_eq!(block.partition, PredictionPartition::Validation);
+        match block.producer_port.as_deref() {
+            // The tied mean resolves deterministically to the lowest class id.
+            Some("prediction") => {
+                assert_eq!(block.values, vec![vec![0.0]]);
+                assert_eq!(block.target_names, vec!["y".to_string()]);
+            }
+            Some("probabilities") => {
+                let row = &block.values[0];
+                assert!((row[0] - 0.4).abs() < 1e-12 && (row[1] - 0.2).abs() < 1e-12);
+                assert_eq!(block.target_names, vec!["y:a", "y:b", "y:c"]);
+            }
+            other => panic!("unexpected merge port {other:?}"),
+        }
+    }
+    let average = ctx
+        .score_collector
+        .iter()
+        .find(|report| {
+            report.producer_node == merge_id
+                && report
+                    .fold_id
+                    .as_ref()
+                    .is_some_and(|fold| fold.as_str() == "avg")
+        })
+        .expect("label fusion is scored against the branches' label truth");
+    assert_eq!(average.producer_port.as_deref(), Some("prediction"));
+    assert_eq!(average.metrics["accuracy"], 0.5);
+    assert_eq!(average.metrics["balanced_accuracy"], 0.5);
+    assert!(ctx.score_collector.iter().all(|report| {
+        report.producer_node != merge_id || report.producer_port.as_deref() == Some("prediction")
+    }));
+}
+
+#[test]
+fn fusion_proba_mean_label_refuses_branches_without_scored_class_ids() {
+    let Err(error) = run_label_fusion(false) else {
+        panic!("labels are required");
+    };
+    assert!(error
+        .to_string()
+        .contains("needs exactly one scored single-target class-id block"));
+}
+
+#[test]
+fn label_fusion_argmax_takes_the_lowest_tied_column() {
+    use super::merge::class_id_of_distribution;
+    assert_eq!(class_id_of_distribution(&[0.2, 0.5, 0.3]), 1);
+    assert_eq!(class_id_of_distribution(&[0.4, 0.2, 0.4]), 0);
+    assert_eq!(class_id_of_distribution(&[0.25, 0.375, 0.375]), 1);
+}
+
 /// A model controller manifest that supports FIT_CV AND REFIT/PREDICT, so the
 /// base branch nodes run in REFIT/PREDICT (the default `controller_manifest` is
 /// FIT_CV-only). Used by the off-fold (test/predict) merge tests.

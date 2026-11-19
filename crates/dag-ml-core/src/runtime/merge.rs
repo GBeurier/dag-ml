@@ -25,6 +25,12 @@ pub(crate) enum MergeReduction {
     /// vector, averaged and renormalized to a valid distribution. DSL
     /// `merge_mode == "fusion_proba_mean"`.
     FusionProbaMean,
+    /// [`MergeReduction::FusionProbaMean`] whose scored primary `prediction`
+    /// output is the class id of each fused distribution (its argmax column;
+    /// ties take the lowest column), with the renormalized mean distribution on
+    /// the auxiliary `probabilities` port. Column `j` of every branch block is
+    /// class id `j`. DSL `merge_mode == "fusion_proba_mean_label"`.
+    FusionProbaMeanLabel,
     /// Base prediction plus a calibrated residual learner correction.
     ResidualFusion,
 }
@@ -178,6 +184,7 @@ pub(crate) fn merge_reduction_mode(
         Some("concat") => Some(MergeReduction::Concat),
         Some("fusion") => Some(MergeReduction::Fusion),
         Some("fusion_proba_mean") => Some(MergeReduction::FusionProbaMean),
+        Some(crate::dsl::FUSION_PROBA_MEAN_LABEL) => Some(MergeReduction::FusionProbaMeanLabel),
         Some("residual_fusion") => Some(MergeReduction::ResidualFusion),
         _ => None,
     }
@@ -247,6 +254,7 @@ pub(crate) fn reassemble_branch_merge(
         MergeReduction::Concat => reassemble_separation_merge(plan, node_plan, ctx, scope),
         MergeReduction::Fusion
         | MergeReduction::FusionProbaMean
+        | MergeReduction::FusionProbaMeanLabel
         | MergeReduction::ResidualFusion => {
             reassemble_fusion_merge(plan, node_plan, ctx, scope, reduction)
         }
@@ -326,6 +334,7 @@ pub(crate) fn reassemble_branch_merge_off_fold(
     // branch may emit none (a modelless / sparse branch); coverage is the union of
     // what is present.
     let mut branch_blocks: Vec<PredictionBlock> = Vec::new();
+    let mut label_names: Vec<Vec<String>> = Vec::new();
     let mut partition: Option<PredictionPartition> = None;
     let mut by_sample_target: BTreeMap<SampleId, Vec<f64>> = BTreeMap::new();
     let mut target_block_names: Option<Vec<String>> = None;
@@ -355,7 +364,12 @@ pub(crate) fn reassemble_branch_merge_off_fold(
                 .filter(|block| block.fold_id.is_none())
                 .collect()
         };
-        let blocks = filter_prediction_blocks_for_edge_source_port(plan, edge, blocks)?;
+        let scope_blocks = blocks;
+        let blocks = filter_prediction_blocks_for_edge_source_port(
+            plan,
+            edge,
+            scope_blocks.iter().copied(),
+        )?;
         if blocks.is_empty() {
             if final_refit {
                 return Err(DagMlError::RuntimeValidation(format!(
@@ -376,7 +390,9 @@ pub(crate) fn reassemble_branch_merge_off_fold(
         if final_refit
             && matches!(
                 reduction,
-                MergeReduction::Fusion | MergeReduction::FusionProbaMean
+                MergeReduction::Fusion
+                    | MergeReduction::FusionProbaMean
+                    | MergeReduction::FusionProbaMeanLabel
             )
             && branch_blocks.first().is_some_and(|first| {
                 first.sample_ids.iter().collect::<BTreeSet<_>>()
@@ -397,6 +413,15 @@ pub(crate) fn reassemble_branch_merge_off_fold(
             }
             _ => {}
         }
+        if reduction == MergeReduction::FusionProbaMeanLabel {
+            label_names.push(label_fusion_companion_names(
+                plan,
+                branch_id,
+                edge,
+                &scope_blocks,
+                block,
+            )?);
+        }
         branch_blocks.push(block.clone());
 
         // Reassemble this branch's off-fold y_true (same phase-expected partition /
@@ -412,13 +437,16 @@ pub(crate) fn reassemble_branch_merge_off_fold(
                 || record.fold_id.is_some()
                 || record.partition != expected_partition
                 || record.variant_id != variant_id
-                || !producer_port_matches_edge_source_port(
+                // Label fusion consumes distributions; truth is the branch's per-sample
+                // label record, which the disagreement check below keeps consistent.
+                || (reduction != MergeReduction::FusionProbaMeanLabel
+                    && !producer_port_matches_edge_source_port(
                     plan,
                     edge,
                     &record.producer_node,
                     record.producer_port.as_deref(),
                     "regression target record",
-                )?
+                )?)
             {
                 continue;
             }
@@ -457,7 +485,7 @@ pub(crate) fn reassemble_branch_merge_off_fold(
         MergeReduction::Fusion => {
             reduce_predictions_across_branches(&branch_blocks, None, &node_plan.node_id)?
         }
-        MergeReduction::FusionProbaMean => {
+        MergeReduction::FusionProbaMean | MergeReduction::FusionProbaMeanLabel => {
             reduce_proba_mean_across_branches(&branch_blocks, &node_plan.node_id)?
         }
         MergeReduction::ResidualFusion => {
@@ -480,7 +508,7 @@ pub(crate) fn reassemble_branch_merge_off_fold(
         .map(|sample_id| by_sample[sample_id].clone())
         .collect();
 
-    let regression_targets = reassemble_merge_targets(
+    let regression_targets: Vec<RegressionTargetBlock> = reassemble_merge_targets(
         &node_plan.node_id,
         &sample_ids,
         &mut by_sample_target,
@@ -548,13 +576,15 @@ pub(crate) fn reassemble_branch_merge_off_fold(
         target_domain: None,
     };
 
+    let predictions =
+        label_fusion_predictions(reduction, merged, &label_names, &regression_targets)?;
     Ok(Some(NodeResult {
         schema_version: None,
         classification_probabilities: Vec::new(),
         consumed_data_views: std::collections::BTreeMap::new(),
         node_id: node_plan.node_id.clone(),
         outputs: BTreeMap::new(),
-        predictions: vec![merged],
+        predictions,
         observation_predictions: Vec::new(),
         aggregated_predictions: Vec::new(),
         explanations: Vec::new(),
@@ -1012,6 +1042,7 @@ pub(crate) fn reassemble_fusion_merge(
     // what fusion averages — so unlike concat we collect, not deduplicate.
     let variant_id = scope.variant_id.clone();
     let mut branch_blocks: Vec<PredictionBlock> = Vec::new();
+    let mut label_names: Vec<Vec<String>> = Vec::new();
     let mut by_sample_target: BTreeMap<SampleId, Vec<f64>> = BTreeMap::new();
     let mut target_block_names: Option<Vec<String>> = None;
 
@@ -1022,7 +1053,12 @@ pub(crate) fn reassemble_fusion_merge(
             Some(&PredictionPartition::Validation),
             Some(&fold_id),
         );
-        let blocks = filter_prediction_blocks_for_edge_source_port(plan, edge, blocks)?;
+        let scope_blocks = blocks;
+        let blocks = filter_prediction_blocks_for_edge_source_port(
+            plan,
+            edge,
+            scope_blocks.iter().copied(),
+        )?;
         if blocks.is_empty() {
             // Modelless / sparse branch: no OOF block this fold. Coverage is
             // rechecked against the full fold validation set below.
@@ -1045,6 +1081,15 @@ pub(crate) fn reassemble_fusion_merge(
                 )));
             }
         }
+        if reduction == MergeReduction::FusionProbaMeanLabel {
+            label_names.push(label_fusion_companion_names(
+                plan,
+                branch_id,
+                edge,
+                &scope_blocks,
+                block,
+            )?);
+        }
         branch_blocks.push(block.clone());
 
         // Reassemble this branch's per-sample y_true (scoped to the active
@@ -1056,13 +1101,16 @@ pub(crate) fn reassemble_fusion_merge(
                 || record.partition != PredictionPartition::Validation
                 || record.fold_id.as_ref() != Some(&fold_id)
                 || record.variant_id != variant_id
-                || !producer_port_matches_edge_source_port(
+                // Label fusion consumes distributions; truth is the branch's per-sample
+                // label record, which the disagreement check below keeps consistent.
+                || (reduction != MergeReduction::FusionProbaMeanLabel
+                    && !producer_port_matches_edge_source_port(
                     plan,
                     edge,
                     &record.producer_node,
                     record.producer_port.as_deref(),
                     "regression target record",
-                )?
+                )?)
             {
                 continue;
             }
@@ -1096,7 +1144,7 @@ pub(crate) fn reassemble_fusion_merge(
         MergeReduction::Fusion => {
             reduce_predictions_across_branches(&branch_blocks, None, &node_plan.node_id)?
         }
-        MergeReduction::FusionProbaMean => {
+        MergeReduction::FusionProbaMean | MergeReduction::FusionProbaMeanLabel => {
             reduce_proba_mean_across_branches(&branch_blocks, &node_plan.node_id)?
         }
         MergeReduction::ResidualFusion => {
@@ -1136,7 +1184,7 @@ pub(crate) fn reassemble_fusion_merge(
     // has a target row. The central R-P1-9 gate turns PARTIAL coverage into a hard
     // error (never a silent no-score); no branch emitting targets is the legitimate
     // unscored case.
-    let regression_targets = reassemble_merge_targets(
+    let regression_targets: Vec<RegressionTargetBlock> = reassemble_merge_targets(
         &node_plan.node_id,
         &sample_ids,
         &mut by_sample_target,
@@ -1203,13 +1251,15 @@ pub(crate) fn reassemble_fusion_merge(
         target_domain: None,
     };
 
+    let predictions =
+        label_fusion_predictions(reduction, merged, &label_names, &regression_targets)?;
     Ok(Some(NodeResult {
         schema_version: None,
         classification_probabilities: Vec::new(),
         consumed_data_views: std::collections::BTreeMap::new(),
         node_id: node_plan.node_id.clone(),
         outputs: BTreeMap::new(),
-        predictions: vec![merged],
+        predictions,
         observation_predictions: Vec::new(),
         aggregated_predictions: Vec::new(),
         explanations: Vec::new(),
@@ -1220,6 +1270,106 @@ pub(crate) fn reassemble_fusion_merge(
         regression_targets,
         lineage,
     }))
+}
+
+/// Target names of the scored class-id block a branch emitted beside the
+/// probability block a label fusion consumes (same partition, fold and rows).
+fn label_fusion_companion_names(
+    plan: &ExecutionPlan,
+    branch_id: &NodeId,
+    edge: &EdgeSpec,
+    scope_blocks: &[&PredictionBlock],
+    probabilities: &PredictionBlock,
+) -> Result<Vec<String>> {
+    let auxiliary = auxiliary_prediction_ports_for_node(plan, branch_id)?;
+    let rows = probabilities.sample_ids.iter().collect::<BTreeSet<_>>();
+    let companions = scope_blocks
+        .iter()
+        .filter(|block| {
+            block
+                .producer_port
+                .as_deref()
+                .is_some_and(|port| port != edge.source.port_name && !auxiliary.contains(port))
+                && block.partition == probabilities.partition
+                && block.fold_id == probabilities.fold_id
+                && block.sample_ids.iter().collect::<BTreeSet<_>>() == rows
+        })
+        .collect::<Vec<_>>();
+    match companions.as_slice() {
+        [label] if label.validate_content()? == 1 && label.target_names.len() == 1 => {
+            Ok(label.target_names.clone())
+        }
+        _ => Err(DagMlError::OofValidation(format!(
+            "label fusion branch `{branch_id}` needs exactly one scored single-target class-id block beside its `{}` distributions",
+            edge.source.port_name
+        ))),
+    }
+}
+
+/// Emit a label fusion as its scored class ids (argmax column, lowest column on
+/// ties) plus the auxiliary renormalized mean distribution, in the same row order.
+/// Other reductions keep their single merged block unchanged.
+fn label_fusion_predictions(
+    reduction: MergeReduction,
+    merged: PredictionBlock,
+    label_names: &[Vec<String>],
+    targets: &[RegressionTargetBlock],
+) -> Result<Vec<PredictionBlock>> {
+    if reduction != MergeReduction::FusionProbaMeanLabel {
+        return Ok(vec![merged]);
+    }
+    let names = label_names
+        .first()
+        .filter(|names| label_names.iter().all(|other| other == *names))
+        .ok_or_else(|| {
+            DagMlError::OofValidation(format!(
+                "label fusion `{}` branches disagree on their class-label target",
+                merged.producer_node
+            ))
+        })?;
+    if targets
+        .iter()
+        .any(|target| !target.target_names.is_empty() && &target.target_names != names)
+    {
+        return Err(DagMlError::OofValidation(format!(
+            "label fusion `{}` truth and class-label target names differ",
+            merged.producer_node
+        )));
+    }
+    let label = PredictionBlock {
+        producer_port: Some("prediction".to_string()),
+        values: merged
+            .values
+            .iter()
+            .map(|row| vec![class_id_of_distribution(row) as f64])
+            .collect(),
+        target_names: names.clone(),
+        ..merged.clone()
+    };
+    label.validate_content()?;
+    let probabilities = PredictionBlock {
+        prediction_id: merged
+            .prediction_id
+            .as_ref()
+            .map(|id| format!("{id}:{}", crate::dsl::FUSION_PROBABILITY_PORT)),
+        producer_port: Some(crate::dsl::FUSION_PROBABILITY_PORT.to_string()),
+        ..merged
+    };
+    Ok(vec![label, probabilities])
+}
+
+/// Deterministic argmax of a validated finite distribution: the lowest column wins ties.
+pub(crate) fn class_id_of_distribution(row: &[f64]) -> usize {
+    row.iter().enumerate().fold(
+        0,
+        |best, (index, value)| {
+            if *value > row[best] {
+                index
+            } else {
+                best
+            }
+        },
+    )
 }
 
 /// Extract the `BranchViewPlan` that the DSL compiler stashed in the graph

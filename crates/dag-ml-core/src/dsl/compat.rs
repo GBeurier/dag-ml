@@ -953,6 +953,7 @@ impl CompatDslLowerer {
             include_original_data,
             on_missing: compat_merge_field(object, "on_missing")?,
             selectors: compat_merge_field(object, "selectors")?.unwrap_or_default(),
+            source_ports: BTreeMap::new(),
             metadata,
             seed_label: optional_object_field(object, "seed_label")?,
             representation: optional_object_field(object, "representation")?,

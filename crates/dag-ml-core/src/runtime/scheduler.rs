@@ -88,7 +88,20 @@ fn prediction_output_ports_for_node(plan: &ExecutionPlan, node_id: &NodeId) -> R
     Ok(ports)
 }
 
-fn auxiliary_prediction_ports_for_node(
+/// The scored primary prediction port of an ordinary node: `oof`, or
+/// `prediction` for a native prediction merge that declares no `oof`.
+fn primary_prediction_port(node: &crate::graph::NodeSpec, declared: &[String]) -> &'static str {
+    if node.kind == NodeKind::PredictionJoin
+        && !declared.iter().any(|port| port == "oof")
+        && declared.iter().any(|port| port == "prediction")
+    {
+        "prediction"
+    } else {
+        "oof"
+    }
+}
+
+pub(crate) fn auxiliary_prediction_ports_for_node(
     plan: &ExecutionPlan,
     node_id: &NodeId,
 ) -> Result<BTreeSet<String>> {
@@ -119,10 +132,11 @@ fn auxiliary_prediction_ports_for_node(
         ))
     })?;
     let declared = prediction_output_ports_for_node(plan, node_id)?;
-    if !declared.iter().any(|port| port == "oof")
+    let primary = primary_prediction_port(node, &declared);
+    if !declared.iter().any(|port| port == primary)
         || ports
             .iter()
-            .any(|port| port == "oof" || !declared.contains(port))
+            .any(|port| port == primary || !declared.contains(port))
         || ports.iter().collect::<BTreeSet<_>>().len() != ports.len()
     {
         return Err(DagMlError::RuntimeValidation(format!(
@@ -263,7 +277,14 @@ pub(crate) fn normalize_result_prediction_ports(
         {
             "y_hat"
         } else {
-            "oof"
+            let node = plan
+                .graph_plan
+                .graph
+                .nodes
+                .iter()
+                .find(|node| node.id == task.node_plan.node_id)
+                .expect("normalized node is in its execution graph");
+            primary_prediction_port(node, &prediction_ports)
         };
     crate::methods_classification::validate_methods_classification_result(plan, task, result)?;
     let auxiliary = auxiliary_prediction_ports_for_node(plan, &task.node_plan.node_id)?;
