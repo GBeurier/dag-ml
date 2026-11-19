@@ -10,6 +10,10 @@
   label inputs to a classification meta-model are refused. Classification
   payloads add `task` and `class_labels`. Regression mode, its payloads and
   outputs are unchanged (byte-identical outcomes, packages and replays).
+- Regression mode now refuses a classifier-only Methods head (it previously
+  fitted a classifier on continuous targets); valid regression recipes are
+  unaffected. Consumers using `merge.source_ports` need dag-ml >= 0.4.5: older
+  versions ignore the field and would merge the primary `oof` port.
 - Pipeline DSL `merge` steps accept `source_ports` (as `merge_model` does) to
   consume a non-primary prediction port of a pending source; absent overrides
   keep the primary `oof` edges and the existing graph bytes.
