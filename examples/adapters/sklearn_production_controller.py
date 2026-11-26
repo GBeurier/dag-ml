@@ -145,8 +145,8 @@ def with_fit_timeout(callable_: Callable[[], T]) -> T:
     """Run `callable_` under the controller's fit timeout, if any.
 
     The timeout is applied via `signal.SIGALRM` (Unix), which is the
-    only portable interrupt for blocking C extensions like sklearn's
-    fit loops. If `FIT_TIMEOUT_ENV` is unset or non-positive the
+    in-process interrupt used on hosts that provide it. Windows hosts
+    can set the CLI process deadline with --adapter-timeout-ms. If `FIT_TIMEOUT_ENV` is unset or non-positive the
     helper is a no-op so smoke campaigns retain their current
     behavior.
 
@@ -161,8 +161,13 @@ def with_fit_timeout(callable_: Callable[[], T]) -> T:
     shape) do not hit this case.
     """
     seconds = fit_timeout_seconds()
-    if seconds <= 0 or not hasattr(signal, "SIGALRM"):
+    if seconds <= 0:
         return callable_()
+    if not hasattr(signal, "SIGALRM"):
+        raise AdapterTaskError(
+            "unsupported_fit_timeout",
+            f"{FIT_TIMEOUT_ENV} requires SIGALRM; configure the host process deadline instead",
+        )
 
     def _on_alarm(_signum: int, _frame: Any) -> None:
         raise AdapterTaskError(

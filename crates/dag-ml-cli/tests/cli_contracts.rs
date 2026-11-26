@@ -4700,7 +4700,7 @@ print(json.dumps(sorted(mod.OPERATOR_SELECTORS.keys())))\n\
 }
 
 #[test]
-fn sklearn_production_controller_fit_timeout_raises_retryable_error() {
+fn sklearn_production_controller_checks_host_fit_timeout_support() {
     let root = repo_root();
     if !python_has_sklearn(&root) {
         return;
@@ -4740,10 +4740,12 @@ except mod.AdapterTaskError as exc:
         String::from_utf8_lossy(&probe.stderr)
     );
     let stdout_text = String::from_utf8_lossy(&probe.stdout);
-    assert!(
-        stdout_text.contains("OK:fit_timeout:1"),
-        "expected `OK:fit_timeout:1` in timeout probe stdout, got: {stdout_text}"
-    );
+    let expected = if cfg!(windows) {
+        "OK:unsupported_fit_timeout:0"
+    } else {
+        "OK:fit_timeout:1"
+    };
+    assert_eq!(stdout_text.trim(), expected);
 }
 
 fn run_production_adapter_one_shot(
