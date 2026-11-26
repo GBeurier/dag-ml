@@ -1455,20 +1455,38 @@ fn cli_selects_builds_and_validates_replay_bundle() {
         "ro-crate-metadata.json",
         "prediction_cache_manifest.json",
         "artifact_manifest.json",
-        "data_envelopes/branch:b0.model:ridge.x.json",
-        "data_envelopes/branch:b1.model:rf.x.json",
-        "data_envelopes/merge:stack.pred_plus_original.meta:ridge.x_original.json",
     ] {
         assert!(
             temp_branch_merge_provenance_dir.join(path).exists(),
             "research provenance package is missing {path}"
         );
     }
+    let metadata: serde_json::Value = serde_json::from_str(&branch_merge_ro_crate_json).unwrap();
+    for key in [
+        "branch:b0.model:ridge.x",
+        "branch:b1.model:rf.x",
+        "merge:stack.pred_plus_original.meta:ridge.x_original",
+    ] {
+        let file = metadata["@graph"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entity| entity["dagml:envelope_key"].as_str() == Some(key))
+            .unwrap();
+        let path = file["@id"].as_str().unwrap();
+        assert!(path.starts_with("data_envelopes/") && path.ends_with(".json"));
+        if !cfg!(windows) {
+            assert_eq!(path, format!("data_envelopes/{key}.json"));
+        }
+        assert!(
+            temp_branch_merge_provenance_dir.join(path).is_file(),
+            "{path}"
+        );
+    }
     assert!(
         branch_merge_ro_crate_json.contains("ComputationalWorkflow")
             && branch_merge_ro_crate_json.contains("prediction_cache_manifest.json")
             && branch_merge_ro_crate_json.contains("artifact_manifest.json")
-            && branch_merge_ro_crate_json.contains("data_envelopes/branch:b0.model:ridge.x.json")
             && branch_merge_ro_crate_json.contains("lineage.prov.jsonld")
             && branch_merge_ro_crate_json.contains("\"sha256\"")
             && branch_merge_ro_crate_json.contains("\"contentSize\""),
