@@ -6234,9 +6234,14 @@ impl ProcessAdapterMode {
 }
 
 fn process_adapter_command(adapter: &Path, mode: ProcessAdapterMode) -> ProcessCommand {
-    let mut command = if adapter.extension().and_then(|extension| extension.to_str()) == Some("py")
-    {
-        let mut command = ProcessCommand::new("python3");
+    let interpreter = match adapter.extension().and_then(|extension| extension.to_str()) {
+        Some("py") => Some("python3"),
+        #[cfg(windows)]
+        Some(extension) if extension.eq_ignore_ascii_case("r") => Some("Rscript"),
+        _ => None,
+    };
+    let mut command = if let Some(program) = interpreter {
+        let mut command = ProcessCommand::new(program);
         command.arg(adapter);
         command
     } else {

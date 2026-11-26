@@ -98,6 +98,7 @@ pub fn build_research_provenance_export(
             data_envelopes,
             prediction_cache_manifest,
             artifact_manifest,
+            host_envelope_path,
         )?,
     })
 }
@@ -235,7 +236,7 @@ pub fn validate_research_provenance_package_files(
         artifact_manifest.as_ref(),
     )?;
 
-    let export = build_research_provenance_export(
+    let expected_prov = build_prov_jsonld(
         &plan,
         &bundle,
         &lineage,
@@ -247,12 +248,26 @@ pub fn validate_research_provenance_package_files(
         require_package_file(files, PROV_JSONLD_FILE)?,
         PROV_JSONLD_FILE,
     )?;
-    if packaged_prov != export.prov_jsonld {
+    if packaged_prov != expected_prov {
         return Err(DagMlError::RuntimeValidation(
             "packaged PROV differs from its validated execution evidence".into(),
         ));
     }
-    let mut expected_crate = export.ro_crate_metadata;
+    let mut expected_crate = build_ro_crate_metadata(
+        &plan,
+        &bundle,
+        &data_envelopes,
+        prediction_cache_manifest.as_ref(),
+        artifact_manifest.as_ref(),
+        |key| {
+            let legacy = format!("data_envelopes/{key}.json");
+            if files.contains_key(&legacy) {
+                legacy
+            } else {
+                portable_envelope_path(key)
+            }
+        },
+    )?;
     // The metadata file is added after annotation by the writer and cannot
     // checksum itself.
     let contract_files = files
@@ -815,6 +830,7 @@ fn build_ro_crate_metadata(
     data_envelopes: &BTreeMap<String, ExternalDataPlanEnvelope>,
     prediction_cache_manifest: Option<&FilePredictionCacheManifest>,
     artifact_manifest: Option<&FileArtifactManifest>,
+    envelope_path: impl Fn(&str) -> String,
 ) -> Result<Value> {
     let mut has_part = vec![
         json!({"@id": "execution_plan.json"}),
@@ -881,7 +897,7 @@ fn build_ro_crate_metadata(
         ));
     }
     for (key, envelope) in data_envelopes {
-        let id = format!("data_envelopes/{key}.json");
+        let id = envelope_path(key);
         has_part.push(json!({"@id": id}));
         graph.push(json!({
             "@id": id,
@@ -1008,13 +1024,50 @@ fn validate_package_path(path: &str) -> Result<()> {
     Ok(())
 }
 
+fn portable_envelope_path(key: &str) -> String {
+    format!(
+        "data_envelopes/envelope-{}.json",
+        sha256_hex(key.as_bytes())
+    )
+}
+
+fn host_envelope_path(key: &str) -> String {
+    // Logical keys remain in the RO-Crate metadata. Keep ordinary filenames
+    // and reserve the digest prefix so a literal key cannot shadow an alias.
+    let device = key
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .trim_end()
+        .to_ascii_uppercase();
+    let reserved = matches!(device.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || device
+            .strip_prefix("COM")
+            .or_else(|| device.strip_prefix("LPT"))
+            .is_some_and(|n| {
+                matches!(
+                    n,
+                    "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
+                )
+            });
+    if cfg!(windows)
+        && (key.contains([':', '<', '>', '"', '|', '?', '*'])
+            || key.to_ascii_lowercase().starts_with("envelope-")
+            || reserved
+            || key.encode_utf16().count() + 5 > 255)
+    {
+        return portable_envelope_path(key);
+    }
+    format!("data_envelopes/{key}.json")
+}
+
 fn data_envelope_file_path(key: &str) -> Result<String> {
-    if key.contains(['/', '\\']) {
+    if key.is_empty() || key.chars().any(char::is_control) || key.contains(['/', '\\']) {
         return Err(DagMlError::RuntimeValidation(format!(
             "data envelope key `{key}` cannot be used as a research provenance package path"
         )));
     }
-    Ok(format!("data_envelopes/{key}.json"))
+    Ok(host_envelope_path(key))
 }
 
 fn require_package_file<'a>(files: &'a BTreeMap<String, Vec<u8>>, path: &str) -> Result<&'a [u8]> {
@@ -1034,15 +1087,34 @@ fn parse_package_json<T: DeserializeOwned>(bytes: &[u8], path: &str) -> Result<T
 fn parse_package_data_envelopes(
     files: &BTreeMap<String, Vec<u8>>,
 ) -> Result<BTreeMap<String, ExternalDataPlanEnvelope>> {
+    let metadata: Value = parse_package_json(
+        require_package_file(files, RO_CRATE_METADATA_FILE)?,
+        RO_CRATE_METADATA_FILE,
+    )?;
+    let keys: BTreeMap<_, _> = metadata["@graph"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|node| Some((node["@id"].as_str()?, node["dagml:envelope_key"].as_str()?)))
+        .collect();
     let mut envelopes = BTreeMap::new();
     for (path, bytes) in files {
-        let Some(key) = path
+        let Some(filename_key) = path
             .strip_prefix("data_envelopes/")
             .and_then(|suffix| suffix.strip_suffix(".json"))
         else {
             continue;
         };
-        if key.is_empty() || key.contains(['/', '\\']) {
+        let key = keys.get(path.as_str()).copied().ok_or_else(|| {
+            DagMlError::RuntimeValidation(format!(
+                "research provenance envelope `{path}` has no declared key"
+            ))
+        })?;
+        if key.is_empty()
+            || key.chars().any(char::is_control)
+            || key.contains(['/', '\\'])
+            || (key != filename_key && portable_envelope_path(key) != *path)
+        {
             return Err(DagMlError::RuntimeValidation(format!(
                 "research provenance data envelope path `{path}` has an invalid key"
             )));
@@ -1586,6 +1658,33 @@ mod tests {
     use crate::ids::{ControllerId, LineageId, NodeId, RunId};
     use crate::plan::build_execution_plan;
     use crate::{CampaignSpec, GraphSpec, Phase};
+
+    #[test]
+    fn read_portable_envelope_identity_on_every_host() {
+        let key = "branch:b0.model:ridge.x";
+        let path = portable_envelope_path(key);
+        let payload = include_bytes!(
+            "../tests/fixtures/package/data/coordinator_data_plan_envelope_sample12.json"
+        );
+        let metadata = |key: &str| {
+            serde_json::to_vec(&json!({
+                "@graph": [{"@id": path, "dagml:envelope_key": key}]
+            }))
+            .unwrap()
+        };
+        let mut files = BTreeMap::from([
+            (path.clone(), payload.to_vec()),
+            (RO_CRATE_METADATA_FILE.to_string(), metadata(key)),
+        ]);
+        assert!(parse_package_data_envelopes(&files)
+            .unwrap()
+            .contains_key(key));
+        files.insert(
+            RO_CRATE_METADATA_FILE.to_string(),
+            metadata("different:key"),
+        );
+        assert!(parse_package_data_envelopes(&files).is_err());
+    }
 
     fn fixture_plan() -> ExecutionPlan {
         let graph: GraphSpec =
